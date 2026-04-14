@@ -1,0 +1,794 @@
+# 对齐技术详解
+
+## 📖 概述
+
+对齐技术（Alignment Techniques）是确保大语言模型的行为与人类价值观、期望和意图保持一致的关键技术。通过人类反馈强化学习（RLHF）和其他方法，我们可以让模型更加有用、诚实和无害。
+
+## 🎯 为什么需要对齐？
+
+### 预训练模型的问题
+
+1. **有害内容**
+   - 可能生成有害、歧视性内容
+   - 缺乏道德约束
+   - 可能被滥用
+
+2. **不准确信息**
+   - 可能编造事实（幻觉）
+   - 缺乏事实核查
+   - 过度自信
+
+3. **不遵循指令**
+   - 可能误解用户意图
+   - 生成无关内容
+   - 格式不正确
+
+### 对齐的目标
+
+1. **有用（Helpful）**
+   - 准确理解用户需求
+   - 提供有用的信息
+   - 解决实际问题
+
+2. **诚实（Honest）**
+   - 不编造事实
+   - 承认不确定性
+   - 提供可靠信息
+
+3. **无害（Harmless）**
+   - 避免有害内容
+   - 尊重用户隐私
+   - 遵守道德规范
+
+## 🔢 主要对齐技术
+
+### 1. 人类反馈强化学习（RLHF）
+
+#### 核心思想
+
+通过人类反馈训练奖励模型，然后用强化学习优化语言模型。
+
+#### 三阶段流程
+
+##### 阶段 1：监督微调（SFT）
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+
+class SupervisedFineTuning:
+    def __init__(self, model_name, train_dataset):
+        """
+        监督微调
+        
+        参数:
+            model_name: 预训练模型名称
+            train_dataset: 训练数据集
+        """
+        self.model_name = model_name
+        self.train_dataset = train_dataset
+        
+        # 加载模型
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto"
+        )
+        
+        # 加载分词器
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+    
+    def train(self, output_dir, num_epochs=3, batch_size=4, learning_rate=2e-5):
+        """
+        训练模型
+        
+        参数:
+            output_dir: 输出目录
+            num_epochs: 训练轮数
+            batch_size: 批次大小
+            learning_rate: 学习率
+        """
+        # 训练参数
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            num_train_epochs=num_epochs,
+            per_device_train_batch_size=batch_size,
+            learning_rate=learning_rate,
+            warmup_steps=100,
+            logging_steps=10,
+            save_steps=500,
+            fp16=True,
+            gradient_checkpointing=True
+        )
+        
+        # 创建训练器
+        trainer = Trainer(
+            model=self.model,
+            args=training_args,
+            train_dataset=self.train_dataset,
+            tokenizer=self.tokenizer
+        )
+        
+        # 训练
+        trainer.train()
+        
+        # 保存模型
+        trainer.save_model(output_dir)
+        
+        return trainer
+
+# 使用示例
+def sft_example():
+    """监督微调示例"""
+    # 假设有高质量的人类对话数据
+    # train_dataset = load_human_conversations()
+    
+    # 创建训练器
+    sft = SupervisedFineTuning(
+        model_name='llama-7b',
+        train_dataset=train_dataset
+    )
+    
+    # 训练
+    sft.train(
+        output_dir='./sft_model',
+        num_epochs=3,
+        batch_size=4,
+        learning_rate=2e-5
+    )
+```
+
+##### 阶段 2：奖励模型（Reward Model）训练
+
+```python
+class RewardModel(nn.Module):
+    def __init__(self, base_model_name):
+        """
+        奖励模型
+        
+        参数:
+            base_model_name: 基础模型名称
+        """
+        super().__init__()
+        
+        # 加载基础模型
+        self.base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_name,
+            torch_dtype=torch.float16
+        )
+        
+        # 奖励头
+        hidden_size = self.base_model.config.hidden_size
+        self.reward_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_size, 1)
+        )
+    
+    def forward(self, input_ids, attention_mask=None):
+        """
+        前向传播
+        
+        参数:
+            input_ids: (batch_size, seq_len)
+            attention_mask: (batch_size, seq_len)
+        
+        返回:
+            reward: (batch_size, 1)
+        """
+        # 获取隐藏状态
+        outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True
+        )
+        
+        # 使用最后一个 token 的隐藏状态
+        last_hidden_state = outputs.hidden_states[-1][:, -1, :]
+        
+        # 计算奖励
+        reward = self.reward_head(last_hidden_state)
+        
+        return reward
+
+class RewardModelTrainer:
+    def __init__(self, base_model_name, comparison_dataset):
+        """
+        奖励模型训练器
+        
+        参数:
+            base_model_name: 基础模型名称
+            comparison_dataset: 比较数据集
+        """
+        self.model = RewardModel(base_model_name)
+        self.comparison_dataset = comparison_dataset
+    
+    def train_step(self, batch):
+        """
+        训练一步
+        
+        参数:
+            batch: 包含 chosen 和 rejected 的批次
+        
+        返回:
+            loss: 损失值
+        """
+        # 获取 chosen 和 rejected 的奖励
+        chosen_reward = self.model(
+            input_ids=batch['chosen_input_ids'],
+            attention_mask=batch['chosen_attention_mask']
+        )
+        
+        rejected_reward = self.model(
+            input_ids=batch['rejected_input_ids'],
+            attention_mask=batch['rejected_attention_mask']
+        )
+        
+        # 计算损失（Bradley-Terry 损失）
+        loss = -torch.log(
+            torch.sigmoid(chosen_reward - rejected_reward)
+        ).mean()
+        
+        return loss
+
+# 使用示例
+def reward_model_example():
+    """奖励模型训练示例"""
+    # 假设有比较数据（人类标注哪个回答更好）
+    # comparison_dataset = load_comparisons()
+    
+    # 创建训练器
+    trainer = RewardModelTrainer(
+        base_model_name='sft_model',
+        comparison_dataset=comparison_dataset
+    )
+    
+    # 训练
+    # for epoch in range(num_epochs):
+    #     for batch in dataloader:
+    #         loss = trainer.train_step(batch)
+    #         loss.backward()
+    #         optimizer.step()
+```
+
+##### 阶段 3：强化学习（PPO）
+
+```python
+class PPOTrainer:
+    def __init__(self, policy_model, reward_model, ref_model, tokenizer):
+        """
+        PPO 训练器
+        
+        参数:
+            policy_model: 策略模型（要优化的模型）
+            reward_model: 奖励模型
+            ref_model: 参考模型（用于 KL 散度）
+            tokenizer: 分词器
+        """
+        self.policy_model = policy_model
+        self.reward_model = reward_model
+        self.ref_model = ref_model
+        self.tokenizer = tokenizer
+        
+        # 冻结参考模型
+        for param in self.ref_model.parameters():
+            param.requires_grad = False
+        
+        # 冻结奖励模型
+        for param in self.reward_model.parameters():
+            param.requires_grad = False
+    
+    def generate_responses(self, prompts, max_length=512):
+        """
+        生成响应
+        
+        参数:
+            prompts: 提示列表
+            max_length: 最大长度
+        
+        返回:
+            responses: 生成的响应
+        """
+        responses = []
+        
+        for prompt in prompts:
+            # 分词
+            inputs = self.tokenizer(
+                prompt,
+                return_tensors='pt',
+                truncation=True,
+                max_length=max_length
+            ).to(self.policy_model.device)
+            
+            # 生成
+            with torch.no_grad():
+                outputs = self.policy_model.generate(
+                    **inputs,
+                    max_length=max_length,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.95,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+            
+            # 解码
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            responses.append(response)
+        
+        return responses
+    
+    def compute_advantages(self, rewards, old_rewards, kl_penalty=0.1):
+        """
+        计算优势
+        
+        参数:
+            rewards: 新奖励
+            old_rewards: 旧奖励
+            kl_penalty: KL 散度惩罚系数
+        
+        返回:
+            advantages: 优势
+        """
+        # 计算优势
+        advantages = rewards - old_rewards - kl_penalty * self.compute_kl_divergence()
+        
+        return advantages
+    
+    def compute_kl_divergence(self):
+        """
+        计算 KL 散度
+        
+        返回:
+            kl_div: KL 散度
+        """
+        # 计算策略模型和参考模型之间的 KL 散度
+        # 这里简化实现
+        return 0.0
+    
+    def train_step(self, prompts, batch_size=4, learning_rate=1e-5):
+        """
+        训练一步
+        
+        参数:
+            prompts: 提示列表
+            batch_size: 批次大小
+            learning_rate: 学习率
+        
+        返回:
+            loss: 损失值
+        """
+        # 生成响应
+        responses = self.generate_responses(prompts)
+        
+        # 计算奖励
+        rewards = []
+        for response in responses:
+            reward = self.reward_model(
+                input_ids=self.tokenizer(response, return_tensors='pt')['input_ids']
+            )
+            rewards.append(reward.item())
+        
+        # 计算优势
+        advantages = self.compute_advantages(rewards, rewards)
+        
+        # PPO 损失
+        # 这里简化实现
+        loss = -torch.mean(torch.tensor(advantages))
+        
+        # 反向传播
+        loss.backward()
+        
+        return loss.item()
+
+# 使用示例
+def ppo_example():
+    """PPO 训练示例"""
+    # 加载模型
+    policy_model = AutoModelForCausalLM.from_pretrained('sft_model')
+    reward_model = RewardModel('reward_model')
+    ref_model = AutoModelForCausalLM.from_pretrained('sft_model')
+    tokenizer = AutoTokenizer.from_pretrained('sft_model')
+    
+    # 创建训练器
+    trainer = PPOTrainer(
+        policy_model=policy_model,
+        reward_model=reward_model,
+        ref_model=ref_model,
+        tokenizer=tokenizer
+    )
+    
+    # 训练
+    # for epoch in range(num_epochs):
+    #     for batch in prompts:
+    #         loss = trainer.train_step(batch)
+```
+
+#### RLHF 的优势
+
+1. **人类对齐**
+   - 直接优化人类偏好
+   - 提高用户满意度
+   - 符合人类价值观
+
+2. **灵活性强**
+   - 可以针对不同目标优化
+   - 适应不同场景
+   - 易于调整
+
+#### RLHF 的劣势
+
+1. **复杂度高**
+   - 需要三个阶段
+   - 计算成本高
+   - 实现复杂
+
+2. **数据需求大**
+   - 需要大量人类标注
+   - 标注成本高
+   - 质量难以保证
+
+### 2. 直接偏好优化（DPO）
+
+#### 核心思想
+
+直接优化人类偏好，无需训练奖励模型。
+
+#### 数学原理
+
+DPO 通过直接优化策略模型来匹配人类偏好，避免了显式的奖励模型训练。
+
+```python
+class DPOTrainer:
+    def __init__(self, policy_model, ref_model, tokenizer):
+        """
+        DPO 训练器
+        
+        参数:
+            policy_model: 策略模型
+            ref_model: 参考模型
+            tokenizer: 分词器
+        """
+        self.policy_model = policy_model
+        self.ref_model = ref_model
+        self.tokenizer = tokenizer
+        
+        # 冻结参考模型
+        for param in self.ref_model.parameters():
+            param.requires_grad = False
+    
+    def compute_dpo_loss(self, batch, beta=0.1):
+        """
+        计算 DPO 损失
+        
+        参数:
+            batch: 包含 chosen 和 rejected 的批次
+            beta: 温度参数
+        
+        返回:
+            loss: DPO 损失
+        """
+        # 获取 chosen 和 rejected 的对数概率
+        chosen_logprob = self.get_logprob(
+            self.policy_model,
+            batch['chosen_input_ids'],
+            batch['chosen_attention_mask']
+        )
+        
+        rejected_logprob = self.get_logprob(
+            self.policy_model,
+            batch['rejected_input_ids'],
+            batch['rejected_attention_mask']
+        )
+        
+        # 获取参考模型的概率
+        ref_chosen_logprob = self.get_logprob(
+            self.ref_model,
+            batch['chosen_input_ids'],
+            batch['chosen_attention_mask']
+        )
+        
+        ref_rejected_logprob = self.get_logprob(
+            self.ref_model,
+            batch['rejected_input_ids'],
+            batch['rejected_attention_mask']
+        )
+        
+        # 计算 DPO 损失
+        chosen_ratio = (chosen_logprob - ref_chosen_logprob) / beta
+        rejected_ratio = (rejected_logprob - ref_rejected_logprob) / beta
+        
+        loss = -torch.log(
+            torch.sigmoid(chosen_ratio - rejected_ratio)
+        ).mean()
+        
+        return loss
+    
+    def get_logprob(self, model, input_ids, attention_mask):
+        """
+        获取对数概率
+        
+        参数:
+            model: 模型
+            input_ids: 输入 ID
+            attention_mask: 注意力掩码
+        
+        返回:
+            logprob: 对数概率
+        """
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask
+        )
+        
+        logits = outputs.logits
+        logprobs = torch.log_softmax(logits, dim=-1)
+        
+        # 计算序列的对数概率
+        logprob = 0.0
+        for i in range(input_ids.size(1) - 1):
+            logprob += logprobs[0, i, input_ids[0, i + 1]].item()
+        
+        return logprob
+
+# 使用示例
+def dpo_example():
+    """DPO 训练示例"""
+    # 加载模型
+    policy_model = AutoModelForCausalLM.from_pretrained('sft_model')
+    ref_model = AutoModelForCausalLM.from_pretrained('sft_model')
+    tokenizer = AutoTokenizer.from_pretrained('sft_model')
+    
+    # 创建训练器
+    trainer = DPOTrainer(
+        policy_model=policy_model,
+        ref_model=ref_model,
+        tokenizer=tokenizer
+    )
+    
+    # 训练
+    # for epoch in range(num_epochs):
+    #     for batch in dataloader:
+    #         loss = trainer.compute_dpo_loss(batch)
+    #         loss.backward()
+    #         optimizer.step()
+```
+
+#### DPO 的优势
+
+1. **简化流程**
+   - 无需训练奖励模型
+   - 只需两个模型
+   - 实现更简单
+
+2. **稳定性好**
+   - 避免奖励模型的不稳定性
+   - 训练更稳定
+   - 收敛更快
+
+3. **效率高**
+   - 计算成本更低
+   - 训练更快
+   - 资源需求少
+
+### 3. 其他对齐技术
+
+#### Constitutional AI（宪法AI）
+
+通过一套原则（宪法）来指导模型行为。
+
+```python
+class ConstitutionalAI:
+    def __init__(self, model, constitution):
+        """
+        宪法 AI
+        
+        参数:
+            model: 语言模型
+            constitution: 宪法原则列表
+        """
+        self.model = model
+        self.constitution = constitution
+    
+    def critique_response(self, prompt, response):
+        """
+        批评响应
+        
+        参数:
+            prompt: 提示
+            response: 响应
+        
+        返回:
+            critique: 批评意见
+        """
+        critique_prompt = f"""
+        根据以下原则批评这个响应：
+        原则：{self.constitution}
+        
+        提示：{prompt}
+        响应：{response}
+        
+        批评：
+        """
+        
+        critique = self.model.generate(critique_prompt)
+        return critique
+    
+    def revise_response(self, prompt, response, critique):
+        """
+        修订响应
+        
+        参数:
+            prompt: 提示
+            response: 响应
+            critique: 批评意见
+        
+        返回:
+            revised_response: 修订后的响应
+        """
+        revise_prompt = f"""
+        根据以下批评意见修订响应：
+        提示：{prompt}
+        原始响应：{response}
+        批评：{critique}
+        
+        修订后的响应：
+        """
+        
+        revised_response = self.model.generate(revise_prompt)
+        return revised_response
+```
+
+#### RLAIF（AI 反馈强化学习）
+
+使用 AI 而不是人类提供反馈。
+
+```python
+class RLAIFTrainer:
+    def __init__(self, policy_model, ai_feedback_model):
+        """
+        RLAIF 训练器
+        
+        参数:
+            policy_model: 策略模型
+            ai_feedback_model: AI 反馈模型
+        """
+        self.policy_model = policy_model
+        self.ai_feedback_model = ai_feedback_model
+    
+    def get_ai_feedback(self, prompt, response):
+        """
+        获取 AI 反馈
+        
+        参数:
+            prompt: 提示
+            response: 响应
+        
+        返回:
+            feedback: AI 反馈
+        """
+        feedback_prompt = f"""
+        评估以下响应的质量：
+        提示：{prompt}
+        响应：{response}
+        
+        评估（1-10分）：
+        """
+        
+        feedback = self.ai_feedback_model.generate(feedback_prompt)
+        return feedback
+```
+
+## 📊 对齐技术比较
+
+| 技术 | 复杂度 | 数据需求 | 计算成本 | 效果 |
+|------|--------|---------|---------|------|
+| RLHF | 高 | 高 | 高 | 好 |
+| DPO | 中 | 中 | 中 | 好 |
+| Constitutional AI | 中 | 低 | 低 | 中 |
+| RLAIF | 中 | 低 | 中 | 中 |
+
+## 💡 实践建议
+
+### 数据质量
+
+1. **人类标注**
+   - 选择高质量的标注者
+   - 提供清晰的标注指南
+   - 定期检查标注质量
+
+2. **多样性**
+   - 覆盖多种场景
+   - 不同类型的提示
+   - 多样的响应
+
+3. **一致性**
+   - 标注标准一致
+   - 避免偏见
+   - 定期校准
+
+### 训练技巧
+
+1. **学习率**
+   - RLHF：通常较小（1e-6 到 1e-5）
+   - DPO：可以稍大（1e-5 到 1e-4）
+   - 使用预热
+
+2. **Batch Size**
+   - 根据显存调整
+   - 通常 4-16
+   - 梯度累积
+
+3. **训练轮数**
+   - 通常 1-3 轮
+   - 监控奖励
+   - 早停
+
+### 评估方法
+
+1. **自动评估**
+   - 奖励模型分数
+   - 基准测试
+   - 安全性检查
+
+2. **人工评估**
+   - 有用性
+   - 诚实性
+   - 无害性
+
+3. **用户反馈**
+   - 满意度调查
+   - 使用统计
+   - 投诉分析
+
+## 🔗 相关资源
+
+### 论文
+- [Training Language Models to Follow Instructions with Human Feedback](https://arxiv.org/abs/2203.02155)
+- [Constitutional AI: Harmlessness from AI Feedback](https://arxiv.org/abs/2212.08073)
+- [Direct Preference Optimization: Your Language Model is Secretly a Reward Model](https://arxiv.org/abs/2305.18290)
+- [Training a Helpful and Harmless Assistant with Reinforcement Learning from Human Feedback](https://arxiv.org/abs/2204.05862)
+
+### 代码
+- [OpenAI Spinning Up](https://spinningup.openai.com/)
+- [Hugging Face TRL](https://github.com/huggingface/trl)
+- [Anthropic Constitutional AI](https://github.com/anthropics/constitutional-ai)
+
+### 工具
+- [TRL](https://huggingface.co/docs/trl)
+- [RLHF-Chat](https://github.com/lm-sys/RLHF-Chat)
+- [Chatbot Arena](https://chat.lmsys.org/)
+
+## ✅ 学习检查点
+
+- [ ] 理解对齐的重要性
+- [ ] 掌握 RLHF 的三阶段流程
+- [ ] 理解 DPO 的优势
+- [ ] 了解其他对齐技术
+- [ ] 能够实现基本的对齐方法
+- [ ] 理解如何选择合适的对齐技术
+
+## 🎉 章节总结
+
+恭喜你完成了 **1.1 大语言模型原理** 的学习！
+
+你已经掌握了：
+- ✅ Transformer 架构的核心组件
+- ✅ Self-Attention 机制的数学原理
+- ✅ 位置编码的不同实现方式
+- ✅ 前馈网络和层归一化的作用
+- ✅ 预训练目标和微调方法
+- ✅ 指令微调和对齐技术
+
+## 🚀 下一步
+
+建议继续学习：
+- **1.2 主流 LLM 模型** - 了解各种开源和闭源模型
+- **1.3 Prompt Engineering** - 学习如何有效使用 LLM
+- **实践项目** - 动手实现和实验
+
+---
+
+**版本**：v1.0  
+**最后更新**：2026-04-14  
+**预计学习时间**：6-8 小时

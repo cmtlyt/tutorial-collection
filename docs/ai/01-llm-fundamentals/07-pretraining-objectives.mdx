@@ -1,0 +1,759 @@
+# 预训练目标详解
+
+## 📖 概述
+
+预训练目标（Pretraining Objectives）是大语言模型训练的核心，决定了模型如何从海量文本数据中学习语言知识。不同的预训练目标会影响模型的能力和适用场景。
+
+## 🎯 为什么需要预训练？
+
+### 从零学习的挑战
+
+1. **数据需求巨大**
+   - 从零训练需要海量标注数据
+   - 标注成本极高
+   - 难以覆盖所有任务
+
+2. **知识迁移困难**
+   - 每个任务独立训练
+   - 无法共享语言知识
+   - 效率低下
+
+3. **泛化能力弱**
+   - 过拟合特定任务
+   - 难以适应新任务
+   - 缺乏通用语言理解
+
+### 预训练的优势
+
+1. **利用无监督数据**
+   - 海量文本数据免费可用
+   - 无需人工标注
+   - 覆盖广泛的语言现象
+
+2. **学习通用知识**
+   - 语法、语义、世界知识
+   - 跨任务共享
+   - 强泛化能力
+
+3. **高效微调**
+   - 预训练 + 微调范式
+   - 少量标注数据即可
+   - 快速适应新任务
+
+## 🔢 主要预训练目标
+
+### 1. 掩码语言建模（Masked Language Modeling, MLM）
+
+#### 核心思想
+
+随机掩盖输入序列中的一些 token，让模型预测被掩盖的 token。
+
+#### 数学公式
+
+给定输入序列 `X = [x₁, x₂, ..., xₙ]`：
+
+1. **随机掩盖**：选择 15% 的 token 进行掩盖
+   - 80% 替换为 `[MASK]`
+   - 10% 替换为随机 token
+   - 10% 保持不变
+
+2. **预测目标**：
+   ```
+   L = - Σ_{i∈M} log P(x_i | X_masked)
+   ```
+   其中 `M` 是被掩盖的位置集合
+
+#### 代码实现
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class MaskedLanguageModel(nn.Module):
+    def __init__(self, vocab_size, d_model, n_heads, n_layers, max_len=512):
+        """
+        掩码语言模型
+        
+        参数:
+            vocab_size: 词汇表大小
+            d_model: 模型维度
+            n_heads: 注意力头数
+            n_layers: 层数
+            max_len: 最大序列长度
+        """
+        super().__init__()
+        
+        # 嵌入层
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.position_embedding = nn.Embedding(max_len, d_model)
+        
+        # Transformer 编码器
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=n_layers
+        )
+        
+        # 输出层
+        self.lm_head = nn.Linear(d_model, vocab_size)
+        
+        # 掩码 token ID
+        self.mask_token_id = vocab_size - 1
+    
+    def forward(self, input_ids, attention_mask=None):
+        """
+        前向传播
+        
+        参数:
+            input_ids: (batch_size, seq_len)
+            attention_mask: (batch_size, seq_len)
+        
+        返回:
+            logits: (batch_size, seq_len, vocab_size)
+        """
+        batch_size, seq_len = input_ids.shape
+        
+        # 嵌入
+        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
+        token_embeds = self.token_embedding(input_ids)
+        position_embeds = self.position_embedding(positions)
+        embeddings = token_embeds + position_embeds
+        
+        # Transformer 编码
+        if attention_mask is not None:
+            # 转换为 Transformer 需要的格式
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+            attention_mask = (1.0 - attention_mask) * -10000.0
+        
+        hidden_states = self.transformer_encoder(embeddings, src_key_padding_mask=attention_mask)
+        
+        # 预测
+        logits = self.lm_head(hidden_states)
+        
+        return logits
+    
+    def create_masked_input(self, input_ids, mask_prob=0.15):
+        """
+        创建掩码输入
+        
+        参数:
+            input_ids: (batch_size, seq_len)
+            mask_prob: 掩码概率
+        
+        返回:
+            masked_input_ids: (batch_size, seq_len)
+            mask_positions: (batch_size, seq_len) - 布尔掩码
+        """
+        batch_size, seq_len = input_ids.shape
+        
+        # 创建随机掩码
+        mask = torch.rand(batch_size, seq_len, device=input_ids.device) < mask_prob
+        
+        # 不掩码特殊 token（假设前几个是特殊 token）
+        mask[:, :2] = False
+        
+        # 应用掩码
+        masked_input_ids = input_ids.clone()
+        
+        # 80% 替换为 [MASK]
+        mask_80 = (torch.rand(batch_size, seq_len, device=input_ids.device) < 0.8) & mask
+        masked_input_ids[mask_80] = self.mask_token_id
+        
+        # 10% 替换为随机 token
+        mask_10 = (torch.rand(batch_size, seq_len, device=input_ids.device) < 0.5) & ~mask_80 & mask
+        random_tokens = torch.randint(0, self.mask_token_id, (batch_size, seq_len), device=input_ids.device)
+        masked_input_ids[mask_10] = random_tokens[mask_10]
+        
+        # 10% 保持不变（无需操作）
+        
+        return masked_input_ids, mask
+
+# 训练示例
+def train_mlm_step(model, input_ids, optimizer, device):
+    """
+    训练一步 MLM
+    
+    参数:
+        model: 模型
+        input_ids: (batch_size, seq_len)
+        optimizer: 优化器
+        device: 设备
+    """
+    model.train()
+    optimizer.zero_grad()
+    
+    # 创建掩码输入
+    masked_input_ids, mask_positions = model.create_masked_input(input_ids)
+    
+    # 前向传播
+    logits = model(masked_input_ids)
+    
+    # 计算损失（只在掩码位置）
+    loss = F.cross_entropy(
+        logits[mask_positions],
+        input_ids[mask_positions]
+    )
+    
+    # 反向传播
+    loss.backward()
+    optimizer.step()
+    
+    return loss.item()
+```
+
+#### 优势
+
+1. **双向上下文**
+   - 可以看到整个序列
+   - 更好的语言理解
+   - 适合理解任务
+
+2. **训练稳定**
+   - 不需要自回归生成
+   - 可以并行训练
+   - 收敛较快
+
+3. **知识丰富**
+   - 学习双向依赖
+   - 更好的语法理解
+   - 丰富的语义表示
+
+#### 劣势
+
+1. **不适合生成**
+   - 训练时使用 [MASK]
+   - 推理时没有 [MASK]
+   - 生成能力弱
+
+2. **预训练-微调差距**
+   - 预训练和微调不一致
+   - 需要适配
+
+#### 代表模型
+
+- **BERT**：双向编码器表示
+- **RoBERTa**：BERT 的改进版本
+- **ALBERT**：轻量级 BERT
+
+### 2. 因果语言建模（Causal Language Modeling, CLM）
+
+#### 核心思想
+
+预测序列中的下一个 token，只能看到之前的 token。
+
+#### 数学公式
+
+给定输入序列 `X = [x₁, x₂, ..., xₙ]`：
+
+```
+L = - Σ_{i=1}^{n} log P(x_i | x₁, x₂, ..., x_{i-1})
+```
+
+#### 代码实现
+
+```python
+class CausalLanguageModel(nn.Module):
+    def __init__(self, vocab_size, d_model, n_heads, n_layers, max_len=512):
+        """
+        因果语言模型
+        
+        参数:
+            vocab_size: 词汇表大小
+            d_model: 模型维度
+            n_heads: 注意力头数
+            n_layers: 层数
+            max_len: 最大序列长度
+        """
+        super().__init__()
+        
+        # 嵌入层
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.position_embedding = nn.Embedding(max_len, d_model)
+        
+        # Transformer 解码器（带因果掩码）
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True
+        )
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=n_layers
+        )
+        
+        # 输出层
+        self.lm_head = nn.Linear(d_model, vocab_size)
+    
+    def forward(self, input_ids, attention_mask=None):
+        """
+        前向传播
+        
+        参数:
+            input_ids: (batch_size, seq_len)
+            attention_mask: (batch_size, seq_len)
+        
+        返回:
+            logits: (batch_size, seq_len, vocab_size)
+        """
+        batch_size, seq_len = input_ids.shape
+        
+        # 嵌入
+        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
+        token_embeds = self.token_embedding(input_ids)
+        position_embeds = self.position_embedding(positions)
+        embeddings = token_embeds + position_embeds
+        
+        # 创建因果掩码
+        causal_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=input_ids.device) * float('-inf'),
+            diagonal=1
+        )
+        
+        # Transformer 解码
+        if attention_mask is not None:
+            # 转换为 Transformer 需要的格式
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+            attention_mask = (1.0 - attention_mask) * -10000.0
+            causal_mask = causal_mask.unsqueeze(0) + attention_mask
+        
+        hidden_states = self.transformer_decoder(
+            embeddings,
+            embeddings,
+            tgt_mask=causal_mask
+        )
+        
+        # 预测
+        logits = self.lm_head(hidden_states)
+        
+        return logits
+
+# 训练示例
+def train_clm_step(model, input_ids, optimizer, device):
+    """
+    训练一步 CLM
+    
+    参数:
+        model: 模型
+        input_ids: (batch_size, seq_len)
+        optimizer: 优化器
+        device: 设备
+    """
+    model.train()
+    optimizer.zero_grad()
+    
+    # 前向传播
+    logits = model(input_ids)
+    
+    # 计算损失（预测下一个 token）
+    # 输入: x₁, x₂, ..., xₙ
+    # 目标: x₂, x₃, ..., xₙ₊₁
+    shift_logits = logits[:, :-1, :].contiguous()
+    shift_labels = input_ids[:, 1:].contiguous()
+    
+    loss = F.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1)
+    )
+    
+    # 反向传播
+    loss.backward()
+    optimizer.step()
+    
+    return loss.item()
+```
+
+#### 优势
+
+1. **生成能力强**
+   - 自回归生成
+   - 流畅的文本生成
+   - 适合创作任务
+
+2. **预训练-微调一致**
+   - 训练和推理一致
+   - 无需适配
+
+3. **长距离依赖**
+   - 可以捕捉长距离依赖
+   - 更好的连贯性
+
+#### 劣势
+
+1. **单向上下文**
+   - 只能看到之前的 token
+   - 理解能力受限
+   - 不适合理解任务
+
+2. **训练慢**
+   - 需要自回归生成
+   - 无法完全并行
+   - 收敛较慢
+
+#### 代表模型
+
+- **GPT 系列**：生成式预训练 Transformer
+- **LLaMA**：高效的开源模型
+- **Qwen**：通义千问系列
+
+### 3. 序列到序列预训练（Seq2Seq Pretraining）
+
+#### 核心思想
+
+结合编码器-解码器结构，同时学习理解和生成。
+
+#### 主要方法
+
+##### T5（Text-to-Text Transfer Transformer）
+
+将所有任务都转换为文本到文本的形式。
+
+```python
+class T5Model(nn.Module):
+    def __init__(self, vocab_size, d_model, n_heads, n_layers, max_len=512):
+        """
+        T5 模型
+        
+        参数:
+            vocab_size: 词汇表大小
+            d_model: 模型维度
+            n_heads: 注意力头数
+            n_layers: 层数
+            max_len: 最大序列长度
+        """
+        super().__init__()
+        
+        # 共享嵌入
+        self.shared_embedding = nn.Embedding(vocab_size, d_model)
+        
+        # 编码器
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        
+        # 解码器
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
+        
+        # 输出层
+        self.lm_head = nn.Linear(d_model, vocab_size)
+    
+    def forward(self, input_ids, decoder_input_ids, attention_mask=None, decoder_attention_mask=None):
+        """
+        前向传播
+        
+        参数:
+            input_ids: (batch_size, seq_len)
+            decoder_input_ids: (batch_size, decoder_seq_len)
+            attention_mask: (batch_size, seq_len)
+            decoder_attention_mask: (batch_size, decoder_seq_len)
+        
+        返回:
+            logits: (batch_size, decoder_seq_len, vocab_size)
+        """
+        # 编码器
+        encoder_hidden = self.encoder(
+            self.shared_embedding(input_ids),
+            src_key_padding_mask=attention_mask
+        )
+        
+        # 解码器
+        decoder_hidden = self.decoder(
+            self.shared_embedding(decoder_input_ids),
+            encoder_hidden,
+            tgt_mask=self._create_causal_mask(decoder_input_ids.size(1)),
+            tgt_key_padding_mask=decoder_attention_mask
+        )
+        
+        # 预测
+        logits = self.lm_head(decoder_hidden)
+        
+        return logits
+    
+    def _create_causal_mask(self, seq_len):
+        """创建因果掩码"""
+        mask = torch.triu(
+            torch.ones(seq_len, seq_len) * float('-inf'),
+            diagonal=1
+        )
+        return mask.to(self.shared_embedding.weight.device)
+```
+
+#### BART（Bidirectional and Auto-Regressive Transformers）
+
+结合 BERT 的双向编码器和 GPT 的自回归解码器。
+
+#### 优势
+
+1. **理解和生成并重**
+   - 双向编码器理解
+   - 自回归解码器生成
+   - 平衡的能力
+
+2. **任务灵活**
+   - 可以处理多种任务
+   - 文本到文本转换
+   - 翻译、摘要等
+
+#### 劣势
+
+1. **模型复杂**
+   - 编码器-解码器结构
+   - 参数量大
+   - 训练成本高
+
+#### 代表模型
+
+- **T5**：文本到文本转换 Transformer
+- **BART**：双向自回归 Transformer
+- **mT5**：多语言 T5
+
+### 4. 对比学习预训练（Contrastive Learning）
+
+#### 核心思想
+
+通过对比正样本和负样本学习表示。
+
+#### 主要方法
+
+##### SimCSE
+
+简单的对比句子嵌入学习。
+
+```python
+class SimCSEModel(nn.Module):
+    def __init__(self, d_model, n_heads, n_layers, max_len=512):
+        """
+        SimCSE 模型
+        
+        参数:
+            d_model: 模型维度
+            n_heads: 注意力头数
+            n_layers: 层数
+            max_len: 最大序列长度
+        """
+        super().__init__()
+        
+        # Transformer 编码器
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=n_layers
+        )
+        
+        # 投影头
+        self.projection = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, 256)
+        )
+    
+    def forward(self, input_ids, attention_mask=None):
+        """
+        前向传播
+        
+        参数:
+            input_ids: (batch_size, seq_len)
+            attention_mask: (batch_size, seq_len)
+        
+        返回:
+            embeddings: (batch_size, 256)
+        """
+        # 编码
+        hidden_states = self.transformer_encoder(
+            input_ids,
+            src_key_padding_mask=attention_mask
+        )
+        
+        # 取 [CLS] token 的表示
+        cls_embedding = hidden_states[:, 0, :]
+        
+        # 投影
+        embeddings = self.projection(cls_embedding)
+        
+        return embeddings
+
+def contrastive_loss(embeddings, temperature=0.05):
+    """
+    对比损失
+    
+    参数:
+        embeddings: (2*batch_size, embedding_dim)
+        temperature: 温度参数
+    
+    返回:
+        loss: 标量
+    """
+    batch_size = embeddings.size(0) // 2
+    
+    # 归一化
+    embeddings = F.normalize(embeddings, dim=1)
+    
+    # 计算相似度矩阵
+    similarity_matrix = torch.matmul(embeddings, embeddings.T) / temperature
+    
+    # 创建标签（正样本对）
+    labels = torch.arange(batch_size, device=embeddings.device)
+    labels = torch.cat([labels + batch_size, labels], dim=0)
+    
+    # 计算损失
+    loss = F.cross_entropy(similarity_matrix, labels)
+    
+    return loss
+```
+
+#### 优势
+
+1. **表示学习**
+   - 学习高质量的句子表示
+   - 适合语义相似度任务
+   - 检索效果好
+
+2. **无监督**
+   - 不需要标注数据
+   - 利用数据增强
+   - 自监督学习
+
+#### 劣势
+
+1. **任务特定**
+   - 主要用于表示学习
+   - 生成能力弱
+   - 应用场景有限
+
+#### 代表模型
+
+- **SimCSE**：简单对比句子嵌入
+- **E5**：嵌入模型
+- **BGE**：通用嵌入
+
+## 📊 预训练目标比较
+
+| 特性 | MLM | CLM | Seq2Seq | 对比学习 |
+|------|-----|-----|---------|---------|
+| 上下文 | 双向 | 单向 | 双向+单向 | 双向 |
+| 生成能力 | 弱 | 强 | 强 | 弱 |
+| 理解能力 | 强 | 弱 | 强 | 强 |
+| 训练速度 | 快 | 慢 | 中 | 快 |
+| 适用任务 | 理解 | 生成 | 理解+生成 | 检索 |
+| 代表模型 | BERT | GPT | T5 | SimCSE |
+
+## 💡 实践建议
+
+### 选择预训练目标
+
+1. **理解任务**
+   - 分类、问答、NER → MLM
+   - 文本生成、对话 → CLM
+   - 翻译、摘要 → Seq2Seq
+   - 语义检索 → 对比学习
+
+2. **数据规模**
+   - 小规模数据 → MLM（稳定）
+   - 大规模数据 → CLM（生成能力强）
+
+3. **计算资源**
+   - 有限资源 → MLM（训练快）
+   - 充足资源 → CLM（性能好）
+
+### 训练技巧
+
+1. **数据预处理**
+   - 清洗数据
+   - 去重
+   - 分词
+
+2. **超参数选择**
+   - 学习率：1e-4 到 5e-4
+   - Batch size：根据 GPU 调整
+   - 训练步数：根据数据量
+
+3. **监控指标**
+   - 损失曲线
+   - 验证集性能
+   - 梯度范数
+
+### 常见问题
+
+1. **过拟合**
+   - 增加数据
+   - 使用 dropout
+   - 早停
+
+2. **训练不稳定**
+   - 调整学习率
+   - 使用梯度裁剪
+   - 检查数据质量
+
+3. **收敛慢**
+   - 增加学习率
+   - 使用学习率预热
+   - 检查模型容量
+
+## 🔗 相关资源
+
+### 论文
+- [BERT: Pre-training of Deep Bidirectional Transformers](https://arxiv.org/abs/1810.04805)
+- [Improving Language Understanding by Generative Pre-Training](https://s3-us-west-2.amazonaws.com/openai-assets/research-covers/language-unsupervised/language_understanding_paper.pdf)
+- [Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer](https://arxiv.org/abs/1910.10683)
+- [SimCSE: Simple Contrastive Learning of Sentence Embeddings](https://arxiv.org/abs/2104.08821)
+
+### 代码
+- [Hugging Face Transformers](https://github.com/huggingface/transformers)
+- [BERT Pretraining](https://github.com/google-research/bert)
+- [GPT-2 Pretraining](https://github.com/openai/gpt-2)
+
+### 数据集
+- [The Pile](https://pile.eleuther.ai/)
+- [C4](https://www.tensorflow.org/datasets/catalog/c4)
+- [OSCAR](https://oscar-project.org/)
+
+## ✅ 学习检查点
+
+- [ ] 理解不同预训练目标的核心思想
+- [ ] 掌握 MLM 和 CLM 的区别
+- [ ] 理解 Seq2Seq 预训练的优势
+- [ ] 了解对比学习的应用
+- [ ] 能够实现基本的预训练目标
+- [ ] 理解如何选择合适的预训练目标
+
+## 🚀 下一步
+
+继续学习：
+- [08-fine-tuning-methods.md](./08-fine-tuning-methods.mdx) - 微调方法详解
+
+---
+
+**版本**：v1.0  
+**最后更新**：2026-04-14  
+**预计学习时间**：6-8 小时

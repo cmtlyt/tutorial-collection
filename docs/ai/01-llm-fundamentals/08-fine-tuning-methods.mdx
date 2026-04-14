@@ -1,0 +1,690 @@
+# 微调方法详解
+
+## 📖 概述
+
+微调（Fine-tuning）是将预训练的大语言模型适配到特定任务的关键技术。通过在目标任务的小规模标注数据上继续训练，模型可以快速适应新任务，同时保留预训练学到的通用知识。
+
+## 🎯 为什么需要微调？
+
+### 预训练模型的局限性
+
+1. **通用知识**
+   - 预训练模型学习通用语言知识
+   - 缺乏特定领域的专业知识
+   - 不了解特定任务的格式
+
+2. **任务不匹配**
+   - 预训练目标和目标任务不同
+   - 输出格式可能不匹配
+   - 需要任务特定的适配
+
+3. **领域差异**
+   - 预训练数据和目标任务数据分布不同
+   - 术语、风格、格式差异
+   - 需要领域适配
+
+### 微调的优势
+
+1. **高效适配**
+   - 利用预训练知识
+   - 少量数据即可
+   - 快速收敛
+
+2. **性能提升**
+   - 针对特定任务优化
+   - 提高准确率
+   - 改善生成质量
+
+3. **灵活应用**
+   - 适应各种任务
+   - 支持多种格式
+   - 易于部署
+
+## 🔢 主要微调方法
+
+### 1. 全量微调（Full Fine-tuning）
+
+#### 核心思想
+
+更新模型的所有参数，在目标任务数据上继续训练。
+
+#### 代码实现
+
+```python
+import torch
+import torch.nn as nn
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+class FullFineTuning:
+    def __init__(self, model_name, num_labels, learning_rate=2e-5):
+        """
+        全量微调
+        
+        参数:
+            model_name: 预训练模型名称
+            num_labels: 分类标签数
+            learning_rate: 学习率
+        """
+        self.model_name = model_name
+        self.num_labels = num_labels
+        self.learning_rate = learning_rate
+        
+        # 加载预训练模型
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            num_labels=num_labels
+        )
+        
+        # 加载分词器
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
+        # 优化器
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=learning_rate
+        )
+    
+    def train_step(self, batch):
+        """
+        训练一步
+        
+        参数:
+            batch: 包含 input_ids, attention_mask, labels
+        
+        返回:
+            loss: 损失值
+        """
+        self.model.train()
+        self.optimizer.zero_grad()
+        
+        # 前向传播
+        outputs = self.model(
+            input_ids=batch['input_ids'],
+            attention_mask=batch['attention_mask'],
+            labels=batch['labels']
+        )
+        
+        loss = outputs.loss
+        
+        # 反向传播
+        loss.backward()
+        self.optimizer.step()
+        
+        return loss.item()
+    
+    def evaluate(self, dataloader):
+        """
+        评估模型
+        
+        参数:
+            dataloader: 数据加载器
+        
+        返回:
+            accuracy: 准确率
+        """
+        self.model.eval()
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for batch in dataloader:
+                outputs = self.model(
+                    input_ids=batch['input_ids'],
+                    attention_mask=batch['attention_mask']
+                )
+                
+                predictions = torch.argmax(outputs.logits, dim=-1)
+                correct += (predictions == batch['labels']).sum().item()
+                total += batch['labels'].size(0)
+        
+        accuracy = correct / total
+        return accuracy
+
+# 使用示例
+def full_finetuning_example():
+    """全量微调示例"""
+    # 初始化
+    finetuner = FullFineTuning(
+        model_name='bert-base-uncased',
+        num_labels=2
+    )
+    
+    # 假设有训练数据
+    # train_dataloader = create_dataloader(train_data)
+    # val_dataloader = create_dataloader(val_data)
+    
+    # 训练循环
+    # for epoch in range(num_epochs):
+    #     for batch in train_dataloader:
+    #         loss = finetuner.train_step(batch)
+    #     
+    #     accuracy = finetuner.evaluate(val_dataloader)
+    #     print(f"Epoch {epoch}, Accuracy: {accuracy}")
+```
+
+#### 优势
+
+1. **性能最佳**
+   - 可以充分利用预训练知识
+   - 适应性强
+   - 性能通常最好
+
+2. **简单直接**
+   - 实现简单
+   - 不需要特殊技巧
+   - 易于理解
+
+#### 劣势
+
+1. **计算成本高**
+   - 需要更新所有参数
+   - 显存占用大
+   - 训练时间长
+
+2. **存储成本高**
+   - 每个任务需要存储完整模型
+   - 磁盘空间占用大
+   - 部署成本高
+
+3. **灾难性遗忘**
+   - 可能遗忘预训练知识
+   - 需要 careful tuning
+   - 容易过拟合
+
+### 2. 参数高效微调（Parameter-Efficient Fine-Tuning, PEFT）
+
+#### 核心思想
+
+只更新少量参数，冻结大部分预训练参数。
+
+#### 主要方法
+
+##### LoRA（Low-Rank Adaptation）
+
+在权重矩阵上添加低秩分解的适配器。
+
+```python
+import torch
+import torch.nn as nn
+
+class LoRALayer(nn.Module):
+    def __init__(self, in_features, out_features, rank=8, alpha=16):
+        """
+        LoRA 层
+        
+        参数:
+            in_features: 输入特征维度
+            out_features: 输出特征维度
+            rank: 低秩分解的秩
+            alpha: 缩放因子
+        """
+        super().__init__()
+        
+        self.in_features = in_features
+        self.out_features = out_features
+        self.rank = rank
+        self.alpha = alpha
+        
+        # 低秩分解矩阵
+        self.lora_A = nn.Parameter(torch.zeros(rank, in_features))
+        self.lora_B = nn.Parameter(torch.zeros(out_features, rank))
+        
+        # 缩放因子
+        self.scaling = alpha / rank
+        
+        # 初始化
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B)
+    
+    def forward(self, x):
+        """
+        前向传播
+        
+        参数:
+            x: (batch_size, seq_len, in_features)
+        
+        返回:
+            output: (batch_size, seq_len, out_features)
+        """
+        # 原始权重（冻结）
+        # W @ x
+        
+        # LoRA 适配
+        lora_output = (x @ self.lora_A.T @ self.lora_B.T) * self.scaling
+        
+        return lora_output
+
+class LoRALinear(nn.Module):
+    def __init__(self, in_features, out_features, rank=8, alpha=16, use_lora=True):
+        """
+        带 LoRA 的线性层
+        
+        参数:
+            in_features: 输入特征维度
+            out_features: 输出特征维度
+            rank: 低秩分解的秩
+            alpha: 缩放因子
+            use_lora: 是否使用 LoRA
+        """
+        super().__init__()
+        
+        # 原始线性层
+        self.linear = nn.Linear(in_features, out_features)
+        
+        # LoRA 适配器
+        self.use_lora = use_lora
+        if use_lora:
+            self.lora = LoRALayer(in_features, out_features, rank, alpha)
+    
+    def forward(self, x):
+        """
+        前向传播
+        """
+        # 原始输出
+        output = self.linear(x)
+        
+        # 添加 LoRA 适配
+        if self.use_lora:
+            output = output + self.lora(x)
+        
+        return output
+
+def apply_lora_to_model(model, target_modules=['q_proj', 'v_proj'], rank=8, alpha=16):
+    """
+    将 LoRA 应用到模型
+    
+    参数:
+        model: 预训练模型
+        target_modules: 目标模块名称
+        rank: 低秩分解的秩
+        alpha: 缩放因子
+    
+    返回:
+        model: 应用 LoRA 后的模型
+    """
+    for name, module in model.named_modules():
+        if any(target in name for target in target_modules):
+            if isinstance(module, nn.Linear):
+                # 替换为 LoRA 线性层
+                in_features = module.in_features
+                out_features = module.out_features
+                
+                # 创建新的 LoRA 线性层
+                lora_linear = LoRALinear(
+                    in_features,
+                    out_features,
+                    rank=rank,
+                    alpha=alpha,
+                    use_lora=True
+                )
+                
+                # 复制原始权重
+                lora_linear.linear.weight.data = module.weight.data.clone()
+                if module.bias is not None:
+                    lora_linear.linear.bias.data = module.bias.data.clone()
+                
+                # 冻结原始权重
+                lora_linear.linear.weight.requires_grad = False
+                if lora_linear.linear.bias is not None:
+                    lora_linear.linear.bias.requires_grad = False
+                
+                # 替换模块
+                parent_module = model
+                for part in name.split('.')[:-1]:
+                    parent_module = getattr(parent_module, part)
+                setattr(parent_module, name.split('.')[-1], lora_linear)
+    
+    return model
+
+# 使用示例
+def lora_finetuning_example():
+    """LoRA 微调示例"""
+    from transformers import AutoModelForCausalLM
+    
+    # 加载预训练模型
+    model = AutoModelForCausalLM.from_pretrained('gpt2')
+    
+    # 应用 LoRA
+    model = apply_lora_to_model(
+        model,
+        target_modules=['c_attn'],  # GPT-2 的注意力投影
+        rank=8,
+        alpha=16
+    )
+    
+    # 只训练 LoRA 参数
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=1e-4)
+    
+    # 训练循环
+    # for epoch in range(num_epochs):
+    #     for batch in train_dataloader:
+    #         loss = train_step(model, batch, optimizer)
+```
+
+##### QLoRA（Quantized LoRA）
+
+在量化模型上应用 LoRA，进一步减少显存占用。
+
+```python
+from transformers import BitsAndBytesConfig
+
+def qlora_finetuning_example():
+    """QLoRA 微调示例"""
+    from transformers import AutoModelForCausalLM
+    
+    # 量化配置
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16
+    )
+    
+    # 加载量化模型
+    model = AutoModelForCausalLM.from_pretrained(
+        'llama-7b',
+        quantization_config=bnb_config,
+        device_map="auto"
+    )
+    
+    # 应用 LoRA
+    model = apply_lora_to_model(
+        model,
+        target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj'],
+        rank=8,
+        alpha=16
+    )
+    
+    # 训练
+    # ...
+```
+
+##### Adapter（适配器）
+
+在 Transformer 层之间添加小型适配器网络。
+
+```python
+class Adapter(nn.Module):
+    def __init__(self, d_model, bottleneck_dim=64):
+        """
+        适配器层
+        
+        参数:
+            d_model: 模型维度
+            bottleneck_dim: 瓶颈维度
+        """
+        super().__init__()
+        
+        self.down_proj = nn.Linear(d_model, bottleneck_dim)
+        self.activation = nn.ReLU()
+        self.up_proj = nn.Linear(bottleneck_dim, d_model)
+    
+    def forward(self, x):
+        """
+        前向传播
+        
+        参数:
+            x: (batch_size, seq_len, d_model)
+        
+        返回:
+            output: (batch_size, seq_len, d_model)
+        """
+        down = self.down_proj(x)
+        activated = self.activation(down)
+        up = self.up_proj(activated)
+        return x + up  # 残差连接
+
+def add_adapters_to_model(model, bottleneck_dim=64):
+    """
+    为模型添加适配器
+    
+    参数:
+        model: 预训练模型
+        bottleneck_dim: 瓶颈维度
+    
+    返回:
+        model: 添加适配器后的模型
+    """
+    for name, module in model.named_modules():
+        if 'layer' in name and 'output' in name:
+            # 在输出层后添加适配器
+            adapter = Adapter(module.out_features, bottleneck_dim)
+            parent_module = model
+            for part in name.split('.')[:-1]:
+                parent_module = getattr(parent_module, part)
+            setattr(parent_module, name.split('.')[-1] + '_adapter', adapter)
+    
+    return model
+```
+
+##### Prefix Tuning（前缀微调）
+
+优化输入序列的前缀 token。
+
+```python
+class PrefixTuning(nn.Module):
+    def __init__(self, d_model, n_heads, n_layers, prefix_length=10):
+        """
+        前缀微调
+        
+        参数:
+            d_model: 模型维度
+            n_heads: 注意力头数
+            n_layers: 层数
+            prefix_length: 前缀长度
+        """
+        super().__init__()
+        
+        self.prefix_length = prefix_length
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        
+        # 前缀嵌入
+        self.prefix_embeddings = nn.Parameter(
+            torch.randn(n_layers, 2, prefix_length, n_heads, d_model // n_heads)
+        )
+    
+    def get_prefix(self, batch_size):
+        """
+        获取前缀
+        
+        参数:
+            batch_size: 批次大小
+        
+        返回:
+            prefix: (n_layers, 2, batch_size, prefix_length, n_heads, d_k)
+        """
+        prefix = self.prefix_embeddings.unsqueeze(2)
+        prefix = prefix.expand(-1, -1, batch_size, -1, -1, -1)
+        return prefix
+```
+
+#### PEFT 方法比较
+
+| 方法 | 参数量 | 显存占用 | 性能 | 实现难度 |
+|------|--------|---------|------|---------|
+| LoRA | 少 | 低 | 好 | 中 |
+| QLoRA | 极少 | 极低 | 好 | 中 |
+| Adapter | 中 | 中 | 好 | 简单 |
+| Prefix Tuning | 少 | 低 | 中 | 复杂 |
+
+### 3. 提示微调（Prompt Tuning）
+
+#### 核心思想
+
+优化提示词（prompt）而不是模型参数。
+
+```python
+class PromptTuning(nn.Module):
+    def __init__(self, model, prompt_length=10, prompt_init='random'):
+        """
+        提示微调
+        
+        参数:
+            model: 预训练模型
+            prompt_length: 提示长度
+            prompt_init: 提示初始化方式
+        """
+        super().__init__()
+        
+        self.model = model
+        self.prompt_length = prompt_length
+        
+        # 提示嵌入
+        if prompt_init == 'random':
+            self.prompt_embeddings = nn.Parameter(
+                torch.randn(prompt_length, model.config.hidden_size)
+            )
+        elif prompt_init == 'from_vocab':
+            # 从词汇表随机选择
+            vocab_embeddings = model.get_input_embeddings().weight.data
+            indices = torch.randint(0, vocab_embeddings.size(0), (prompt_length,))
+            self.prompt_embeddings = nn.Parameter(vocab_embeddings[indices])
+    
+    def forward(self, input_ids, attention_mask=None):
+        """
+        前向传播
+        
+        参数:
+            input_ids: (batch_size, seq_len)
+            attention_mask: (batch_size, seq_len)
+        
+        返回:
+            outputs: 模型输出
+        """
+        batch_size = input_ids.size(0)
+        
+        # 获取提示嵌入
+        prompt = self.prompt_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # 获取输入嵌入
+        input_embeddings = self.model.get_input_embeddings()(input_ids)
+        
+        # 拼接提示和输入
+        embeddings = torch.cat([prompt, input_embeddings], dim=1)
+        
+        # 更新注意力掩码
+        if attention_mask is not None:
+            prompt_mask = torch.ones(batch_size, self.prompt_length, device=input_ids.device)
+            attention_mask = torch.cat([prompt_mask, attention_mask], dim=1)
+        
+        # 前向传播
+        outputs = self.model(
+            inputs_embeds=embeddings,
+            attention_mask=attention_mask
+        )
+        
+        return outputs
+```
+
+#### 优势
+
+1. **参数极少**
+   - 只优化提示嵌入
+   - 参数量非常少
+   - 存储成本低
+
+2. **易于部署**
+   - 只需要存储提示
+   - 可以共享基础模型
+   - 部署简单
+
+#### 劣势
+
+1. **性能受限**
+   - 性能通常不如全量微调
+   - 需要精心设计提示
+   - 对提示长度敏感
+
+2. **任务特定**
+   - 不同任务需要不同提示
+   - 难以泛化
+   - 需要调优
+
+## 📊 微调方法选择指南
+
+| 场景 | 推荐方法 | 原因 |
+|------|---------|------|
+| 大显存，追求最佳性能 | 全量微调 | 性能最佳 |
+| 有限显存，单任务 | LoRA | 平衡性能和效率 |
+| 有限显存，多任务 | QLoRA | 极低显存占用 |
+| 需要快速切换任务 | Adapter | 易于切换 |
+| 极少参数，简单任务 | Prompt Tuning | 参数最少 |
+
+## 💡 实践建议
+
+### 训练技巧
+
+1. **学习率**
+   - 全量微调：1e-5 到 5e-5
+   - PEFT：1e-4 到 5e-4
+   - 使用学习率预热
+
+2. **Batch Size**
+   - 根据显存调整
+   - 通常 8-32
+   - 梯度累积可以模拟大 batch
+
+3. **训练轮数**
+   - 通常 3-10 轮
+   - 监控验证集性能
+   - 早停防止过拟合
+
+### 常见问题
+
+1. **过拟合**
+   - 增加数据
+   - 使用 dropout
+   - 早停
+   - 正则化
+
+2. **灾难性遗忘**
+   - 使用较小的学习率
+   - 使用 PEFT 方法
+   - 多任务学习
+
+3. **显存不足**
+   - 使用 QLoRA
+   - 减小 batch size
+   - 使用梯度检查点
+   - 混合精度训练
+
+## 🔗 相关资源
+
+### 论文
+- [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
+- [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314)
+- [Parameter-Efficient Transfer Learning for NLP](https://arxiv.org/abs/1903.08871)
+- [The Power of Scale for Parameter-Efficient Prompt Tuning](https://arxiv.org/abs/2104.08691)
+
+### 代码
+- [PEFT Library](https://github.com/huggingface/peft)
+- [Hugging Face Transformers](https://github.com/huggingface/transformers)
+- [bitsandbytes](https://github.com/TimDettmers/bitsandbytes)
+
+### 工具
+- [PEFT](https://huggingface.co/docs/peft)
+- [Accelerate](https://huggingface.co/docs/accelerate)
+- [DeepSpeed](https://www.deepspeed.ai/)
+
+## ✅ 学习检查点
+
+- [ ] 理解全量微调的优缺点
+- [ ] 掌握 LoRA 的核心思想
+- [ ] 理解 QLoRA 的优势
+- [ ] 了解其他 PEFT 方法
+- [ ] 能够实现基本的微调方法
+- [ ] 理解如何选择合适的微调方法
+
+## 🚀 下一步
+
+继续学习：
+- [09-instruction-tuning.md](./09-instruction-tuning.mdx) - 指令微调详解
+
+---
+
+**版本**：v1.0  
+**最后更新**：2026-04-14  
+**预计学习时间**：6-8 小时
