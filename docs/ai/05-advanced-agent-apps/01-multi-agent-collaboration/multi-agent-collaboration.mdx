@@ -1,0 +1,3448 @@
+# 多 Agent 协作
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-15
+
+## 📖 概述
+
+多 Agent 协作是指多个智能 Agent 协同工作，通过有效的协作模式、通信机制和冲突解决策略，共同完成复杂任务的技术。多 Agent 系统能够将复杂问题分解为子任务，由不同的 Agent 专门处理，通过协作实现整体目标。本章节将详细介绍多 Agent 协作的核心技术。
+
+## 🎯 为什么需要多 Agent 协作？
+
+### 从单 Agent 到多 Agent
+
+1. **任务复杂性**
+   - 复杂任务分解
+   - 专业化分工
+   - 并行处理
+
+2. **系统鲁棒性**
+   - 容错能力
+   - 负载均衡
+   - 资源优化
+
+3. **扩展性**
+   - 水平扩展
+   - 模块化设计
+   - 灵活部署
+
+## 🔢 协作模式
+
+### 1. 顺序协作
+
+#### 核心思想
+
+Agent 按照预定义的顺序依次执行任务，每个 Agent 的输出作为下一个 Agent 的输入。
+
+#### 技术特点
+
+1. **线性流程**
+   - 明确的执行顺序
+   - 简单的控制逻辑
+   - 易于理解和调试
+
+2. **依赖管理**
+   - 前置任务完成
+   - 数据传递
+   - 状态同步
+
+3. **适用场景**
+   - 流水线处理
+   - 数据转换
+   - 分步任务
+
+#### 代码实现
+
+```javascript
+class SequentialCollaboration {
+  constructor() {
+    this.agents = [];
+    this.pipeline = [];
+  }
+
+  /**
+   * 添加 Agent
+   * 
+   * @param {Object} agent - Agent 对象
+   * @returns {SequentialCollaboration} - 返回自身以支持链式调用
+   */
+  addAgent(agent) {
+    this.agents.push(agent);
+    return this;
+  }
+
+  /**
+   * 构建流水线
+   * 
+   * @param {Array<string>} agentNames - Agent 名称列表
+   * @returns {SequentialCollaboration} - 返回自身以支持链式调用
+   */
+  buildPipeline(agentNames) {
+    this.pipeline = agentNames.map(name => {
+      const agent = this.agents.find(a => a.name === name);
+      if (!agent) {
+        throw new Error(`Agent not found: ${name}`);
+      }
+      return agent;
+    });
+
+    return this;
+  }
+
+  /**
+   * 执行流水线
+   * 
+   * @param {*} input - 输入数据
+   * @returns {Promise<*>} - 最终输出
+   */
+  async execute(input) {
+    let currentInput = input;
+    const results = [];
+
+    for (const agent of this.pipeline) {
+      console.log(`执行 Agent: ${agent.name}`);
+      
+      try {
+        const result = await agent.execute(currentInput);
+        results.push({
+          agent: agent.name,
+          input: currentInput,
+          output: result,
+          success: true
+        });
+
+        currentInput = result;
+      } catch (error) {
+        console.error(`Agent ${agent.name} 执行失败:`, error);
+        results.push({
+          agent: agent.name,
+          input: currentInput,
+          error: error.message,
+          success: false
+        });
+
+        throw new Error(`流水线执行失败，Agent: ${agent.name}`);
+      }
+    }
+
+    return {
+      finalOutput: currentInput,
+      steps: results
+    };
+  }
+
+  /**
+   * 带重试的执行
+   * 
+   * @param {*} input - 输入数据
+   * @param {number} maxRetries - 最大重试次数
+   * @returns {Promise<*>} - 最终输出
+   */
+  async executeWithRetry(input, maxRetries = 3) {
+    let currentInput = input;
+    const results = [];
+
+    for (const agent of this.pipeline) {
+      let retries = 0;
+      let success = false;
+      let lastError = null;
+
+      while (!success && retries < maxRetries) {
+        try {
+          console.log(`执行 Agent: ${agent.name} (尝试 ${retries + 1}/${maxRetries})`);
+          
+          const result = await agent.execute(currentInput);
+          results.push({
+            agent: agent.name,
+            input: currentInput,
+            output: result,
+            success: true,
+            retries: retries
+          });
+
+          currentInput = result;
+          success = true;
+        } catch (error) {
+          lastError = error;
+          retries++;
+          console.error(`Agent ${agent.name} 执行失败 (尝试 ${retries}/${maxRetries}):`, error.message);
+          
+          if (retries < maxRetries) {
+            await this.sleep(1000 * retries); // 指数退避
+          }
+        }
+      }
+
+      if (!success) {
+        results.push({
+          agent: agent.name,
+          input: currentInput,
+          error: lastError.message,
+          success: false,
+          retries: maxRetries
+        });
+
+        throw new Error(`Agent ${agent.name} 执行失败，已重试 ${maxRetries} 次`);
+      }
+    }
+
+    return {
+      finalOutput: currentInput,
+      steps: results
+    };
+  }
+
+  /**
+   * 延迟函数
+   * 
+   * @param {number} ms - 延迟毫秒数
+   * @returns {Promise<void>}
+   */
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 获取流水线状态
+   * 
+   * @returns {Object} - 流水线状态
+   */
+  getPipelineStatus() {
+    return {
+      agents: this.pipeline.map(agent => ({
+        name: agent.name,
+        type: agent.type,
+        status: agent.status || 'idle'
+      })),
+      length: this.pipeline.length
+    };
+  }
+}
+
+// 使用示例
+async function example() {
+  const collaboration = new SequentialCollaboration();
+
+  // 添加 Agent
+  collaboration
+    .addAgent({
+      name: 'data-fetcher',
+      type: 'fetcher',
+      execute: async (input) => {
+        console.log('获取数据...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return { data: 'fetched data', timestamp: Date.now() };
+      }
+    })
+    .addAgent({
+      name: 'data-processor',
+      type: 'processor',
+      execute: async (input) => {
+        console.log('处理数据...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return { processedData: input.data.toUpperCase(), ...input };
+      }
+    })
+    .addAgent({
+      name: 'data-saver',
+      type: 'saver',
+      execute: async (input) => {
+        console.log('保存数据...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return { saved: true, ...input };
+      }
+    });
+
+  // 构建流水线
+  collaboration.buildPipeline([
+    'data-fetcher',
+    'data-processor',
+    'data-saver'
+  ]);
+
+  // 执行流水线
+  const result = await collaboration.execute('initial input');
+  console.log('执行结果:', result);
+}
+```
+
+#### 应用场景
+
+1. **数据处理流水线**
+   - 数据采集
+   - 数据清洗
+   - 数据存储
+
+2. **内容生成**
+   - 内容规划
+   - 内容创作
+   - 内容发布
+
+3. **工作流程**
+   - 审批流程
+   - 任务流转
+   - 状态管理
+
+### 2. 并行协作
+
+#### 核心思想
+
+多个 Agent 同时执行不同的任务，通过并行处理提高系统效率和响应速度。
+
+#### 技术特点
+
+1. **并发执行**
+   - 同时处理多个任务
+   - 资源利用率高
+   - 响应时间短
+
+2. **任务分配**
+   - 动态分配
+   - 负载均衡
+   - 资源调度
+
+3. **结果聚合**
+   - 等待所有任务完成
+   - 合并结果
+   - 错误处理
+
+#### 代码实现
+
+```javascript
+class ParallelCollaboration {
+  constructor() {
+    this.agents = [];
+    this.maxConcurrency = 10;
+  }
+
+  /**
+   * 添加 Agent
+   * 
+   * @param {Object} agent - Agent 对象
+   * @returns {ParallelCollaboration} - 返回自身以支持链式调用
+   */
+  addAgent(agent) {
+    this.agents.push(agent);
+    return this;
+  }
+
+  /**
+   * 设置最大并发数
+   * 
+   * @param {number} maxConcurrency - 最大并发数
+   * @returns {ParallelCollaboration} - 返回自身以支持链式调用
+   */
+  setMaxConcurrency(maxConcurrency) {
+    this.maxConcurrency = maxConcurrency;
+    return this;
+  }
+
+  /**
+   * 并行执行所有 Agent
+   * 
+   * @param {*} input - 输入数据
+   * @returns {Promise<Array>} - 所有 Agent 的执行结果
+   */
+  async executeAll(input) {
+    const tasks = this.agents.map(agent => 
+      this.executeAgent(agent, input)
+    );
+
+    const results = await Promise.allSettled(tasks);
+
+    return results.map((result, index) => ({
+      agent: this.agents[index].name,
+      success: result.status === 'fulfilled',
+      result: result.status === 'fulfilled' ? result.value : null,
+      error: result.status === 'rejected' ? result.reason.message : null
+    }));
+  }
+
+  /**
+   * 带并发控制的并行执行
+   * 
+   * @param {*} input - 输入数据
+   * @returns {Promise<Array>} - 所有 Agent 的执行结果
+   */
+  async executeWithConcurrency(input) {
+    const results = [];
+    const executing = [];
+
+    for (const agent of this.agents) {
+      const task = this.executeAgent(agent, input)
+        .then(result => {
+          results.push({
+            agent: agent.name,
+            success: true,
+            result: result
+          });
+        })
+        .catch(error => {
+          results.push({
+            agent: agent.name,
+            success: false,
+            error: error.message
+          });
+        })
+        .finally(() => {
+          executing.splice(executing.indexOf(task), 1);
+        });
+
+      executing.push(task);
+
+      if (executing.length >= this.maxConcurrency) {
+        await Promise.race(executing);
+      }
+    }
+
+    await Promise.all(executing);
+    return results;
+  }
+
+  /**
+   * 执行单个 Agent
+   * 
+   * @param {Object} agent - Agent 对象
+   * @param {*} input - 输入数据
+   * @returns {Promise<*>} - 执行结果
+   */
+  async executeAgent(agent, input) {
+    console.log(`执行 Agent: ${agent.name}`);
+    
+    if (!agent.execute) {
+      throw new Error(`Agent ${agent.name} 缺少 execute 方法`);
+    }
+
+    return await agent.execute(input);
+  }
+
+  /**
+   * 批量执行
+   * 
+   * @param {Array} inputs - 输入数据列表
+   * @returns {Promise<Array>} - 执行结果
+   */
+  async executeBatch(inputs) {
+    const results = [];
+
+    for (const input of inputs) {
+      const batchResults = await this.executeAll(input);
+      results.push({
+        input: input,
+        results: batchResults
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * 动态任务分配
+   * 
+   * @param {Array} tasks - 任务列表
+   * @returns {Promise<Array>} - 执行结果
+   */
+  async dynamicTaskAllocation(tasks) {
+    const results = [];
+    const availableAgents = [...this.agents];
+    
+    for (const task of tasks) {
+      if (availableAgents.length === 0) {
+        throw new Error('没有可用的 Agent');
+      }
+
+      // 选择最合适的 Agent
+      const agent = this.selectBestAgent(availableAgents, task);
+      
+      const result = await this.executeAgent(agent, task.input);
+      
+      results.push({
+        task: task.id,
+        agent: agent.name,
+        result: result,
+        success: true
+      });
+
+      // 移除已使用的 Agent
+      const index = availableAgents.indexOf(agent);
+      availableAgents.splice(index, 1);
+    }
+
+    return results;
+  }
+
+  /**
+   * 选择最佳 Agent
+   * 
+   * @param {Array} agents - 可用 Agent 列表
+   * @param {Object} task - 任务对象
+   * @returns {Object} - 最佳 Agent
+   */
+  selectBestAgent(agents, task) {
+    if (agents.length === 0) {
+      throw new Error('No available agents');
+    }
+
+    // 计算每个 Agent 的适配分数
+    const scoredAgents = agents.map(agent => {
+      let score = 0;
+
+      // 1. 能力匹配度（基于 Agent 类型和任务类型）
+      if (agent.type && task.type) {
+        const typeMatch = agent.type.toLowerCase().includes(task.type.toLowerCase()) ||
+                         task.type.toLowerCase().includes(agent.type.toLowerCase());
+        score += typeMatch ? 30 : 0;
+      }
+
+      // 2. 负载均衡（基于 Agent 的当前负载）
+      if (agent.currentLoad !== undefined) {
+        score += (1 - agent.currentLoad) * 20;
+      } else {
+        score += 10; // 默认中等负载
+      }
+
+      // 3. 历史性能（基于 Agent 的历史成功率）
+      if (agent.successRate !== undefined) {
+        score += agent.successRate * 25;
+      } else {
+        score += 12.5; // 默认中等成功率
+      }
+
+      // 4. 优先级（基于 Agent 的优先级设置）
+      if (agent.priority !== undefined) {
+        score += agent.priority * 10;
+      } else {
+        score += 5; // 默认中等优先级
+      }
+
+      // 5. 可用性（基于 Agent 的状态）
+      if (agent.status === 'idle') {
+        score += 15;
+      } else if (agent.status === 'busy') {
+        score += 5;
+      } else {
+        score += 0;
+      }
+
+      return {
+        agent: agent,
+        score: score
+      };
+    });
+
+    // 按分数排序，选择分数最高的 Agent
+    scoredAgents.sort((a, b) => b.score - a.score);
+
+    console.log(`任务 ${task.id} 的 Agent 评分:`, 
+      scoredAgents.map(s => ({ name: s.agent.name, score: s.score })));
+
+    return scoredAgents[0].agent;
+  }
+
+  /**
+   * 获取执行统计
+   * 
+   * @param {Array} results - 执行结果列表
+   * @returns {Object} - 统计信息
+   */
+  getStatistics(results) {
+    const total = results.length;
+    const successful = results.filter(r => r.success).length;
+    const failed = total - successful;
+
+    return {
+      total: total,
+      successful: successful,
+      failed: failed,
+      successRate: total > 0 ? successful / total : 0
+    };
+  }
+}
+
+// 使用示例
+async function example() {
+  const collaboration = new ParallelCollaboration()
+    .setMaxConcurrency(5);
+
+  // 添加 Agent
+  collaboration
+    .addAgent({
+      name: 'image-processor',
+      type: 'processor',
+      execute: async (input) => {
+        console.log('处理图像...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return { processed: true, type: 'image' };
+      }
+    })
+    .addAgent({
+      name: 'text-analyzer',
+      type: 'analyzer',
+      execute: async (input) => {
+        console.log('分析文本...');
+        await new Promise(resolve => setTimeout(resolve, 800));
+        return { analyzed: true, type: 'text' };
+      }
+    })
+    .addAgent({
+      name: 'audio-transcriber',
+      type: 'transcriber',
+      execute: async (input) => {
+        console.log('转录音频...');
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        return { transcribed: true, type: 'audio' };
+      }
+    });
+
+  // 并行执行
+  const results = await collaboration.executeWithConcurrency('input data');
+  console.log('执行结果:', results);
+
+  // 获取统计信息
+  const stats = collaboration.getStatistics(results);
+  console.log('统计信息:', stats);
+}
+```
+
+#### 应用场景
+
+1. **批量处理**
+   - 图像批量处理
+   - 文本批量分析
+   - 数据批量转换
+
+2. **实时处理**
+   - 实时数据分析
+   - 实时内容生成
+   - 实时响应
+
+3. **分布式计算**
+   - 分布式任务执行
+   - 资源池管理
+   - 负载均衡
+
+### 3. 层级协作
+
+#### 核心思想
+
+Agent 按照层级结构组织，上层 Agent 负责任务分解和协调，下层 Agent 负责具体执行。
+
+#### 技术特点
+
+1. **层次结构**
+   - 清晰的层级关系
+   - 责任明确
+   - 易于管理
+
+2. **任务分解**
+   - 自顶向下分解
+   - 任务分配
+   - 进度监控
+
+3. **结果聚合**
+   - 自底向上聚合
+   - 状态同步
+   - 决策制定
+
+#### 代码实现
+
+```javascript
+class HierarchicalCollaboration {
+  constructor() {
+    this.rootAgent = null;
+    this.agents = new Map();
+  }
+
+  /**
+   * 添加 Agent
+   * 
+   * @param {Object} agent - Agent 对象
+   * @returns {HierarchicalCollaboration} - 返回自身以支持链式调用
+   */
+  addAgent(agent) {
+    this.agents.set(agent.id, agent);
+    return this;
+  }
+
+  /**
+   * 设置根 Agent
+   * 
+   * @param {string} agentId - Agent ID
+   * @returns {HierarchicalCollaboration} - 返回自身以支持链式调用
+   */
+  setRootAgent(agentId) {
+    this.rootAgent = this.agents.get(agentId);
+    if (!this.rootAgent) {
+      throw new Error(`Root agent not found: ${agentId}`);
+    }
+    return this;
+  }
+
+  /**
+   * 构建层级关系
+   * 
+   * @param {string} parentId - 父 Agent ID
+   * @param {string} childId - 子 Agent ID
+   * @returns {HierarchicalCollaboration} - 返回自身以支持链式调用
+   */
+  addRelationship(parentId, childId) {
+    const parent = this.agents.get(parentId);
+    const child = this.agents.get(childId);
+
+    if (!parent) {
+      throw new Error(`Parent agent not found: ${parentId}`);
+    }
+    if (!child) {
+      throw new Error(`Child agent not found: ${childId}`);
+    }
+
+    if (!parent.children) {
+      parent.children = [];
+    }
+    parent.children.push(child);
+    child.parent = parent;
+
+    return this;
+  }
+
+  /**
+   * 执行任务
+   * 
+   * @param {*} input - 输入数据
+   * @returns {Promise<*>} - 执行结果
+   */
+  async execute(input) {
+    if (!this.rootAgent) {
+      throw new Error('Root agent not set');
+    }
+
+    return await this.executeAgent(this.rootAgent, input);
+  }
+
+  /**
+   * 执行 Agent
+   * 
+   * @param {Object} agent - Agent 对象
+   * @param {*} input - 输入数据
+   * @returns {Promise<*>} - 执行结果
+   */
+  async executeAgent(agent, input) {
+    console.log(`执行 Agent: ${agent.name} (层级: ${agent.level || 0})`);
+
+    // 如果有子 Agent，先分解任务
+    if (agent.children && agent.children.length > 0) {
+      const subTasks = await agent.decomposeTask(input);
+      const childResults = [];
+
+      for (let i = 0; i < subTasks.length; i++) {
+        const childAgent = agent.children[i];
+        const result = await this.executeAgent(childAgent, subTasks[i]);
+        childResults.push(result);
+      }
+
+      // 聚合子任务结果
+      const aggregatedResult = await agent.aggregateResults(childResults);
+      
+      return {
+        agent: agent.name,
+        result: aggregatedResult,
+        childResults: childResults
+      };
+    } else {
+      // 叶子 Agent 直接执行
+      const result = await agent.execute(input);
+      return {
+        agent: agent.name,
+        result: result
+      };
+    }
+  }
+
+  /**
+   * 获取层级结构
+   * 
+   * @returns {Object} - 层级结构
+   */
+  getHierarchy() {
+    if (!this.rootAgent) {
+      return null;
+    }
+
+    return this.buildHierarchyTree(this.rootAgent);
+  }
+
+  /**
+   * 构建层级树
+   * 
+   * @param {Object} agent - Agent 对象
+   * @returns {Object} - 层级树
+   */
+  buildHierarchyTree(agent) {
+    const node = {
+      id: agent.id,
+      name: agent.name,
+      type: agent.type,
+      children: []
+    };
+
+    if (agent.children) {
+      for (const child of agent.children) {
+        node.children.push(this.buildHierarchyTree(child));
+      }
+    }
+
+    return node;
+  }
+
+  /**
+   * 获取 Agent 状态
+   * 
+   * @param {string} agentId - Agent ID
+   * @returns {Object} - Agent 状态
+   */
+  getAgentStatus(agentId) {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+
+    return {
+      id: agent.id,
+      name: agent.name,
+      type: agent.type,
+      status: agent.status || 'idle',
+      level: agent.level || 0,
+      children: agent.children ? agent.children.map(c => c.id) : [],
+      parent: agent.parent ? agent.parent.id : null
+    };
+  }
+
+  /**
+   * 获取所有 Agent 状态
+   * 
+   * @returns {Array<Object>} - 所有 Agent 状态
+   */
+  getAllAgentStatus() {
+    const statuses = [];
+
+    for (const [id, agent] of this.agents) {
+      statuses.push(this.getAgentStatus(id));
+    }
+
+    return statuses;
+  }
+}
+
+// 使用示例
+async function example() {
+  const collaboration = new HierarchicalCollaboration();
+
+  // 添加 Agent
+  collaboration
+    .addAgent({
+      id: 'coordinator',
+      name: '协调器',
+      type: 'coordinator',
+      level: 0,
+      decomposeTask: async (input) => {
+        console.log('分解任务...');
+        return [
+          { type: 'fetch', query: input.query },
+          { type: 'process', data: input.data }
+        ];
+      },
+      aggregateResults: async (results) => {
+        console.log('聚合结果...');
+        return {
+          fetched: results[0].result,
+          processed: results[1].result,
+          combined: true
+        };
+      }
+    })
+    .addAgent({
+      id: 'fetcher',
+      name: '数据获取器',
+      type: 'fetcher',
+      level: 1,
+      execute: async (input) => {
+        console.log('获取数据...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return { data: 'fetched data' };
+      }
+    })
+    .addAgent({
+      id: 'processor',
+      name: '数据处理器',
+      type: 'processor',
+      level: 1,
+      execute: async (input) => {
+        console.log('处理数据...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return { processed: true };
+      }
+    });
+
+  // 构建层级关系
+  collaboration
+    .setRootAgent('coordinator')
+    .addRelationship('coordinator', 'fetcher')
+    .addRelationship('coordinator', 'processor');
+
+  // 执行任务
+  const result = await collaboration.execute({
+    query: 'test query',
+    data: 'test data'
+  });
+
+  console.log('执行结果:', result);
+
+  // 获取层级结构
+  const hierarchy = collaboration.getHierarchy();
+  console.log('层级结构:', hierarchy);
+}
+```
+
+#### 应用场景
+
+1. **复杂任务管理**
+   - 项目管理
+   - 任务分解
+   - 进度跟踪
+
+2. **组织架构**
+   - 企业管理
+   - 部门协调
+   - 决策制定
+
+3. **系统架构**
+   - 微服务架构
+   - 分布式系统
+   - 服务编排
+
+### 4. 对抗协作
+
+#### 核心思想
+
+Agent 之间通过竞争和对抗来提升整体性能，类似于对抗生成网络（GAN）的思想。
+
+#### 技术特点
+
+1. **竞争机制**
+   - Agent 之间的竞争
+   - 性能提升
+   - 创新激励
+
+2. **对抗训练**
+   - 生成器 vs 判别器
+   - 迭代优化
+   - 平衡状态
+
+3. **博弈论**
+   - 策略优化
+   - 纳什均衡
+   - 收敛分析
+
+#### 代码实现
+
+```javascript
+class AdversarialCollaboration {
+  constructor() {
+    this.agents = [];
+    this.rounds = 10;
+  }
+
+  /**
+   * 添加 Agent
+   * 
+   * @param {Object} agent - Agent 对象
+   * @returns {AdversarialCollaboration} - 返回自身以支持链式调用
+   */
+  addAgent(agent) {
+    this.agents.push(agent);
+    return this;
+  }
+
+  /**
+   * 设置训练轮数
+   * 
+   * @param {number} rounds - 训练轮数
+   * @returns {AdversarialCollaboration} - 返回自身以支持链式调用
+   */
+  setRounds(rounds) {
+    this.rounds = rounds;
+    return this;
+  }
+
+  /**
+   * 执行对抗训练
+   * 
+   * @param {*} input - 输入数据
+   * @returns {Promise<Object>} - 训练结果
+   */
+  async train(input) {
+    const history = [];
+
+    for (let round = 0; round < this.rounds; round++) {
+      console.log(`\n=== 第 ${round + 1} 轮 ===`);
+
+      const roundResults = [];
+
+      // 每个 Agent 执行
+      for (const agent of this.agents) {
+        const result = await agent.execute(input, history);
+        
+        roundResults.push({
+          agent: agent.name,
+          result: result,
+          score: agent.evaluate(result)
+        });
+      }
+
+      // Agent 之间的对抗
+      for (let i = 0; i < this.agents.length; i++) {
+        for (let j = i + 1; j < this.agents.length; j++) {
+          const agent1 = this.agents[i];
+          const agent2 = this.agents[j];
+          
+          const result1 = roundResults[i].result;
+          const result2 = roundResults[j].result;
+
+          // Agent1 评估 Agent2 的结果
+          const score1 = agent1.evaluate(result2);
+          
+          // Agent2 评估 Agent1 的结果
+          const score2 = agent2.evaluate(result1);
+
+          roundResults[i].opponentScores = roundResults[i].opponentScores || {};
+          roundResults[i].opponentScores[agent2.name] = score2;
+          
+          roundResults[j].opponentScores = roundResults[j].opponentScores || {};
+          roundResults[j].opponentScores[agent1.name] = score1;
+
+          // 更新 Agent 策略
+          await agent1.updateStrategy(result1, score2);
+          await agent2.updateStrategy(result2, score1);
+        }
+      }
+
+      history.push({
+        round: round + 1,
+        results: roundResults
+      });
+
+      // 检查是否收敛
+      if (this.checkConvergence(history)) {
+        console.log('训练收敛！');
+        break;
+      }
+    }
+
+    return {
+      history: history,
+      finalScores: this.calculateFinalScores(history)
+    };
+  }
+
+  /**
+   * 检查收敛
+   * 
+   * @param {Array} history - 训练历史
+   * @returns {boolean} - 是否收敛
+   */
+  checkConvergence(history) {
+    if (history.length < 5) {
+      return false;
+    }
+
+    // 检查最近 5 轮的分数变化
+    const recentRounds = history.slice(-5);
+    const scores = recentRounds.map(round => 
+      round.results.reduce((sum, r) => sum + r.score, 0) / round.results.length
+    );
+
+    // 计算方差
+    const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const variance = scores.reduce((sum, score) => sum + Math.pow(score - mean, 2), 0) / scores.length;
+
+    // 方差小于阈值则认为收敛
+    return variance < 0.01;
+  }
+
+  /**
+   * 计算最终分数
+   * 
+   * @param {Array} history - 训练历史
+   * @returns {Object} - 最终分数
+   */
+  calculateFinalScores(history) {
+    const finalScores = {};
+
+    for (const agent of this.agents) {
+      const agentScores = history.map(round => {
+        const result = round.results.find(r => r.agent === agent.name);
+        return result ? result.score : 0;
+      });
+
+      finalScores[agent.name] = {
+        average: agentScores.reduce((a, b) => a + b, 0) / agentScores.length,
+        max: Math.max(...agentScores),
+        min: Math.min(...agentScores),
+        trend: this.calculateTrend(agentScores)
+      };
+    }
+
+    return finalScores;
+  }
+
+  /**
+   * 计算趋势
+   * 
+   * @param {Array} scores - 分数列表
+   * @returns {string} - 趋势
+   */
+  calculateTrend(scores) {
+    if (scores.length < 2) {
+      return 'stable';
+    }
+
+    const firstHalf = scores.slice(0, Math.floor(scores.length / 2));
+    const secondHalf = scores.slice(Math.floor(scores.length / 2));
+
+    const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+    const secondAvg = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+
+    if (secondAvg > firstAvg * 1.05) {
+      return 'improving';
+    } else if (secondAvg < firstAvg * 0.95) {
+      return 'declining';
+    } else {
+      return 'stable';
+    }
+  }
+
+  /**
+   * 执行推理
+   * 
+   * @param {*} input - 输入数据
+   * @returns {Promise<Object>} - 推理结果
+   */
+  async inference(input) {
+    const results = [];
+
+    for (const agent of this.agents) {
+      const result = await agent.execute(input);
+      const score = agent.evaluate(result);
+
+      results.push({
+        agent: agent.name,
+        result: result,
+        score: score
+      });
+    }
+
+    // 选择最佳结果
+    const bestResult = results.reduce((best, current) => 
+      current.score > best.score ? current : best
+    );
+
+    return {
+      bestResult: bestResult,
+      allResults: results
+    };
+  }
+}
+
+// 使用示例
+async function example() {
+  const collaboration = new AdversarialCollaboration()
+    .setRounds(10);
+
+  // 添加对抗 Agent
+  collaboration
+    .addAgent({
+      name: 'generator',
+      type: 'generator',
+      execute: async (input, history) => {
+        console.log('生成器执行...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // 基于历史记录改进生成质量
+        let quality = 0.5;
+        if (history && history.length > 0) {
+          const lastRound = history[history.length - 1];
+          const generatorResult = lastRound.results.find(r => r.agent === 'generator');
+          if (generatorResult && generatorResult.opponentScores) {
+            // 根据判别器的评分调整生成策略
+            const discriminatorScore = generatorResult.opponentScores['discriminator'] || 0;
+            quality = Math.min(0.95, Math.max(0.1, discriminatorScore + 0.1));
+          }
+        }
+        
+        // 添加随机波动模拟真实生成过程
+        quality = quality + (Math.random() - 0.5) * 0.2;
+        quality = Math.max(0.1, Math.min(0.95, quality));
+        
+        return { 
+          generated: 'generated content', 
+          quality: quality,
+          timestamp: Date.now()
+        };
+      },
+      evaluate: (result) => {
+        // 生成器的自我评估：质量越高分数越高
+        return result.quality * 100;
+      },
+      updateStrategy: async (result, opponentScore) => {
+        console.log('生成器更新策略...');
+        // 基于判别器的反馈调整内部参数
+        // 在实际实现中，这里会更新生成器的权重和参数
+        const adjustment = (opponentScore / 100 - 0.5) * 0.1;
+        return { adjusted: true, adjustment: adjustment };
+      }
+    })
+    .addAgent({
+      name: 'discriminator',
+      type: 'discriminator',
+      execute: async (input, history) => {
+        console.log('判别器执行...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // 判别器分析生成内容的质量
+        let confidence = 0.5;
+        
+        if (history && history.length > 0) {
+          const lastRound = history[history.length - 1];
+          const discriminatorResult = lastRound.results.find(r => r.agent === 'discriminator');
+          const generatorResult = lastRound.results.find(r => r.agent === 'generator');
+          
+          if (generatorResult && generatorResult.result) {
+            // 基于生成内容的质量进行判别
+            const quality = generatorResult.result.quality || 0.5;
+            // 判别器试图识别生成内容，质量越高越难识别
+            confidence = 1 - quality + (Math.random() - 0.5) * 0.3;
+            confidence = Math.max(0.1, Math.min(0.95, confidence));
+          }
+          
+          if (discriminatorResult && discriminatorResult.opponentScores) {
+            // 根据生成器的评分调整判别策略
+            const generatorScore = discriminatorResult.opponentScores['generator'] || 0;
+            confidence = confidence + (generatorScore / 100 - 0.5) * 0.1;
+            confidence = Math.max(0.1, Math.min(0.95, confidence));
+          }
+        } else {
+          // 第一轮：随机初始化
+          confidence = 0.4 + Math.random() * 0.2;
+        }
+        
+        return { 
+          discriminated: confidence > 0.5, 
+          confidence: confidence,
+          timestamp: Date.now()
+        };
+      },
+      evaluate: (result) => {
+        // 判别器的自我评估：准确判别的分数越高
+        // 如果判别器认为内容是生成的（confidence > 0.5），且确实如此，则得分高
+        return result.confidence * 100;
+      },
+      updateStrategy: async (result, opponentScore) => {
+        console.log('判别器更新策略...');
+        // 基于生成器的反馈调整判别阈值
+        const adjustment = (opponentScore / 100 - 0.5) * 0.1;
+        return { adjusted: true, adjustment: adjustment };
+      }
+    });
+
+  // 执行对抗训练
+  const trainingResult = await collaboration.train('input data');
+  console.log('训练结果:', trainingResult);
+
+  // 执行推理
+  const inferenceResult = await collaboration.inference('test data');
+  console.log('推理结果:', inferenceResult);
+}
+```
+
+#### 应用场景
+
+1. **生成对抗网络**
+   - 图像生成
+   - 文本生成
+   - 音频生成
+
+2. **博弈论应用**
+   - 策略优化
+   - 资源分配
+   - 决策制定
+
+3. **性能优化**
+   - 算法优化
+   - 参数调优
+   - 系统优化
+
+## 🔢 通信机制
+
+### 1. 消息传递
+
+#### 核心思想
+
+Agent 之间通过消息进行通信，实现信息的传递和共享。
+
+#### 技术特点
+
+1. **异步通信**
+   - 非阻塞消息传递
+   - 提高并发性
+   - 解耦发送者和接收者
+
+2. **消息队列**
+   - 消息缓冲
+   - 可靠传递
+   - 顺序保证
+
+3. **消息格式**
+   - 结构化消息
+   - 类型安全
+   - 易于扩展
+
+#### 代码实现
+
+```javascript
+class MessagePassing {
+  constructor() {
+    this.agents = new Map();
+    this.messageQueue = new Map();
+    this.messageHandlers = new Map();
+  }
+
+  /**
+   * 注册 Agent
+   * 
+   * @param {string} agentId - Agent ID
+   * @param {Object} agent - Agent 对象
+   * @returns {MessagePassing} - 返回自身以支持链式调用
+   */
+  registerAgent(agentId, agent) {
+    this.agents.set(agentId, agent);
+    this.messageQueue.set(agentId, []);
+    return this;
+  }
+
+  /**
+   * 发送消息
+   * 
+   * @param {string} from - 发送者 ID
+   * @param {string} to - 接收者 ID
+   * @param {Object} message - 消息内容
+   * @returns {Promise<void>}
+   */
+  async sendMessage(from, to, message) {
+    const messageObject = {
+      id: this.generateMessageId(),
+      from: from,
+      to: to,
+      message: message,
+      timestamp: Date.now(),
+      status: 'pending'
+    };
+
+    // 将消息添加到接收者的队列
+    const queue = this.messageQueue.get(to);
+    if (queue) {
+      queue.push(messageObject);
+    } else {
+      throw new Error(`Agent not found: ${to}`);
+    }
+
+    // 通知接收者
+    await this.notifyAgent(to, messageObject);
+  }
+
+  /**
+   * 广播消息
+   * 
+   * @param {string} from - 发送者 ID
+   * @param {Object} message - 消息内容
+   * @returns {Promise<Array>} - 发送结果
+   */
+  async broadcast(from, message) {
+    const results = [];
+
+    for (const [agentId] of this.agents) {
+      if (agentId !== from) {
+        try {
+          await this.sendMessage(from, agentId, message);
+          results.push({ agentId: agentId, success: true });
+        } catch (error) {
+          results.push({ agentId: agentId, success: false, error: error.message });
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * 接收消息
+   * 
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<Object>} - 消息对象
+   */
+  async receiveMessage(agentId) {
+    const queue = this.messageQueue.get(agentId);
+    
+    if (!queue || queue.length === 0) {
+      return null;
+    }
+
+    const message = queue.shift();
+    message.status = 'received';
+    
+    return message;
+  }
+
+  /**
+   * 处理消息
+   * 
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<void>}
+   */
+  async processMessages(agentId) {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+
+    while (true) {
+      const message = await this.receiveMessage(agentId);
+      
+      if (!message) {
+        break;
+      }
+
+      try {
+        await agent.handleMessage(message);
+        message.status = 'processed';
+      } catch (error) {
+        console.error(`处理消息失败:`, error);
+        message.status = 'failed';
+        message.error = error.message;
+      }
+    }
+  }
+
+  /**
+   * 通知 Agent
+   * 
+   * @param {string} agentId - Agent ID
+   * @param {Object} message - 消息对象
+   * @returns {Promise<void>}
+   */
+  async notifyAgent(agentId, message) {
+    const agent = this.agents.get(agentId);
+    
+    if (agent && agent.onMessage) {
+      await agent.onMessage(message);
+    }
+  }
+
+  /**
+   * 注册消息处理器
+   * 
+   * @param {string} messageType - 消息类型
+   * @param {Function} handler - 处理函数
+   * @returns {MessagePassing} - 返回自身以支持链式调用
+   */
+  registerHandler(messageType, handler) {
+    this.messageHandlers.set(messageType, handler);
+    return this;
+  }
+
+  /**
+   * 生成消息 ID
+   * 
+   * @returns {string} - 消息 ID
+   */
+  generateMessageId() {
+    return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * 获取消息队列状态
+   * 
+   * @param {string} agentId - Agent ID
+   * @returns {Object} - 队列状态
+   */
+  getQueueStatus(agentId) {
+    const queue = this.messageQueue.get(agentId);
+    
+    if (!queue) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+
+    return {
+      agentId: agentId,
+      queueLength: queue.length,
+      messages: queue.map(m => ({
+        id: m.id,
+        from: m.from,
+        type: m.message.type,
+        status: m.status,
+        timestamp: m.timestamp
+      }))
+    };
+  }
+
+  /**
+   * 获取所有队列状态
+   * 
+   * @returns {Array<Object>} - 所有队列状态
+   */
+  getAllQueueStatus() {
+    const statuses = [];
+
+    for (const [agentId] of this.agents) {
+      statuses.push(this.getQueueStatus(agentId));
+    }
+
+    return statuses;
+  }
+}
+
+// 使用示例
+async function example() {
+  const messaging = new MessagePassing();
+
+  // 注册 Agent
+  messaging
+    .registerAgent('agent1', {
+      handleMessage: async (message) => {
+        console.log(`Agent1 收到消息:`, message.message);
+      }
+    })
+    .registerAgent('agent2', {
+      handleMessage: async (message) => {
+        console.log(`Agent2 收到消息:`, message.message);
+      }
+    });
+
+  // 发送消息
+  await messaging.sendMessage('agent1', 'agent2', {
+    type: 'greeting',
+    content: 'Hello from agent1!'
+  });
+
+  // 广播消息
+  await messaging.broadcast('agent1', {
+    type: 'announcement',
+    content: 'Important announcement!'
+  });
+
+  // 处理消息
+  await messaging.processMessages('agent2');
+
+  // 获取队列状态
+  const status = messaging.getQueueStatus('agent2');
+  console.log('队列状态:', status);
+}
+```
+
+#### 应用场景
+
+1. **分布式系统**
+   - 微服务通信
+   - 事件驱动架构
+   - 消息队列
+
+2. **实时协作**
+   - 实时通信
+   - 协同编辑
+   - 多人游戏
+
+3. **异步处理**
+   - 任务队列
+   - 后台处理
+   - 事件通知
+
+### 2. 共享内存
+
+#### 核心思想
+
+Agent 之间通过共享内存进行通信，实现高效的数据共享和同步。
+
+#### 技术特点
+
+1. **高效访问**
+   - 直接内存访问
+   - 低延迟
+   - 高吞吐量
+
+2. **同步机制**
+   - 锁机制
+   - 信号量
+   - 条件变量
+
+3. **数据一致性**
+   - 原子操作
+   - 内存屏障
+   - 缓存一致性
+
+#### 代码实现
+
+```javascript
+class SharedMemory {
+  constructor() {
+    this.memory = new Map();
+    this.locks = new Map();
+    this.subscribers = new Map();
+  }
+
+  /**
+   * 写入数据
+   * 
+   * @param {string} key - 键
+   * @param {*} value - 值
+   * @param {Object} options - 选项
+   * @returns {Promise<void>}
+   */
+  async write(key, value, options = {}) {
+    const { lock = true, notify = true } = options;
+
+    // 获取锁
+    if (lock) {
+      await this.acquireLock(key);
+    }
+
+    try {
+      // 写入数据
+      this.memory.set(key, {
+        value: value,
+        timestamp: Date.now(),
+        version: (this.memory.get(key)?.version || 0) + 1
+      });
+
+      // 通知订阅者
+      if (notify) {
+        await this.notifySubscribers(key, value);
+      }
+    } finally {
+      // 释放锁
+      if (lock) {
+        await this.releaseLock(key);
+      }
+    }
+  }
+
+  /**
+   * 读取数据
+   * 
+   * @param {string} key - 键
+   * @param {Object} options - 选项
+   * @returns {Promise<*>} - 值
+   */
+  async read(key, options = {}) {
+    const { lock = true } = options;
+
+    // 获取锁
+    if (lock) {
+      await this.acquireLock(key);
+    }
+
+    try {
+      const data = this.memory.get(key);
+      return data ? data.value : undefined;
+    } finally {
+      // 释放锁
+      if (lock) {
+        await this.releaseLock(key);
+      }
+    }
+  }
+
+  /**
+   * 原子操作
+   * 
+   * @param {string} key - 键
+   * @param {Function} operation - 操作函数
+   * @returns {Promise<*>} - 操作结果
+   */
+  async atomic(key, operation) {
+    await this.acquireLock(key);
+
+    try {
+      const currentValue = await this.read(key, { lock: false });
+      const newValue = operation(currentValue);
+      await this.write(key, newValue, { lock: false, notify: true });
+      return newValue;
+    } finally {
+      await this.releaseLock(key);
+    }
+  }
+
+  /**
+   * 订阅键变化
+   * 
+   * @param {string} key - 键
+   * @param {Function} callback - 回调函数
+   * @returns {Function} - 取消订阅函数
+   */
+  subscribe(key, callback) {
+    if (!this.subscribers.has(key)) {
+      this.subscribers.set(key, new Set());
+    }
+
+    this.subscribers.get(key).add(callback);
+
+    // 返回取消订阅函数
+    return () => {
+      const subscribers = this.subscribers.get(key);
+      if (subscribers) {
+        subscribers.delete(callback);
+      }
+    };
+  }
+
+  /**
+   * 通知订阅者
+   * 
+   * @param {string} key - 键
+   * @param {*} value - 新值
+   * @returns {Promise<void>}
+   */
+  async notifySubscribers(key, value) {
+    const subscribers = this.subscribers.get(key);
+    
+    if (subscribers) {
+      for (const callback of subscribers) {
+        try {
+          await callback(key, value);
+        } catch (error) {
+          console.error(`订阅者回调失败:`, error);
+        }
+      }
+    }
+  }
+
+  /**
+   * 获取锁
+   * 
+   * @param {string} key - 键
+   * @returns {Promise<void>}
+   */
+  async acquireLock(key) {
+    while (this.locks.has(key)) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    this.locks.set(key, true);
+  }
+
+  /**
+   * 释放锁
+   * 
+   * @param {string} key - 键
+   * @returns {Promise<void>}
+   */
+  async releaseLock(key) {
+    this.locks.delete(key);
+  }
+
+  /**
+   * 删除数据
+   * 
+   * @param {string} key - 键
+   * @returns {Promise<void>}
+   */
+  async delete(key) {
+    await this.acquireLock(key);
+
+    try {
+      this.memory.delete(key);
+      await this.notifySubscribers(key, undefined);
+    } finally {
+      await this.releaseLock(key);
+    }
+  }
+
+  /**
+   * 获取所有键
+   * 
+   * @returns {Array<string>} - 键列表
+   */
+  getKeys() {
+    return Array.from(this.memory.keys());
+  }
+
+  /**
+   * 获取内存状态
+   * 
+   * @returns {Object} - 内存状态
+   */
+  getStatus() {
+    return {
+      size: this.memory.size,
+      keys: this.getKeys(),
+      locks: Array.from(this.locks.keys()),
+      subscribers: Array.from(this.subscribers.keys()).map(key => ({
+        key: key,
+        count: this.subscribers.get(key).size
+      }))
+    };
+  }
+}
+
+// 使用示例
+async function example() {
+  const sharedMemory = new SharedMemory();
+
+  // 写入数据
+  await sharedMemory.write('counter', 0);
+
+  // 订阅变化
+  const unsubscribe = sharedMemory.subscribe('counter', (key, value) => {
+    console.log(`${key} 变为: ${value}`);
+  });
+
+  // 原子操作
+  for (let i = 0; i < 5; i++) {
+    await sharedMemory.atomic('counter', (current) => {
+      return (current || 0) + 1;
+    });
+  }
+
+  // 读取数据
+  const value = await sharedMemory.read('counter');
+  console.log('当前值:', value);
+
+  // 取消订阅
+  unsubscribe();
+
+  // 获取状态
+  const status = sharedMemory.getStatus();
+  console.log('内存状态:', status);
+}
+```
+
+#### 应用场景
+
+1. **高性能计算**
+   - 并行计算
+   - 数据共享
+   - 结果聚合
+
+2. **实时系统**
+   - 实时数据共享
+   - 状态同步
+   - 协同处理
+
+3. **缓存系统**
+   - 分布式缓存
+   - 热点数据
+   - 快速访问
+
+### 3. 事件驱动
+
+#### 核心思想
+
+Agent 之间通过事件进行通信，实现松耦合的异步交互。
+
+#### 技术特点
+
+1. **事件驱动**
+   - 事件发布
+   - 事件订阅
+   - 事件处理
+
+2. **松耦合**
+   - 发布者-订阅者模式
+   - 异步处理
+   - 易于扩展
+
+3. **事件流**
+   - 事件过滤
+   - 事件转换
+   - 事件聚合
+
+#### 代码实现
+
+```javascript
+class EventDriven {
+  constructor() {
+    this.eventHandlers = new Map();
+    this.eventQueue = [];
+    this.processing = false;
+  }
+
+  /**
+   * 订阅事件
+   * 
+   * @param {string} eventType - 事件类型
+   * @param {Function} handler - 处理函数
+   * @returns {Function} - 取消订阅函数
+   */
+  on(eventType, handler) {
+    if (!this.eventHandlers.has(eventType)) {
+      this.eventHandlers.set(eventType, new Set());
+    }
+
+    this.eventHandlers.get(eventType).add(handler);
+
+    // 返回取消订阅函数
+    return () => {
+      this.off(eventType, handler);
+    };
+  }
+
+  /**
+   * 取消订阅事件
+   * 
+   * @param {string} eventType - 事件类型
+   * @param {Function} handler - 处理函数
+   * @returns {EventDriven} - 返回自身以支持链式调用
+   */
+  off(eventType, handler) {
+    const handlers = this.eventHandlers.get(eventType);
+    
+    if (handlers) {
+      handlers.delete(handler);
+    }
+
+    return this;
+  }
+
+  /**
+   * 发布事件
+   * 
+   * @param {string} eventType - 事件类型
+   * @param {*} data - 事件数据
+   * @returns {Promise<number>} - 处理器数量
+   */
+  async emit(eventType, data) {
+    const handlers = this.eventHandlers.get(eventType);
+    
+    if (!handlers || handlers.size === 0) {
+      return 0;
+    }
+
+    // 将事件添加到队列
+    const event = {
+      type: eventType,
+      data: data,
+      timestamp: Date.now()
+    };
+
+    this.eventQueue.push(event);
+
+    // 开始处理队列
+    if (!this.processing) {
+      await this.processQueue();
+    }
+
+    return handlers.size;
+  }
+
+  /**
+   * 处理事件队列
+   * 
+   * @returns {Promise<void>}
+   */
+  async processQueue() {
+    this.processing = true;
+
+    while (this.eventQueue.length > 0) {
+      const event = this.eventQueue.shift();
+      await this.handleEvent(event);
+    }
+
+    this.processing = false;
+  }
+
+  /**
+   * 处理事件
+   * 
+   * @param {Object} event - 事件对象
+   * @returns {Promise<void>}
+   */
+  async handleEvent(event) {
+    const handlers = this.eventHandlers.get(event.type);
+    
+    if (!handlers) {
+      return;
+    }
+
+    const promises = [];
+
+    for (const handler of handlers) {
+      const promise = handler(event)
+        .catch(error => {
+          console.error(`事件处理器失败 (${event.type}):`, error);
+        });
+
+      promises.push(promise);
+    }
+
+    await Promise.all(promises);
+  }
+
+  /**
+   * 一次性订阅
+   * 
+   * @param {string} eventType - 事件类型
+   * @param {Function} handler - 处理函数
+   * @returns {Function} - 取消订阅函数
+   */
+  once(eventType, handler) {
+    const wrapper = async (event) => {
+      await handler(event);
+      this.off(eventType, wrapper);
+    };
+
+    return this.on(eventType, wrapper);
+  }
+
+  /**
+   * 订阅多个事件
+   * 
+   * @param {Array<string>} eventTypes - 事件类型列表
+   * @param {Function} handler - 处理函数
+   * @returns {Function} - 取消订阅函数
+   */
+  onAny(eventTypes, handler) {
+    const unsubscribers = [];
+
+    for (const eventType of eventTypes) {
+      const unsubscribe = this.on(eventType, handler);
+      unsubscribers.push(unsubscribe);
+    }
+
+    // 返回取消所有订阅的函数
+    return () => {
+      for (const unsubscribe of unsubscribers) {
+        unsubscribe();
+      }
+    };
+  }
+
+  /**
+   * 事件过滤
+   * 
+   * @param {string} eventType - 源事件类型
+   * @param {Function} filter - 过滤函数
+   * @param {string} newEventType - 新事件类型
+   * @returns {Function} - 取消订阅函数
+   */
+  filter(eventType, filter, newEventType) {
+    const handler = (event) => {
+      if (filter(event.data)) {
+        this.emit(newEventType, event.data);
+      }
+    };
+
+    return this.on(eventType, handler);
+  }
+
+  /**
+   * 事件转换
+   * 
+   * @param {string} eventType - 源事件类型
+   * @param {Function} transformer - 转换函数
+   * @param {string} newEventType - 新事件类型
+   * @returns {Function} - 取消订阅函数
+   */
+  transform(eventType, transformer, newEventType) {
+    const handler = async (event) => {
+      const transformedData = await transformer(event.data);
+      await this.emit(newEventType, transformedData);
+    };
+
+    return this.on(eventType, handler);
+  }
+
+  /**
+   * 事件聚合
+   * 
+   * @param {string} eventType - 源事件类型
+   * @param {number} count - 聚合数量
+   * @param {string} newEventType - 新事件类型
+   * @returns {Function} - 取消订阅函数
+   */
+  aggregate(eventType, count, newEventType) {
+    let buffer = [];
+
+    const handler = (event) => {
+      buffer.push(event.data);
+
+      if (buffer.length >= count) {
+        this.emit(newEventType, [...buffer]);
+        buffer = [];
+      }
+    };
+
+    return this.on(eventType, handler);
+  }
+
+  /**
+   * 获取事件统计
+   * 
+   * @returns {Object} - 事件统计
+   */
+  getStatistics() {
+    const stats = {};
+
+    for (const [eventType, handlers] of this.eventHandlers) {
+      stats[eventType] = {
+        handlers: handlers.size,
+        queued: this.eventQueue.filter(e => e.type === eventType).length
+      };
+    }
+
+    return stats;
+  }
+}
+
+// 使用示例
+async function example() {
+  const eventSystem = new EventDriven();
+
+  // 订阅事件
+  eventSystem.on('data:received', (event) => {
+    console.log('数据接收:', event.data);
+  });
+
+  eventSystem.on('data:processed', (event) => {
+    console.log('数据处理:', event.data);
+  });
+
+  // 一次性订阅
+  eventSystem.once('system:ready', (event) => {
+    console.log('系统就绪!');
+  });
+
+  // 发布事件
+  await eventSystem.emit('system:ready', { status: 'ready' });
+  await eventSystem.emit('data:received', { data: 'test data' });
+  await eventSystem.emit('data:processed', { result: 'processed' });
+
+  // 事件过滤
+  eventSystem.filter(
+    'data:received',
+    (data) => data.data && data.data.length > 5,
+    'data:valid'
+  );
+
+  eventSystem.on('data:valid', (event) => {
+    console.log('有效数据:', event.data);
+  });
+
+  await eventSystem.emit('data:received', { data: 'short' });
+  await eventSystem.emit('data:received', { data: 'long data string' });
+
+  // 获取统计
+  const stats = eventSystem.getStatistics();
+  console.log('事件统计:', stats);
+}
+```
+
+#### 应用场景
+
+1. **用户界面**
+   - 用户交互
+   - 状态更新
+   - UI 响应
+
+2. **系统集成**
+   - 模块通信
+   - 插件系统
+   - 扩展机制
+
+3. **实时应用**
+   - 实时通知
+   - 数据更新
+   - 状态同步
+
+## 🔢 冲突解决
+
+### 1. 协商机制
+
+#### 核心思想
+
+Agent 之间通过协商解决冲突，达成共识。
+
+#### 技术特点
+
+1. **协商协议**
+   - 提案-接受协议
+   - 多轮协商
+   - 妥协策略
+
+2. **协商策略**
+   - 合作协商
+   - 竞争协商
+   - 混合协商
+
+3. **共识达成**
+   - 一致性协议
+   - 投票机制
+   - 多数原则
+
+#### 代码实现
+
+```javascript
+class NegotiationMechanism {
+  constructor() {
+    this.agents = new Map();
+    this.negotiations = new Map();
+  }
+
+  /**
+   * 注册 Agent
+   * 
+   * @param {string} agentId - Agent ID
+   * @param {Object} agent - Agent 对象
+   * @returns {NegotiationMechanism} - 返回自身以支持链式调用
+   */
+  registerAgent(agentId, agent) {
+    this.agents.set(agentId, agent);
+    return this;
+  }
+
+  /**
+   * 开始协商
+   * 
+   * @param {string} negotiationId - 协商 ID
+   * @param {string} initiatorId - 发起者 ID
+   * @param {Object} proposal - 提案
+   * @returns {Promise<Object>} - 协商结果
+   */
+  async startNegotiation(negotiationId, initiatorId, proposal) {
+    const negotiation = {
+      id: negotiationId,
+      initiator: initiatorId,
+      proposal: proposal,
+      status: 'in_progress',
+      responses: new Map(),
+      startTime: Date.now(),
+      maxRounds: 5,
+      currentRound: 0
+    };
+
+    this.negotiations.set(negotiationId, negotiation);
+
+    // 向所有 Agent 发送提案
+    const participants = Array.from(this.agents.keys()).filter(id => id !== initiatorId);
+    
+    for (const participantId of participants) {
+      const response = await this.sendProposal(participantId, proposal);
+      negotiation.responses.set(participantId, response);
+    }
+
+    // 检查是否达成共识
+    return await this.checkConsensus(negotiationId);
+  }
+
+  /**
+   * 发送提案
+   * 
+   * @param {string} agentId - Agent ID
+   * @param {Object} proposal - 提案
+   * @returns {Promise<Object>} - 响应
+   */
+  async sendProposal(agentId, proposal) {
+    const agent = this.agents.get(agentId);
+    
+    if (!agent || !agent.evaluateProposal) {
+      return {
+        accepted: false,
+        reason: 'Agent not available'
+      };
+    }
+
+    return await agent.evaluateProposal(proposal);
+  }
+
+  /**
+   * 检查共识
+   * 
+   * @param {string} negotiationId - 协商 ID
+   * @returns {Promise<Object>} - 协商结果
+   */
+  async checkConsensus(negotiationId) {
+    const negotiation = this.negotiations.get(negotiationId);
+    
+    if (!negotiation) {
+      throw new Error(`Negotiation not found: ${negotiationId}`);
+    }
+
+    const responses = Array.from(negotiation.responses.values());
+    const accepted = responses.filter(r => r.accepted).length;
+    const total = responses.length;
+
+    // 如果所有参与者都接受，达成共识
+    if (accepted === total) {
+      negotiation.status = 'consensus';
+      negotiation.endTime = Date.now();
+      
+      return {
+        status: 'consensus',
+        proposal: negotiation.proposal,
+        responses: responses
+      };
+    }
+
+    // 如果超过半数接受，达成多数共识
+    if (accepted > total / 2) {
+      negotiation.status = 'majority';
+      negotiation.endTime = Date.now();
+      
+      return {
+        status: 'majority',
+        proposal: negotiation.proposal,
+        responses: responses
+      };
+    }
+
+    // 否则，需要进一步协商
+    negotiation.currentRound++;
+
+    if (negotiation.currentRound >= negotiation.maxRounds) {
+      negotiation.status = 'failed';
+      negotiation.endTime = Date.now();
+      
+      return {
+        status: 'failed',
+        proposal: negotiation.proposal,
+        responses: responses
+      };
+    }
+
+    // 修改提案
+    const modifiedProposal = await this.modifyProposal(negotiation);
+    negotiation.proposal = modifiedProposal;
+
+    // 重新发送提案
+    return await this.startNegotiation(negotiationId, negotiation.initiator, modifiedProposal);
+  }
+
+  /**
+   * 修改提案
+   * 
+   * @param {Object} negotiation - 协商对象
+   * @returns {Promise<Object>} - 修改后的提案
+   */
+  async modifyProposal(negotiation) {
+    const responses = Array.from(negotiation.responses.values());
+    const rejectedResponses = responses.filter(r => !r.accepted);
+
+    // 基于拒绝理由修改提案
+    const modifiedProposal = { ...negotiation.proposal };
+
+    for (const response of rejectedResponses) {
+      if (response.suggestions) {
+        // 应用建议
+        Object.assign(modifiedProposal, response.suggestions);
+      }
+    }
+
+    return modifiedProposal;
+  }
+
+  /**
+   * 反提案
+   * 
+   * @param {string} negotiationId - 协商 ID
+   * @param {string} agentId - Agent ID
+   * @param {Object} counterProposal - 反提案
+   * @returns {Promise<Object>} - 协商结果
+   */
+  async counterProposal(negotiationId, agentId, counterProposal) {
+    const negotiation = this.negotiations.get(negotiationId);
+    
+    if (!negotiation) {
+      throw new Error(`Negotiation not found: ${negotiationId}`);
+    }
+
+    // 向发起者发送反提案
+    const initiator = this.agents.get(negotiation.initiator);
+    
+    if (initiator && initiator.evaluateCounterProposal) {
+      const response = await initiator.evaluateCounterProposal(counterProposal);
+
+      if (response.accepted) {
+        negotiation.status = 'consensus';
+        negotiation.proposal = counterProposal;
+        negotiation.endTime = Date.now();
+
+        return {
+          status: 'consensus',
+          proposal: counterProposal
+        };
+      }
+    }
+
+    negotiation.status = 'failed';
+    negotiation.endTime = Date.now();
+
+    return {
+      status: 'failed',
+      proposal: negotiation.proposal
+    };
+  }
+
+  /**
+   * 获取协商状态
+   * 
+   * @param {string} negotiationId - 协商 ID
+   * @returns {Object} - 协商状态
+   */
+  getNegotiationStatus(negotiationId) {
+    const negotiation = this.negotiations.get(negotiationId);
+    
+    if (!negotiation) {
+      throw new Error(`Negotiation not found: ${negotiationId}`);
+    }
+
+    return {
+      id: negotiation.id,
+      initiator: negotiation.initiator,
+      status: negotiation.status,
+      currentRound: negotiation.currentRound,
+      maxRounds: negotiation.maxRounds,
+      responses: Array.from(negotiation.responses.entries()).map(([agentId, response]) => ({
+        agentId: agentId,
+        ...response
+      })),
+      startTime: negotiation.startTime,
+      endTime: negotiation.endTime
+    };
+  }
+}
+
+// 使用示例
+async function example() {
+  const negotiation = new NegotiationMechanism();
+
+  // 注册 Agent
+  negotiation
+    .registerAgent('agent1', {
+      evaluateProposal: async (proposal) => {
+        console.log('Agent1 评估提案:', proposal);
+        // 根据提案内容决定是否接受
+        if (proposal.value > 50) {
+          return { accepted: true };
+        } else {
+          return { 
+            accepted: false, 
+            reason: 'Value too low',
+            suggestions: { value: proposal.value + 20 }
+          };
+        }
+      }
+    })
+    .registerAgent('agent2', {
+      evaluateProposal: async (proposal) => {
+        console.log('Agent2 评估提案:', proposal);
+        if (proposal.value > 60) {
+          return { accepted: true };
+        } else {
+          return { 
+            accepted: false, 
+            reason: 'Value too low',
+            suggestions: { value: proposal.value + 30 }
+          };
+        }
+      }
+    });
+
+  // 开始协商
+  const result = await negotiation.startNegotiation('neg1', 'agent1', {
+    value: 40,
+    description: 'Initial proposal'
+  });
+
+  console.log('协商结果:', result);
+
+  // 获取协商状态
+  const status = negotiation.getNegotiationStatus('neg1');
+  console.log('协商状态:', status);
+}
+```
+
+#### 应用场景
+
+1. **资源分配**
+   - 资源协商
+   - 负载均衡
+   - 任务分配
+
+2. **决策制定**
+   - 集体决策
+   - 策略协商
+   - 达成共识
+
+3. **冲突解决**
+   - 利益冲突
+   - 资源竞争
+   - 协作优化
+
+### 2. 投票机制
+
+#### 核心思想
+
+Agent 通过投票解决冲突，实现民主决策。
+
+#### 技术特点
+
+1. **投票协议**
+   - 一人一票
+   - 加权投票
+   - 委托投票
+
+2. **投票策略**
+   - 多数决
+   - 一致决
+   - 超级多数
+
+3. **投票结果**
+   - 结果统计
+   - 结果公布
+   - 结果执行
+
+#### 代码实现
+
+```javascript
+class VotingMechanism {
+  constructor() {
+    this.agents = new Map();
+    this.votes = new Map();
+    this.proposals = new Map();
+  }
+
+  /**
+   * 注册 Agent
+   * 
+   * @param {string} agentId - Agent ID
+   * @param {Object} agent - Agent 对象
+   * @returns {VotingMechanism} - 返回自身以支持链式调用
+   */
+  registerAgent(agentId, agent) {
+    this.agents.set(agentId, agent);
+    return this;
+  }
+
+  /**
+   * 创建提案
+   * 
+   * @param {string} proposalId - 提案 ID
+   * @param {string} proposerId - 提案者 ID
+   * @param {Object} proposal - 提案内容
+   * @param {Object} options - 选项
+   * @returns {VotingMechanism} - 返回自身以支持链式调用
+   */
+  createProposal(proposalId, proposerId, proposal, options = {}) {
+    const {
+      votingMethod = 'majority',
+      quorum = 0.5,
+      timeout = 60000
+    } = options;
+
+    this.proposals.set(proposalId, {
+      id: proposalId,
+      proposer: proposerId,
+      proposal: proposal,
+      votingMethod: votingMethod,
+      quorum: quorum,
+      timeout: timeout,
+      status: 'pending',
+      votes: new Map(),
+      startTime: null,
+      endTime: null
+    });
+
+    return this;
+  }
+
+  /**
+   * 开始投票
+   * 
+   * @param {string} proposalId - 提案 ID
+   * @returns {Promise<Object>} - 投票结果
+   */
+  async startVoting(proposalId) {
+    const proposal = this.proposals.get(proposalId);
+    
+    if (!proposal) {
+      throw new Error(`Proposal not found: ${proposalId}`);
+    }
+
+    proposal.status = 'voting';
+    proposal.startTime = Date.now();
+
+    // 通知所有 Agent 开始投票
+    const participants = Array.from(this.agents.keys());
+    
+    for (const participantId of participants) {
+      if (participantId !== proposal.proposer) {
+        // 异步收集投票
+        this.collectVote(proposalId, participantId);
+      }
+    }
+
+    // 等待投票结束
+    return await this.waitForVotingEnd(proposalId);
+  }
+
+  /**
+   * 收集投票
+   * 
+   * @param {string} proposalId - 提案 ID
+   * @param {string} agentId - Agent ID
+   * @returns {Promise<void>}
+   */
+  async collectVote(proposalId, agentId) {
+    const proposal = this.proposals.get(proposalId);
+    const agent = this.agents.get(agentId);
+
+    if (!agent || !agent.vote) {
+      return;
+    }
+
+    try {
+      const vote = await agent.vote(proposal.proposal);
+      proposal.votes.set(agentId, vote);
+    } catch (error) {
+      console.error(`Agent ${agentId} 投票失败:`, error);
+      proposal.votes.set(agentId, { abstain: true });
+    }
+  }
+
+  /**
+   * 等待投票结束
+   * 
+   * @param {string} proposalId - 提案 ID
+   * @returns {Promise<Object>} - 投票结果
+   */
+  async waitForVotingEnd(proposalId) {
+    const proposal = this.proposals.get(proposalId);
+
+    // 等待超时或所有 Agent 投票
+    const checkInterval = 1000;
+    const startTime = Date.now();
+
+    while (true) {
+      const elapsed = Date.now() - startTime;
+
+      // 检查是否超时
+      if (elapsed >= proposal.timeout) {
+        break;
+      }
+
+      // 检查是否达到法定人数
+      const totalAgents = this.agents.size;
+      const votedAgents = proposal.votes.size;
+      const quorumMet = votedAgents / totalAgents >= proposal.quorum;
+
+      if (quorumMet) {
+        // 等待一小段时间确保所有投票都收集到
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        break;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+    }
+
+    proposal.endTime = Date.now();
+    proposal.status = 'completed';
+
+    return this.calculateVotingResult(proposalId);
+  }
+
+  /**
+   * 计算投票结果
+   * 
+   * @param {string} proposalId - 提案 ID
+   * @returns {Object>} - 投票结果
+   */
+  calculateVotingResult(proposalId) {
+    const proposal = this.proposals.get(proposalId);
+    
+    if (!proposal) {
+      throw new Error(`Proposal not found: ${proposalId}`);
+    }
+
+    const votes = Array.from(proposal.votes.values());
+    const approve = votes.filter(v => v.approve).length;
+    const reject = votes.filter(v => v.reject).length;
+    const abstain = votes.filter(v => v.abstain).length;
+    const total = votes.length;
+
+    let result = {
+      proposalId: proposalId,
+      proposal: proposal.proposal,
+      votingMethod: proposal.votingMethod,
+      totalVotes: total,
+      approve: approve,
+      reject: reject,
+      abstain: abstain,
+      votes: Array.from(proposal.votes.entries()).map(([agentId, vote]) => ({
+        agentId: agentId,
+        ...vote
+      }))
+    };
+
+    // 根据投票方法决定结果
+    switch (proposal.votingMethod) {
+      case 'majority':
+        result.passed = approve > reject;
+        break;
+      case 'unanimous':
+        result.passed = approve === total && reject === 0;
+        break;
+      case 'supermajority':
+        result.passed = approve / total >= 0.67;
+        break;
+      default:
+        result.passed = approve > reject;
+    }
+
+    return result;
+  }
+
+  /**
+   * 加权投票
+   * 
+   * @param {string} proposalId - 提案 ID
+   * @param {Map<string, number>} weights - 权重映射
+   * @returns {Promise<Object>} - 投票结果
+   */
+  async weightedVoting(proposalId, weights) {
+    const proposal = this.proposals.get(proposalId);
+    
+    if (!proposal) {
+      throw new Error(`Proposal not found: ${proposalId}`);
+    }
+
+    const votes = Array.from(proposal.votes.entries());
+    let approveWeight = 0;
+    let rejectWeight = 0;
+    let abstainWeight = 0;
+    let totalWeight = 0;
+
+    for (const [agentId, vote] of votes) {
+      const weight = weights.get(agentId) || 1;
+      totalWeight += weight;
+
+      if (vote.approve) {
+        approveWeight += weight;
+      } else if (vote.reject) {
+        rejectWeight += weight;
+      } else {
+        abstainWeight += weight;
+      }
+    }
+
+    return {
+      proposalId: proposalId,
+      proposal: proposal.proposal,
+      totalWeight: totalWeight,
+      approveWeight: approveWeight,
+      rejectWeight: rejectWeight,
+      abstainWeight: abstainWeight,
+      passed: approveWeight > rejectWeight,
+      votes: votes.map(([agentId, vote]) => ({
+        agentId: agentId,
+        weight: weights.get(agentId) || 1,
+        ...vote
+      }))
+    };
+  }
+
+  /**
+   * 委托投票
+   * 
+   * @param {string} proposalId - 提案 ID
+   * @param {Map<string, string>} delegations - 委托映射
+   * @returns {Promise<Object>} - 投票结果
+   */
+  async delegatedVoting(proposalId, delegations) {
+    const proposal = this.proposals.get(proposalId);
+    
+    if (!proposal) {
+      throw new Error(`Proposal not found: ${proposalId}`);
+    }
+
+    // 处理委托投票
+    const processedVotes = new Map();
+
+    for (const [agentId, vote] of proposal.votes) {
+      if (delegations.has(agentId)) {
+        // 该 Agent 委托了投票权
+        const delegateId = delegations.get(agentId);
+        const delegateVote = proposal.votes.get(delegateId);
+        
+        if (delegateVote) {
+          processedVotes.set(agentId, delegateVote);
+        } else {
+          processedVotes.set(agentId, { abstain: true });
+        }
+      } else {
+        processedVotes.set(agentId, vote);
+      }
+    }
+
+    // 计算结果
+    const votes = Array.from(processedVotes.values());
+    const approve = votes.filter(v => v.approve).length;
+    const reject = votes.filter(v => v.reject).length;
+
+    return {
+      proposalId: proposalId,
+      proposal: proposal.proposal,
+      totalVotes: votes.length,
+      approve: approve,
+      reject: reject,
+      passed: approve > reject,
+      votes: Array.from(processedVotes.entries()).map(([agentId, vote]) => ({
+        agentId: agentId,
+        delegated: delegations.has(agentId),
+        ...vote
+      }))
+    };
+  }
+
+  /**
+   * 获取提案状态
+   * 
+   * @param {string} proposalId - 提案 ID
+   * @returns {Object} - 提案状态
+   */
+  getProposalStatus(proposalId) {
+    const proposal = this.proposals.get(proposalId);
+    
+    if (!proposal) {
+      throw new Error(`Proposal not found: ${proposalId}`);
+    }
+
+    return {
+      id: proposal.id,
+      proposer: proposal.proposer,
+      status: proposal.status,
+      votingMethod: proposal.votingMethod,
+      quorum: proposal.quorum,
+      votes: proposal.votes.size,
+      startTime: proposal.startTime,
+      endTime: proposal.endTime
+    };
+  }
+}
+
+// 使用示例
+async function example() {
+  const voting = new VotingMechanism();
+
+  // 注册 Agent
+  voting
+    .registerAgent('agent1', {
+      vote: async (proposal) => {
+        console.log('Agent1 投票:', proposal);
+        return { approve: true };
+      }
+    })
+    .registerAgent('agent2', {
+      vote: async (proposal) => {
+        console.log('Agent2 投票:', proposal);
+        return { approve: false };
+      }
+    })
+    .registerAgent('agent3', {
+      vote: async (proposal) => {
+        console.log('Agent3 投票:', proposal);
+        return { approve: true };
+      }
+    });
+
+  // 创建提案
+  voting.createProposal('prop1', 'agent1', {
+    title: 'Test Proposal',
+    description: 'This is a test proposal'
+  }, {
+    votingMethod: 'majority',
+    quorum: 0.67,
+    timeout: 10000
+  });
+
+  // 开始投票
+  const result = await voting.startVoting('prop1');
+  console.log('投票结果:', result);
+
+  // 获取提案状态
+  const status = voting.getProposalStatus('prop1');
+  console.log('提案状态:', status);
+}
+```
+
+#### 应用场景
+
+1. **集体决策**
+   - 团队决策
+   - 组织决策
+   - 社区治理
+
+2. **资源分配**
+   - 资源投票
+   - 优先级排序
+   - 预算分配
+
+3. **冲突解决**
+   - 意见分歧
+   - 利益冲突
+   - 达成共识
+
+### 3. 仲裁机制
+
+#### 核心思想
+
+通过第三方仲裁者解决 Agent 之间的冲突。
+
+#### 技术特点
+
+1. **仲裁者**
+   - 中立第三方
+   - 权威性
+   - 公正性
+
+2. **仲裁流程**
+   - 冲突提交
+   - 证据收集
+   - 仲裁裁决
+
+3. **裁决执行**
+   - 强制执行
+   - 结果公布
+   - 后续跟进
+
+#### 代码实现
+
+```javascript
+class ArbitrationMechanism {
+  constructor() {
+    this.agents = new Map();
+    this.arbitrators = new Map();
+    this.disputes = new Map();
+  }
+
+  /**
+   * 注册 Agent
+   * 
+   * @param {string} agentId - Agent ID
+   * @param {Object} agent - Agent 对象
+   * @returns {ArbitrationMechanism} - 返回自身以支持链式调用
+   */
+  registerAgent(agentId, agent) {
+    this.agents.set(agentId, agent);
+    return this;
+  }
+
+  /**
+   * 注册仲裁者
+   * 
+   * @param {string} arbitratorId - 仲裁者 ID
+   * @param {Object} arbitrator - 仲裁者对象
+   * @returns {ArbitrationMechanism} - 返回自身以支持链式调用
+   */
+  registerArbitrator(arbitratorId, arbitrator) {
+    this.arbitrators.set(arbitratorId, arbitrator);
+    return this;
+  }
+
+  /**
+   * 提交争议
+   * 
+   * @param {string} disputeId - 争议 ID
+   * @param {string} plaintiffId - 原告 ID
+   * @param {string} defendantId - 被告 ID
+   * @param {Object} dispute - 争议内容
+   * @returns {Promise<Object>} - 争议结果
+   */
+  async submitDispute(disputeId, plaintiffId, defendantId, dispute) {
+    const disputeObj = {
+      id: disputeId,
+      plaintiff: plaintiffId,
+      defendant: defendantId,
+      dispute: dispute,
+      status: 'pending',
+      evidence: new Map(),
+      arbitrator: null,
+      ruling: null,
+      submittedAt: Date.now()
+    };
+
+    this.disputes.set(disputeId, disputeObj);
+
+    // 选择仲裁者
+    const arbitratorId = this.selectArbitrator();
+    const arbitrator = this.arbitrators.get(arbitratorId);
+
+    if (!arbitrator) {
+      throw new Error('No available arbitrator');
+    }
+
+    disputeObj.arbitrator = arbitratorId;
+    disputeObj.status = 'arbitrating';
+
+    // 收集证据
+    await this.collectEvidence(disputeId);
+
+    // 仲裁
+    const ruling = await arbitrator.arbitrate(disputeObj);
+    disputeObj.ruling = ruling;
+    disputeObj.status = 'resolved';
+    disputeObj.resolvedAt = Date.now();
+
+    return {
+      disputeId: disputeId,
+      status: disputeObj.status,
+      ruling: ruling
+    };
+  }
+
+  /**
+   * 选择仲裁者
+   * 
+   * @returns {string} - 仲裁者 ID
+   */
+  selectArbitrator() {
+    const arbitratorIds = Array.from(this.arbitrators.keys());
+    
+    if (arbitratorIds.length === 0) {
+      throw new Error('No available arbitrators');
+    }
+
+    // 计算每个仲裁者的适配分数
+    const scoredArbitrators = arbitratorIds.map(arbitratorId => {
+      const arbitrator = this.arbitrators.get(arbitratorId);
+      let score = 0;
+
+      // 1. 专业性匹配（基于仲裁者的专长领域）
+      if (arbitrator.expertise) {
+        score += arbitrator.expertise.length * 15;
+      } else {
+        score += 15; // 默认中等专业性
+      }
+
+      // 2. 负载均衡（基于仲裁者的当前负载）
+      if (arbitrator.currentLoad !== undefined) {
+        score += (1 - arbitrator.currentLoad) * 20;
+      } else {
+        score += 10; // 默认中等负载
+      }
+
+      // 3. 历史公正性（基于仲裁者的历史裁决公正度）
+      if (arbitrator.fairnessScore !== undefined) {
+        score += arbitrator.fairnessScore * 30;
+      } else {
+        score += 15; // 默认中等公正性
+      }
+
+      // 4. 经验值（基于仲裁者处理过的争议数量）
+      if (arbitrator.experience !== undefined) {
+        score += Math.min(arbitrator.experience * 2, 20);
+      } else {
+        score += 10; // 默认中等经验
+      }
+
+      // 5. 可用性（基于仲裁者的状态）
+      if (arbitrator.status === 'available') {
+        score += 15;
+      } else if (arbitrator.status === 'busy') {
+        score += 5;
+      } else {
+        score += 0;
+      }
+
+      return {
+        arbitratorId: arbitratorId,
+        score: score
+      };
+    });
+
+    // 按分数排序，选择分数最高的仲裁者
+    scoredArbitrators.sort((a, b) => b.score - a.score);
+
+    console.log('仲裁者评分:', 
+      scoredArbitrators.map(s => ({ id: s.arbitratorId, score: s.score })));
+
+    return scoredArbitrators[0].arbitratorId;
+  }
+
+  /**
+   * 收集证据
+   * 
+   * @param {string} disputeId - 争议 ID
+   * @returns {Promise<void>}
+   */
+  async collectEvidence(disputeId) {
+    const dispute = this.disputes.get(disputeId);
+    
+    if (!dispute) {
+      throw new Error(`Dispute not found: ${disputeId}`);
+    }
+
+    // 从原告收集证据
+    const plaintiff = this.agents.get(dispute.plaintiff);
+    if (plaintiff && plaintiff.provideEvidence) {
+      const evidence = await plaintiff.provideEvidence(dispute.dispute);
+      dispute.evidence.set(dispute.plaintiff, evidence);
+    }
+
+    // 从被告收集证据
+    const defendant = this.agents.get(dispute.defendant);
+    if (defendant && defendant.provideEvidence) {
+      const evidence = await defendant.provideEvidence(dispute.dispute);
+      dispute.evidence.set(dispute.defendant, evidence);
+    }
+  }
+
+  /**
+   * 执行裁决
+   * 
+   * @param {string} disputeId - 争议 ID
+   * @returns {Promise<void>}
+   */
+  async executeRuling(disputeId) {
+    const dispute = this.disputes.get(disputeId);
+    
+    if (!dispute || !dispute.ruling) {
+      throw new Error(`Dispute not found or not resolved: ${disputeId}`);
+    }
+
+    const ruling = dispute.ruling;
+
+    // 通知原告
+    const plaintiff = this.agents.get(dispute.plaintiff);
+    if (plaintiff && plaintiff.acceptRuling) {
+      await plaintiff.acceptRuling(ruling);
+    }
+
+    // 通知被告
+    const defendant = this.agents.get(dispute.defendant);
+    if (defendant && defendant.acceptRuling) {
+      await defendant.acceptRuling(ruling);
+    }
+  }
+
+  /**
+   * 上诉
+   * 
+   * @param {string} disputeId - 争议 ID
+   * @param {string} appellantId - 上诉方 ID
+   * @param {Object} appeal - 上诉内容
+   * @returns {Promise<Object>} - 上诉结果
+   */
+  async appeal(disputeId, appellantId, appeal) {
+    const dispute = this.disputes.get(disputeId);
+    
+    if (!dispute) {
+      throw new Error(`Dispute not found: ${disputeId}`);
+    }
+
+    if (dispute.status !== 'resolved') {
+      throw new Error(`Dispute not resolved yet: ${disputeId}`);
+    }
+
+    // 创建新的争议
+    const newDisputeId = `${disputeId}_appeal_${Date.now()}`;
+    
+    return await this.submitDispute(
+      newDisputeId,
+      appellantId,
+      dispute.arbitrator,
+      {
+        originalDispute: disputeId,
+        appealReason: appeal.reason,
+        appealEvidence: appeal.evidence
+      }
+    );
+  }
+
+  /**
+   * 获取争议状态
+   * 
+   * @param {string} disputeId - 争议 ID
+   * @returns {Object} - 争议状态
+   */
+  getDisputeStatus(disputeId) {
+    const dispute = this.disputes.get(disputeId);
+    
+    if (!dispute) {
+      throw new Error(`Dispute not found: ${disputeId}`);
+    }
+
+    return {
+      id: dispute.id,
+      plaintiff: dispute.plaintiff,
+      defendant: dispute.defendant,
+      status: dispute.status,
+      arbitrator: dispute.arbitrator,
+      ruling: dispute.ruling,
+      submittedAt: dispute.submittedAt,
+      resolvedAt: dispute.resolvedAt
+    };
+  }
+
+  /**
+   * 获取所有争议
+   * 
+   * @returns {Array<Object>} - 争议列表
+   */
+  getAllDisputes() {
+    return Array.from(this.disputes.values()).map(dispute => ({
+      id: dispute.id,
+      plaintiff: dispute.plaintiff,
+      defendant: dispute.defendant,
+      status: dispute.status,
+      arbitrator: dispute.arbitrator,
+      submittedAt: dispute.submittedAt,
+      resolvedAt: dispute.resolvedAt
+    }));
+  }
+}
+
+// 使用示例
+async function example() {
+  const arbitration = new ArbitrationMechanism();
+
+  // 注册 Agent
+  arbitration
+    .registerAgent('agent1', {
+      provideEvidence: async (dispute) => {
+        console.log('Agent1 提供证据:', dispute);
+        return {
+          type: 'document',
+          content: 'Evidence from agent1'
+        };
+      },
+      acceptRuling: async (ruling) => {
+        console.log('Agent1 接受裁决:', ruling);
+      }
+    })
+    .registerAgent('agent2', {
+      provideEvidence: async (dispute) => {
+        console.log('Agent2 提供证据:', dispute);
+        return {
+          type: 'document',
+          content: 'Evidence from agent2'
+        };
+      },
+      acceptRuling: async (ruling) => {
+        console.log('Agent2 接受裁决:', ruling);
+      }
+    });
+
+  // 注册仲裁者
+  arbitration.registerArbitrator('arbitrator1', {
+    expertise: ['resource', 'contract'],
+    fairnessScore: 0.85,
+    experience: 50,
+    currentLoad: 0.3,
+    status: 'available',
+    arbitrate: async (dispute) => {
+      console.log('仲裁者进行仲裁:', dispute);
+      
+      // 收集证据
+      const evidence1 = dispute.evidence.get(dispute.plaintiff);
+      const evidence2 = dispute.evidence.get(dispute.defendant);
+
+      // 证据分析逻辑
+      let plaintiffScore = 0;
+      let defendantScore = 0;
+
+      // 1. 证据完整性评估
+      if (evidence1 && evidence1.content) {
+        plaintiffScore += 20;
+      }
+      if (evidence2 && evidence2.content) {
+        defendantScore += 20;
+      }
+
+      // 2. 证据相关性评估（基于争议类型）
+      if (dispute.dispute.type === 'resource' && evidence1) {
+        plaintiffScore += 15;
+      }
+      if (dispute.dispute.type === 'resource' && evidence2) {
+        defendantScore += 15;
+      }
+
+      // 3. 证据时效性评估
+      if (evidence1 && evidence1.timestamp) {
+        const evidenceAge = Date.now() - evidence1.timestamp;
+        if (evidenceAge < 86400000) { // 24小时内
+          plaintiffScore += 15;
+        } else if (evidenceAge < 604800000) { // 7天内
+          plaintiffScore += 10;
+        }
+      }
+      if (evidence2 && evidence2.timestamp) {
+        const evidenceAge = Date.now() - evidence2.timestamp;
+        if (evidenceAge < 86400000) {
+          defendantScore += 15;
+        } else if (evidenceAge < 604800000) {
+          defendantScore += 10;
+        }
+      }
+
+      // 4. 证据可信度评估（基于证据类型）
+      if (evidence1) {
+        switch (evidence1.type) {
+          case 'document':
+            plaintiffScore += 20;
+            break;
+          case 'witness':
+            plaintiffScore += 15;
+            break;
+          case 'digital':
+            plaintiffScore += 10;
+            break;
+          default:
+            plaintiffScore += 5;
+        }
+      }
+      if (evidence2) {
+        switch (evidence2.type) {
+          case 'document':
+            defendantScore += 20;
+            break;
+          case 'witness':
+            defendantScore += 15;
+            break;
+          case 'digital':
+            defendantScore += 10;
+            break;
+          default:
+            defendantScore += 5;
+        }
+      }
+
+      // 5. 添加随机因素模拟真实仲裁的不确定性
+      plaintiffScore += Math.random() * 10;
+      defendantScore += Math.random() * 10;
+
+      // 计算最终得分
+      const totalScore = plaintiffScore + defendantScore;
+      const plaintiffRatio = totalScore > 0 ? plaintiffScore / totalScore : 0.5;
+
+      // 做出裁决
+      let decision;
+      let reasoning;
+      let compensation = 0;
+
+      if (plaintiffRatio > 0.55) {
+        decision = 'plaintiff';
+        reasoning = `Based on evidence analysis, plaintiff's evidence score (${plaintiffScore.toFixed(2)}) exceeds defendant's (${defendantScore.toFixed(2)})`;
+        compensation = Math.round(1000 * plaintiffRatio);
+      } else if (defendantScore / totalScore > 0.55) {
+        decision = 'defendant';
+        reasoning = `Based on evidence analysis, defendant's evidence score (${defendantScore.toFixed(2)}) exceeds plaintiff's (${plaintiffScore.toFixed(2)})`;
+        compensation = 0;
+      } else {
+        // 证据相当，倾向于被告（无罪推定）
+        decision = 'defendant';
+        reasoning = `Evidence scores are closely matched (plaintiff: ${plaintiffScore.toFixed(2)}, defendant: ${defendantScore.toFixed(2)}), decision favors defendant`;
+        compensation = 0;
+      }
+
+      return {
+        decision: decision,
+        reasoning: reasoning,
+        compensation: compensation,
+        plaintiffScore: plaintiffScore,
+        defendantScore: defendantScore,
+        confidence: Math.abs(plaintiffRatio - 0.5) * 2
+      };
+    }
+  });
+
+  // 提交争议
+  const result = await arbitration.submitDispute('dispute1', 'agent1', 'agent2', {
+    type: 'resource',
+    description: 'Resource allocation conflict'
+  });
+
+  console.log('争议结果:', result);
+
+  // 执行裁决
+  await arbitration.executeRuling('dispute1');
+
+  // 获取争议状态
+  const status = arbitration.getDisputeStatus('dispute1');
+  console.log('争议状态:', status);
+}
+```
+
+#### 应用场景
+
+1. **争议解决**
+   - 资源冲突
+   - 利益纠纷
+   - 责任认定
+
+2. **合同执行**
+   - 合同纠纷
+   - 违约处理
+   - 赔偿计算
+
+3. **规则执行**
+   - 规则违反
+   - 惩罚执行
+   - 纠正措施
+
+## 📊 技术对比
+
+| 特性 | 顺序协作 | 并行协作 | 层级协作 | 对抗协作 |
+|------|----------|----------|----------|----------|
+| **执行方式** | 串行 | 并行 | 层级 | 对抗 |
+| **适用场景** | 流水线 | 批量处理 | 复杂任务 | 性能优化 |
+| **复杂度** | 低 | 中等 | 高 | 高 |
+| **效率** | 低 | 高 | 中等 | 高 |
+| **容错性** | 低 | 高 | 中等 | 中等 |
+| **可扩展性** | 低 | 高 | 中等 | 中等 |
+
+| 特性 | 消息传递 | 共享内存 | 事件驱动 |
+|------|----------|----------|----------|
+| **通信方式** | 异步消息 | 共享数据 | 事件发布 |
+| **耦合度** | 松耦合 | 紧耦合 | 松耦合 |
+| **实时性** | 中等 | 高 | 高 |
+| **可扩展性** | 高 | 中等 | 高 |
+| **适用场景** | 分布式系统 | 高性能计算 | 事件系统 |
+
+| 特性 | 协商机制 | 投票机制 | 仲裁机制 |
+|------|----------|----------|----------|
+| **决策方式** | 协商 | 投票 | 仲裁 |
+| **公平性** | 中等 | 高 | 高 |
+| **效率** | 低 | 中等 | 高 |
+| **适用场景** | 资源分配 | 集体决策 | 争议解决 |
+| **权威性** | 低 | 中等 | 高 |
+
+## 🎓 学习路径
+
+### 初级阶段
+1. 理解多 Agent 协作基本概念
+2. 掌握顺序协作和并行协作
+3. 实现简单的消息传递
+
+### 中级阶段
+1. 学习层级协作和对抗协作
+2. 掌握共享内存和事件驱动
+3. 实现协商机制
+
+### 高级阶段
+1. 深入理解投票和仲裁机制
+2. 实现复杂的多 Agent 系统
+3. 探索协作优化方法
+
+## 🔗 相关资源
+
+- [Multi-Agent Systems](https://en.wikipedia.org/wiki/Multi-agent_system)
+- [Actor Model](https://en.wikipedia.org/wiki/Actor_model)
+- [Message Passing Interface](https://www.mpi-forum.org/)
+- [Event-Driven Architecture](https://en.wikipedia.org/wiki/Event-driven_architecture)
+- [Consensus Algorithms](https://en.wikipedia.org/wiki/Consensus_(computer_science))
