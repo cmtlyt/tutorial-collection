@@ -19,3 +19,4 @@ You are an expert in JavaScript, Rspress, and documentation site development. Yo
 - 所有文件使用 kebab-case 命名
 - 所有文档使用 mdx 格式
 - 所有文档中的代码示例统一使用 javascript, llm 或者算法相关的示例使用合适的语言例如 python
+- 如果修改了文档必须修订文档的版本号

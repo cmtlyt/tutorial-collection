@@ -1,0 +1,1023 @@
+# RAG 高级技术
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-15
+
+## 📖 概述
+
+RAG 高级技术是在基础 RAG 系统之上的优化和增强，通过检索优化、知识图谱增强和评估机制，显著提升 RAG 系统的准确性、可靠性和性能。
+
+## 🎯 检索优化
+
+检索优化是提升 RAG 系统检索质量的关键技术，通过多种策略的组合使用，可以显著提高相关文档的召回率和准确率。
+
+### 混合检索（稠密+稀疏）
+
+混合检索结合了稠密检索和稀疏检索的优势，能够同时捕获语义相似性和关键词匹配。
+
+#### 原理
+
+- **稠密检索**：使用向量嵌入进行语义相似度搜索
+- **稀疏检索**：使用关键词匹配（如 BM25）
+- **结果融合**：通过加权或重排序合并两种检索结果
+
+#### JavaScript 实现示例
+
+```javascript
+import { OpenAIEmbeddings } from '@langchain/openai';
+import { BM25 } from 'bm25';
+
+class HybridRetriever {
+  constructor(vectorStore, documents) {
+    this.embeddings = new OpenAIEmbeddings();
+    this.vectorStore = vectorStore;
+    this.documents = documents;
+    
+    // 初始化 BM25
+    const tokenizedDocs = documents.map(doc => 
+      doc.content.toLowerCase().split(/\s+/)
+    );
+    this.bm25 = new BM25(tokenizedDocs);
+  }
+  
+  async hybridSearch(query, topK = 5, denseWeight = 0.7) {
+    // 稠密检索
+    const queryEmbedding = await this.embeddings.embedQuery(query);
+    const denseResults = await this.vectorStore.similaritySearchVectorWithScore(
+      queryEmbedding,
+      topK * 2
+    );
+    
+    // 稀疏检索
+    const queryTokens = query.toLowerCase().split(/\s+/);
+    const sparseScores = this.bm25.score(queryTokens);
+    
+    // 结果融合
+    const fusedResults = this.fuseResults(
+      denseResults,
+      sparseScores,
+      denseWeight,
+      topK
+    );
+    
+    return fusedResults;
+  }
+  
+  fuseResults(denseResults, sparseScores, denseWeight, topK) {
+    const scoreMap = new Map();
+    
+    // 处理稠密检索结果
+    denseResults.forEach(([doc, score], index) => {
+      const docId = doc.metadata.id;
+      const normalizedScore = 1 - (index / denseResults.length);
+      scoreMap.set(docId, {
+        doc,
+        denseScore: normalizedScore,
+        sparseScore: 0,
+      });
+    });
+    
+    // 处理稀疏检索结果
+    sparseScores.forEach((score, index) => {
+      const doc = this.documents[index];
+      const docId = doc.metadata.id;
+      const normalizedScore = score / Math.max(...sparseScores);
+      
+      if (scoreMap.has(docId)) {
+        scoreMap.get(docId).sparseScore = normalizedScore;
+      } else {
+        scoreMap.set(docId, {
+          doc,
+          denseScore: 0,
+          sparseScore: normalizedScore,
+        });
+      }
+    });
+    
+    // 计算混合分数并排序
+    const results = Array.from(scoreMap.values()).map(item => ({
+      doc: item.doc,
+      score: item.denseScore * denseWeight + item.sparseScore * (1 - denseWeight),
+    }));
+    
+    return results
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+}
+```
+
+#### 优势
+
+- **提高召回率**：结合语义和关键词匹配
+- **增强鲁棒性**：对查询变化更不敏感
+- **改善精确度**：通过结果融合提升相关性
+
+### 重排序（Reranking）
+
+重排序是对初始检索结果进行重新排序的技术，能够显著提升检索质量。
+
+#### 原理
+
+1. **初始检索**：使用快速检索器获取候选文档
+2. **重排序**：使用更精确的重排序模型对候选文档重新评分
+3. **结果选择**：选择重排序后得分最高的文档
+
+#### JavaScript 实现示例
+
+```javascript
+import { OpenAI } from 'openai';
+
+class Reranker {
+  constructor(model = 'gpt-4') {
+    this.openai = new OpenAI();
+    this.model = model;
+  }
+  
+  async rerank(query, documents, topK = 5) {
+    const scores = await Promise.all(
+      documents.map(doc => this.scoreDocument(query, doc))
+    );
+    
+    const rankedDocs = documents
+      .map((doc, index) => ({ doc, score: scores[index] }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK)
+      .map(item => item.doc);
+    
+    return rankedDocs;
+  }
+  
+  async scoreDocument(query, document) {
+    const response = await this.openai.chat.completions.create({
+      model: this.model,
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个文档相关性评估专家。请评估查询和文档之间的相关性，返回 0-1 之间的分数。'
+        },
+        {
+          role: 'user',
+          content: `查询：${query}\n\n文档：${document.content}\n\n相关性分数（0-1）：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 10,
+    });
+    
+    const scoreText = response.choices[0].message.content.trim();
+    return parseFloat(scoreText);
+  }
+}
+
+// 使用示例
+async function rerankingExample() {
+  const retriever = new HybridRetriever(vectorStore, documents);
+  const reranker = new Reranker();
+  
+  const query = "什么是机器学习？";
+  
+  // 初始检索
+  const initialResults = await retriever.hybridSearch(query, 10);
+  const candidateDocs = initialResults.map(r => r.doc);
+  
+  // 重排序
+  const finalResults = await reranker.rerank(query, candidateDocs, 5);
+  
+  console.log('重排序结果：', finalResults);
+}
+```
+
+#### 推荐工具
+
+- **Cohere Rerank**：专业的重排序 API
+- **BGE Reranker**：开源的重排序模型
+- **Cross-Encoder**：基于 BERT 的重排序模型
+
+### 查询扩展
+
+查询扩展通过扩展原始查询来改善检索效果，特别是对于模糊或不完整的查询。
+
+#### 原理
+
+1. **查询分析**：理解用户查询的意图
+2. **查询扩展**：生成相关的查询变体或补充信息
+3. **多路检索**：使用扩展后的查询进行多次检索
+4. **结果合并**：合并和去重检索结果
+
+#### JavaScript 实现示例
+
+```javascript
+import { OpenAI } from 'openai';
+
+class QueryExpander {
+  constructor() {
+    this.openai = new OpenAI();
+  }
+  
+  async expandQuery(query, numExpansions = 3) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: `你是一个查询扩展专家。请为给定的查询生成 ${numExpansions} 个相关的查询变体，每个变体应该从不同角度或使用不同的词汇来表达相同的意思。`
+        },
+        {
+          role: 'user',
+          content: `原始查询：${query}\n\n请生成 ${numExpansions} 个查询变体，每行一个：`
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 200,
+    });
+    
+    const expansionsText = response.choices[0].message.content.trim();
+    const expansions = expansionsText.split('\n').map(s => s.trim());
+    
+    return [query, ...expansions];
+  }
+  
+  async expandedSearch(query, retriever, topK = 5) {
+    // 扩展查询
+    const expandedQueries = await this.expandQuery(query);
+    
+    // 对每个查询进行检索
+    const allResults = [];
+    const seenDocs = new Set();
+    
+    for (const expandedQuery of expandedQueries) {
+      const results = await retriever.hybridSearch(expandedQuery, topK * 2);
+      
+      for (const result of results) {
+        const docId = result.doc.metadata.id;
+        if (!seenDocs.has(docId)) {
+          seenDocs.add(docId);
+          allResults.push(result);
+        }
+      }
+    }
+    
+    // 重排序并返回 topK 结果
+    const reranker = new Reranker();
+    const finalResults = await reranker.rerank(query, allResults.map(r => r.doc), topK);
+    
+    return finalResults;
+  }
+}
+```
+
+### 多路召回
+
+多路召回使用不同的检索策略从多个来源获取文档，提高召回的全面性。
+
+#### 原理
+
+1. **多路检索**：使用不同的检索策略并行检索
+2. **结果合并**：合并所有检索结果
+3. **去重和重排序**：去除重复文档并重新排序
+
+#### JavaScript 实现示例
+
+```javascript
+class MultiPathRetriever {
+  constructor(retrievers) {
+    this.retrievers = retrievers;
+  }
+  
+  async multiPathSearch(query, topK = 5) {
+    // 并行执行所有检索器
+    const allResults = await Promise.all(
+      this.retrievers.map(retriever => retriever.search(query, topK * 2))
+    );
+    
+    // 合并结果
+    const mergedResults = this.mergeResults(allResults);
+    
+    // 去重
+    const uniqueResults = this.deduplicateResults(mergedResults);
+    
+    // 重排序
+    const reranker = new Reranker();
+    const finalResults = await reranker.rerank(query, uniqueResults.map(r => r.doc), topK);
+    
+    return finalResults;
+  }
+  
+  mergeResults(allResults) {
+    const merged = [];
+    for (const results of allResults) {
+      merged.push(...results);
+    }
+    return merged;
+  }
+  
+  deduplicateResults(results) {
+    const seen = new Set();
+    const unique = [];
+    
+    for (const result of results) {
+      const docId = result.doc.metadata.id;
+      if (!seen.has(docId)) {
+        seen.add(docId);
+        unique.push(result);
+      }
+    }
+    
+    return unique;
+  }
+}
+```
+
+## 🕸️ 知识图谱增强
+
+知识图谱增强将结构化知识与 RAG 系统结合，提供更准确和可解释的检索结果。
+
+### GraphRAG
+
+GraphRAG 是将知识图谱与 RAG 系统结合的技术，通过图结构来增强检索和生成。
+
+#### 原理
+
+1. **知识图谱构建**：从文档中提取实体和关系
+2. **图检索**：在知识图谱中查找相关实体和关系
+3. **上下文增强**：将图结构信息融入检索上下文
+4. **生成增强**：使用增强的上下文生成更准确的回答
+
+#### JavaScript 实现示例
+
+```javascript
+import { OpenAI } from 'openai';
+
+class GraphRAG {
+  constructor() {
+    this.openai = new OpenAI();
+    this.graph = new Map(); // 简化的图结构
+  }
+  
+  async buildGraph(documents) {
+    for (const doc of documents) {
+      const entities = await this.extractEntities(doc.content);
+      
+      entities.forEach(entity => {
+        if (!this.graph.has(entity)) {
+          this.graph.set(entity, new Set());
+        }
+      });
+      
+      // 提取关系
+      const relations = await this.extractRelations(doc.content, entities);
+      relations.forEach(([source, target]) => {
+        this.graph.get(source).add(target);
+      });
+    }
+  }
+  
+  async extractEntities(text) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个实体识别专家。请从文本中提取重要的实体，每行一个实体。'
+        },
+        {
+          role: 'user',
+          content: `文本：${text}\n\n实体列表：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 200,
+    });
+    
+    const entitiesText = response.choices[0].message.content.trim();
+    return entitiesText.split('\n').map(s => s.trim());
+  }
+  
+  async extractRelations(text, entities) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个关系抽取专家。请从文本中提取实体之间的关系，格式为"实体1 -> 实体2"，每行一个关系。'
+        },
+        {
+          role: 'user',
+          content: `文本：${text}\n实体列表：${entities.join(', ')}\n\n关系列表：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 200,
+    });
+    
+    const relationsText = response.choices[0].message.content.trim();
+    return relationsText.split('\n').map(s => {
+      const [source, target] = s.split('->').map(item => item.trim());
+      return [source, target];
+    });
+  }
+  
+  async graphSearch(query) {
+    const queryEntities = await this.extractEntities(query);
+    
+    const relevantEntities = new Set();
+    for (const entity of queryEntities) {
+      if (this.graph.has(entity)) {
+        relevantEntities.add(entity);
+        this.graph.get(entity).forEach(neighbor => {
+          relevantEntities.add(neighbor);
+        });
+      }
+    }
+    
+    return Array.from(relevantEntities);
+  }
+  
+  async graphEnhancedSearch(query, retriever, topK = 5) {
+    // 普通检索
+    const normalResults = await retriever.search(query, topK);
+    
+    // 图检索
+    const relevantEntities = await this.graphSearch(query);
+    
+    // 构建增强的上下文
+    const enhancedContext = this.buildEnhancedContext(normalResults, relevantEntities);
+    
+    return {
+      results: normalResults,
+      entities: relevantEntities,
+      context: enhancedContext,
+    };
+  }
+  
+  buildEnhancedContext(results, entities) {
+    const contextParts = results.map(r => r.content);
+    contextParts.push(`相关实体：${entities.join(', ')}`);
+    return contextParts.join('\n\n');
+  }
+}
+```
+
+### 知识图谱构建
+
+知识图谱构建是从非结构化文本中提取结构化知识的过程。
+
+#### 主要步骤
+
+1. **实体识别**：识别文本中的实体
+2. **关系抽取**：识别实体之间的关系
+3. **属性抽取**：提取实体的属性
+4. **图构建**：构建知识图谱结构
+
+#### Python 示例（使用 spaCy）
+
+```python
+import spacy
+from collections import defaultdict
+
+class KnowledgeGraphBuilder:
+    def __init__(self):
+        self.nlp = spacy.load("en_core_web_sm")
+        self.graph = defaultdict(set)
+        self.entities = defaultdict(dict)
+    
+    def build_graph(self, texts):
+        for text in texts:
+            doc = self.nlp(text)
+            
+            # 提取实体
+            entities = [ent.text for ent in doc.ents]
+            
+            # 提取关系（简化版）
+            for i, ent1 in enumerate(doc.ents):
+                for ent2 in doc.ents[i+1:]:
+                    self.graph[ent1.text].add(ent2.text)
+                    self.entities[ent1.text]['type'] = ent1.label_
+                    self.entities[ent2.text]['type'] = ent2.label_
+        
+        return self.graph
+    
+    def get_neighbors(self, entity):
+        return list(self.graph.get(entity, set()))
+    
+    def get_entity_type(self, entity):
+        return self.entities.get(entity, {}).get('type', 'UNKNOWN')
+```
+
+### 实体关系抽取
+
+实体关系抽取是识别文本中实体之间关系的技术。
+
+#### JavaScript 实现示例
+
+```javascript
+class RelationExtractor {
+  constructor() {
+    this.openai = new OpenAI();
+  }
+  
+  async extractRelations(text, entities) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个关系抽取专家。请从文本中提取实体之间的关系，返回 JSON 格式。'
+        },
+        {
+          role: 'user',
+          content: `文本：${text}\n实体列表：${entities.join(', ')}\n\n关系列表（JSON 格式）：`
+        }
+      ],
+      temperature: 0,
+      response_format: { type: "json_object" },
+    });
+    
+    const relations = JSON.parse(response.choices[0].message.content);
+    return relations.relations || [];
+  }
+}
+```
+
+## 📊 RAG 评估
+
+RAG 评估是衡量 RAG 系统性能的重要环节，通过科学的评估指标和方法来优化系统。
+
+### RAGAS
+
+RAGAS（Retrieval Augmented Generation Assessment）是一个专门用于评估 RAG 系统的框架。
+
+#### 主要指标
+
+- **Faithfulness（忠实度）**：生成内容是否忠实于检索到的上下文
+- **Answer Relevance（答案相关性）**：生成答案是否与查询相关
+- **Context Precision（上下文精确度）**：检索到的上下文是否相关
+- **Context Recall（上下文召回率）**：检索到的上下文是否包含所有必要信息
+
+#### JavaScript 实现示例
+
+```javascript
+class RAGASEvaluator {
+  constructor() {
+    this.openai = new OpenAI();
+  }
+  
+  async evaluate(query, retrievedContexts, generatedAnswer, groundTruth = null) {
+    const metrics = {};
+    
+    // 评估忠实度
+    metrics.faithfulness = await this.evaluateFaithfulness(
+      retrievedContexts,
+      generatedAnswer
+    );
+    
+    // 评估答案相关性
+    metrics.answerRelevance = await this.evaluateAnswerRelevance(
+      query,
+      generatedAnswer
+    );
+    
+    // 评估上下文精确度
+    metrics.contextPrecision = await this.evaluateContextPrecision(
+      query,
+      retrievedContexts
+    );
+    
+    // 如果有真实答案，评估上下文召回率
+    if (groundTruth) {
+      metrics.contextRecall = await this.evaluateContextRecall(
+        groundTruth,
+        retrievedContexts
+      );
+    }
+    
+    return metrics;
+  }
+  
+  async evaluateFaithfulness(contexts, answer) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个忠实度评估专家。请评估答案是否忠实于给定的上下文，返回 0-1 之间的分数。'
+        },
+        {
+          role: 'user',
+          content: `上下文：${contexts.join('\n')}\n\n答案：${answer}\n\n忠实度分数（0-1）：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 10,
+    });
+    
+    return parseFloat(response.choices[0].message.content.trim());
+  }
+  
+  async evaluateAnswerRelevance(query, answer) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个答案相关性评估专家。请评估答案是否与查询相关，返回 0-1 之间的分数。'
+        },
+        {
+          role: 'user',
+          content: `查询：${query}\n\n答案：${answer}\n\n相关性分数（0-1）：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 10,
+    });
+    
+    return parseFloat(response.choices[0].message.content.trim());
+  }
+  
+  async evaluateContextPrecision(query, contexts) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个上下文精确度评估专家。请评估检索到的上下文是否与查询相关，返回 0-1 之间的分数。'
+        },
+        {
+          role: 'user',
+          content: `查询：${query}\n\n上下文：${contexts.join('\n')}\n\n精确度分数（0-1）：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 10,
+    });
+    
+    return parseFloat(response.choices[0].message.content.trim());
+  }
+  
+  async evaluateContextRecall(groundTruth, contexts) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个上下文召回率评估专家。请评估检索到的上下文是否包含真实答案中的所有必要信息，返回 0-1 之间的分数。'
+        },
+        {
+          role: 'user',
+          content: `真实答案：${groundTruth}\n\n上下文：${contexts.join('\n')}\n\n召回率分数（0-1）：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 10,
+    });
+    
+    return parseFloat(response.choices[0].message.content.trim());
+  }
+}
+```
+
+### TruLens
+
+TruLens 是一个用于评估 LLM 应用的框架，支持 RAG 系统的评估。
+
+#### 主要功能
+
+- **上下文相关性评估**
+- **答案质量评估**
+- **幻觉检测**
+- **偏见评估**
+
+#### JavaScript 实现示例
+
+```javascript
+class TruLensEvaluator {
+  constructor() {
+    this.openai = new OpenAI();
+  }
+  
+  async evaluateRAG(query, retrievedContexts, generatedAnswer) {
+    const evaluations = {};
+    
+    // 评估上下文相关性
+    evaluations.contextRelevance = await this.evaluateContextRelevance(
+      query,
+      retrievedContexts
+    );
+    
+    // 评估答案质量
+    evaluations.answerQuality = await this.evaluateAnswerQuality(
+      query,
+      generatedAnswer
+    );
+    
+    // 检测幻觉
+    evaluations.hallucination = await this.detectHallucination(
+      retrievedContexts,
+      generatedAnswer
+    );
+    
+    return evaluations;
+  }
+  
+  async evaluateContextRelevance(query, contexts) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个上下文相关性评估专家。请评估检索到的上下文是否与查询相关，返回 0-1 之间的分数。'
+        },
+        {
+          role: 'user',
+          content: `查询：${query}\n\n上下文：${contexts.join('\n')}\n\n相关性分数（0-1）：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 10,
+    });
+    
+    return parseFloat(response.choices[0].message.content.trim());
+  }
+  
+  async evaluateAnswerQuality(query, answer) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个答案质量评估专家。请评估答案的质量，考虑准确性、完整性和可理解性，返回 0-1 之间的分数。'
+        },
+        {
+          role: 'user',
+          content: `查询：${query}\n\n答案：${answer}\n\n质量分数（0-1）：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 10,
+    });
+    
+    return parseFloat(response.choices[0].message.content.trim());
+  }
+  
+  async detectHallucination(contexts, answer) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个幻觉检测专家。请评估答案是否包含上下文中不存在的信息，返回 0-1 之间的分数（0 表示无幻觉，1 表示严重幻觉）。'
+        },
+        {
+          role: 'user',
+          content: `上下文：${contexts.join('\n')}\n\n答案：${answer}\n\n幻觉分数（0-1）：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 10,
+    });
+    
+    return parseFloat(response.choices[0].message.content.trim());
+  }
+}
+```
+
+### 评估指标设计
+
+设计有效的评估指标是 RAG 系统优化的重要环节。
+
+#### 关键指标
+
+| 指标类别 | 指标名称 | 计算方法 | 目标值 |
+|---------|---------|---------|--------|
+| 检索质量 | Precision@K | 相关文档数 / 检索文档数 | > 0.8 |
+| 检索质量 | Recall@K | 检索到的相关文档数 / 总相关文档数 | > 0.7 |
+| 检索质量 | MRR | 平均倒数排名 | > 0.7 |
+| 生成质量 | Faithfulness | 答案忠实于上下文程度 | > 0.8 |
+| 生成质量 | Relevance | 答案与查询相关性 | > 0.8 |
+| 生成质量 | Coherence | 答案连贯性 | > 0.7 |
+
+#### JavaScript 实现示例
+
+```javascript
+class MetricCalculator {
+  calculatePrecisionAtK(retrievedDocs, relevantDocs, k) {
+    const topKDocs = retrievedDocs.slice(0, k);
+    const relevantInTopK = topKDocs.filter(doc => 
+      relevantDocs.includes(doc.metadata.id)
+    ).length;
+    
+    return relevantInTopK / k;
+  }
+  
+  calculateRecallAtK(retrievedDocs, relevantDocs, k) {
+    const topKDocs = retrievedDocs.slice(0, k);
+    const relevantInTopK = topKDocs.filter(doc => 
+      relevantDocs.includes(doc.metadata.id)
+    ).length;
+    
+    return relevantInTopK / relevantDocs.length;
+  }
+  
+  calculateMRR(retrievedDocs, relevantDocs) {
+    let sumReciprocalRank = 0;
+    
+    for (const relevantDoc of relevantDocs) {
+      const rank = retrievedDocs.findIndex(doc => 
+        doc.metadata.id === relevantDoc
+      );
+      
+      if (rank !== -1) {
+        sumReciprocalRank += 1 / (rank + 1);
+      }
+    }
+    
+    return sumReciprocalRank / relevantDocs.length;
+  }
+}
+```
+
+## 💡 实践案例
+
+### 案例 1：构建完整的优化 RAG 系统
+
+```javascript
+class OptimizedRAGSystem {
+  constructor(vectorStore, documents) {
+    this.openai = new OpenAI();
+    this.documents = documents;
+    this.hybridRetriever = new HybridRetriever(vectorStore, documents);
+    this.queryExpander = new QueryExpander();
+    this.reranker = new Reranker();
+    this.graphRAG = new GraphRAG();
+    this.evaluator = new RAGASEvaluator();
+  }
+  
+  async initialize() {
+    // 构建知识图谱
+    await this.graphRAG.buildGraph(this.documents);
+  }
+  
+  async query(query, topK = 5) {
+    // 查询扩展
+    const expandedQuery = await this.queryExpander.expandQuery(query);
+    
+    // 混合检索
+    const initialResults = await this.hybridRetriever.hybridSearch(
+      expandedQuery[0],
+      topK * 3
+    );
+    
+    // 重排序
+    const candidateDocs = initialResults.map(r => r.doc);
+    const rerankedDocs = await this.reranker.rerank(query, candidateDocs, topK);
+    
+    // 图增强
+    const graphEnhanced = await this.graphRAG.graphEnhancedSearch(
+      query,
+      { search: () => Promise.resolve(rerankedDocs) },
+      topK
+    );
+    
+    return {
+      documents: rerankedDocs,
+      entities: graphEnhanced.entities,
+      context: graphEnhanced.context,
+    };
+  }
+  
+  async evaluate(query, groundTruth) {
+    const result = await this.query(query);
+    const generatedAnswer = await this.generateAnswer(query, result.context);
+    
+    const metrics = await this.evaluator.evaluate(
+      query,
+      result.documents.map(d => d.content),
+      generatedAnswer,
+      groundTruth
+    );
+    
+    return metrics;
+  }
+  
+  async generateAnswer(query, context) {
+    const response = await this.openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个有用的助手，请根据给定的上下文回答问题。'
+        },
+        {
+          role: 'user',
+          content: `上下文：${context}\n\n问题：${query}\n\n答案：`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 500,
+    });
+    
+    return response.choices[0].message.content;
+  }
+}
+```
+
+### 案例 2：批量评估 RAG 系统
+
+```javascript
+async function batchEvaluate(ragSystem, testQueries, groundTruths) {
+  const results = [];
+  
+  for (let i = 0; i < testQueries.length; i++) {
+    const query = testQueries[i];
+    const groundTruth = groundTruths[i];
+    
+    try {
+      const metrics = await ragSystem.evaluate(query, groundTruth);
+      results.push({
+        query,
+        success: true,
+        metrics,
+      });
+    } catch (error) {
+      results.push({
+        query,
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+  
+  // 计算平均指标
+  const successfulResults = results.filter(r => r.success);
+  const avgMetrics = {
+    faithfulness: successfulResults.reduce((sum, r) => 
+      sum + r.metrics.faithfulness, 0) / successfulResults.length,
+    answerRelevance: successfulResults.reduce((sum, r) => 
+      sum + r.metrics.answerRelevance, 0) / successfulResults.length,
+    contextPrecision: successfulResults.reduce((sum, r) => 
+      sum + r.metrics.contextPrecision, 0) / successfulResults.length,
+  };
+  
+  return {
+    results,
+    avgMetrics,
+  };
+}
+```
+
+## 🎯 最佳实践
+
+### 1. 检索优化
+
+- **组合多种策略**：混合检索、重排序、查询扩展等
+- **调整参数**：根据具体应用场景优化权重和参数
+- **监控性能**：持续监控检索质量和响应时间
+- **A/B 测试**：对比不同策略的效果
+
+### 2. 知识图谱增强
+
+- **增量更新**：定期更新知识图谱
+- **质量保证**：验证提取的实体和关系
+- **可视化**：使用图可视化工具分析知识图谱
+- **领域适配**：针对特定领域定制实体和关系类型
+
+### 3. RAG 评估
+
+- **建立基准**：建立评估基准和目标值
+- **持续监控**：定期评估系统性能
+- **用户反馈**：收集用户反馈进行改进
+- **自动化测试**：建立自动化评估流程
+
+## 🔗 相关资源
+
+### 官方文档
+- [LangChain RAG 评估](https://js.langchain.com/docs/guides/evaluation)
+- [LlamaIndex RAG 评估](https://docs.llamaindex.ai/en/stable/optimizing/production_evaluation/)
+- [RAGAS 文档](https://docs.ragas.io/)
+
+### 学习资源
+- [RAG 评估指南](https://www.pinecone.io/learn/rag-evaluation/)
+- [知识图谱 RAG](https://www.microsoft.com/en-us/research/blog/graphrag/)
+- [检索优化技术](https://arxiv.org/abs/2309.01431)
+
+### 开源项目
+- [RAGAS GitHub](https://github.com/explodinggradients/ragas)
+- [TruLens GitHub](https://github.com/truera/trulens)
+- [LangChain GitHub](https://github.com/langchain-ai/langchainjs)
+
+## ✅ 学习检查点
+
+- [ ] 理解混合检索的原理和优势
+- [ ] 掌握重排序技术的实现方法
+- [ ] 了解查询扩展和多路召回策略
+- [ ] 理解知识图谱在 RAG 中的作用
+- [ ] 掌握 RAG 评估的主要指标和方法
+- [ ] 能够构建完整的优化 RAG 系统
+
+## 🚀 下一步
+
+继续学习以下内容：
+
+- Agent 基础
+- Agent 开发
