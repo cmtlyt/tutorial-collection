@@ -1,0 +1,1862 @@
+# Agent 核心概念
+
+> **版本**：v1.1  
+> **最后更新**：2026-04-15
+
+## 💻 代码语言说明
+
+本文档主要使用 **Python** 作为代码示例语言，原因如下：
+
+1. **行业标准**：主流的 Agent 框架（LangChain、AutoGen、CrewAI 等）都是 Python 优先
+2. **生态完整**：Python 在 AI/ML 领域拥有最完整的生态系统
+3. **社区支持**：大部分 Agent 开发资源和示例都是 Python
+
+**JavaScript 开发者请注意**：
+- LangChain.js 提供了完整的 JavaScript 实现
+- Vercel AI SDK 是现代化的 TypeScript AI 开发套件
+- 本文档中的 Python 概念可以直接映射到 JavaScript 生态
+- 关键 API 和设计模式在两种语言中是相似的
+
+如果您使用 JavaScript，可以参考以下资源：
+- [LangChain.js 文档](https://js.langchain.com/)
+- [Vercel AI SDK](https://sdk.vercel.ai/)
+
+## 📖 概述
+
+Agent（智能体）是能够自主感知环境、做出决策并执行行动的 AI 系统。与传统的 LLM 应用不同，Agent 具备规划、记忆、工具使用和反思等核心能力，能够处理复杂的多步骤任务。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 理解 Agent 的核心概念和组成部分
+- 掌握规划（Planning）的工作原理
+- 了解记忆（Memory）系统的类型和应用
+- 理解工具使用（Tool Use）的机制
+- 掌握反思（Reflection）的作用和实现
+
+## 🧠 Agent 的四大核心能力
+
+### 1. 规划（Planning）
+
+规划是 Agent 的核心能力之一，使其能够将复杂任务分解为可执行的子任务。
+
+#### 什么是规划
+
+规划是指 Agent 在执行任务前，先分析任务需求，制定执行策略的过程。规划能力让 Agent 能够：
+
+- 🎯 分解复杂任务
+- 📋 制定执行步骤
+- ⏰ 评估时间和资源需求
+- 🔄 动态调整策略
+
+#### 规划的类型
+
+##### 静态规划
+
+在任务开始前一次性制定完整的执行计划。
+
+```python
+# Python 示例：静态规划
+from typing import List
+
+def plan_task(task: str) -> List[str]:
+    """
+    为任务制定静态执行计划
+    """
+    # 使用 LLM 分析任务并生成计划
+    plan = """
+    任务：创建一个待办事项应用
+    
+    执行计划：
+    1. 分析需求和技术栈
+    2. 设计数据库模型
+    3. 创建后端 API
+    4. 开发前端界面
+    5. 编写测试
+    6. 部署应用
+    """
+    return plan
+```
+
+##### 动态规划
+
+在执行过程中根据实际情况动态调整计划。
+
+```python
+# Python 示例：动态规划
+class DynamicPlanner:
+    def __init__(self, llm):
+        self.llm = llm
+        self.current_plan = []
+        self.completed_steps = []
+    
+    def execute_step(self, step: str) -> bool:
+        """
+        执行单个步骤并评估结果
+        """
+        try:
+            # 执行步骤
+            result = self._execute(step)
+            
+            # 评估结果
+            if self._evaluate_result(result):
+                self.completed_steps.append(step)
+                return True
+            else:
+                # 调整计划
+                self._adjust_plan(step, result)
+                return False
+        except Exception as e:
+            # 处理错误并重新规划
+            self._handle_error(e)
+            return False
+    
+    def _execute(self, step: str) -> dict:
+        """
+        执行具体步骤
+        """
+        # 这里根据步骤内容执行相应的操作
+        # 实际应用中会调用具体的工具或服务
+        return {
+            'step': step,
+            'status': 'completed',
+            'result': f'已执行: {step}'
+        }
+    
+    def _evaluate_result(self, result: dict) -> bool:
+        """
+        评估执行结果
+        """
+        # 检查结果是否符合预期
+        return result.get('status') == 'completed'
+    
+    def _adjust_plan(self, failed_step: str, result: dict):
+        """
+        根据执行结果调整计划
+        """
+        # 使用 LLM 分析失败原因并生成替代方案
+        prompt = f"""
+        以下步骤执行失败：
+        步骤：{failed_step}
+        结果：{result}
+        
+        请分析失败原因，并提供替代方案。
+        以列表形式输出替代步骤。
+        """
+        
+        response = self.llm.predict(prompt)
+        new_steps = parse_steps(response)
+        
+        # 更新计划：移除失败步骤，添加新步骤
+        if failed_step in self.current_plan:
+            index = self.current_plan.index(failed_step)
+            self.current_plan = self.current_plan[:index] + new_steps + self.current_plan[index + 1:]
+    
+    def _handle_error(self, error: Exception):
+        """
+        处理错误并重新规划
+        """
+        print(f"执行出错: {str(error)}")
+        # 可以记录错误并通知用户
+        # 或者尝试恢复策略
+```
+
+#### 规划的实现方式
+
+##### 1. 任务分解（Task Decomposition）
+
+将复杂任务分解为更小的、可管理的子任务。
+
+```python
+# Python 示例：任务分解
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+
+def parse_steps(text: str) -> List[str]:
+    """
+    解析 LLM 输出的步骤列表
+    """
+    steps = []
+    lines = text.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # 移除序号（如 "1. "、"1）" 等）
+        line = line.lstrip('0123456789.')
+        line = line.lstrip('0123456789）')
+        line = line.lstrip('-*•')
+        line = line.strip()
+        
+        if line:
+            steps.append(line)
+    
+    return steps
+
+def decompose_task(task: str, llm) -> List[str]:
+    """
+    使用 LLM 分解任务
+    """
+    prompt = PromptTemplate(
+        input_variables=["task"],
+        template="""
+        请将以下任务分解为具体的执行步骤：
+        
+        任务：{task}
+        
+        请以列表形式输出步骤，每个步骤应该清晰、具体、可执行。
+        """
+    )
+    
+    chain = LLMChain(llm=llm, prompt=prompt)
+    result = chain.run(task=task)
+    
+    # 解析结果
+    steps = parse_steps(result)
+    return steps
+
+# 使用示例
+task = "创建一个在线书店系统"
+steps = decompose_task(task, llm)
+print(steps)
+# 输出：
+# ['设计数据库模型（用户、商品、订单）', '实现用户认证系统', '开发商品管理功能', '实现购物车和订单系统', '集成支付网关', '开发管理后台']
+```
+
+##### 2. 目标导向规划（Goal-Oriented Planning）
+
+基于最终目标反向推导执行路径。
+
+```python
+# Python 示例：目标导向规划
+class GoalOrientedPlanner:
+    def __init__(self, goal: str, llm):
+        self.goal = goal
+        self.llm = llm
+        self.current_state = {}
+    
+    def plan(self) -> List[str]:
+        """
+        从目标反向规划
+        """
+        # 分析目标
+        goal_requirements = self._analyze_goal(self.goal)
+        
+        # 确定当前状态
+        self._assess_current_state()
+        
+        # 计算差距
+        gaps = self._identify_gaps(self.current_state, goal_requirements)
+        
+        # 生成填补差距的步骤
+        steps = self._generate_steps(gaps)
+        
+        return steps
+    
+    def _analyze_goal(self, goal: str) -> dict:
+        """
+        分析目标要求
+        """
+        prompt = f"""
+        请分析以下目标需要满足哪些要求：
+        
+        目标：{goal}
+        
+        请列出实现该目标所需的所有条件、资源和能力。
+        以 JSON 格式返回，包含以下字段：
+        - requirements: 所需的需求列表
+        - resources: 所需的资源列表
+        - capabilities: 所需的能力列表
+        """
+        
+        response = self.llm.predict(prompt)
+        
+        try:
+            import json
+            return json.loads(response)
+        except json.JSONDecodeError:
+            # 如果解析失败，返回默认结构
+            return {
+                'requirements': [],
+                'resources': [],
+                'capabilities': []
+            }
+    
+    def _assess_current_state(self):
+        """
+        确定当前状态
+        """
+        # 这里可以集成各种检测机制
+        # 例如：检查数据库状态、API 可用性、配置等
+        self.current_state = {
+            'database': 'initialized',
+            'api': 'available',
+            'auth': 'not_configured'
+        }
+    
+    def _identify_gaps(self, current: dict, target: dict) -> List[dict]:
+        """
+        识别当前状态与目标之间的差距
+        """
+        gaps = []
+        
+        # 检查需求差距
+        for requirement in target.get('requirements', []):
+            if requirement not in current.values():
+                gaps.append({
+                    'type': 'requirement',
+                    'aspect': requirement,
+                    'current': 'missing',
+                    'target': requirement
+                })
+        
+        # 检查资源差距
+        for resource in target.get('resources', []):
+            if resource not in current.values():
+                gaps.append({
+                    'type': 'resource',
+                    'aspect': resource,
+                    'current': 'missing',
+                    'target': resource
+                })
+        
+        # 检查能力差距
+        for capability in target.get('capabilities', []):
+            if capability not in current.values():
+                gaps.append({
+                    'type': 'capability',
+                    'aspect': capability,
+                    'current': 'missing',
+                    'target': capability
+                })
+        
+        return gaps
+    
+    def _generate_steps(self, gaps: List[dict]) -> List[str]:
+        """
+        生成填补差距的步骤
+        """
+        if not gaps:
+            return []
+        
+        # 使用 LLM 为每个差距生成解决方案
+        prompt = f"""
+        请为以下差距生成解决方案步骤：
+        
+        差距列表：
+        {chr(10).join(f"- {gap['type']}: {gap['aspect']} (当前: {gap['current']}, 目标: {gap['target']})" for gap in gaps)}
+        
+        请为每个差距提供具体的执行步骤。
+        以列表形式输出。
+        """
+        
+        response = self.llm.predict(prompt)
+        steps = parse_steps(response)
+        
+        return steps
+```
+
+##### 3. 反向推理（Backward Chaining）
+
+从目标出发，逐步推导出需要执行的操作。
+
+```python
+# Python 示例：反向推理
+class Rule:
+    """
+    规则类
+    """
+    def __init__(self, name: str, preconditions: List[str], action: str):
+        self.name = name
+        self.preconditions = preconditions
+        self.action = action
+
+class BackwardChainingPlanner:
+    def __init__(self, rules: List[Rule] = None):
+        self.rules = rules or []
+    
+    def add_rule(self, rule: Rule):
+        """
+        添加规则
+        """
+        self.rules.append(rule)
+    
+    def plan(self, goal: str) -> List[str]:
+        """
+        使用反向推理规划
+        """
+        plan = []
+        visited = set()  # 避免循环
+        self._plan_recursive(goal, plan, visited)
+        return plan
+    
+    def _plan_recursive(self, goal: str, plan: List[str], visited: set):
+        """
+        递归规划
+        """
+        # 避免循环
+        if goal in visited:
+            return
+        visited.add(goal)
+        
+        # 查找能够实现当前目标的规则
+        applicable_rules = self._find_applicable_rules(goal)
+        
+        if not applicable_rules:
+            # 无法找到规则，添加到计划中（作为基本操作）
+            if goal not in plan:
+                plan.append(goal)
+            return
+        
+        # 选择最佳规则
+        rule = self._select_best_rule(applicable_rules)
+        
+        # 递归处理前提条件
+        for subgoal in rule.preconditions:
+            self._plan_recursive(subgoal, plan, visited)
+        
+        # 添加规则的动作到计划
+        if rule.action not in plan:
+            plan.append(rule.action)
+    
+    def _find_applicable_rules(self, goal: str) -> List[Rule]:
+        """
+        查找能够实现当前目标的规则
+        """
+        applicable = []
+        for rule in self.rules:
+            # 简化判断：如果规则的动作包含目标关键词
+            if goal.lower() in rule.action.lower():
+                applicable.append(rule)
+        return applicable
+    
+    def _select_best_rule(self, applicable_rules: List[Rule]) -> Rule:
+        """
+        选择最佳规则
+        """
+        # 简化选择：选择前提条件最少的规则
+        if not applicable_rules:
+            return None
+        
+        best_rule = min(
+            applicable_rules,
+            key=lambda r: len(r.preconditions)
+        )
+        return best_rule
+
+# 使用示例
+rules = [
+    Rule(
+        name="创建数据库",
+        preconditions=["安装数据库软件", "配置数据库连接"],
+        action="创建数据库表"
+    ),
+    Rule(
+        name="开发后端API",
+        preconditions=["设计API接口", "实现业务逻辑"],
+        action="部署后端服务"
+    ),
+    Rule(
+        name="开发前端界面",
+        preconditions=["设计UI原型", "实现前端组件"],
+        action="部署前端应用"
+    )
+]
+
+planner = BackwardChainingPlanner(rules)
+plan = planner.plan("部署前端应用")
+print(plan)
+# 输出：['设计UI原型', '实现前端组件', '部署前端应用']
+```
+
+#### 规划的最佳实践
+
+- ✅ **明确目标**：清晰定义最终目标
+- ✅ **逐步细化**：从粗粒度到细粒度
+- ✅ **考虑约束**：时间、资源、能力等
+- ✅ **保持灵活**：允许动态调整
+- ❌ **过度规划**：不要过度细化
+- ❌ **忽视反馈**：根据执行结果调整
+
+### 2. 记忆（Memory）
+
+记忆系统使 Agent 能够存储和检索信息，实现上下文感知和持续学习。
+
+#### 记忆的类型
+
+##### 短期记忆（Short-term Memory）
+
+存储当前会话的上下文信息，容量有限。
+
+```python
+# Python 示例：短期记忆
+from typing import List, Dict
+from datetime import datetime
+
+class ShortTermMemory:
+    def __init__(self, max_size: int = 10):
+        self.max_size = max_size
+        self.messages: List[Dict] = []
+    
+    def add_message(self, role: str, content: str):
+        """
+        添加消息到短期记忆
+        """
+        self.messages.append({
+            'role': role,
+            'content': content,
+            'timestamp': datetime.now()
+        })
+        
+        # 超过容量限制时，移除最旧的消息
+        if len(self.messages) > self.max_size:
+            self.messages.pop(0)
+    
+    def get_context(self, window_size: int = 5) -> str:
+        """
+        获取最近的上下文
+        """
+        recent_messages = self.messages[-window_size:]
+        context = '\n'.join([
+            f"{msg['role']}: {msg['content']}" 
+            for msg in recent_messages
+        ])
+        return context
+    
+    def search(self, query: str) -> List[Dict]:
+        """
+        在记忆中搜索
+        """
+        results = []
+        for msg in self.messages:
+            if query.lower() in msg['content'].lower():
+                results.append(msg)
+        return results
+    
+    def clear(self):
+        """
+        清空记忆
+        """
+        self.messages = []
+    
+    def get_all_messages(self) -> List[Dict]:
+        """
+        获取所有消息
+        """
+        return self.messages.copy()
+```
+
+##### 长期记忆（Long-term Memory）
+
+持久化存储重要信息，支持跨会话访问。
+
+```python
+# Python 示例：长期记忆
+import json
+import os
+from typing import Dict, List, Any
+from datetime import datetime
+
+class LongTermMemory:
+    def __init__(self, storage_path: str = 'memory.json'):
+        self.storage_path = storage_path
+        self.memory: Dict = self._load_memory()
+    
+    def _load_memory(self) -> Dict:
+        """
+        从文件加载记忆
+        """
+        if os.path.exists(self.storage_path):
+            try:
+                with open(self.storage_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"加载记忆文件失败: {e}")
+                return {}
+        return {}
+    
+    def _save_memory(self):
+        """
+        保存记忆到文件
+        """
+        try:
+            with open(self.storage_path, 'w', encoding='utf-8') as f:
+                json.dump(self.memory, f, ensure_ascii=False, indent=2)
+        except IOError as e:
+            print(f"保存记忆文件失败: {e}")
+    
+    def store(self, key: str, value: Any, metadata: Dict = None):
+        """
+        存储信息到长期记忆
+        """
+        self.memory[key] = {
+            'value': value,
+            'metadata': metadata or {},
+            'timestamp': datetime.now().isoformat(),
+            'access_count': 0
+        }
+        self._save_memory()
+    
+    def retrieve(self, key: str) -> Any:
+        """
+        从长期记忆检索信息
+        """
+        if key in self.memory:
+            self.memory[key]['access_count'] += 1
+            self.memory[key]['last_accessed'] = datetime.now().isoformat()
+            self._save_memory()
+            return self.memory[key]['value']
+        return None
+    
+    def delete(self, key: str) -> bool:
+        """
+        删除记忆
+        """
+        if key in self.memory:
+            del self.memory[key]
+            self._save_memory()
+            return True
+        return False
+    
+    def search(self, query: str) -> List[Dict]:
+        """
+        搜索长期记忆
+        """
+        results = []
+        for key, item in self.memory.items():
+            if query.lower() in str(item['value']).lower():
+                results.append({
+                    'key': key,
+                    'value': item['value'],
+                    'metadata': item['metadata'],
+                    'relevance': self._calculate_relevance(query, item)
+                })
+        
+        # 按相关性排序
+        results.sort(key=lambda x: x['relevance'], reverse=True)
+        return results
+    
+    def _calculate_relevance(self, query: str, item: Dict) -> float:
+        """
+        计算相关性得分
+        """
+        # 简单的相关性计算
+        # 实际应用中可以使用更复杂的算法
+        score = 0
+        value_str = str(item['value']).lower()
+        query_lower = query.lower()
+        
+        # 精确匹配
+        if query_lower == value_str:
+            score += 2.0
+        # 包含匹配
+        elif query_lower in value_str:
+            score += 1.0
+        
+        # 访问频率加权
+        if item.get('access_count', 0) > 0:
+            score += min(item['access_count'] * 0.1, 1.0)
+        
+        # 最近访问加权
+        if 'last_accessed' in item:
+            try:
+                last_accessed = datetime.fromisoformat(item['last_accessed'])
+                days_since_access = (datetime.now() - last_accessed).days
+                if days_since_access < 7:
+                    score += 0.3
+            except (ValueError, TypeError):
+                # 忽略日期解析错误
+                pass
+        
+        return score
+    
+    def get_all_keys(self) -> List[str]:
+        """
+        获取所有键
+        """
+        return list(self.memory.keys())
+    
+    def clear(self):
+        """
+        清空所有记忆
+        """
+        self.memory = {}
+        self._save_memory()
+```
+
+##### 向量记忆（Vector Memory）
+
+使用向量存储实现语义搜索和相似度匹配。
+
+```python
+# Python 示例：向量记忆
+from sentence_transformers import SentenceTransformer
+import numpy as np
+from typing import List, Tuple
+
+class VectorMemory:
+    def __init__(self, model_name: str = 'all-MiniLM-L6-v2'):
+        self.model = SentenceTransformer(model_name)
+        self.memories: List[Tuple[str, np.ndarray]] = []
+    
+    def add(self, text: str, metadata: dict = None):
+        """
+        添加文本到向量记忆
+        """
+        # 生成文本的向量表示
+        embedding = self.model.encode(text)
+        self.memories.append((text, embedding, metadata))
+    
+    def search(self, query: str, top_k: int = 5) -> List[dict]:
+        """
+        语义搜索
+        """
+        # 生成查询的向量
+        query_embedding = self.model.encode(query)
+        
+        # 计算相似度
+        similarities = []
+        for text, embedding, metadata in self.memories:
+            similarity = np.dot(query_embedding, embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(embedding)
+            )
+            similarities.append({
+                'text': text,
+                'similarity': float(similarity),
+                'metadata': metadata
+            })
+        
+        # 按相似度排序并返回前 k 个结果
+        similarities.sort(key=lambda x: x['similarity'], reverse=True)
+        return similarities[:top_k]
+```
+
+#### 记忆的管理策略
+
+##### 记忆清理
+
+定期清理过期或不重要的记忆。
+
+```python
+# Python 示例：记忆清理
+class MemoryCleaner:
+    def __init__(self, memory: LongTermMemory):
+        self.memory = memory
+    
+    def clean_old_memories(self, days: int = 30):
+        """
+        清理超过指定天数的记忆
+        """
+        from datetime import datetime, timedelta
+        
+        cutoff_date = datetime.now() - timedelta(days=days)
+        keys_to_remove = []
+        
+        for key, item in self.memory.memory.items():
+            timestamp = datetime.fromisoformat(item['timestamp'])
+            if timestamp < cutoff_date:
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del self.memory.memory[key]
+        
+        self.memory._save_memory()
+    
+    def clean_low_access_memories(self, threshold: int = 5):
+        """
+        清理访问次数低于阈值的记忆
+        """
+        keys_to_remove = []
+        
+        for key, item in self.memory.memory.items():
+            if item['access_count'] < threshold:
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del self.memory.memory[key]
+        
+        self.memory._save_memory()
+```
+
+##### 记忆压缩
+
+将多条相关记忆压缩为一条摘要。
+
+```python
+# Python 示例：记忆压缩
+class MemoryCompressor:
+    def __init__(self, llm):
+        self.llm = llm
+    
+    def compress_memories(self, memories: List[str]) -> str:
+        """
+        压缩多条记忆为摘要
+        """
+        prompt = f"""
+        请将以下多条记忆压缩为一个简洁的摘要：
+        
+        记忆列表：
+        {chr(10).join(memories)}
+        
+        摘要应该：
+        1. 保留关键信息
+        2. 简洁明了
+        3. 易于理解
+        """
+        
+        summary = self.llm.predict(prompt)
+        return summary
+    
+    def compress_conversation(self, messages: List[dict]) -> str:
+        """
+        压缩对话历史
+        """
+        prompt = f"""
+        请将以下对话历史压缩为一个简洁的摘要：
+        
+        对话：
+        {self._format_messages(messages)}
+        
+        摘要应该包含：
+        1. 主要讨论的话题
+        2. 关键的决策或结论
+        3. 重要的信息点
+        """
+        
+        summary = self.llm.predict(prompt)
+        return summary
+    
+    def _format_messages(self, messages: List[dict]) -> str:
+        """
+        格式化消息
+        """
+        formatted = []
+        for msg in messages:
+            formatted.append(f"{msg['role']}: {msg['content']}")
+        return '\n'.join(formatted)
+```
+
+#### 记忆的最佳实践
+
+- ✅ **分层存储**：短期、长期、向量记忆结合使用
+- ✅ **定期清理**：避免记忆无限增长
+- ✅ **语义检索**：使用向量存储实现智能搜索
+- ✅ **元数据管理**：为记忆添加标签和元数据
+- ❌ **过度存储**：不要存储所有信息
+- ❌ **忽视隐私**：注意敏感信息的处理
+
+### 3. 工具使用（Tool Use）
+
+工具使用能力让 Agent 能够调用外部服务和 API，扩展其功能边界。
+
+#### 工具的定义
+
+工具是 Agent 可以调用的外部函数或服务，用于执行特定任务。
+
+```python
+```python
+# Python 示例：搜索工具
+class SearchTool(Tool):
+    def __init__(self, api_key: str = None):
+        super().__init__(
+            name='search',
+            description='在互联网上搜索信息'
+        )
+        self.api_key = api_key
+    
+    def execute(self, query: str, limit: int = 10) -> str:
+        """
+        执行搜索
+        """
+        if self.api_key:
+            # 实际应用中调用真实的搜索 API
+            try:
+                # 示例：使用某个搜索 API
+                # 这里是伪代码，实际需要根据具体 API 调整
+                import requests
+                
+                response = requests.get(
+                    'https://api.search.example.com/search',
+                    params={
+                        'q': query,
+                        'limit': limit,
+                        'api_key': self.api_key
+                    },
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    results = data.get('results', [])
+                    return '\n'.join([
+                        f"{i+1}. {r.get('title', '')}\n   {r.get('url', '')}\n   {r.get('snippet', '')}"
+                        for i, r in enumerate(results[:limit])
+                    ])
+                else:
+                    return f"搜索失败: HTTP {response.status_code}"
+            except Exception as e:
+                return f"搜索出错: {str(e)}"
+        else:
+            # 模拟搜索结果（当没有 API key 时）
+            results = [
+                f"结果 1: 关于 {query} 的信息",
+                f"结果 2: {query} 的详细说明",
+                f"结果 3: {query} 的最新进展"
+            ]
+            return '\n'.join(results[:limit])
+    
+    def _get_parameters(self) -> Dict:
+        return {
+            'type': 'object',
+            'properties': {
+                'query': {
+                    'type': 'string',
+                    'description': '搜索查询'
+                },
+                'limit': {
+                    'type': 'integer',
+                    'description': '返回结果数量',
+                    'default': 10
+                }
+            },
+            'required': ['query']
+        }
+
+# 示例：计算器工具
+class CalculatorTool(Tool):
+    def __init__(self):
+        super().__init__(
+            name='calculator',
+            description='执行数学计算'
+        )
+    
+    def execute(self, expression: str) -> str:
+        """
+        执行计算
+        """
+        try:
+            # 使用安全的表达式解析器
+            # 这里使用 Python 的 ast 模块来安全地解析表达式
+            import ast
+            import operator
+            
+            # 定义允许的操作符
+            operators = {
+                ast.Add: operator.add,
+                ast.Sub: operator.sub,
+                ast.Mult: operator.mul,
+                ast.Div: operator.truediv,
+                ast.Pow: operator.pow,
+                ast.USub: operator.neg,
+            }
+            
+            def eval_node(node):
+                if isinstance(node, ast.Num):  # Python < 3.8
+                    return node.n
+                elif isinstance(node, ast.Constant):  # Python >= 3.8
+                    return node.value
+                elif isinstance(node, ast.BinOp):
+                    left = eval_node(node.left)
+                    right = eval_node(node.right)
+                    op_type = type(node.op)
+                    if op_type in operators:
+                        return operators[op_type](left, right)
+                    else:
+                        raise TypeError(f"不支持的操作符: {op_type}")
+                elif isinstance(node, ast.UnaryOp):
+                    operand = eval_node(node.operand)
+                    op_type = type(node.op)
+                    if op_type in operators:
+                        return operators[op_type](operand)
+                    else:
+                        raise TypeError(f"不支持的一元操作符: {op_type}")
+                else:
+                    raise TypeError(f"不支持的节点类型: {type(node)}")
+            
+            # 解析表达式
+            tree = ast.parse(expression, mode='eval')
+            result = eval_node(tree.body)
+            
+            return str(result)
+        except SyntaxError:
+            return "计算错误: 表达式语法错误"
+        except TypeError as e:
+            return f"计算错误: {str(e)}"
+        except Exception as e:
+            return f"计算错误: {str(e)}"
+    
+    def _get_parameters(self) -> Dict:
+        return {
+            'type': 'object',
+            'properties': {
+                'expression': {
+                    'type': 'string',
+                    'description': '数学表达式，例如: 2 + 2 * 3'
+                }
+            },
+            'required': ['expression']
+        }
+``````
+
+#### 工具注册和管理
+
+```python
+# Python 示例：工具注册器
+class ToolRegistry:
+    def __init__(self):
+        self.tools: Dict[str, Tool] = {}
+    
+    def register(self, tool: Tool):
+        """
+        注册工具
+        """
+        self.tools[tool.name] = tool
+    
+    def get_tool(self, name: str) -> Tool:
+        """
+        获取工具
+        """
+        return self.tools.get(name)
+    
+    def list_tools(self) -> List[Dict]:
+        """
+        列出所有工具
+        """
+        return [tool.get_schema() for tool in self.tools.values()]
+    
+    def search_tools(self, query: str) -> List[Tool]:
+        """
+        搜索工具
+        """
+        results = []
+        for tool in self.tools.values():
+            if query.lower() in tool.description.lower():
+                results.append(tool)
+        return results
+
+# 使用示例
+registry = ToolRegistry()
+registry.register(SearchTool())
+registry.register(CalculatorTool())
+
+# 列出所有工具
+tools = registry.list_tools()
+print(tools)
+
+# 搜索工具
+search_results = registry.search_tools('搜索')
+```
+
+#### 工具调用机制
+
+##### 1. 基于描述的工具选择
+
+Agent 根据任务需求选择合适的工具。
+
+```python
+# Python 示例：工具选择
+class ToolSelector:
+    def __init__(self, llm, registry: ToolRegistry):
+        self.llm = llm
+        self.registry = registry
+    
+    def select_tool(self, task: str) -> Tool:
+        """
+        为任务选择合适的工具
+        """
+        tools_info = self._format_tools_info()
+        
+        prompt = f"""
+        任务：{task}
+        
+        可用工具：
+        {tools_info}
+        
+        请选择最合适的工具来完成任务。
+        只返回工具名称。
+        """
+        
+        tool_name = self.llm.predict(prompt).strip()
+        return self.registry.get_tool(tool_name)
+    
+    def _format_tools_info(self) -> str:
+        """
+        格式化工具信息
+        """
+        info = []
+        for tool in self.registry.tools.values():
+            info.append(f"- {tool.name}: {tool.description}")
+        return '\n'.join(info)
+```
+
+##### 2. 参数解析和验证
+
+解析 LLM 输出的参数并验证其有效性。
+
+```python
+# Python 示例：参数解析
+import json
+import re
+from typing import Dict, Any
+
+class ParameterParser:
+    def __init__(self, tool: Tool):
+        self.tool = tool
+    
+    def parse(self, llm_output: str) -> Dict[str, Any]:
+        """
+        解析 LLM 输出的参数
+        """
+        try:
+            # 尝试解析 JSON
+            params = json.loads(llm_output)
+            
+            # 验证参数
+            validated = self._validate_parameters(params)
+            
+            return validated
+        except json.JSONDecodeError:
+            # 如果不是 JSON，尝试其他解析方式
+            return self._parse_text(llm_output)
+    
+    def _parse_text(self, text: str) -> Dict[str, Any]:
+        """
+        从文本中解析参数
+        """
+        params = {}
+        
+        # 尝试匹配键值对模式
+        # 例如：query="搜索内容" 或 query: 搜索内容
+        pattern = r'(\w+)\s*[:=]\s*"([^"]*)"|(\w+)\s*[:=]\s*([^\s,]+)'
+        matches = re.findall(pattern, text)
+        
+        for match in matches:
+            if match[0]:  # 带引号的值
+                key, value = match[0], match[1]
+                params[key] = value
+            elif match[2]:  # 不带引号的值
+                key, value = match[2], match[3]
+                params[key] = value
+        
+        # 如果没有匹配到，尝试按行解析
+        if not params:
+            lines = text.strip().split('\n')
+            for line in lines:
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    params[key.strip()] = value.strip().strip('"\'')
+        
+        return params
+    
+    def _validate_parameters(self, params: Dict) -> Dict:
+        """
+        验证参数
+        """
+        schema = self.tool._get_parameters()
+        required = schema.get('required', [])
+        properties = schema.get('properties', {})
+        
+        validated = {}
+        
+        # 检查必需参数
+        for param_name in required:
+            if param_name not in params:
+                raise ValueError(f"缺少必需参数: {param_name}")
+        
+        # 验证参数类型和值
+        for param_name, param_value in params.items():
+            if param_name in properties:
+                param_schema = properties[param_name]
+                validated[param_name] = self._validate_type(
+                    param_value, param_schema
+                )
+            else:
+                # 未知参数，保留原值
+                validated[param_name] = param_value
+        
+        return validated
+    
+    def _validate_type(self, value: Any, schema: Dict) -> Any:
+        """
+        验证参数类型
+        """
+        param_type = schema.get('type')
+        
+        try:
+            if param_type == 'string':
+                return str(value)
+            elif param_type == 'integer':
+                return int(value)
+            elif param_type == 'number':
+                return float(value)
+            elif param_type == 'boolean':
+                if isinstance(value, str):
+                    return value.lower() in ('true', 'yes', '1')
+                return bool(value)
+            else:
+                return value
+        except (ValueError, TypeError) as e:
+            # 类型转换失败，返回默认值或抛出异常
+            default_value = schema.get('default')
+            if default_value is not None:
+                return default_value
+            raise ValueError(f"参数类型转换失败: {str(e)}")
+```
+
+##### 3. 错误处理和重试
+
+处理工具执行错误并实现自动重试。
+
+```python
+# Python 示例：错误处理
+import time
+from typing import Callable, Any
+
+class ToolExecutor:
+    def __init__(self, max_retries: int = 3, retry_delay: float = 1.0):
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+    
+    def execute_with_retry(
+        self,
+        tool: Tool,
+        params: Dict[str, Any]
+    ) -> Any:
+        """
+        带重试的工具执行
+        """
+        last_error = None
+        
+        for attempt in range(self.max_retries):
+            try:
+                result = tool.execute(**params)
+                return result
+            except Exception as e:
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    raise ToolExecutionError(
+                        f"工具执行失败: {str(e)}"
+                    ) from e
+        
+        raise ToolExecutionError(
+            f"达到最大重试次数: {str(last_error)}"
+        )
+
+class ToolExecutionError(Exception):
+    """工具执行错误"""
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
+    
+    def __str__(self):
+        return self.message
+```
+
+#### 工具的最佳实践
+
+- ✅ **清晰描述**：提供详细的工具描述
+- ✅ **参数验证**：严格验证输入参数
+- ✅ **错误处理**：优雅地处理执行错误
+- ✅ **文档完善**：提供使用示例和文档
+- ❌ **过度复杂**：保持工具简单专注
+- ❌ **忽视安全**：注意权限和安全问题
+
+### 4. 反思（Reflection）
+
+反思能力使 Agent 能够评估自己的行为，学习经验并改进决策。
+
+#### 反思的类型
+
+##### 自我评估（Self-Evaluation）
+
+Agent 评估自己的输出质量和决策合理性。
+
+```python
+# Python 示例：自我评估
+class SelfEvaluator:
+    def __init__(self, llm):
+        self.llm = llm
+    
+    def evaluate_output(
+        self,
+        task: str,
+        output: str,
+        criteria: List[str] = None
+    ) -> Dict:
+        """
+        评估输出质量
+        """
+        if criteria is None:
+            criteria = [
+                '准确性',
+                '完整性',
+                '清晰度',
+                '实用性'
+            ]
+        
+        prompt = f"""
+        请评估以下输出的质量：
+        
+        任务：{task}
+        输出：{output}
+        
+        评估标准：
+        {chr(10).join(f"- {c}" for c in criteria)}
+        
+        请为每个标准打分（1-10分），并提供简要说明。
+        以 JSON 格式返回结果。
+        """
+        
+        evaluation = self.llm.predict(prompt)
+        
+        try:
+            return json.loads(evaluation)
+        except json.JSONDecodeError:
+            return {
+                'overall_score': 5,
+                'feedback': '无法解析评估结果'
+            }
+    
+    def evaluate_decision(
+        self,
+        context: str,
+        decision: str,
+        outcome: str
+    ) -> Dict:
+        """
+        评估决策质量
+        """
+        prompt = f"""
+        请评估以下决策的质量：
+        
+        上下文：{context}
+        决策：{decision}
+        结果：{outcome}
+        
+        请评估：
+        1. 决策是否合理
+        2. 结果是否达到预期
+        3. 有哪些可以改进的地方
+        
+        以 JSON 格式返回评估结果。
+        """
+        
+        evaluation = self.llm.predict(prompt)
+        return json.loads(evaluation)
+```
+
+##### 经验学习（Experience Learning）
+
+从成功和失败中学习，改进未来的决策。
+
+```python
+# Python 示例：经验学习
+from typing import List, Dict
+from datetime import datetime
+
+class ExperienceLearner:
+    def __init__(self, memory: LongTermMemory, llm=None):
+        self.memory = memory
+        self.llm = llm
+        self.success_patterns = []
+        self.failure_patterns = []
+    
+    def record_experience(
+        self,
+        task: str,
+        action: str,
+        outcome: str,
+        success: bool
+    ):
+        """
+        记录经验
+        """
+        experience = {
+            'task': task,
+            'action': action,
+            'outcome': outcome,
+            'success': success,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        if success:
+            self.success_patterns.append(experience)
+        else:
+            self.failure_patterns.append(experience)
+        
+        # 存储到长期记忆
+        self.memory.store(
+            key=f"experience_{len(self.success_patterns + self.failure_patterns)}",
+            value=experience,
+            metadata={'type': 'experience'}
+        )
+    
+    def _is_similar_task(self, task1: str, task2: str) -> bool:
+        """
+        判断两个任务是否相似
+        """
+        # 简化的相似度判断
+        # 实际应用中可以使用更复杂的语义相似度计算
+        task1_lower = task1.lower()
+        task2_lower = task2.lower()
+        
+        # 检查关键词重叠
+        keywords1 = set(task1_lower.split())
+        keywords2 = set(task2_lower.split())
+        
+        overlap = keywords1 & keywords2
+        similarity = len(overlap) / max(len(keywords1), len(keywords2))
+        
+        return similarity > 0.3  # 相似度阈值
+    
+    def get_similar_experiences(
+        self,
+        task: str,
+        limit: int = 5
+    ) -> List[Dict]:
+        """
+        获取相似经验
+        """
+        # 在记忆中搜索相似任务
+        similar = self.memory.search(task)
+        
+        # 过滤出经验记录
+        experiences = [
+            item['value'] for item in similar
+            if item.get('metadata', {}).get('type') == 'experience'
+        ]
+        
+        return experiences[:limit]
+    
+    def _analyze_failure(
+        self,
+        task: str,
+        action: str,
+        outcome: str,
+        similar_success: List[Dict]
+    ) -> str:
+        """
+        分析失败原因
+        """
+        if not similar_success:
+            return "无法分析：没有相似的成功经验"
+        
+        # 如果有 LLM，使用 LLM 进行深入分析
+        if self.llm:
+            prompt = f"""
+            请分析以下失败经验：
+            
+            任务：{task}
+            采取的行动：{action}
+            结果：{outcome}
+            
+            参考以下成功经验：
+            {chr(10).join(f"- {exp['task']}: {exp['action']} -> {exp['outcome']}" for exp in similar_success[:3])}
+            
+            请分析失败原因，并提供建议。
+            """
+            
+            try:
+                lesson = self.llm.predict(prompt)
+                return lesson
+            except Exception as e:
+                return f"分析失败: {str(e)}"
+        
+        # 简化分析：比较成功和失败的行动差异
+        success_actions = [exp['action'] for exp in similar_success]
+        
+        if action not in success_actions:
+            return f"建议：尝试使用以下成功的行动方式之一：{', '.join(success_actions[:3])}"
+        else:
+            return "行动方式正确，可能需要调整其他因素（如参数、上下文等）"
+    
+    def learn_from_failure(
+        self,
+        task: str,
+        action: str,
+        outcome: str
+    ) -> str:
+        """
+        从失败中学习
+        """
+        # 获取相似的成功经验
+        similar_success = [
+            exp for exp in self.success_patterns
+            if self._is_similar_task(task, exp['task'])
+        ]
+        
+        if similar_success:
+            # 分析成功和失败的区别
+            lesson = self._analyze_failure(
+                task, action, outcome, similar_success
+            )
+            return lesson
+        else:
+            return "没有找到相似的成功经验，建议尝试不同的方法"
+    
+    def get_success_rate(self) -> float:
+        """
+        获取成功率
+        """
+        total = len(self.success_patterns) + len(self.failure_patterns)
+        if total == 0:
+            return 0.0
+        return len(self.success_patterns) / total
+```
+
+##### 策略调整（Strategy Adjustment）
+
+根据反思结果调整未来的策略。
+
+```python
+# Python 示例：策略调整
+class StrategyAdjuster:
+    def __init__(self, llm):
+        self.llm = llm
+        self.strategies = {}
+    
+    def adjust_strategy(
+        self,
+        task_type: str,
+        current_strategy: str,
+        feedback: str
+    ) -> str:
+        """
+        调整策略
+        """
+        prompt = f"""
+        基于以下反馈，调整策略：
+        
+        任务类型：{task_type}
+        当前策略：{current_strategy}
+        反馈：{feedback}
+        
+        请提供改进后的策略，并说明改进原因。
+        """
+        
+        new_strategy = self.llm.predict(prompt)
+        
+        # 保存新策略
+        self.strategies[task_type] = new_strategy
+        
+        return new_strategy
+    
+    def get_strategy(self, task_type: str) -> str:
+        """
+        获取策略
+        """
+        return self.strategies.get(task_type, "使用默认策略")
+```
+
+#### 反思的实现方式
+
+##### 1. 执行后反思（Post-Execution Reflection）
+
+在任务完成后进行反思。
+
+```python
+# Python 示例：执行后反思
+class PostExecutionReflector:
+    def __init__(self, llm, evaluator: SelfEvaluator):
+        self.llm = llm
+        self.evaluator = evaluator
+    
+    def reflect(
+        self,
+        task: str,
+        plan: List[str],
+        execution_log: List[Dict],
+        final_output: str
+    ) -> Dict:
+        """
+        执行后反思
+        """
+        # 评估输出质量
+        evaluation = self.evaluator.evaluate_output(
+            task, final_output
+        )
+        
+        # 分析执行过程
+        analysis = self._analyze_execution(
+            plan, execution_log
+        )
+        
+        # 生成改进建议
+        improvements = self._generate_improvements(
+            evaluation, analysis
+        )
+        
+        return {
+            'evaluation': evaluation,
+            'analysis': analysis,
+            'improvements': improvements
+        }
+    
+    def _format_log(self, execution_log: List[Dict]) -> str:
+        """
+        格式化执行日志
+        """
+        formatted = []
+        for log_entry in execution_log:
+            if 'iteration' in log_entry:
+                formatted.append(f"迭代 {log_entry['iteration']}:")
+                execution = log_entry.get('execution', {})
+                formatted.append(f"  任务: {execution.get('task', 'N/A')}")
+                formatted.append(f"  策略: {execution.get('strategy', 'N/A')}")
+                formatted.append(f"  结果: {execution.get('result', 'N/A')[:100]}...")
+            else:
+                formatted.append(str(log_entry))
+        return '\n'.join(formatted)
+    
+    def _analyze_execution(
+        self,
+        plan: List[str],
+        execution_log: List[Dict]
+    ) -> Dict:
+        """
+        分析执行过程
+        """
+        prompt = f"""
+        分析以下执行过程：
+        
+        计划：
+        {chr(10).join(f"{i+1}. {step}" for i, step in enumerate(plan))}
+        
+        执行日志：
+        {self._format_log(execution_log)}
+        
+        请分析：
+        1. 哪些步骤执行得好
+        2. 哪些步骤执行得不好
+        3. 有哪些意外情况
+        4. 计划是否合理
+        
+        以 JSON 格式返回分析结果，包含以下字段：
+        - good_steps: 执行得好的步骤列表
+        - bad_steps: 执行得不好的步骤列表
+        - unexpected_issues: 意外情况列表
+        - plan_quality: 计划合理性评分（1-10）
+        - overall_assessment: 整体评估
+        """
+        
+        analysis = self.llm.predict(prompt)
+        
+        try:
+            return json.loads(analysis)
+        except json.JSONDecodeError:
+            # 如果解析失败，返回默认结构
+            return {
+                'good_steps': [],
+                'bad_steps': [],
+                'unexpected_issues': [],
+                'plan_quality': 5,
+                'overall_assessment': '无法解析分析结果'
+            }
+    
+    def _generate_improvements(
+        self,
+        evaluation: Dict,
+        analysis: Dict
+    ) -> List[str]:
+        """
+        生成改进建议
+        """
+        prompt = f"""
+        基于以下评估和分析，生成改进建议：
+        
+        评估：{json.dumps(evaluation, ensure_ascii=False)}
+        分析：{json.dumps(analysis, ensure_ascii=False)}
+        
+        请提供具体的、可操作的改进建议。
+        以列表形式返回，每条建议应该清晰、具体。
+        """
+        
+        improvements = self.llm.predict(prompt)
+        return parse_list(improvements)
+```
+
+##### 2. 执行中反思（In-Execution Reflection）
+
+在执行过程中实时反思和调整。
+
+```python
+# Python 示例：执行中反思
+class InExecutionReflector:
+    def __init__(self, llm):
+        self.llm = llm
+    
+    def reflect_during_execution(
+        self,
+        task: str,
+        current_step: str,
+        step_result: str,
+        remaining_steps: List[str]
+    ) -> Dict:
+        """
+        执行中反思
+        """
+        prompt = f"""
+        任务：{task}
+        当前步骤：{current_step}
+        步骤结果：{step_result}
+        剩余步骤：
+        {chr(10).join(f"- {step}" for step in remaining_steps)}
+        
+        请评估：
+        1. 当前步骤是否成功
+        2. 是否需要调整后续步骤
+        3. 是否需要补充新的步骤
+        
+        以 JSON 格式返回评估结果和建议。
+        """
+        
+        reflection = self.llm.predict(prompt)
+        return json.loads(reflection)
+    
+    def should_adjust_plan(
+        self,
+        reflection: Dict
+    ) -> bool:
+        """
+        判断是否需要调整计划
+        """
+        # 根据反思结果决定是否调整
+        return reflection.get('needs_adjustment', False)
+```
+
+#### 反思的最佳实践
+
+- ✅ **定期反思**：建立反思机制
+- ✅ **客观评估**：使用明确的评估标准
+- ✅ **持续学习**：从经验中学习
+- ✅ **策略改进**：根据反思结果调整策略
+- ❌ **过度反思**：不要在每一步都反思
+- ❌ **忽视反馈**：认真对待反思结果
+
+## 🔄 四大能力的协同
+
+Agent 的四大核心能力不是独立的，而是相互协同工作的。
+
+### 协同示例
+
+```python
+# Python 示例：四大能力协同
+class IntelligentAgent:
+    def __init__(self, llm):
+        self.llm = llm
+        
+        # 初始化四大能力
+        self.planner = DynamicPlanner(llm)
+        self.memory = LongTermMemory()
+        self.tool_registry = ToolRegistry()
+        self.reflector = PostExecutionReflector(llm, SelfEvaluator(llm))
+        
+        # 注册工具
+        self._register_tools()
+    
+    def _register_tools(self):
+        """
+        注册工具
+        """
+        self.tool_registry.register(SearchTool())
+        self.tool_registry.register(CalculatorTool())
+    
+    def execute_task(self, task: str) -> str:
+        """
+        执行任务
+        """
+        # 1. 规划
+        plan = self.planner.plan(task)
+        
+        # 2. 执行
+        execution_log = []
+        final_output = None
+        
+        for step in plan:
+            # 选择工具
+            tool = self.tool_registry.select_tool(step)
+            
+            # 执行工具
+            result = tool.execute()
+            
+            # 记录执行日志
+            execution_log.append({
+                'step': step,
+                'tool': tool.name,
+                'result': result
+            })
+            
+            # 存储到记忆
+            self.memory.store(
+                key=f"step_{len(execution_log)}",
+                value=result,
+                metadata={'task': task}
+            )
+            
+            final_output = result
+        
+        # 3. 反思
+        reflection = self.reflector.reflect(
+            task, plan, execution_log, final_output
+        )
+        
+        # 4. 学习
+        if reflection['evaluation']['overall_score'] < 7:
+            # 如果质量不高，学习改进
+            self._learn_from_reflection(reflection)
+        
+        return final_output
+    
+    def _learn_from_reflection(self, reflection: Dict):
+        """
+        从反思中学习
+        """
+        # 存储反思结果
+        self.memory.store(
+            key='last_reflection',
+            value=reflection,
+            metadata={'type': 'reflection'}
+        )
+        
+        # 调整策略
+        for improvement in reflection['improvements']:
+            self.planner.adjust_strategy(improvement)
+```
+
+## 📚 学习检查点
+
+完成本节学习后，你应该能够回答：
+- [ ] Agent 的四大核心能力是什么？
+- [ ] 规划的作用是什么？有哪些类型？
+- [ ] 记忆系统有哪些类型？如何选择？
+- [ ] 工具使用的实现机制是什么？
+- [ ] 反思能力如何帮助 Agent 改进？
+- [ ] 四大能力如何协同工作？
+
+## 🔗 相关资源
+
+### 论文
+- [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)
+- [Reflexion: Language Agents with Verbal Reinforcement Learning](https://arxiv.org/abs/2303.11366)
+- [Chain-of-Thought Prompting Elicits Reasoning in Large Language Models](https://arxiv.org/abs/2201.11903)
+
+### 框架文档
+- [LangChain Agents](https://python.langchain.com/docs/modules/agents/)
+- [AutoGen](https://microsoft.github.io/autogen/)
+- [CrewAI](https://docs.crewai.com/)
+
+### 示例代码
+- [LangChain Examples](https://github.com/langchain-ai/langchain/tree/master/cookbook)
+- [AutoGen Examples](https://github.com/microsoft/autogen/tree/main/notebook)
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **Agent 架构模式** - 了解常见的 Agent 架构设计
+- **Agent 框架** - 学习主流的 Agent 开发框架
+- **实践项目** - 动手构建完整的 Agent 应用

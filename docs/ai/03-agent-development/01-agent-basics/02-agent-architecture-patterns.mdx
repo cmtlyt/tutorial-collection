@@ -1,0 +1,1124 @@
+# Agent 架构模式
+
+> **版本**：v1.1  
+> **最后更新**：2026-04-15
+
+## 💻 代码语言说明
+
+本文档主要使用 **Python** 作为代码示例语言，原因如下：
+
+1. **行业标准**：主流的 Agent 框架（LangChain、AutoGen、CrewAI 等）都是 Python 优先
+2. **生态完整**：Python 在 AI/ML 领域拥有最完整的生态系统
+3. **社区支持**：大部分 Agent 开发资源和示例都是 Python
+
+**JavaScript 开发者请注意**：
+- LangChain.js 提供了完整的 JavaScript 实现
+- Vercel AI SDK 是现代化的 TypeScript AI 开发套件
+- 本文档中的 Python 概念可以直接映射到 JavaScript 生态
+- 关键 API 和设计模式在两种语言中是相似的
+
+如果您使用 JavaScript，可以参考以下资源：
+- [LangChain.js 文档](https://js.langchain.com/)
+- [Vercel AI SDK](https://sdk.vercel.ai/)
+
+## 📖 概述
+
+Agent 架构模式定义了 Agent 的组织结构和运行方式。不同的架构模式适用于不同的应用场景，理解这些模式有助于设计更高效的 Agent 系统。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 理解 ReAct 模式的工作原理
+- 掌握 Plan-and-Solve 模式的应用场景
+- 了解 Self-Refine 模式的实现方式
+- 掌握 Reflexion 模式的核心思想
+- 能够根据任务选择合适的架构模式
+
+## 🏗️ ReAct 模式
+
+### 什么是 ReAct
+
+ReAct（Reasoning + Acting）是一种将推理和行动结合的 Agent 架构模式。Agent 通过交替进行思考和行动来完成任务。
+
+### 工作原理
+
+ReAct 模式的核心是"推理-行动-观察"循环：
+
+1. **Thought（思考）**：分析当前情况
+2. **Action（行动）**：决定执行什么工具
+3. **Observation（观察）**：观察工具执行结果
+4. **重复**：直到完成任务
+
+### 实现示例
+
+```python
+# Python 示例：ReAct Agent
+from typing import List, Dict, Optional
+from langchain.llms import OpenAI
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain.tools import Tool
+from langchain import hub
+
+class ReActAgent:
+    def __init__(self, tools: List[Tool], llm: OpenAI):
+        self.tools = tools
+        self.llm = llm
+        self.agent = self._create_agent()
+        self.executor = self._create_executor()
+    
+    def _create_agent(self):
+        """
+        创建 ReAct Agent
+        """
+        # 获取 ReAct 提示模板
+        prompt = hub.pull("hwchase17/react")
+        
+        # 创建 Agent
+        agent = create_react_agent(
+            llm=self.llm,
+            tools=self.tools,
+            prompt=prompt
+        )
+        
+        return agent
+    
+    def _create_executor(self):
+        """
+        创建 Agent 执行器
+        """
+        return AgentExecutor(
+            agent=self.agent,
+            tools=self.tools,
+            verbose=True,
+            max_iterations=10,
+            handle_parsing_errors=True
+        )
+    
+    def run(self, query: str) -> str:
+        """
+        运行 Agent
+        """
+        result = self.executor.invoke({"input": query})
+        return result["output"]
+
+# 使用示例
+def create_search_tool():
+    """创建搜索工具"""
+    def search(query: str) -> str:
+        # 模拟搜索
+        return f"关于 '{query}' 的搜索结果"
+    
+    return Tool(
+        name="Search",
+        func=search,
+        description="用于搜索互联网信息"
+    )
+
+def create_calculator_tool():
+    """创建计算器工具"""
+    def calculate(expression: str) -> str:
+        try:
+            result = eval(expression)
+            return str(result)
+        except Exception as e:
+            return f"计算错误: {str(e)}"
+    
+    return Tool(
+        name="Calculator",
+        func=calculate,
+        description="用于数学计算"
+    )
+
+# 创建 Agent
+tools = [create_search_tool(), create_calculator_tool()]
+llm = OpenAI(temperature=0)
+agent = ReActAgent(tools, llm)
+
+# 执行任务
+result = agent.run("搜索苹果公司的股价，然后计算100股的价值")
+print(result)
+```
+
+### ReAct 提示模板
+
+```
+Answer the following questions as best you can. You have access to the following tools:
+
+{tool_names}
+
+{tool_descriptions}
+
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Begin!
+
+Question: {input}
+Thought:{agent_scratchpad}
+```
+
+### 执行流程示例
+
+```
+Question: 搜索苹果公司的股价，然后计算100股的价值
+
+Thought: 我需要先搜索苹果公司的股价信息
+Action: Search
+Action Input: 苹果公司股价
+Observation: 苹果公司（AAPL）当前股价为 $150.25
+
+Thought: 现在我有了股价信息，需要计算100股的价值
+Action: Calculator
+Action Input: 150.25 * 100
+Observation: 15025.0
+
+Thought: 我已经得到了最终答案
+Final Answer: 苹果公司100股的价值为 $15,025
+```
+
+### 优缺点
+
+#### 优点
+- ✅ **简单直观**：易于理解和实现
+- ✅ **通用性强**：适用于多种任务
+- ✅ **可解释性好**：每一步都有明确的思考过程
+- ✅ **易于调试**：可以观察中间步骤
+
+#### 缺点
+- ❌ **效率较低**：需要多次迭代
+- ❌ **容易陷入循环**：可能重复相同的行动
+- ❌ **依赖 LLM 能力**：推理质量取决于 LLM
+- ❌ **成本较高**：多次调用 LLM
+
+### 适用场景
+
+- ✅ 需要多步推理的任务
+- ✅ 需要使用多个工具的任务
+- ✅ 需要探索性搜索的任务
+- ❌ 对延迟敏感的实时应用
+- ❌ 需要结构化输出的任务
+
+## 📋 Plan-and-Solve 模式
+
+### 什么是 Plan-and-Solve
+
+Plan-and-Solve 模式将任务分为两个阶段：规划阶段和执行阶段。Agent 先制定详细的执行计划，然后按计划执行。
+
+### 工作原理
+
+1. **规划阶段**：分析任务，生成详细的执行计划
+2. **执行阶段**：按照计划逐步执行
+3. **验证阶段**：检查执行结果，必要时调整计划
+
+### 实现示例
+
+```python
+# Python 示例：Plan-and-Solve Agent
+from typing import List, Dict
+from langchain.llms import OpenAI
+from langchain.prompts import PromptTemplate
+
+def parse_plan(plan_text: str) -> List[str]:
+    """
+    解析计划文本
+    """
+    steps = []
+    lines = plan_text.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # 移除序号（如 "1. "、"1）" 等）
+        line = line.lstrip('0123456789.')
+        line = line.lstrip('0123456789）')
+        line = line.lstrip('-*•')
+        
+        # 提取步骤描述（去除"第一步"、"第二步"等前缀）
+        if '：' in line or ':' in line:
+            parts = line.split('：' if '：' in line else ':')
+            if len(parts) > 1:
+                steps.append(parts[1].strip())
+        else:
+            steps.append(line.strip())
+    
+    return steps
+
+class PlanAndSolveAgent:
+    def __init__(self, llm: OpenAI, tools: Dict[str, callable] = None):
+        self.llm = llm
+        self.tools = tools or {}
+        self.planner_prompt = PromptTemplate(
+            input_variables=["task"],
+            template="""
+            请为以下任务制定详细的执行计划：
+            
+            任务：{task}
+            
+            请按照以下格式输出计划：
+            1. 第一步：[步骤描述]
+            2. 第二步：[步骤描述]
+            ...
+            
+            每个步骤应该：
+            - 清晰具体
+            - 可执行
+            - 有明确的输入和输出
+            """
+        )
+    
+    def plan(self, task: str) -> List[str]:
+        """
+        制定执行计划
+        """
+        prompt = self.planner_prompt.format(task=task)
+        plan_text = self.llm.predict(prompt)
+        
+        # 解析计划
+        steps = parse_plan(plan_text)
+        return steps
+    
+    def execute(self, plan: List[str]) -> str:
+        """
+        执行计划
+        """
+        results = []
+        
+        for i, step in enumerate(plan, 1):
+            print(f"\n执行步骤 {i}/{len(plan)}: {step}")
+            
+            # 执行步骤
+            result = self._execute_step(step)
+            results.append(result)
+            
+            print(f"结果: {result}")
+        
+        # 汇总结果
+        final_result = self._summarize_results(plan, results)
+        return final_result
+    
+    def _execute_step(self, step: str) -> str:
+        """
+        执行单个步骤
+        """
+        # 根据步骤内容选择合适的工具
+        if self.tools:
+            for tool_name, tool_func in self.tools.items():
+                if tool_name.lower() in step.lower():
+                    try:
+                        return tool_func(step)
+                    except Exception as e:
+                        return f"执行失败: {str(e)}"
+        
+        # 如果没有匹配的工具，使用 LLM 生成执行结果
+        prompt = f"""
+        请执行以下步骤并返回结果：
+        
+        步骤：{step}
+        
+        请返回具体的执行结果。
+        """
+        
+        try:
+            result = self.llm.predict(prompt)
+            return result
+        except Exception as e:
+            return f"执行出错: {str(e)}"
+    
+    def _summarize_results(
+        self,
+        plan: List[str],
+        results: List[str]
+    ) -> str:
+        """
+        汇总执行结果
+        """
+        summary = "任务执行完成\n\n"
+        summary += "执行步骤：\n"
+        
+        for i, (step, result) in enumerate(zip(plan, results), 1):
+            summary += f"{i}. {step}\n"
+            summary += f"   结果: {result}\n"
+        
+        return summary
+    
+    def run(self, task: str) -> str:
+        """
+        运行完整流程
+        """
+        print("=== 规划阶段 ===")
+        plan = self.plan(task)
+        print(f"生成的计划:\n{chr(10).join(f'{i+1}. {step}' for i, step in enumerate(plan))}")
+        
+        print("\n=== 执行阶段 ===")
+        result = self.execute(plan)
+        
+        return result
+
+# 使用示例
+llm = OpenAI(temperature=0)
+
+# 定义一些工具函数
+def create_database_model(step: str) -> str:
+    """创建数据库模型"""
+    return "已创建数据库模型（用户表、任务表）"
+
+def create_backend_api(step: str) -> str:
+    """创建后端 API"""
+    return "已创建后端 API（添加、删除、更新任务接口）"
+
+def create_frontend_ui(step: str) -> str:
+    """创建前端界面"""
+    return "已创建前端界面（任务列表、添加表单）"
+
+tools = {
+    '数据库': create_database_model,
+    'api': create_backend_api,
+    '前端': create_frontend_ui
+}
+
+agent = PlanAndSolveAgent(llm, tools)
+result = agent.run("创建一个简单的待办事项应用")
+print(result)
+```
+
+### 计划示例
+
+```
+任务：创建一个简单的待办事项应用
+
+执行计划：
+1. 第一步：设计数据库模型（用户、任务）
+2. 第二步：创建后端 API（添加、删除、更新任务）
+3. 第三步：开发前端界面（任务列表、添加表单）
+4. 第二步：实现用户认证功能
+5. 第五步：编写测试用例
+6. 第六步：部署应用
+```
+
+### 优缺点
+
+#### 优点
+- ✅ **结构清晰**：计划明确，易于理解
+- ✅ **执行高效**：按计划执行，减少不必要的思考
+- ✅ **易于追踪**：可以监控每个步骤的执行情况
+- ✅ **可重用性**：计划可以保存和复用
+
+#### 缺点
+- ❌ **灵活性差**：难以应对计划外的变化
+- ❌ **规划质量依赖**：如果计划制定不好，执行效果差
+- ❌ **缺乏动态调整**：执行过程中难以调整计划
+- ❌ **需要额外时间**：规划阶段需要额外的时间
+
+### 适用场景
+
+- ✅ 任务结构清晰，步骤明确
+- ✅ 需要可预测的执行流程
+- ✅ 需要详细的执行记录
+- ❌ 任务不确定性强
+- ❌ 需要频繁调整计划
+
+## 🔄 Self-Refine 模式
+
+### 什么是 Self-Refine
+
+Self-Refine 模式让 Agent 通过多次迭代不断改进自己的输出。Agent 先生成初始结果，然后评估并改进，直到达到满意的质量。
+
+### 工作原理
+
+1. **生成初始输出**：基于任务生成初步结果
+2. **自我评估**：评估输出质量，找出问题
+3. **改进输出**：根据评估结果改进输出
+4. **重复**：直到达到质量标准
+
+### 实现示例
+
+```python
+# Python 示例：Self-Refine Agent
+from typing import List, Dict
+import json
+from langchain.llms import OpenAI
+from langchain.prompts import PromptTemplate
+
+class SelfRefineAgent:
+    def __init__(
+        self,
+        llm: OpenAI,
+        max_iterations: int = 3,
+        quality_threshold: float = 0.8
+    ):
+        self.llm = llm
+        self.max_iterations = max_iterations
+        self.quality_threshold = quality_threshold
+        
+        # 提示模板
+        self.generation_prompt = PromptTemplate(
+            input_variables=["task", "feedback"],
+            template="""
+            任务：{task}
+            
+            {feedback}
+            
+            请生成高质量的输出。
+            """
+        )
+        
+        self.evaluation_prompt = PromptTemplate(
+            input_variables=["task", "output"],
+            template="""
+            请评估以下输出的质量：
+            
+            任务：{task}
+            输出：{output}
+            
+            评估标准：
+            1. 准确性
+            2. 完整性
+            3. 清晰度
+            4. 实用性
+            
+            请提供：
+            1. 总体评分（0-1）
+            2. 具体反馈（指出优点和不足）
+            3. 改进建议
+            
+            以 JSON 格式返回，包含以下字段：
+            - score: 总体评分（0-1）
+            - feedback: 具体反馈
+            - suggestions: 改进建议列表
+            """
+        )
+    
+    def generate(
+        self,
+        task: str,
+        feedback: str = ""
+    ) -> str:
+        """
+        生成输出
+        """
+        prompt = self.generation_prompt.format(
+            task=task,
+            feedback=feedback
+        )
+        return self.llm.predict(prompt)
+    
+    def evaluate(
+        self,
+        task: str,
+        output: str
+    ) -> Dict:
+        """
+        评估输出质量
+        """
+        prompt = self.evaluation_prompt.format(
+            task=task,
+            output=output
+        )
+        
+        evaluation = self.llm.predict(prompt)
+        
+        try:
+            return json.loads(evaluation)
+        except json.JSONDecodeError:
+            # 如果解析失败，尝试提取评分
+            try:
+                # 简单的评分提取
+                if '评分' in evaluation or 'score' in evaluation:
+                    import re
+                    score_match = re.search(r'[评分score][:：]\s*([0-9.]+)', evaluation)
+                    if score_match:
+                        score = float(score_match.group(1))
+                        if score > 1:
+                            score = score / 10  # 如果是10分制，转换为0-1
+                    else:
+                        score = 0.5
+                else:
+                    score = 0.5
+                
+                return {
+                    "score": score,
+                    "feedback": evaluation[:200],
+                    "suggestions": []
+                }
+            except:
+                return {
+                    "score": 0.5,
+                    "feedback": "无法解析评估结果",
+                    "suggestions": []
+                }
+    
+    def refine(
+        self,
+        task: str,
+        output: str,
+        evaluation: Dict
+    ) -> str:
+        """
+        改进输出
+        """
+        feedback = f"""
+        之前的输出：
+        {output}
+        
+        评估反馈：
+        评分：{evaluation.get('score', 0)}
+        具体反馈：{evaluation.get('feedback', '')}
+        改进建议：
+        {chr(10).join(f"- {s}" for s in evaluation.get('suggestions', []))}
+        
+        请根据以上反馈改进输出。
+        """
+        
+        return self.generate(task, feedback)
+    
+    def run(self, task: str) -> Dict:
+        """
+        运行 Self-Refine 流程
+        """
+        print("=== 初始生成 ===")
+        current_output = self.generate(task)
+        print(f"输出: {current_output}\n")
+        
+        iteration = 0
+        for iteration in range(self.max_iterations):
+            print(f"=== 迭代 {iteration + 1}/{self.max_iterations} ===")
+            
+            # 评估
+            evaluation = self.evaluate(task, current_output)
+            score = evaluation.get('score', 0)
+            
+            print(f"评分: {score}")
+            print(f"反馈: {evaluation.get('feedback', '')}")
+            
+            # 检查是否达到质量标准
+            if score >= self.quality_threshold:
+                print("\n达到质量标准，停止迭代")
+                break
+            
+            # 改进
+            print("\n改进输出...")
+            current_output = self.refine(task, current_output, evaluation)
+            print(f"改进后: {current_output[:200]}...\n")
+        
+        return {
+            "final_output": current_output,
+            "iterations": iteration + 1,
+            "final_score": evaluation.get('score', 0)
+        }
+
+# 使用示例
+llm = OpenAI(temperature=0)
+agent = SelfRefineAgent(llm, max_iterations=3)
+
+result = agent.run("写一篇关于人工智能发展历史的文章")
+print(f"\n最终输出:\n{result['final_output']}")
+print(f"迭代次数: {result['iterations']}")
+print(f"最终评分: {result['final_score']}")
+```
+
+### 迭代示例
+
+```
+=== 初始生成 ===
+输出: 人工智能是计算机科学的一个分支...
+
+=== 迭代 1/3 ===
+评分: 0.6
+反馈: 内容不够详细，缺少关键事件和时间线
+
+改进输出...
+
+=== 迭代 2/3 ===
+评分: 0.75
+反馈: 内容更丰富了，但结构可以更清晰
+
+改进输出...
+
+=== 迭代 3/3 ===
+评分: 0.85
+反馈: 质量良好，内容完整，结构清晰
+
+达到质量标准，停止迭代
+```
+
+### 优缺点
+
+#### 优点
+- ✅ **质量保证**：通过迭代不断提高质量
+- ✅ **自我改进**：无需外部反馈即可改进
+- ✅ **适应性强**：可以根据评估结果调整输出
+- ✅ **可控制**：可以通过阈值控制质量
+
+#### 缺点
+- ❌ **成本较高**：多次迭代需要更多资源
+- ❌ **时间较长**：需要多次生成和评估
+- ❌ **可能陷入局部最优**：可能无法达到最优解
+- ❌ **依赖评估能力**：评估质量取决于 LLM
+
+### 适用场景
+
+- ✅ 对输出质量要求高的任务
+- ✅ 创意写作、代码生成等
+- ✅ 需要多次优化的任务
+- ❌ 实时性要求高的任务
+- ❌ 资源受限的场景
+
+## 🎭 Reflexion 模式
+
+### 什么是 Reflexion
+
+Reflexion 是一种基于语言强化学习的 Agent 架构模式。Agent 通过反思自己的行为和结果，学习经验并改进未来的决策。
+
+### 工作原理
+
+1. **执行任务**：执行任务并记录过程
+2. **自我反思**：分析执行过程和结果
+3. **生成经验**：从反思中提取经验教训
+4. **策略更新**：根据经验更新决策策略
+5. **重复**：持续学习和改进
+
+### 实现示例
+
+```python
+# Python 示例：Reflexion Agent
+from typing import List, Dict
+import json
+from datetime import datetime
+from langchain.llms import OpenAI
+from langchain.prompts import PromptTemplate
+
+class ReflexionAgent:
+    def __init__(self, llm: OpenAI):
+        self.llm = llm
+        self.experience_memory = []
+        self.strategy = "使用默认策略"
+        
+        # 提示模板
+        self.execution_prompt = PromptTemplate(
+            input_variables=["task", "strategy", "context"],
+            template="""
+            任务：{task}
+            策略：{strategy}
+            上下文：{context}
+            
+            请执行任务并返回结果。
+            """
+        )
+        
+        self.reflection_prompt = PromptTemplate(
+            input_variables=["task", "execution_log", "result"],
+            template="""
+            请反思以下执行过程：
+            
+            任务：{task}
+            执行日志：{execution_log}
+            结果：{result}
+            
+            请分析：
+            1. 哪些决策是正确的
+            2. 哪些决策需要改进
+            3. 可以学到什么经验
+            4. 如何改进策略
+            
+            以 JSON 格式返回反思结果，包含以下字段：
+            - correct_decisions: 正确决策列表
+            - improvements: 需要改进的地方列表
+            - lessons: 经验教训列表
+            - strategy_updates: 策略更新建议列表
+            """
+        )
+    
+    def execute(
+        self,
+        task: str,
+        strategy: str = None,
+        context: str = ""
+    ) -> Dict:
+        """
+        执行任务
+        """
+        if strategy is None:
+            strategy = self.strategy
+        
+        prompt = self.execution_prompt.format(
+            task=task,
+            strategy=strategy,
+            context=context
+        )
+        
+        result = self.llm.predict(prompt)
+        
+        return {
+            "task": task,
+            "strategy": strategy,
+            "result": result,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    def reflect(
+        self,
+        execution: Dict,
+        execution_log: List[Dict]
+    ) -> Dict:
+        """
+        反思执行过程
+        """
+        # 格式化执行日志
+        log_text = self._format_execution_log(execution_log)
+        
+        prompt = self.reflection_prompt.format(
+            task=execution["task"],
+            execution_log=log_text,
+            result=execution["result"][:500]  # 限制结果长度
+        )
+        
+        reflection = self.llm.predict(prompt)
+        
+        try:
+            return json.loads(reflection)
+        except json.JSONDecodeError:
+            # 如果解析失败，返回默认结构
+            return {
+                "correct_decisions": [],
+                "improvements": [],
+                "lessons": [],
+                "strategy_updates": []
+            }
+    
+    def _format_execution_log(self, execution_log: List[Dict]) -> str:
+        """
+        格式化执行日志
+        """
+        formatted = []
+        for log_entry in execution_log:
+            iteration = log_entry.get('iteration', '?')
+            execution = log_entry.get('execution', {})
+            formatted.append(f"迭代 {iteration}:")
+            formatted.append(f"  策略: {execution.get('strategy', 'N/A')}")
+            formatted.append(f"  结果: {execution.get('result', 'N/A')[:200]}...")
+        return '\n'.join(formatted)
+    
+    def update_strategy(self, reflection: Dict):
+        """
+        更新策略
+        """
+        strategy_updates = reflection.get("strategy_updates", [])
+        
+        if strategy_updates:
+            # 根据反思结果更新策略
+            if isinstance(strategy_updates, list):
+                self.strategy = "；".join(strategy_updates)
+            else:
+                self.strategy = str(strategy_updates)
+            print(f"更新策略: {self.strategy}")
+    
+    def store_experience(
+        self,
+        execution: Dict,
+        reflection: Dict
+    ):
+        """
+        存储经验
+        """
+        experience = {
+            "execution": execution,
+            "reflection": reflection,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        self.experience_memory.append(experience)
+        
+        # 限制记忆大小
+        if len(self.experience_memory) > 100:
+            self.experience_memory.pop(0)
+    
+    def _calculate_similarity(self, task1: str, task2: str) -> float:
+        """
+        计算任务相似度
+        """
+        # 简化的相似度计算
+        task1_lower = task1.lower()
+        task2_lower = task2.lower()
+        
+        # 检查关键词重叠
+        keywords1 = set(task1_lower.split())
+        keywords2 = set(task2_lower.split())
+        
+        overlap = keywords1 & keywords2
+        similarity = len(overlap) / max(len(keywords1), len(keywords2))
+        
+        return similarity
+    
+    def retrieve_similar_experiences(
+        self,
+        task: str,
+        threshold: float = 0.3,
+        limit: int = 3
+    ) -> List[Dict]:
+        """
+        检索相似经验
+        """
+        similar_experiences = []
+        
+        for experience in self.experience_memory:
+            execution = experience.get("execution", {})
+            experience_task = execution.get("task", "")
+            
+            similarity = self._calculate_similarity(task, experience_task)
+            
+            if similarity >= threshold:
+                similar_experiences.append({
+                    "experience": experience,
+                    "similarity": similarity
+                })
+        
+        # 按相似度排序
+        similar_experiences.sort(
+            key=lambda x: x["similarity"],
+            reverse=True
+        )
+        
+        # 返回前 N 个
+        return [
+            exp["experience"]
+            for exp in similar_experiences[:limit]
+        ]
+    
+    def run(self, task: str, iterations: int = 3) -> Dict:
+        """
+        运行 Reflexion 流程
+        """
+        execution_log = []
+        
+        for i in range(iterations):
+            print(f"\n=== 迭代 {i + 1}/{iterations} ===")
+            
+            # 检索相似经验
+            similar_experiences = self.retrieve_similar_experiences(task)
+            
+            # 构建上下文
+            context = ""
+            if similar_experiences:
+                context = "参考经验：\n"
+                for j, exp in enumerate(similar_experiences, 1):
+                    reflection = exp.get("reflection", {})
+                    context += f"{j}. {reflection.get('lessons', ['无'])[0]}\n"
+            
+            # 执行任务
+            execution = self.execute(task, context=context)
+            execution_log.append({
+                "iteration": i + 1,
+                "execution": execution
+            })
+            
+            print(f"策略: {execution['strategy']}")
+            print(f"结果: {execution['result'][:100]}...")
+            
+            # 反思
+            reflection = self.reflect(execution, execution_log)
+            
+            print(f"\n反思:")
+            print(f"正确决策: {len(reflection.get('correct_decisions', []))}")
+            print(f"改进点: {len(reflection.get('improvements', []))}")
+            print(f"经验教训: {len(reflection.get('lessons', []))}")
+            
+            # 存储经验
+            self.store_experience(execution, reflection)
+            
+            # 更新策略
+            self.update_strategy(reflection)
+        
+        return {
+            "task": task,
+            "iterations": iterations,
+            "final_strategy": self.strategy,
+            "experiences_stored": len(self.experience_memory)
+        }
+
+# 使用示例
+llm = OpenAI(temperature=0)
+agent = ReflexionAgent(llm)
+
+result = agent.run("设计一个用户登录系统", iterations=3)
+print(f"\n最终策略: {result['final_strategy']}")
+print(f"存储的经验数量: {result['experiences_stored']}")
+```
+
+### 反思示例
+
+```json
+{
+  "correct_decisions": [
+    "使用密码哈希存储",
+    "实现会话管理"
+  ],
+  "improvements": [
+    "应该添加双因素认证",
+    "需要实现密码重置功能"
+  ],
+  "lessons": [
+    "安全性是登录系统的关键",
+    "用户体验也很重要"
+  ],
+  "strategy_updates": [
+    "优先考虑安全性",
+    "添加必要的用户体验功能"
+  ]
+}
+```
+
+### 优缺点
+
+#### 优点
+- ✅ **持续学习**：从经验中不断改进
+- ✅ **自适应能力**：能够适应不同任务
+- ✅ **长期优化**：随着经验积累不断优化
+- ✅ **可解释性**：反思过程提供了可解释性
+
+#### 缺点
+- ❌ **学习成本高**：需要多次迭代才能学习
+- ❌ **记忆管理**：需要管理大量的经验记忆
+- ❌ **收敛性不确定**：可能不收敛或收敛到次优解
+- ❌ **复杂度高**：实现和维护复杂
+
+### 适用场景
+
+- ✅ 需要长期学习和改进的任务
+- ✅ 重复性任务
+- ✅ 需要自适应能力的场景
+- ❌ 一次性任务
+- ❌ 对快速响应要求高的任务
+
+## 📊 架构模式对比
+
+| 模式 | 核心特点 | 优点 | 缺点 | 适用场景 |
+|------|----------|------|------|----------|
+| ReAct | 推理-行动循环 | 简单直观，可解释性好 | 效率低，成本高 | 多步推理任务 |
+| Plan-and-Solve | 先规划后执行 | 结构清晰，执行高效 | 灵活性差 | 任务结构明确 |
+| Self-Refine | 迭代改进 | 质量保证，自我改进 | 成本高，时间长 | 高质量要求 |
+| Reflexion | 反思学习 | 持续学习，自适应 | 复杂度高，学习成本高 | 长期优化 |
+
+## 🎯 模式选择指南
+
+### 选择 ReAct 如果你需要：
+- 🎯 简单的实现
+- 🔍 探索性任务
+- 📊 可观察的执行过程
+- 🛠️ 多工具协作
+
+### 选择 Plan-and-Solve 如果你需要：
+- 📋 明确的执行计划
+- ⚡ 高效的执行
+- 📝 详细的执行记录
+- 🔄 可复用的流程
+
+### 选择 Self-Refine 如果你需要：
+- 🎨 高质量输出
+- ✨ 创意优化
+- 🎯 精确控制质量
+- 🔄 多次迭代改进
+
+### 选择 Reflexion 如果你需要：
+- 📚 长期学习
+- 🎭 自适应能力
+- 🔄 持续优化
+- 🧠 经验积累
+
+## 💡 混合模式
+
+实际应用中，可以结合多种模式的优势。
+
+### ReAct + Self-Refine
+
+```python
+class HybridAgent:
+    """
+    结合 ReAct 和 Self-Refine 的混合 Agent
+    """
+    def __init__(self, llm):
+        self.react_agent = ReActAgent(tools, llm)
+        self.refine_agent = SelfRefineAgent(llm)
+    
+    def run(self, task: str) -> str:
+        # 使用 ReAct 生成初步结果
+        initial_result = self.react_agent.run(task)
+        
+        # 使用 Self-Refine 优化结果
+        refined_result = self.refine_agent.refine(
+            task, initial_result
+        )
+        
+        return refined_result
+```
+
+### Plan-and-Solve + Reflexion
+
+```python
+class AdaptiveAgent:
+    """
+    结合 Plan-and-Solve 和 Reflexion 的自适应 Agent
+    """
+    def __init__(self, llm):
+        self.planner = PlanAndSolveAgent(llm)
+        self.reflexion_agent = ReflexionAgent(llm)
+    
+    def run(self, task: str, iterations: int = 3) -> str:
+        for i in range(iterations):
+            # 使用 Plan-and-Solve 执行任务
+            result = self.planner.run(task)
+            
+            # 使用 Reflexion 反思和学习
+            self.reflexion_agent.run(task, iterations=1)
+            
+            # 根据反思结果调整计划
+            self.planner.adjust_plan(
+                self.reflexion_agent.strategy
+            )
+        
+        return result
+```
+
+## 📚 学习检查点
+
+完成本节学习后，你应该能够回答：
+- [ ] ReAct 模式的工作原理是什么？
+- [ ] Plan-and-Solve 模式适用于哪些场景？
+- [ ] Self-Refine 模式如何提高输出质量？
+- [ ] Reflexion 模式的核心思想是什么？
+- [ ] 不同架构模式的优缺点是什么？
+- [ ] 如何为任务选择合适的架构模式？
+- [ ] 如何结合多种模式的优势？
+
+## 🔗 相关资源
+
+### 论文
+- [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)
+- [Reflexion: Language Agents with Verbal Reinforcement Learning](https://arxiv.org/abs/2303.11366)
+- [Plan-and-Solve Prompting: Improving Zero-Shot Chain-of-Thought Reasoning by Large Language Models](https://arxiv.org/abs/2305.04091)
+- [Self-Refine: Large Language Models Can Self-Correct with Reinforcement](https://arxiv.org/abs/2309.17436)
+
+### 框架文档
+- [LangChain Agent Types](https://python.langchain.com/docs/modules/agents/agent_types/)
+- [AutoGen Conversation Patterns](https://microsoft.github.io/autogen/docs/topics/groupchat/customized_speaker_selection)
+- [CrewAI Processes](https://docs.crewai.com/how-to/Processes/)
+
+### 示例代码
+- [LangChain Agent Examples](https://github.com/langchain-ai/langchain/tree/master/cookbook)
+- [AutoGen Examples](https://github.com/microsoft/autogen/tree/main/notebook)
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **Agent 框架** - 学习主流的 Agent 开发框架
+- **Agent 工具集成** - 深入学习工具开发
+- **实践项目** - 动手构建完整的 Agent 应用
