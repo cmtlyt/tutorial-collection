@@ -1,0 +1,548 @@
+# 前馈网络详解
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-14
+
+## 📖 概述
+
+前馈网络（Feed-Forward Network，FFN）是 Transformer 架构中的重要组件，也称为位置前馈网络（Position-wise Feed-Forward Network）。它在每个位置独立地应用相同的变换，为模型提供非线性表达能力。
+
+## 🎯 作用与重要性
+
+### 为什么需要 FFN？
+
+1. **非线性变换**
+   - 自注意力机制本质上是线性变换
+   - FFN 引入非线性激活函数
+   - 增强模型的表达能力
+
+2. **特征变换**
+   - 将注意力输出映射到新的特征空间
+   - 提取更高级的语义特征
+   - 类似于传统神经网络中的隐藏层
+
+3. **位置独立性**
+   - 对每个位置独立应用
+   - 保持位置编码的信息
+   - 便于并行计算
+
+### 在 Transformer 中的位置
+
+```
+输入
+    ↓
+自注意力
+    ↓
+残差连接 + 层归一化
+    ↓
+前馈网络 ← 我们在这里
+    ↓
+残差连接 + 层归一化
+    ↓
+输出
+```
+
+## 🔢 数学原理
+
+### 基本结构
+
+FFN 由两个线性变换组成，中间有一个非线性激活函数：
+
+```
+FFN(x) = max(0, xW₁ + b₁)W₂ + b₂
+```
+
+或者更详细地：
+
+```
+h = ReLU(xW₁ + b₁)
+output = hW₂ + b₂
+```
+
+其中：
+- `x`：输入，形状为 `(batch_size, seq_len, d_model)`
+- `W₁`：第一个权重矩阵，形状为 `(d_model, d_ff)`
+- `b₁`：第一个偏置，形状为 `(d_ff,)`
+- `W₂`：第二个权重矩阵，形状为 `(d_ff, d_model)`
+- `b₂`：第二个偏置，形状为 `(d_model,)`
+- `d_ff`：隐藏层维度，通常 `d_ff = 4 * d_model`
+
+### 维度变化
+
+```
+输入: (batch_size, seq_len, d_model)
+    ↓ 线性变换 + ReLU
+隐藏: (batch_size, seq_len, d_ff)
+    ↓ 线性变换
+输出: (batch_size, seq_len, d_model)
+```
+
+### 为什么使用 ReLU？
+
+1. **计算简单**：`max(0, x)`，计算效率高
+2. **稀疏激活**：只有部分神经元被激活
+3. **缓解梯度消失**：正区间的梯度恒为 1
+4. **实践效果好**：在大量任务上表现良好
+
+## 💻 代码实现
+
+### 基础实现
+
+```python
+import torch
+import torch.nn as nn
+
+class FeedForwardNetwork(nn.Module):
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        """
+        前馈网络
+        
+        参数:
+            d_model: 模型维度
+            d_ff: 隐藏层维度
+            dropout: Dropout 比率
+        """
+        super().__init__()
+        
+        # 第一个线性层：扩展维度
+        self.linear1 = nn.Linear(d_model, d_ff)
+        
+        # 激活函数
+        self.activation = nn.ReLU()
+        
+        # 第二个线性层：恢复维度
+        self.linear2 = nn.Linear(d_ff, d_model)
+        
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x):
+        """
+        前向传播
+        
+        参数:
+            x: (batch_size, seq_len, d_model)
+        
+        返回:
+            output: (batch_size, seq_len, d_model)
+        """
+        # 第一层 + 激活
+        x = self.linear1(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+        
+        # 第二层
+        x = self.linear2(x)
+        x = self.dropout(x)
+        
+        return x
+```
+
+### 完整的 Transformer 层
+
+```python
+class TransformerLayer(nn.Module):
+    def __init__(self, d_model, d_ff, n_heads, dropout=0.1):
+        """
+        Transformer 层
+        
+        参数:
+            d_model: 模型维度
+            d_ff: 前馈网络隐藏层维度
+            n_heads: 注意力头数
+            dropout: Dropout 比率
+        """
+        super().__init__()
+        
+        # 自注意力
+        self.self_attention = MultiHeadAttention(d_model, n_heads, dropout)
+        
+        # 前馈网络
+        self.feed_forward = FeedForwardNetwork(d_model, d_ff, dropout)
+        
+        # 层归一化
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x, mask=None):
+        """
+        前向传播
+        
+        参数:
+            x: (batch_size, seq_len, d_model)
+            mask: (batch_size, 1, seq_len, seq_len)
+        
+        返回:
+            output: (batch_size, seq_len, d_model)
+        """
+        # 自注意力 + 残差连接 + 层归一化
+        attn_output, _ = self.self_attention(x, x, x, mask)
+        x = self.norm1(x + self.dropout(attn_output))
+        
+        # 前馈网络 + 残差连接 + 层归一化
+        ff_output = self.feed_forward(x)
+        x = self.norm2(x + self.dropout(ff_output))
+        
+        return x
+```
+
+## 🔧 变体与改进
+
+### 1. GELU 激活函数
+
+GELU（Gaussian Error Linear Unit）在许多现代模型中替代了 ReLU。
+
+#### 数学公式
+
+```
+GELU(x) = x * Φ(x)
+```
+
+其中 `Φ(x)` 是标准正态分布的累积分布函数。
+
+#### 近似实现
+
+```python
+class GELU(nn.Module):
+    def __init__(self):
+        super().__init__()
+    
+    def forward(self, x):
+        return 0.5 * x * (1.0 + torch.tanh(
+            math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))
+        ))
+
+# 使用 GELU 的 FFN
+class FeedForwardNetworkGELU(nn.Module):
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super().__init__()
+        
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.activation = GELU()
+        self.linear2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x):
+        x = self.linear1(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+        x = self.linear2(x)
+        x = self.dropout(x)
+        return x
+```
+
+#### GELU vs ReLU
+
+| 特性 | ReLU | GELU |
+|------|------|------|
+| 平滑性 | 不连续 | 平滑 |
+| 梯度 | 0 或 1 | 连续变化 |
+| 性能 | 良好 | 通常更好 |
+| 计算成本 | 低 | 稍高 |
+
+### 2. SwiGLU 激活函数
+
+SwiGLU 在 LLaMA 等现代模型中使用，性能优于 GELU。
+
+#### 数学公式
+
+```
+SwiGLU(x) = Swish(xW) ⊙ (xV)
+
+其中 Swish(x) = x * σ(x)
+```
+
+#### 代码实现
+
+```python
+class SwiGLU(nn.Module):
+    def __init__(self, d_model, d_ff):
+        """
+        SwiGLU 激活函数
+        
+        参数:
+            d_model: 模型维度
+            d_ff: 隐藏层维度（注意：SwiGLU 需要 2/3 的 d_ff）
+        """
+        super().__init__()
+        
+        # SwiGLU 需要三个权重矩阵
+        self.W_gate = nn.Linear(d_model, d_ff, bias=False)
+        self.W_up = nn.Linear(d_model, d_ff, bias=False)
+        self.W_down = nn.Linear(d_ff, d_model, bias=False)
+    
+    def forward(self, x):
+        """
+        前向传播
+        
+        参数:
+            x: (batch_size, seq_len, d_model)
+        
+        返回:
+            output: (batch_size, seq_len, d_model)
+        """
+        # 门控
+        gate = torch.sigmoid(self.W_gate(x))
+        
+        # 上投影
+        up = self.W_up(x)
+        
+        # SwiGLU 激活
+        activated = gate * up
+        
+        # 下投影
+        output = self.W_down(activated)
+        
+        return output
+```
+
+### 3. 深度前馈网络
+
+增加 FFN 的深度，提高表达能力。
+
+```python
+class DeepFeedForwardNetwork(nn.Module):
+    def __init__(self, d_model, d_ff, n_layers=2, dropout=0.1):
+        """
+        深度前馈网络
+        
+        参数:
+            d_model: 模型维度
+            d_ff: 隐藏层维度
+            n_layers: 隐藏层数量
+            dropout: Dropout 比率
+        """
+        super().__init__()
+        
+        layers = []
+        for i in range(n_layers):
+            if i == 0:
+                layers.append(nn.Linear(d_model, d_ff))
+            elif i == n_layers - 1:
+                layers.append(nn.Linear(d_ff, d_model))
+            else:
+                layers.append(nn.Linear(d_ff, d_ff))
+            
+            if i < n_layers - 1:
+                layers.append(nn.GELU())
+                layers.append(nn.Dropout(dropout))
+        
+        self.network = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        return self.network(x)
+```
+
+### 4. 专家混合（Mixture of Experts）
+
+使用多个专家网络，根据输入动态选择。
+
+```python
+class MoEFeedForward(nn.Module):
+    def __init__(self, d_model, d_ff, n_experts=4, top_k=2):
+        """
+        专家混合前馈网络
+        
+        参数:
+            d_model: 模型维度
+            d_ff: 每个专家的隐藏层维度
+            n_experts: 专家数量
+            top_k: 激活的专家数量
+        """
+        super().__init__()
+        
+        self.n_experts = n_experts
+        self.top_k = top_k
+        
+        # 门控网络
+        self.gate = nn.Linear(d_model, n_experts)
+        
+        # 专家网络
+        self.experts = nn.ModuleList([
+            FeedForwardNetwork(d_model, d_ff)
+            for _ in range(n_experts)
+        ])
+    
+    def forward(self, x):
+        """
+        前向传播
+        
+        参数:
+            x: (batch_size, seq_len, d_model)
+        
+        返回:
+            output: (batch_size, seq_len, d_model)
+        """
+        batch_size, seq_len, d_model = x.shape
+        
+        # 计算门控权重
+        gate_logits = self.gate(x)  # (batch_size, seq_len, n_experts)
+        gate_probs = F.softmax(gate_logits, dim=-1)
+        
+        # 选择 top-k 专家
+        top_k_probs, top_k_indices = torch.topk(gate_probs, self.top_k, dim=-1)
+        
+        # 归一化 top-k 概率
+        top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
+        
+        # 计算输出
+        output = torch.zeros_like(x)
+        
+        for k in range(self.top_k):
+            expert_idx = top_k_indices[:, :, k]
+            expert_weight = top_k_probs[:, :, k]
+            
+            for i in range(self.n_experts):
+                mask = (expert_idx == i)
+                if mask.any():
+                    expert_input = x[mask]
+                    expert_output = self.experts[i](expert_input)
+                    output[mask] += expert_weight[mask].unsqueeze(-1) * expert_output
+        
+        return output
+```
+
+## 📊 超参数选择
+
+### 维度选择
+
+| 模型 | d_model | d_ff | 比例 |
+|------|---------|------|------|
+| Transformer Base | 512 | 2048 | 4x |
+| Transformer Large | 1024 | 4096 | 4x |
+| BERT Base | 768 | 3072 | 4x |
+| BERT Large | 1024 | 4096 | 4x |
+| GPT-2 Small | 768 | 3072 | 4x |
+| LLaMA-7B | 4096 | 11008 | 2.7x |
+
+### 激活函数选择
+
+| 模型 | 激活函数 |
+|------|---------|
+| 原始 Transformer | ReLU |
+| BERT | GELU |
+| GPT-2 | GELU |
+| GPT-3 | GELU |
+| LLaMA | SwiGLU |
+| PaLM | SwiGLU |
+
+## 💡 实践建议
+
+### 训练技巧
+
+1. **初始化**
+   ```python
+   # Xavier/Glorot 初始化
+   nn.init.xavier_uniform_(self.linear1.weight)
+   nn.init.xavier_uniform_(self.linear2.weight)
+   ```
+
+2. **Dropout**
+   - 通常使用 0.1 的 dropout
+   - 在两个线性层后都应用
+
+3. **层归一化**
+   - FFN 前后都有层归一化
+   - 使用残差连接
+
+### 性能优化
+
+1. **激活函数选择**
+   - ReLU：计算快，适合简单任务
+   - GELU：性能好，适合大多数任务
+   - SwiGLU：性能最佳，但计算成本高
+
+2. **维度选择**
+   - 标准：`d_ff = 4 * d_model`
+   - 节省参数：`d_ff = 2 * d_model`
+   - 提高性能：`d_ff = 6 * d_model`
+
+3. **深度选择**
+   - 标准：2 层
+   - 复杂任务：3-4 层
+   - 注意：过深可能导致过拟合
+
+### 常见问题
+
+1. **梯度消失**
+   - 使用 GELU 或 SwiGLU
+   - 使用残差连接
+   - 使用层归一化
+
+2. **过拟合**
+   - 增加 dropout
+   - 减小 d_ff
+   - 使用权重衰减
+
+3. **计算效率**
+   - 使用 fused 操作
+   - 使用混合精度训练
+   - 考虑使用 MoE
+
+## 🔍 可视化与分析
+
+### 激活模式分析
+
+```python
+def analyze_ffn_activations(model, input_data):
+    """
+    分析 FFN 的激活模式
+    
+    参数:
+        model: 包含 FFN 的模型
+        input_data: 输入数据
+    """
+    # 获取 FFN 的输出
+    with torch.no_grad():
+        ff_output = model.feed_forward(input_data)
+    
+    # 计算激活统计
+    activation_rate = (ff_output > 0).float().mean()
+    mean_activation = ff_output.mean()
+    std_activation = ff_output.std()
+    
+    print(f"激活率: {activation_rate:.4f}")
+    print(f"平均激活: {mean_activation:.4f}")
+    print(f"激活标准差: {std_activation:.4f}")
+    
+    # 绘制激活分布
+    plt.figure(figsize=(10, 6))
+    plt.hist(ff_output.flatten().numpy(), bins=50)
+    plt.xlabel('Activation Value')
+    plt.ylabel('Frequency')
+    plt.title('FFN Activation Distribution')
+    plt.show()
+```
+
+## 🔗 相关资源
+
+### 论文
+- 文档处理
+- 文档处理
+- 文档处理
+- 文档处理
+
+### 代码
+- 文档处理
+- 文档处理
+
+### 博客
+- 文档处理
+- 文档处理
+
+## ✅ 学习检查点
+
+- [ ] 理解 FFN 的作用和重要性
+- [ ] 掌握 FFN 的基本结构
+- [ ] 理解不同激活函数的特点
+- [ ] 了解 SwiGLU 的优势
+- [ ] 理解 MoE 的思想
+- [ ] 能够实现基本的 FFN
+
+## 🚀 下一步
+
+继续学习以下内容：
+- 层归一化详解

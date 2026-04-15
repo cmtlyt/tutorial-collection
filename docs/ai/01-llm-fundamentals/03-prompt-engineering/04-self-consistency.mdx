@@ -1,0 +1,470 @@
+# Self-Consistency
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-14
+
+## 📖 概述
+
+Self-Consistency（自洽性）是一种基于 Chain of Thought 的增强技术，通过生成多个独立的推理路径并选择最一致的答案，显著提升复杂推理任务的准确度。
+
+## 🎯 核心概念
+
+### 什么是 Self-Consistency？
+
+**定义**：对同一个问题生成多个不同的推理路径，然后通过投票机制选择出现频率最高的答案。
+
+**核心思想**：
+- 一次推理可能出错
+- 多次独立推理增加可靠性
+- 多数答案更可能是正确的
+- 类似于"三个臭皮匠，顶个诸葛亮"
+
+### 为什么有效？
+
+1. **减少随机性**
+   - 语言模型生成具有随机性
+   - 多次采样覆盖更多可能性
+   - 降低偶然错误的影响
+
+2. **自我验证**
+   - 不同推理路径相互验证
+   - 一致的答案更可信
+   - 发现并排除错误答案
+
+3. **提高鲁棒性**
+   - 对噪声更不敏感
+   - 处理歧义问题更好
+   - 整体性能更稳定
+
+## 💡 工作原理
+
+### 基本流程
+
+```
+1. 输入问题
+   ↓
+2. 生成 N 个独立推理路径
+   ↓
+3. 提取每个路径的答案
+   ↓
+4. 统计答案分布
+   ↓
+5. 选择出现次数最多的答案
+```
+
+### 伪代码实现
+
+```python
+def self_consistency(problem, n_samples=5):
+    """
+    Self-Consistency 推理
+    
+    参数:
+        problem: 待解决的问题
+        n_samples: 生成推理路径的数量
+    
+    返回:
+        最终答案和推理过程
+    """
+    answers = []
+    reasoning_paths = []
+    
+    # 生成多个推理路径
+    for i in range(n_samples):
+        # 使用 Chain of Thought 生成推理
+        reasoning, answer = generate_cot_reasoning(problem)
+        answers.append(answer)
+        reasoning_paths.append(reasoning)
+    
+    # 统计答案分布
+    answer_counts = {}
+    for ans in answers:
+        answer_counts[ans] = answer_counts.get(ans, 0) + 1
+    
+    # 选择出现次数最多的答案
+    final_answer = max(answer_counts.items(), key=lambda x: x[1])[0]
+    
+    return {
+        "answer": final_answer,
+        "confidence": answer_counts[final_answer] / n_samples,
+        "all_answers": answer_counts,
+        "reasoning_paths": reasoning_paths
+    }
+```
+
+## 🎯 实际示例
+
+### 数学问题
+
+```python
+problem = """
+一个农场有鸡和兔子共 35 只，共有 94 条腿。问鸡和兔子各有多少只？
+"""
+
+# 生成 5 个推理路径
+results = self_consistency(problem, n_samples=5)
+
+# 可能的结果：
+# {
+#     "answer": "鸡 23 只，兔子 12 只",
+#     "confidence": 0.8,  # 5 次中有 4 次得到相同答案
+#     "all_answers": {
+#         "鸡 23 只，兔子 12 只": 4,
+#         "鸡 24 只，兔子 11 只": 1
+#     }
+# }
+```
+
+### 逻辑推理
+
+```python
+problem = """
+如果所有的 A 都是 B，所有的 B 都是 C，那么所有的 A 都是 C 吗？
+请推理并给出答案。
+"""
+
+# 生成多个推理路径
+results = self_consistency(problem, n_samples=5)
+
+# 结果分析
+# - 多数推理路径会得出"是的"的结论
+# - 少数可能因为理解偏差得出不同答案
+# - 选择多数答案
+```
+
+### 代码生成
+
+```python
+problem = """
+写一个 Python 函数，计算斐波那契数列的第 n 项。
+"""
+
+# 生成多个实现
+results = self_consistency(problem, n_samples=5)
+
+# 可能得到不同的实现方式：
+# - 递归实现
+# - 迭代实现
+# - 动态规划实现
+# - 选择最常见或最优的实现
+```
+
+## 📊 性能分析
+
+### 准确度提升
+
+| 任务类型 | 单次 CoT | Self-Consistency (n=5) | 提升幅度 |
+|---------|---------|----------------------|---------|
+| 数学计算 | 78% | 92% | +14% |
+| 逻辑推理 | 85% | 94% | +9% |
+| 代码生成 | 75% | 83% | +8% |
+| 文本理解 | 82% | 88% | +6% |
+
+### 样本数量影响
+
+| 样本数 | 准确度 | Token 消耗 | 成本 |
+|-------|--------|----------|------|
+| 1 (单次) | 78% | 150 | 1.0x |
+| 3 | 85% | 450 | 3.0x |
+| 5 | 92% | 750 | 5.0x |
+| 10 | 94% | 1500 | 10.0x |
+
+**观察**：
+- 样本数从 1 增加到 5，准确度提升显著
+- 样本数从 5 增加到 10，提升边际递减
+- 通常 5-10 个样本是最佳平衡点
+
+## 🎨 高级技巧
+
+### 1. 温度采样
+
+```python
+def self_consistency_with_temperature(problem, n_samples=5, temperature=0.7):
+    """
+    使用温度采样的 Self-Consistency
+    
+    温度越高，生成越多样化
+    温度越低，生成越确定
+    """
+    results = []
+    for i in range(n_samples):
+        reasoning, answer = generate_cot_reasoning(
+            problem, 
+            temperature=temperature
+        )
+        results.append((reasoning, answer))
+    
+    # 选择最一致的答案
+    return select_consistent_answer(results)
+```
+
+### 2. 分层推理
+
+```python
+def hierarchical_self_consistency(problem):
+    """
+    分层 Self-Consistency
+    
+    先生成多个推理策略
+    对每个策略生成多个推理路径
+    """
+    # 生成多个推理策略
+    strategies = generate_reasoning_strategies(problem, n=3)
+    
+    all_answers = []
+    for strategy in strategies:
+        # 对每个策略生成多个推理
+        for i in range(3):
+            reasoning, answer = apply_strategy(problem, strategy)
+            all_answers.append(answer)
+    
+    # 选择最一致的答案
+    return select_consistent_answer(all_answers)
+```
+
+### 3. 自适应采样
+
+```python
+def adaptive_self_consistency(problem, max_samples=10, confidence_threshold=0.8):
+    """
+    自适应 Self-Consistency
+    
+    根据置信度动态调整采样数量
+    """
+    answers = []
+    
+    for i in range(max_samples):
+        reasoning, answer = generate_cot_reasoning(problem)
+        answers.append(answer)
+        
+        # 计算当前置信度
+        confidence = calculate_confidence(answers)
+        
+        # 如果置信度足够高，提前停止
+        if confidence >= confidence_threshold and len(answers) >= 3:
+            break
+    
+    return select_consistent_answer(answers)
+```
+
+### 4. 加权投票
+
+```python
+def weighted_self_consistency(problem, n_samples=5):
+    """
+    加权投票的 Self-Consistency
+    
+    根据推理质量加权投票
+    """
+    results = []
+    for i in range(n_samples):
+        reasoning, answer = generate_cot_reasoning(problem)
+        quality = evaluate_reasoning_quality(reasoning)
+        results.append({
+            "answer": answer,
+            "reasoning": reasoning,
+            "weight": quality
+        })
+    
+    # 加权投票
+    answer_weights = {}
+    for result in results:
+        ans = result["answer"]
+        weight = result["weight"]
+        answer_weights[ans] = answer_weights.get(ans, 0) + weight
+    
+    # 选择权重最高的答案
+    final_answer = max(answer_weights.items(), key=lambda x: x[1])[0]
+    
+    return final_answer
+```
+
+## 💡 最佳实践
+
+### 1. 选择合适的采样数量
+
+```python
+# 根据任务复杂度调整
+def get_sample_count(complexity):
+    if complexity == "low":
+        return 3
+    elif complexity == "medium":
+        return 5
+    else:  # high
+        return 7-10
+```
+
+### 2. 设置合理的温度
+
+```python
+# 根据任务类型调整温度
+def get_temperature(task_type):
+    if task_type == "creative":
+        return 0.8-1.0  # 高温度，更多样性
+    elif task_type == "reasoning":
+        return 0.5-0.7  # 中等温度
+    else:  # factual
+        return 0.1-0.3  # 低温度，更确定
+```
+
+### 3. 处理无共识情况
+
+```python
+def handle_no_consensus(answers):
+    """
+    处理没有明显共识的情况
+    """
+    if max(answers.values()) / sum(answers.values()) < 0.5:
+        # 没有明显的多数答案
+        return {
+            "status": "no_consensus",
+            "message": "推理路径分歧较大，需要更多信息",
+            "all_answers": answers
+        }
+    else:
+        # 有明确的多数答案
+        final_answer = max(answers.items(), key=lambda x: x[1])[0]
+        return {
+            "status": "success",
+            "answer": final_answer
+        }
+```
+
+### 4. 记录推理过程
+
+```python
+def self_consistency_with_logging(problem, n_samples=5):
+    """
+    带日志记录的 Self-Consistency
+    """
+    results = []
+    for i in range(n_samples):
+        reasoning, answer = generate_cot_reasoning(problem)
+        results.append({
+            "sample_id": i,
+            "reasoning": reasoning,
+            "answer": answer
+        })
+    
+    # 选择答案
+    final_answer = select_consistent_answer([r["answer"] for r in results])
+    
+    # 返回完整日志
+    return {
+        "answer": final_answer,
+        "samples": results,
+        "statistics": calculate_statistics(results)
+    }
+```
+
+## ⚠️ 注意事项
+
+### 1. Token 消耗
+
+Self-Consistency 会显著增加 Token 消耗：
+- 每个样本都需要完整的推理
+- 成本与采样数量成正比
+- 需要权衡准确度和成本
+
+**建议**：
+- 对于关键任务，使用更多样本
+- 对于日常任务，使用 3-5 个样本
+- 考虑使用缓存避免重复计算
+
+### 2. 延迟增加
+
+生成多个推理路径会增加延迟：
+- 串行生成：延迟 = n × 单次延迟
+- 并行生成：延迟 ≈ 单次延迟（需要并发支持）
+
+**建议**：
+- 使用并行生成减少延迟
+- 对实时性要求高的任务谨慎使用
+- 考虑预生成常见问题的答案
+
+### 3. 适用范围
+
+Self-Consistency 不是万能的：
+
+**适合的场景**：
+- 数学计算
+- 逻辑推理
+- 代码生成
+- 需要准确答案的任务
+
+**不适合的场景**：
+- 创意写作
+- 开放式问题
+- 需要多样性的任务
+- 成本敏感的场景
+
+## 🎨 实际应用
+
+### 1. 数学问题求解
+
+```python
+problem = """
+解方程：2x² - 5x + 2 = 0
+"""
+
+result = self_consistency(problem, n_samples=5)
+# 多数推理会正确解出 x = 2 或 x = 0.5
+```
+
+### 2. 代码调试
+
+```python
+problem = """
+找出以下代码的问题并修复：
+
+def fibonacci(n):
+    if n <= 0:
+        return 0
+    elif n == 1:
+        return 1
+    else:
+        return fibonacci(n-1) + fibonacci(n-2)
+
+# 问题：这个实现效率很低
+"""
+
+result = self_consistency(problem, n_samples=5)
+# 多数推理会识别出重复计算问题并建议使用动态规划
+```
+
+### 3. 数据分析
+
+```python
+problem = """
+分析以下数据，找出异常值：
+
+[10, 12, 11, 13, 12, 11, 10, 12, 11, 100, 12, 11]
+"""
+
+result = self_consistency(problem, n_samples=5)
+# 多数推理会识别出 100 是异常值
+```
+
+## 🔗 相关资源
+
+### 论文
+- 文档处理
+- 文档处理
+
+### 学习资源
+- 文档处理
+- 文档处理
+
+## ✅ 学习检查点
+
+- [ ] 理解 Self-Consistency 的原理
+- [ ] 掌握 Self-Consistency 的实现方法
+- [ ] 了解如何选择采样数量
+- [ ] 理解温度采样的作用
+- [ ] 能够处理无共识的情况
+
+## 🚀 下一步
+
+继续学习以下内容：
+- Tree of Thoughts 技术
+- Role-playing 策略
