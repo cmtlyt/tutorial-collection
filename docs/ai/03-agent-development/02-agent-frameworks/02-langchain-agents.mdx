@@ -1,0 +1,806 @@
+# LangChain Agents
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-15
+
+## 📖 概述
+
+LangChain Agents 是 LangChain 框架中最强大的组件之一，它能够使用 LLM 来决定采取什么行动、执行哪些工具，并观察结果。Agent 可以自主地执行复杂的多步骤任务，是构建智能应用的核心技术。
+
+## 🏗️ Agent 核心架构
+
+### Agent 循环
+
+Agent 的核心是一个循环过程：
+
+```
+用户输入 → Agent 决策 → 执行工具 → 观察结果 → 重新决策 → 最终输出
+```
+
+#### 详细流程
+
+```javascript
+// Agent 循环伪代码
+async function agentLoop(userInput) {
+  // 1. 初始化
+  let currentInput = userInput;
+  let iterations = 0;
+  const maxIterations = 10;
+  
+  while (iterations < maxIterations) {
+    // 2. Agent 决策
+    const agentDecision = await llm.decideAction(currentInput);
+    
+    // 3. 检查是否需要使用工具
+    if (agentDecision.toolUse) {
+      // 4. 执行工具
+      const toolResult = await executeTool(
+        agentDecision.toolName,
+        agentDecision.toolInput
+      );
+      
+      // 5. 更新输入
+      currentInput = `工具执行结果: ${toolResult}`;
+      iterations++;
+    } else {
+      // 6. 直接回答
+      return agentDecision.finalAnswer;
+    }
+  }
+  
+  return "达到最大迭代次数，无法完成任务";
+}
+```
+
+### 核心组件
+
+#### 1. LLM（语言模型）
+- **作用**：负责决策和推理
+- **选择**：GPT-4、Claude、本地模型等
+- **配置**：温度、最大 token 数等
+
+#### 2. Tools（工具集）
+- **作用**：扩展 Agent 的能力
+- **类型**：搜索、计算、API 调用等
+- **自定义**：可以创建自己的工具
+
+#### 3. Agent Type（Agent 类型）
+- **作用**：定义 Agent 的决策模式
+- **类型**：ReAct、OpenAI Functions、Structured Chat 等
+- **选择**：根据任务需求选择
+
+#### 4. Memory（记忆）
+- **作用**：维护对话历史和上下文
+- **类型**：ConversationBufferMemory、SummaryBufferMemory 等
+- **配置**：窗口大小、总结策略等
+
+## 🔑 主要 Agent 类型
+
+### 1. ReAct Agent
+
+ReAct（Reasoning + Acting）是最经典和广泛使用的 Agent 类型。
+
+#### 工作原理
+
+ReAct Agent 使用"推理-行动"循环：
+1. **Thought（思考）**：分析当前情况
+2. **Action（行动）**：决定执行什么工具
+3. **Observation（观察）**：观察工具执行结果
+4. 重复直到完成任务
+
+#### 代码示例
+
+```javascript
+import { AgentExecutor, createReactAgent } from "langchain/agents";
+import { Tool } from "langchain/tools";
+import { OpenAI } from "langchain/llms/openai";
+import { hub } from "langchain/hub";
+
+// 1. 定义工具
+const searchTool = new Tool({
+  name: "Search",
+  description: "用于搜索信息的工具",
+  func: async (query) => {
+    // 实现搜索逻辑
+    return `搜索结果: ${query}`;
+  }
+});
+
+const tools = [searchTool];
+
+// 2. 初始化 LLM
+const llm = new OpenAI({ temperature: 0 });
+
+// 3. 获取 ReAct 提示模板
+const prompt = await hub.pull("hwchase17/react");
+
+// 4. 创建 Agent
+const agent = await createReactAgent({
+  llm,
+  tools,
+  prompt
+});
+
+// 5. 创建 Agent 执行器
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  verbose: true,
+  maxIterations: 5
+});
+
+// 6. 执行查询
+const result = await agentExecutor.invoke({
+  input: "搜索关于 AI Agent 的最新进展"
+});
+
+console.log(result.output);
+```
+
+#### 提示模板结构
+
+```
+Answer the following questions as best you can. You have access to the following tools:
+
+{tool_names}
+
+{tool_descriptions}
+
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Begin!
+
+Question: {input}
+Thought:{agent_scratchpad}
+```
+
+#### 适用场景
+- ✅ 需要多步推理的任务
+- ✅ 需要使用多个工具的任务
+- ✅ 需要探索性搜索的任务
+- ❌ 对延迟敏感的实时应用
+- ❌ 需要结构化输出的任务
+
+### 2. OpenAI Functions Agent
+
+OpenAI Functions Agent 专门针对 OpenAI 的函数调用功能进行了优化。
+
+#### 工作原理
+
+利用 OpenAI 的函数调用 API，让 LLM 直接输出结构化的函数调用，而不是文本。
+
+#### 代码示例
+
+```javascript
+import { createOpenAIFunctionsAgent, AgentExecutor } from "langchain/agents";
+import { ChatOpenAI } from "langchain/chat_models/openai";
+import { DynamicStructuredTool } from "langchain/tools";
+import { hub } from "langchain/hub";
+import { z } from "zod";
+
+// 1. 定义工具
+const searchTool = new DynamicStructuredTool({
+  name: "search",
+  description: "搜索工具",
+  schema: z.object({
+    query: z.string().describe("搜索查询")
+  }),
+  func: async ({ query }) => {
+    return `搜索结果: ${query}`;
+  }
+});
+
+const calculateTool = new DynamicStructuredTool({
+  name: "calculate",
+  description: "计算工具",
+  schema: z.object({
+    expression: z.string().describe("数学表达式")
+  }),
+  func: async ({ expression }) => {
+    try {
+      // 注意：实际应用中应该使用安全的数学表达式解析器
+      const result = eval(expression);
+      return `计算结果: ${result}`;
+    } catch (error) {
+      return "计算错误";
+    }
+  }
+});
+
+const tools = [searchTool, calculateTool];
+
+// 2. 初始化 Chat 模型
+const llm = new ChatOpenAI({ 
+  modelName: "gpt-4", 
+  temperature: 0 
+});
+
+// 3. 获取提示模板
+const prompt = await hub.pull("hwchase17/openai-functions-agent");
+
+// 4. 创建 Agent
+const agent = await createOpenAIFunctionsAgent({
+  llm,
+  tools,
+  prompt
+});
+
+// 5. 创建执行器
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  verbose: true
+});
+
+// 6. 执行查询
+const result = await agentExecutor.invoke({
+  input: "计算 123 * 456 并搜索 AI Agent 相关信息"
+});
+
+console.log(result);
+```
+
+#### 优势
+- 🚀 更快的响应速度
+- 🎯 更准确的工具选择
+- 📊 结构化输出
+- 🔒 更好的错误处理
+
+#### 适用场景
+- ✅ 使用 OpenAI GPT-4/GPT-3.5
+- ✅ 需要快速响应
+- ✅ 需要结构化输出
+- ❌ 使用其他 LLM 提供商
+
+### 3. Structured Chat Agent
+
+Structured Chat Agent 支持复杂的多参数工具调用。
+
+#### 工作原理
+
+允许 Agent 使用多个参数调用工具，并处理复杂的输入结构。
+
+#### 代码示例
+
+```javascript
+import { createStructuredChatAgent, AgentExecutor } from "langchain/agents";
+import { ChatOpenAI } from "langchain/chat_models/openai";
+import { DynamicStructuredTool } from "langchain/tools";
+import { hub } from "langchain/hub";
+import { z } from "zod";
+
+// 1. 定义输入模型
+const searchInputSchema = z.object({
+  query: z.string().describe("搜索查询"),
+  limit: z.number().default(10).describe("结果数量限制"),
+  source: z.string().default("web").describe("搜索源")
+});
+
+// 2. 定义工具
+const searchTool = new DynamicStructuredTool({
+  name: "Search",
+  description: "高级搜索工具",
+  schema: searchInputSchema,
+  func: async ({ query, limit = 10, source = "web" }) => {
+    return `从 ${source} 搜索 '${query}'，返回 ${limit} 条结果`;
+  }
+});
+
+const tools = [searchTool];
+
+// 3. 初始化模型
+const llm = new ChatOpenAI({ 
+  modelName: "gpt-4", 
+  temperature: 0 
+});
+
+// 4. 获取提示模板
+const prompt = await hub.pull("hwchase17/structured-chat-agent");
+
+// 5. 创建 Agent
+const agent = await createStructuredChatAgent({
+  llm,
+  tools,
+  prompt
+});
+
+// 6. 创建执行器
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  verbose: true
+});
+
+// 7. 执行查询
+const result = await agentExecutor.invoke({
+  input: "搜索关于 AI Agent 的论文，限制返回 5 条结果"
+});
+
+console.log(result);
+```
+
+#### 适用场景
+- ✅ 工具需要多个参数
+- ✅ 需要复杂的输入结构
+- ✅ 需要参数验证
+- ❌ 简单的单参数工具
+
+### 4. Custom Agents
+
+当内置的 Agent 类型无法满足需求时，可以创建自定义 Agent。
+
+#### 自定义 Agent 模板
+
+```javascript
+import { AgentExecutor, AgentAction, AgentFinish } from "langchain/agents";
+import { OpenAI } from "langchain/llms/openai";
+
+class CustomAgent {
+  constructor(llm, tools) {
+    this.llm = llm;
+    this.tools = tools;
+    this.llmType = "openai";
+  }
+
+  /**
+   * 规划下一步行动
+   */
+  async plan(intermediateSteps, callbacks) {
+    // 1. 构建上下文
+    const context = this._buildContext(intermediateSteps);
+    
+    // 2. 调用 LLM 决策
+    const decision = await this.llm.predict(
+      `基于以下上下文，决定下一步行动:\n${context}`,
+      callbacks
+    );
+    
+    // 3. 解析决策
+    if (decision.includes("FINAL_ANSWER")) {
+      return new AgentFinish({
+        returnValues: {
+          output: decision.split("FINAL_ANSWER:")[1].trim()
+        },
+        log: decision
+      });
+    } else {
+      // 解析工具调用
+      const { toolName, toolInput } = this._parseDecision(decision);
+      return new AgentAction({
+        tool: toolName,
+        toolInput: toolInput,
+        log: decision
+      });
+    }
+  }
+
+  /**
+   * 构建上下文
+   */
+  _buildContext(intermediateSteps) {
+    let context = "";
+    intermediateSteps.forEach((step, index) => {
+      const [action, observation] = step;
+      context += `步骤 ${index + 1}: 使用 ${action.tool} 工具\n`;
+      context += `输入: ${action.toolInput}\n`;
+      context += `结果: ${observation}\n\n`;
+    });
+    return context;
+  }
+
+  /**
+   * 解析 LLM 决策
+   */
+  _parseDecision(decision) {
+    const lines = decision.split('\n');
+    const toolLine = lines.find(l => l.includes('TOOL:'));
+    const inputLine = lines.find(l => l.includes('INPUT:'));
+    
+    const toolName = toolLine.split('TOOL:')[1].trim();
+    const toolInput = inputLine.split('INPUT:')[1].trim();
+    
+    return { toolName, toolInput };
+  }
+}
+
+// 使用自定义 Agent
+const llm = new OpenAI({ temperature: 0 });
+const tools = [searchTool]; // 假设已定义
+
+const customAgent = new CustomAgent(llm, tools);
+const agentExecutor = new AgentExecutor({
+  agent: customAgent,
+  tools,
+  verbose: true
+});
+
+const result = await agentExecutor.invoke({ input: "你的查询" });
+console.log(result);
+```
+
+#### 自定义场景
+- 🎯 特定的决策逻辑
+- 🔄 自定义的循环控制
+- 📊 特定的输出格式
+- 🔧 集成特定的工作流
+
+## 🛠️ 工具开发
+
+### 内置工具
+
+LangChain 提供了大量内置工具：
+
+```javascript
+import { SerpAPI, RequestsGetTool } from "langchain/tools";
+import { Tool } from "langchain/tools";
+
+// 使用内置工具 - 搜索
+const searchTool = new SerpAPI({
+  apiKey: process.env.SERPAPI_API_KEY,
+  name: "Search",
+  description: "搜索互联网"
+});
+
+// 使用内置工具 - HTTP GET
+const httpTool = new RequestsGetTool({
+  name: "requests_get",
+  description: "执行 HTTP GET 请求"
+});
+
+// 自定义包装器
+const customSearchTool = new Tool({
+  name: "CustomSearch",
+  description: "自定义搜索工具",
+  func: async (query) => {
+    // 实现自定义搜索逻辑
+    return `搜索结果: ${query}`;
+  }
+});
+```
+
+### 自定义工具
+
+#### 方式一：使用 Tool 类
+
+```javascript
+import { Tool } from "langchain/tools";
+
+async function myCustomFunction(inputText) {
+  // 实现你的逻辑
+  return `处理结果: ${inputText}`;
+}
+
+const customTool = new Tool({
+  name: "CustomTool",
+  func: myCustomFunction,
+  description: "自定义工具的描述"
+});
+```
+
+#### 方式二：使用 DynamicStructuredTool
+
+```javascript
+import { DynamicStructuredTool } from "langchain/tools";
+import { z } from "zod";
+
+// 天气工具
+const weatherTool = new DynamicStructuredTool({
+  name: "weather_api",
+  description: "获取城市天气信息",
+  schema: z.object({
+    city: z.string().describe("城市名称")
+  }),
+  func: async ({ city }) => {
+    // 实现天气查询逻辑
+    return `${city} 今天天气晴朗，温度 25°C`;
+  }
+});
+
+// 股票价格工具
+const stockTool = new DynamicStructuredTool({
+  name: "stock_price",
+  description: "获取股票价格",
+  schema: z.object({
+    symbol: z.string().describe("股票代码")
+  }),
+  func: async ({ symbol }) => {
+    // 实现股票查询逻辑
+    return `${symbol} 当前价格: $150.25`;
+  }
+});
+```
+
+#### 方式三：使用 DynamicStructuredTool（带复杂参数）
+
+```javascript
+import { DynamicStructuredTool } from "langchain/tools";
+import { z } from "zod";
+
+// 计算器工具
+const calculatorTool = new DynamicStructuredTool({
+  name: "Calculator",
+  description: "执行数学计算",
+  schema: z.object({
+    expression: z.string().describe("数学表达式"),
+    precision: z.number().default(2).describe("小数位数")
+  }),
+  func: async ({ expression, precision = 2 }) => {
+    try {
+      // 注意：实际应用中应该使用安全的数学表达式解析器
+      const result = eval(expression);
+      return `${result.toFixed(precision)}`;
+    } catch (error) {
+      return `计算错误: ${error.message}`;
+    }
+  }
+});
+```
+
+## 📊 Agent 执行器配置
+
+### 基本配置
+
+```javascript
+import { AgentExecutor } from "langchain/agents";
+
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  verbose: true,              // 显示详细日志
+  maxIterations: 10,         // 最大迭代次数
+  maxExecutionTime: 60,     // 最大执行时间（秒）
+  earlyStoppingMethod: "generate",  // 早期停止策略
+  handleParsingErrors: true  // 处理解析错误
+});
+```
+### 高级配置
+
+#### 记忆集成
+
+```javascript
+import { BufferMemory } from "langchain/memory";
+import { ChatMessageHistory } from "langchain/stores/message/in_memory";
+
+const memory = new BufferMemory({
+  memoryKey: "chat_history",
+  returnMessages: true
+});
+
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  memory,
+  verbose: true
+});
+```
+
+#### 错误处理
+
+```javascript
+import { AgentExecutor } from "langchain/agents";
+
+function handleError(error) {
+  console.error(`发生错误: ${error}`);
+  return "抱歉，我遇到了一些问题，请重试。";
+}
+
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  handleParsingErrors: handleError,
+  verbose: true
+});
+```
+
+#### 回调处理
+
+```javascript
+import { ConsoleCallbackHandler } from "langchain/callbacks";
+
+const callbacks = [new ConsoleCallbackHandler()];
+
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  callbacks,
+  verbose: true
+});
+```
+
+## 🎯 最佳实践
+
+### 1. 工具设计
+
+#### ✅ 好的工具设计
+- 清晰的描述（告诉 Agent 何时使用）
+- 合理的参数（不要太多，也不要太少）
+- 简单的输入输出（易于 LLM 理解）
+- 错误处理（优雅地处理异常）
+
+#### ❌ 避免的工具设计
+- 模糊的描述
+- 复杂的参数结构
+- 不稳定的输出格式
+- 没有错误处理
+
+### 2. 提示工程
+
+#### 优化提示模板
+
+```javascript
+import { PromptTemplate } from "langchain/prompts";
+
+const customPrompt = PromptTemplate.fromTemplate(
+  `你是一个专业的 {role} Agent。
+
+你的任务是: {task}
+
+你可以使用以下工具:
+{tools}
+
+请遵循以下原则:
+1. 仔细分析用户需求
+2. 选择最合适的工具
+3. 如果信息不足，主动询问
+4. 提供清晰准确的答案
+
+当前对话历史:
+{chat_history}
+
+用户输入: {input}
+
+{agent_scratchpad}`
+);
+```
+
+### 3. 性能优化
+
+#### 减少迭代次数
+- 提供清晰的工具描述
+- 优化提示模板
+- 使用合适的 Agent 类型
+
+#### 加速执行
+- 使用 OpenAI Functions Agent
+- 并行执行工具（如果可能）
+- 缓存常用工具结果
+
+#### 降低成本
+- 使用更便宜的模型（如 GPT-3.5）
+- 限制最大 token 数
+- 减少不必要的迭代
+
+### 4. 监控和调试
+
+#### 详细日志
+
+```javascript
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  verbose: true,  // 显示所有步骤
+  returnIntermediateSteps: true  // 返回中间步骤
+});
+
+const result = await agentExecutor.invoke({ input: "查询" });
+console.log("中间步骤:", result.intermediateSteps);
+```
+
+#### 自定义回调
+
+```javascript
+import { BaseCallbackHandler } from "langchain/callbacks/base";
+
+class CustomCallbackHandler extends BaseCallbackHandler {
+  name = "CustomCallbackHandler";
+
+  async handleAgentAction(action) {
+    console.log(`执行工具: ${action.tool}`);
+    console.log(`工具输入: ${action.toolInput}`);
+  }
+
+  async handleAgentFinish(finish) {
+    console.log(`最终答案: ${JSON.stringify(finish.returnValues)}`);
+  }
+}
+
+const callbacks = [new CustomCallbackHandler()];
+
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  callbacks
+});
+```
+
+## 💡 常见问题
+
+### Q1: Agent 陷入无限循环怎么办？
+
+**解决方案：**
+```javascript
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  maxIterations: 5,  // 限制迭代次数
+  maxExecutionTime: 30,  // 限制执行时间
+  earlyStoppingMethod: "generate"  // 早期停止
+});
+```
+
+### Q2: Agent 无法正确选择工具？
+
+**解决方案：**
+- 优化工具描述，使其更清晰
+- 使用示例（few-shot）在提示中
+- 考虑使用 OpenAI Functions Agent
+
+### Q3: 如何提高 Agent 的响应速度？
+
+**解决方案：**
+- 使用 OpenAI Functions Agent
+- 减少工具数量
+- 优化工具实现
+- 使用更快的模型
+
+### Q4: 如何处理工具执行错误？
+
+**解决方案：**
+```javascript
+async function robustTool(inputText) {
+  try {
+    // 工具逻辑
+    return result;
+  } catch (error) {
+    return `错误: ${error.message}。请重试或使用其他方法。`;
+  }
+}
+
+// 在 AgentExecutor 中配置
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+  handleParsingErrors: true  // 自动处理解析错误
+});
+```
+
+## 📚 学习资源
+
+### 官方文档
+- [LangChain.js Agents Guide](https://js.langchain.com/docs/modules/agents/)
+- [Agent Types](https://js.langchain.com/docs/modules/agents/agent_types/)
+- [Custom Agents](https://js.langchain.com/docs/modules/agents/how_to/custom_agent/)
+
+### 示例代码
+- [LangChain.js Cookbook](https://github.com/langchain-ai/langchainjs/tree/main/cookbook)
+- [Agent Examples](https://js.langchain.com/docs/modules/agents/agent_examples/)
+
+### 社区资源
+- [LangChain Discord](https://discord.gg/6adMQxZJCs)
+- [LangChain.js GitHub](https://github.com/langchain-ai/langchainjs)
+
+## ✅ 学习检查点
+
+- [ ] 理解 Agent 循环的工作原理
+- [ ] 掌握 ReAct Agent 的使用方法
+- [ ] 了解 OpenAI Functions Agent 的优势
+- [ ] 能够创建自定义工具
+- [ ] 能够配置 Agent 执行器
+- [ ] 理解如何优化 Agent 性能
+- [ ] 能够调试 Agent 的问题
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **AutoGen** - 多 Agent 协作框架
+- **CrewAI** - Agent 团队编排
+- **Agent 工具集成** - 深入学习工具开发

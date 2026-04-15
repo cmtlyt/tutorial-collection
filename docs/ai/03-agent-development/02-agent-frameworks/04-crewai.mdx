@@ -1,0 +1,1342 @@
+# CrewAI
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-15
+
+## 📖 概述
+
+CrewAI 是一个专注于多 Agent 团队协作的框架，它允许你创建具有不同角色的 Agent 团队，并通过任务分配和工作流编排来完成复杂任务。CrewAI 的核心理念是模拟真实团队的工作方式，让每个 Agent 扮演特定的角色，协同合作达成目标。
+
+## 🏗️ CrewAI 核心架构
+
+### Agent 团队模式
+
+CrewAI 采用团队协作模式：
+
+```
+用户任务
+    ↓
+┌─────────────────────────────────┐
+│  Crew（团队）                    │
+│  - 管理多个 Agent                │
+│  - 分配任务                      │
+│  - 协调工作流                    │
+└─────────────────────────────────┘
+    ↓
+┌─────────────────────────────────┐
+│  Agents（Agent 团队）            │
+│  ┌─────────────┬─────────────┐  │
+│  │ 研究员 Agent │ 开发者 Agent │  │
+│  │ - 收集信息  │ - 编写代码  │  │
+│  │ - 分析数据  │ - 实现功能  │  │
+│  └─────────────┴─────────────┘  │
+│  ┌─────────────┬─────────────┐  │
+│  │ 测试员 Agent │ 审查员 Agent │  │
+│  │ - 编写测试  │ - 代码审查  │  │
+│  │ - 验证功能  │ - 质量保证  │  │
+│  └─────────────┴─────────────┘  │
+└─────────────────────────────────┘
+    ↓
+┌─────────────────────────────────┐
+│  Tasks（任务队列）               │
+│  - 任务 1 → 任务 2 → 任务 3     │
+│  - 并行任务                      │
+│  - 依赖关系                      │
+└─────────────────────────────────┘
+    ↓
+最终结果
+```
+
+### 核心组件
+
+#### 1. Agent（智能体）
+CrewAI 的基础单元，具有：
+- **角色（Role）**：定义 Agent 的专业领域
+- **目标（Goal）**：Agent 要达成的目标
+- **背景（Backstory）**：Agent 的背景故事
+- **工具（Tools）**：Agent 可用的工具集
+- **记忆（Memory）**：短期和长期记忆
+
+#### 2. Task（任务）
+定义具体的工作内容：
+- **描述（Description）**：任务的详细描述
+- **预期输出（Expected Output）**：任务的预期结果
+- **Agent（Agent）**：负责执行任务的 Agent
+- **工具（Tools）**：任务可用的工具
+- **依赖（Dependencies）**：任务之间的依赖关系
+
+#### 3. Crew（团队）
+管理 Agent 和任务：
+- **Agents**：团队中的所有 Agent
+- **Tasks**：团队要完成的所有任务
+- **流程（Process）**：任务的执行顺序
+- **记忆（Memory）**：团队的共享记忆
+
+#### 4. Process（流程）
+定义任务的执行方式：
+- **顺序执行（Sequential）**：按顺序执行任务
+- **层级执行（Hierarchical）**：基于 Agent 层级执行
+- **自定义流程**：自定义执行逻辑
+
+## 🔑 基础使用
+
+### 创建简单的 Agent 团队
+
+```python
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI
+
+# 1. 配置 LLM
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 2. 创建研究员 Agent
+researcher = Agent(
+    role="研究员",
+    goal="收集和分析相关信息",
+    backstory="""你是一位经验丰富的研究员，
+擅长从各种来源收集信息并进行深入分析。
+你注重细节，能够发现数据中的模式和趋势。""",
+    verbose=True,
+    llm=llm
+)
+
+# 3. 创建开发者 Agent
+developer = Agent(
+    role="开发者",
+    goal="根据研究结果开发解决方案",
+    backstory="""你是一位资深的软件开发者，
+擅长将需求转化为高质量的代码。
+你注重代码质量和可维护性。""",
+    verbose=True,
+    llm=llm
+)
+
+# 4. 创建任务
+research_task = Task(
+    description="研究 AI Agent 的最新进展和技术趋势",
+    expected_output="一份详细的研究报告，包括技术趋势、主要框架和最佳实践",
+    agent=researcher
+)
+
+development_task = Task(
+    description="基于研究结果，设计并实现一个简单的 AI Agent 框架",
+    expected_output="完整的代码实现和文档",
+    agent=developer
+)
+
+# 5. 创建团队
+crew = Crew(
+    agents=[researcher, developer],
+    tasks=[research_task, development_task],
+    process=Process.sequential,
+    verbose=True
+)
+
+# 6. 执行任务
+result = crew.kickoff()
+
+print("最终结果:")
+print(result)
+```
+
+### 使用工具的 Agent
+
+```python
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI
+from langchain.tools import Tool
+
+# 1. 配置 LLM
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 2. 定义工具
+def search_tool(query):
+    """搜索工具"""
+    # 实现搜索逻辑
+    return f"搜索结果: {query}"
+
+def calculator_tool(expression):
+    """计算器工具"""
+    try:
+        result = eval(expression)
+        return f"计算结果: {result}"
+    except Exception as e:
+        return f"计算错误: {str(e)}"
+
+# 3. 创建工具列表
+tools = [
+    Tool(name="Search", func=search_tool, description="搜索信息"),
+    Tool(name="Calculator", func=calculator_tool, description="执行计算")
+]
+
+# 4. 创建带工具的 Agent
+analyst = Agent(
+    role="数据分析师",
+    goal="分析数据并生成报告",
+    backstory="""你是一位数据分析师，
+擅长使用各种工具收集和分析数据。""",
+    tools=tools,
+    verbose=True,
+    llm=llm
+)
+
+# 5. 创建任务
+analysis_task = Task(
+    description="搜索 AI 市场数据并计算增长率",
+    expected_output="数据分析报告",
+    agent=analyst
+)
+
+# 6. 创建团队
+crew = Crew(
+    agents=[analyst],
+    tasks=[analysis_task],
+    verbose=True
+)
+
+# 7. 执行任务
+result = crew.kickoff()
+```
+
+## 🎯 Agent 团队
+
+### 角色分工
+
+```python
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 1. 产品经理
+product_manager = Agent(
+    role="产品经理",
+    goal="定义产品需求和规格",
+    backstory="""你是一位经验丰富的产品经理，
+擅长理解用户需求并将其转化为产品规格。
+你注重用户体验和产品可行性。""",
+    verbose=True,
+    llm=llm
+)
+
+# 2. 架构师
+architect = Agent(
+    role="软件架构师",
+    goal="设计系统架构和技术方案",
+    backstory="""你是一位资深的软件架构师，
+擅长设计可扩展、可维护的系统架构。
+你熟悉各种技术栈和设计模式。""",
+    verbose=True,
+    llm=llm
+)
+
+# 3. 前端开发者
+frontend_developer = Agent(
+    role="前端开发者",
+    goal="实现用户界面和交互",
+    backstory="""你是一位专业的前端开发者，
+擅长创建美观、易用的用户界面。
+你熟悉 React、Vue 等现代前端框架。""",
+    verbose=True,
+    llm=llm
+)
+
+# 4. 后端开发者
+backend_developer = Agent(
+    role="后端开发者",
+    goal="实现服务器端逻辑和 API",
+    backstory="""你是一位经验丰富的后端开发者，
+擅长构建高性能、可扩展的服务端应用。
+你熟悉 Python、Node.js 等后端技术。""",
+    verbose=True,
+    llm=llm
+)
+
+# 5. 测试工程师
+tester = Agent(
+    role="测试工程师",
+    goal="确保产品质量和稳定性",
+    backstory="""你是一位专业的测试工程师，
+擅长设计测试用例和自动化测试。
+你注重测试覆盖率和 bug 发现。""",
+    verbose=True,
+    llm=llm
+)
+
+# 6. 创建任务
+requirements_task = Task(
+    description="收集用户需求并编写产品需求文档",
+    expected_output="完整的产品需求文档",
+    agent=product_manager
+)
+
+architecture_task = Task(
+    description="设计系统架构和技术选型",
+    expected_output="架构设计文档和技术栈说明",
+    agent=architect
+)
+
+frontend_task = Task(
+    description="实现前端用户界面",
+    expected_output="完整的前端代码",
+    agent=frontend_developer
+)
+
+backend_task = Task(
+    description="实现后端 API 和业务逻辑",
+    expected_output="完整的后端代码和 API 文档",
+    agent=backend_developer
+)
+
+testing_task = Task(
+    description="编写测试用例并执行测试",
+    expected_output="测试报告和 bug 列表",
+    agent=tester
+)
+
+# 7. 创建团队
+crew = Crew(
+    agents=[product_manager, architect, frontend_developer, 
+            backend_developer, tester],
+    tasks=[requirements_task, architecture_task, frontend_task, 
+            backend_task, testing_task],
+    process=Process.sequential,
+    verbose=True
+)
+
+# 8. 执行任务
+result = crew.kickoff()
+```
+
+### 层级团队
+
+```python
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 1. 项目经理（管理者）
+project_manager = Agent(
+    role="项目经理",
+    goal="协调团队工作，确保项目按时完成",
+    backstory="""你是一位经验丰富的项目经理，
+擅长团队协调和项目管理。
+你注重效率和团队协作。""",
+    verbose=True,
+    llm=llm
+)
+
+# 2. 团队领导
+team_lead = Agent(
+    role="技术团队领导",
+    goal="指导技术团队，解决技术难题",
+    backstory="""你是一位技术专家和团队领导，
+擅长技术决策和团队指导。
+你有丰富的项目经验。""",
+    verbose=True,
+    llm=llm
+)
+
+# 3. 开发者
+developer = Agent(
+    role="开发者",
+    goal="实现功能代码",
+    backstory="""你是一位开发者，
+专注于编写高质量的代码。""",
+    verbose=True,
+    llm=llm
+)
+
+# 4. 创建任务
+planning_task = Task(
+    description="制定项目计划和时间表",
+    expected_output="项目计划文档",
+    agent=project_manager
+)
+
+technical_task = Task(
+    description="设计技术方案并指导开发",
+    expected_output="技术方案文档",
+    agent=team_lead
+)
+
+development_task = Task(
+    description="实现功能代码",
+    expected_output="功能代码",
+    agent=developer
+)
+
+# 5. 创建层级团队
+crew = Crew(
+    agents=[project_manager, team_lead, developer],
+    tasks=[planning_task, technical_task, development_task],
+    process=Process.hierarchical,  # 层级执行
+    manager_llm=llm,  # 管理者使用的 LLM
+    verbose=True
+)
+
+# 6. 执行任务
+result = crew.kickoff()
+```
+
+## 📋 任务分配
+
+### 顺序任务
+
+```python
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 创建 Agent
+researcher = Agent(
+    role="研究员",
+    goal="收集信息",
+    backstory="你是一位研究员。",
+    verbose=True,
+    llm=llm
+)
+
+writer = Agent(
+    role="作家",
+    goal="撰写文章",
+    backstory="你是一位作家。",
+    verbose=True,
+    llm=llm
+)
+
+editor = Agent(
+    role="编辑",
+    goal="编辑和润色",
+    backstory="你是一位编辑。",
+    verbose=True,
+    llm=llm
+)
+
+# 创建顺序任务
+task1 = Task(
+    description="研究 AI Agent 的最新进展",
+    expected_output="研究报告",
+    agent=researcher
+)
+
+task2 = Task(
+    description="基于研究报告撰写文章",
+    expected_output="文章草稿",
+    agent=writer,
+    context=[task1]  # 依赖 task1 的结果
+)
+
+task3 = Task(
+    description="编辑和润色文章",
+    expected_output="最终文章",
+    agent=editor,
+    context=[task2]  # 依赖 task2 的结果
+)
+
+# 创建团队
+crew = Crew(
+    agents=[researcher, writer, editor],
+    tasks=[task1, task2, task3],
+    process=Process.sequential,  # 顺序执行
+    verbose=True
+)
+
+# 执行任务
+result = crew.kickoff()
+```
+
+### 并行任务
+
+```python
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 创建 Agent
+researcher1 = Agent(
+    role="研究员 1",
+    goal="研究技术方面",
+    backstory="你专注于技术研究。",
+    verbose=True,
+    llm=llm
+)
+
+researcher2 = Agent(
+    role="研究员 2",
+    goal="研究市场方面",
+    backstory="你专注于市场研究。",
+    verbose=True,
+    llm=llm
+)
+
+researcher3 = Agent(
+    role="研究员 3",
+    goal="研究用户方面",
+    backstory="你专注于用户研究。",
+    verbose=True,
+    llm=llm
+)
+
+synthesizer = Agent(
+    role="综合分析师",
+    goal="综合研究结果",
+    backstory="你擅长综合分析。",
+    verbose=True,
+    llm=llm
+)
+
+# 创建并行任务
+task1 = Task(
+    description="研究 AI Agent 的技术进展",
+    expected_output="技术研究报告",
+    agent=researcher1
+)
+
+task2 = Task(
+    description="研究 AI Agent 的市场趋势",
+    expected_output="市场研究报告",
+    agent=researcher2
+)
+
+task3 = Task(
+    description="研究用户对 AI Agent 的需求",
+    expected_output="用户研究报告",
+    agent=researcher3
+)
+
+# 综合任务（依赖所有并行任务）
+synthesis_task = Task(
+    description="综合所有研究报告",
+    expected_output="综合分析报告",
+    agent=synthesizer,
+    context=[task1, task2, task3]  # 依赖所有并行任务
+)
+
+# 创建团队
+crew = Crew(
+    agents=[researcher1, researcher2, researcher3, synthesizer],
+    tasks=[task1, task2, task3, synthesis_task],
+    process=Process.sequential,  # CrewAI 会自动识别并行任务
+    verbose=True
+)
+
+# 执行任务
+result = crew.kickoff()
+```
+
+### 复杂依赖关系
+
+```python
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 创建 Agent
+data_collector = Agent(
+    role="数据收集员",
+    goal="收集数据",
+    backstory="你擅长数据收集。",
+    verbose=True,
+    llm=llm
+)
+
+data_analyst = Agent(
+    role="数据分析师",
+    goal="分析数据",
+    backstory="你擅长数据分析。",
+    verbose=True,
+    llm=llm
+)
+
+report_writer = Agent(
+    role="报告撰写人",
+    goal="撰写报告",
+    backstory="你擅长撰写报告。",
+    verbose=True,
+    llm=llm
+)
+
+visualizer = Agent(
+    role="可视化专家",
+    goal="创建可视化",
+    backstory="你擅长数据可视化。",
+    verbose=True,
+    llm=llm
+)
+
+# 创建任务（复杂依赖）
+task1 = Task(
+    description="收集销售数据",
+    expected_output="原始数据",
+    agent=data_collector
+)
+
+task2 = Task(
+    description="分析销售趋势",
+    expected_output="分析结果",
+    agent=data_analyst,
+    context=[task1]  # 依赖 task1
+)
+
+task3 = Task(
+    description="创建销售趋势图表",
+    expected_output="可视化图表",
+    agent=visualizer,
+    context=[task1]  # 依赖 task1（与 task2 并行）
+)
+
+task4 = Task(
+    description="撰写销售报告",
+    expected_output="最终报告",
+    agent=report_writer,
+    context=[task2, task3]  # 依赖 task2 和 task3
+)
+
+# 创建团队
+crew = Crew(
+    agents=[data_collector, data_analyst, report_writer, visualizer],
+    tasks=[task1, task2, task3, task4],
+    process=Process.sequential,
+    verbose=True
+)
+
+# 执行任务
+result = crew.kickoff()
+```
+
+## 🔄 工作流编排
+
+### 顺序流程
+
+```python
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 创建 Agent
+agent1 = Agent(
+    role="Agent 1",
+    goal="完成第一步",
+    backstory="你是第一个 Agent。",
+    verbose=True,
+    llm=llm
+)
+
+agent2 = Agent(
+    role="Agent 2",
+    goal="完成第二步",
+    backstory="你是第二个 Agent。",
+    verbose=True,
+    llm=llm
+)
+
+agent3 = Agent(
+    role="Agent 3",
+    goal="完成第三步",
+    backstory="你是第三个 Agent。",
+    verbose=True,
+    llm=llm
+)
+
+# 创建任务
+task1 = Task(
+    description="第一步任务",
+    expected_output="第一步结果",
+    agent=agent1
+)
+
+task2 = Task(
+    description="第二步任务",
+    expected_output="第二步结果",
+    agent=agent2,
+    context=[task1]
+)
+
+task3 = Task(
+    description="第三步任务",
+    expected_output="第三步结果",
+    agent=agent3,
+    context=[task2]
+)
+
+# 创建顺序流程团队
+crew = Crew(
+    agents=[agent1, agent2, agent3],
+    tasks=[task1, task2, task3],
+    process=Process.sequential,  # 顺序流程
+    verbose=True
+)
+
+# 执行任务
+result = crew.kickoff()
+```
+
+### 层级流程
+
+```python
+from crewai import Agent, Task, Crew, Process
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 创建 Agent
+manager = Agent(
+    role="管理者",
+    goal="协调工作",
+    backstory="你是团队管理者。",
+    verbose=True,
+    llm=llm
+)
+
+worker1 = Agent(
+    role="工作者 1",
+    goal="执行任务 1",
+    backstory="你是工作者 1。",
+    verbose=True,
+    llm=llm
+)
+
+worker2 = Agent(
+    role="工作者 2",
+    goal="执行任务 2",
+    backstory="你是工作者 2。",
+    verbose=True,
+    llm=llm
+)
+
+# 创建任务
+task1 = Task(
+    description="任务 1",
+    expected_output="结果 1",
+    agent=worker1
+)
+
+task2 = Task(
+    description="任务 2",
+    expected_output="结果 2",
+    agent=worker2
+)
+
+# 创建层级流程团队
+crew = Crew(
+    agents=[manager, worker1, worker2],
+    tasks=[task1, task2],
+    process=Process.hierarchical,  # 层级流程
+    manager_llm=llm,
+    verbose=True
+)
+
+# 执行任务
+result = crew.kickoff()
+```
+
+### 自定义流程
+
+```python
+from crewai import Agent, Task, Crew
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 创建 Agent
+agents = [
+    Agent(
+        role=f"Agent {i}",
+        goal=f"完成任务 {i}",
+        backstory=f"你是 Agent {i}。",
+        verbose=True,
+        llm=llm
+    )
+    for i in range(5)
+]
+
+# 创建任务
+tasks = [
+    Task(
+        description=f"任务 {i}",
+        expected_output=f"结果 {i}",
+        agent=agents[i]
+    )
+    for i in range(5)
+]
+
+# 创建团队（不指定 process，使用默认）
+crew = Crew(
+    agents=agents,
+    tasks=tasks,
+    verbose=True
+)
+
+# 执行任务
+result = crew.kickoff()
+```
+
+## 🛠️ 工具集成
+
+### LangChain 工具
+
+```python
+from crewai import Agent, Task, Crew
+from langchain_openai import ChatOpenAI
+from langchain.tools import Tool
+from langchain.utilities import SerpAPIWrapper
+
+# 1. 配置 LLM
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 2. 创建 LangChain 工具
+search = SerpAPIWrapper()
+search_tool = Tool(
+    name="Search",
+    func=search.run,
+    description="搜索互联网"
+)
+
+# 3. 创建带工具的 Agent
+researcher = Agent(
+    role="研究员",
+    goal="收集信息",
+    backstory="你是一位研究员。",
+    tools=[search_tool],
+    verbose=True,
+    llm=llm
+)
+
+# 4. 创建任务
+task = Task(
+    description="搜索关于 AI Agent 的最新信息",
+    expected_output="搜索结果总结",
+    agent=researcher
+)
+
+# 5. 创建团队
+crew = Crew(
+    agents=[researcher],
+    tasks=[task],
+    verbose=True
+)
+
+# 6. 执行任务
+result = crew.kickoff()
+```
+
+### 自定义工具
+
+```python
+from crewai import Agent, Task, Crew
+from langchain_openai import ChatOpenAI
+from langchain.tools import Tool
+
+# 1. 配置 LLM
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 2. 定义自定义工具
+def weather_tool(city: str) -> str:
+    """获取天气信息"""
+    # 实现天气查询逻辑
+    return f"{city} 今天天气晴朗，温度 25°C"
+
+def stock_tool(symbol: str) -> str:
+    """获取股票价格"""
+    # 实现股票查询逻辑
+    return f"{symbol} 当前价格: $150.25"
+
+# 3. 创建工具列表
+tools = [
+    Tool(
+        name="Weather",
+        func=weather_tool,
+        description="获取城市天气信息"
+    ),
+    Tool(
+        name="Stock",
+        func=stock_tool,
+        description="获取股票价格"
+    )
+]
+
+# 4. 创建带工具的 Agent
+assistant = Agent(
+    role="助手",
+    goal="帮助用户",
+    backstory="你是一个有帮助的助手。",
+    tools=tools,
+    verbose=True,
+    llm=llm
+)
+
+# 5. 创建任务
+task = Task(
+    description="查询北京的天气和 AAPL 的股票价格",
+    expected_output="查询结果",
+    agent=assistant
+)
+
+# 6. 创建团队
+crew = Crew(
+    agents=[assistant],
+    tasks=[task],
+    verbose=True
+)
+
+# 7. 执行任务
+result = crew.kickoff()
+```
+
+## 🎨 高级功能
+
+### 记忆系统
+
+```python
+from crewai import Agent, Task, Crew
+from langchain_openai import ChatOpenAI
+
+# 1. 配置 LLM
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 2. 创建带记忆的 Agent
+agent = Agent(
+    role="助手",
+    goal="帮助用户",
+    backstory="你是一个有帮助的助手。",
+    verbose=True,
+    llm=llm,
+    memory=True,  # 启用记忆
+    embedder={
+        "provider": "openai",
+        "config": {"model": "text-embedding-ada-002"}
+    }
+)
+
+# 3. 创建任务
+task = Task(
+    description="记住我的名字是张三",
+    expected_output="确认记住",
+    agent=agent
+)
+
+# 4. 创建团队
+crew = Crew(
+    agents=[agent],
+    tasks=[task],
+    verbose=True,
+    memory=True  # 启用团队记忆
+)
+
+# 5. 执行任务
+result = crew.kickoff()
+
+# 6. 继续对话（Agent 会记住）
+task2 = Task(
+    description="你还记得我的名字吗？",
+    expected_output="回答",
+    agent=agent
+)
+
+result2 = crew.kickoff()
+```
+
+### 回调处理
+
+```python
+from crewai import Agent, Task, Crew
+from langchain_openai import ChatOpenAI
+
+# 1. 定义回调函数
+def on_task_start(task):
+    print(f"任务开始: {task.description}")
+
+def on_task_end(task, output):
+    print(f"任务结束: {task.description}")
+    print(f"输出: {output}")
+
+def on_agent_start(agent):
+    print(f"Agent 开始工作: {agent.role}")
+
+def on_agent_end(agent, output):
+    print(f"Agent 结束工作: {agent.role}")
+
+# 2. 配置 LLM
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 3. 创建 Agent
+agent = Agent(
+    role="助手",
+    goal="帮助用户",
+    backstory="你是一个有帮助的助手。",
+    verbose=True,
+    llm=llm
+)
+
+# 4. 创建任务
+task = Task(
+    description="完成一个任务",
+    expected_output="任务结果",
+    agent=agent
+)
+
+# 5. 创建团队（带回调）
+crew = Crew(
+    agents=[agent],
+    tasks=[task],
+    verbose=True,
+    callbacks={
+        "on_task_start": on_task_start,
+        "on_task_end": on_task_end,
+        "on_agent_start": on_agent_start,
+        "on_agent_end": on_agent_end
+    }
+)
+
+# 6. 执行任务
+result = crew.kickoff()
+```
+
+### 错误处理
+
+```python
+from crewai import Agent, Task, Crew
+from langchain_openai import ChatOpenAI
+
+# 1. 配置 LLM
+llm = ChatOpenAI(
+    model="gpt-4",
+    temperature=0,
+    api_key="your-api-key"
+)
+
+# 2. 创建 Agent（带错误处理）
+agent = Agent(
+    role="助手",
+    goal="帮助用户",
+    backstory="""你是一个有帮助的助手。
+如果遇到错误，请尝试恢复并继续。""",
+    verbose=True,
+    llm=llm,
+    max_iter=5,  # 最大迭代次数
+    allow_delegation=False  # 不允许委托
+)
+
+# 3. 创建任务
+task = Task(
+    description="完成任务",
+    expected_output="任务结果",
+    agent=agent
+)
+
+# 4. 创建团队
+crew = Crew(
+    agents=[agent],
+    tasks=[task],
+    verbose=True
+)
+
+# 5. 执行任务（带错误处理）
+try:
+    result = crew.kickoff()
+    print("任务完成:", result)
+except Exception as e:
+    print("任务失败:", str(e))
+    # 重试或恢复逻辑
+```
+
+## 🎯 最佳实践
+
+### 1. Agent 设计
+
+#### ✅ 好的 Agent 设计
+```python
+# 明确的角色和目标
+agent = Agent(
+    role="数据分析师",
+    goal="分析数据并提供洞察",
+    backstory="""你是一位专业的数据分析师，
+有 10 年的经验，擅长使用 Python 和 SQL 进行数据分析。
+你注重数据准确性和洞察深度。""",
+    verbose=True,
+    llm=llm
+)
+```
+
+#### ❌ 避免
+```python
+# 模糊的角色和目标
+agent = Agent(
+    role="助手",
+    goal="帮助用户",
+    backstory="你是一个助手。",
+    verbose=True,
+    llm=llm
+)
+```
+
+### 2. 任务设计
+
+#### ✅ 好的任务设计
+```python
+task = Task(
+    description="分析 2024 年第一季度的销售数据，识别趋势和异常值，并提供改进建议",
+    expected_output="一份包含以下内容的分析报告：\n1. 销售趋势分析\n2. 异常值识别\n3. 改进建议\n4. 可视化图表",
+    agent=analyst
+)
+```
+
+#### ❌ 避免
+```python
+task = Task(
+    description="分析销售数据",
+    expected_output="报告",
+    agent=analyst
+)
+```
+
+### 3. 团队组织
+
+#### ✅ 合理的团队结构
+```python
+# 小团队（3-5 个 Agent）
+crew = Crew(
+    agents=[researcher, analyst, writer],
+    tasks=[research_task, analysis_task, writing_task],
+    verbose=True
+)
+```
+
+#### ❌ 避免过度复杂
+```python
+# 过多 Agent（10+ 个）会导致协调困难
+crew = Crew(
+    agents=[agent1, agent2, ..., agent10],
+    tasks=[task1, task2, ..., task10],
+    verbose=True
+)
+```
+
+### 4. 性能优化
+
+#### 减少不必要的 Agent
+```python
+# 合并相似角色
+agent = Agent(
+    role="全栈开发者",
+    goal="开发和测试功能",
+    backstory="你擅长前端和后端开发，也熟悉测试。",
+    verbose=True,
+    llm=llm
+)
+```
+
+#### 使用更快的模型
+```python
+# 对于简单任务使用 GPT-3.5
+llm = ChatOpenAI(
+    model="gpt-3.5-turbo",
+    temperature=0,
+    api_key="your-api-key"
+)
+```
+
+## 💡 常见问题
+
+### Q1: 如何处理 Agent 之间的冲突？
+
+**解决方案：**
+```python
+# 使用层级结构
+manager = Agent(
+    role="管理者",
+    goal="协调团队",
+    backstory="你是团队管理者，负责协调和决策。",
+    verbose=True,
+    llm=llm
+)
+
+worker1 = Agent(
+    role="工作者 1",
+    goal="完成任务",
+    backstory="你服从管理者的安排。",
+    verbose=True,
+    llm=llm
+)
+
+crew = Crew(
+    agents=[manager, worker1],
+    tasks=[task1, task2],
+    process=Process.hierarchical,  # 层级结构
+    manager_llm=llm,
+    verbose=True
+)
+```
+
+### Q2: 如何优化任务执行顺序？
+
+**解决方案：**
+```python
+# 明确任务依赖关系
+task1 = Task(
+    description="收集数据",
+    expected_output="数据",
+    agent=collector
+)
+
+task2 = Task(
+    description="分析数据",
+    expected_output="分析结果",
+    agent=analyst,
+    context=[task1]  # 明确依赖 task1
+)
+
+task3 = Task(
+    description="撰写报告",
+    expected_output="报告",
+    agent=writer,
+    context=[task2]  # 明确依赖 task2
+)
+
+crew = Crew(
+    agents=[collector, analyst, writer],
+    tasks=[task1, task2, task3],
+    process=Process.sequential,
+    verbose=True
+)
+```
+
+### Q3: 如何监控团队执行过程？
+
+**解决方案：**
+```python
+# 使用回调
+def on_task_start(task):
+    print(f"[开始] {task.description}")
+
+def on_task_end(task, output):
+    print(f"[完成] {task.description}")
+    print(f"[输出] {output}")
+
+crew = Crew(
+    agents=agents,
+    tasks=tasks,
+    verbose=True,
+    callbacks={
+        "on_task_start": on_task_start,
+        "on_task_end": on_task_end
+    }
+)
+
+result = crew.kickoff()
+```
+
+### Q4: 如何处理执行失败？
+
+**解决方案：**
+```python
+try:
+    result = crew.kickoff()
+    print("成功:", result)
+except Exception as e:
+    print("失败:", str(e))
+    
+    # 重试逻辑
+    max_retries = 3
+    for i in range(max_retries):
+        try:
+            result = crew.kickoff()
+            print(f"重试 {i+1} 成功:", result)
+            break
+        except Exception as retry_error:
+            print(f"重试 {i+1} 失败:", str(retry_error))
+```
+
+## 📚 学习资源
+
+### 官方文档
+- [CrewAI Documentation](https://docs.crewai.com/)
+- [CrewAI GitHub](https://github.com/joaomdmoura/crewAI)
+- [CrewAI Examples](https://github.com/joaomdmoura/crewAI-examples)
+
+### 社区资源
+- [CrewAI Discord](https://discord.gg/crewai)
+- [CrewAI Blog](https://blog.crewai.com/)
+
+### 教程
+- [Getting Started with CrewAI](https://docs.crewai.com/getting-started/)
+- [Advanced CrewAI Patterns](https://docs.crewai.com/advanced-patterns/)
+
+## ✅ 学习检查点
+
+- [ ] 理解 CrewAI 的 Agent 团队概念
+- [ ] 掌握 Agent 的创建和配置方法
+- [ ] 了解任务分配和依赖关系
+- [ ] 能够创建顺序和并行工作流
+- [ ] 掌握层级团队的组织方法
+- [ ] 能够集成 LangChain 工具
+- [ ] 理解记忆系统和回调机制
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **其他框架** - Semantic Kernel、MetaGPT 等
+- **Agent 工具集成** - 深入学习工具开发
+- **Agent 记忆系统** - 理解记忆管理
