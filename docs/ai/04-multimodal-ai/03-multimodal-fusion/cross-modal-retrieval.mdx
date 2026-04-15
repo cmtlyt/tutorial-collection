@@ -1,0 +1,1204 @@
+# 跨模态检索
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-15
+
+## 📖 概述
+
+跨模态检索是指在不同模态之间进行信息检索的技术，例如使用文本搜索图像、使用图像搜索文本、使用视频搜索相关内容等。通过学习跨模态的语义对齐，跨模态检索能够实现更自然、更高效的信息获取方式。本章节将详细介绍跨模态检索的技术方法和应用。
+
+## 🎯 为什么需要跨模态检索？
+
+### 从单一模态到跨模态检索
+
+1. **更自然的交互**
+   - 用文本描述搜索图像
+   - 用图像搜索相关内容
+   - 多模态查询组合
+
+2. **更丰富的信息**
+   - 整合多种信息源
+   - 提供更全面的结果
+   - 增强检索准确性
+
+3. **更广泛的应用**
+   - 电商搜索
+   - 内容推荐
+   - 智能助手
+
+## 🔢 主要跨模态检索技术
+
+### 1. 图文检索
+
+#### 核心思想
+
+图文检索是指使用文本查询图像，或使用图像查询文本的技术。通过学习文本和图像在共享语义空间中的表示，实现跨模态的相似度计算。
+
+#### 技术方法
+
+1. **双编码器架构**
+   - 文本编码器：将文本编码为向量
+   - 图像编码器：将图像编码为向量
+   - 通过余弦相似度计算匹配度
+
+2. **对比学习**
+   - 正样本对：匹配的文本-图像对
+   - 负样本对：不匹配的文本-图像对
+   - 最大化正样本相似度，最小化负样本相似度
+
+3. **检索策略**
+   - 文本到图像检索
+   - 图像到文本检索
+   - 双向检索
+
+#### 代码实现
+
+```javascript
+import { pipeline } from '@xenova/transformers';
+
+class ImageTextRetrieval {
+  constructor() {
+    this.textEncoder = null;
+    this.imageEncoder = null;
+    this.index = new Map();
+  }
+
+  /**
+   * 加载模型
+   */
+  async loadModels() {
+    // 加载 CLIP 模型
+    this.clipModel = await pipeline(
+      'zero-shot-image-classification',
+      'Xenova/clip-vit-base-patch32'
+    );
+  }
+
+  /**
+   * 建立索引
+   * 
+   * @param {Array<Object>} items - 索引项列表
+   * @returns {Promise<void>}
+   */
+  async buildIndex(items) {
+    if (!this.clipModel) {
+      await this.loadModels();
+    }
+
+    for (const item of items) {
+      const imageEmbedding = await this.encodeImage(item.imageUrl);
+      const textEmbedding = await this.encodeText(item.description);
+
+      this.index.set(item.id, {
+        id: item.id,
+        imageUrl: item.imageUrl,
+        description: item.description,
+        imageEmbedding: imageEmbedding,
+        textEmbedding: textEmbedding
+      });
+    }
+
+    console.log(`索引建立完成，共 ${this.index.size} 项`);
+  }
+
+  /**
+   * 编码图像
+   * 
+   * @param {string} imageUrl - 图像 URL
+   * @returns {Promise<Array>} - 图像嵌入向量
+   */
+  async encodeImage(imageUrl) {
+    if (!this.clipModel) {
+      await this.loadModels();
+    }
+
+    // 使用 CLIP 提取图像特征
+    const features = await this.clipModel.extractFeatures(imageUrl);
+    return features;
+  }
+
+  /**
+   * 编码文本
+   * 
+   * @param {string} text - 文本
+   * @returns {Promise<Array>} - 文本嵌入向量
+   */
+  async encodeText(text) {
+    if (!this.clipModel) {
+      await this.loadModels();
+    }
+
+    // 使用 CLIP 提取文本特征
+    const features = await this.clipModel.encodeText(text);
+    return features;
+  }
+
+  /**
+   * 文本到图像检索
+   * 
+   * @param {string} query - 查询文本
+   * @param {number} topK - 返回结果数量
+   * @returns {Promise<Array>} - 检索结果
+   */
+  async textToImage(query, topK = 10) {
+    if (!this.clipModel) {
+      await this.loadModels();
+    }
+
+    // 编码查询文本
+    const queryEmbedding = await this.encodeText(query);
+
+    // 计算相似度
+    const results = [];
+
+    for (const [id, item] of this.index) {
+      const similarity = this.cosineSimilarity(
+        queryEmbedding,
+        item.imageEmbedding
+      );
+
+      results.push({
+        id: item.id,
+        imageUrl: item.imageUrl,
+        description: item.description,
+        similarity: similarity
+      });
+    }
+
+    // 排序并返回 topK
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.slice(0, topK);
+  }
+
+  /**
+   * 图像到文本检索
+   * 
+   * @param {string} imageUrl - 图像 URL
+   * @param {number} topK - 返回结果数量
+   * @returns {Promise<Array>} - 检索结果
+   */
+  async imageToText(imageUrl, topK = 10) {
+    if (!this.clipModel) {
+      await this.loadModels();
+    }
+
+    // 编码查询图像
+    const queryEmbedding = await this.encodeImage(imageUrl);
+
+    // 计算相似度
+    const results = [];
+
+    for (const [id, item] of this.index) {
+      const similarity = this.cosineSimilarity(
+        queryEmbedding,
+        item.textEmbedding
+      );
+
+      results.push({
+        id: item.id,
+        imageUrl: item.imageUrl,
+        description: item.description,
+        similarity: similarity
+      });
+    }
+
+    // 排序并返回 topK
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.slice(0, topK);
+  }
+
+  /**
+   * 双向检索
+   * 
+   * @param {string} query - 查询文本或图像 URL
+   * @param {string} type - 查询类型 ('text' 或 'image')
+   * @param {number} topK - 返回结果数量
+   * @returns {Promise<Array>} - 检索结果
+   */
+  async bidirectionalRetrieval(query, type, topK = 10) {
+    if (type === 'text') {
+      return await this.textToImage(query, topK);
+    } else if (type === 'image') {
+      return await this.imageToText(query, topK);
+    } else {
+      throw new Error(`不支持的查询类型: ${type}`);
+    }
+  }
+
+  /**
+   * 余弦相似度计算
+   * 
+   * @param {Array} vec1 - 向量 1
+   * @param {Array} vec2 - 向量 2
+   * @returns {number} - 相似度
+   */
+  cosineSimilarity(vec1, vec2) {
+    const dotProduct = vec1.reduce((sum, val, i) => sum + val * vec2[i], 0);
+    const norm1 = Math.sqrt(vec1.reduce((sum, val) => sum + val * val, 0));
+    const norm2 = Math.sqrt(vec2.reduce((sum, val) => sum + val * val, 0));
+    
+    return dotProduct / (norm1 * norm2);
+  }
+
+  /**
+   * 添加新项到索引
+   * 
+   * @param {Object} item - 索引项
+   * @returns {Promise<void>}
+   */
+  async addItem(item) {
+    if (!this.clipModel) {
+      await this.loadModels();
+    }
+
+    const imageEmbedding = await this.encodeImage(item.imageUrl);
+    const textEmbedding = await this.encodeText(item.description);
+
+    this.index.set(item.id, {
+      id: item.id,
+      imageUrl: item.imageUrl,
+      description: item.description,
+      imageEmbedding: imageEmbedding,
+      textEmbedding: textEmbedding
+    });
+  }
+
+  /**
+   * 删除索引项
+   * 
+   * @param {string} id - 项 ID
+   * @returns {boolean} - 是否删除成功
+   */
+  removeItem(id) {
+    return this.index.delete(id);
+  }
+
+  /**
+   * 获取索引大小
+   * 
+   * @returns {number} - 索引大小
+   */
+  getIndexSize() {
+    return this.index.size;
+  }
+}
+
+// 使用示例
+async function example() {
+  const retrieval = new ImageTextRetrieval();
+  
+  // 建立索引
+  const items = [
+    {
+      id: '1',
+      imageUrl: 'https://example.com/image1.jpg',
+      description: 'A cat sitting on a windowsill'
+    },
+    {
+      id: '2',
+      imageUrl: 'https://example.com/image2.jpg',
+      description: 'A dog playing in the park'
+    },
+    {
+      id: '3',
+      imageUrl: 'https://example.com/image3.jpg',
+      description: 'A bird flying in the sky'
+    }
+  ];
+  
+  await retrieval.buildIndex(items);
+  
+  // 文本到图像检索
+  const textResults = await retrieval.textToImage('a cat', 3);
+  console.log('文本到图像检索结果:', textResults);
+  
+  // 图像到文本检索
+  const imageResults = await retrieval.imageToText('https://example.com/query.jpg', 3);
+  console.log('图像到文本检索结果:', imageResults);
+}
+```
+
+#### 应用场景
+
+1. **电商搜索**
+   - 以文搜图
+   - 以图搜文
+   - 商品推荐
+
+2. **内容管理**
+   - 图像标注
+   - 内容分类
+   - 相似内容发现
+
+3. **社交媒体**
+   - 内容推荐
+   - 趋势发现
+   - 用户兴趣匹配
+
+### 2. 视频检索
+
+#### 核心思想
+
+视频检索是指使用文本、图像或视频片段查询视频内容的技术。通过理解视频的视觉、音频和文本信息，实现精准的视频内容检索。
+
+#### 技术方法
+
+1. **多模态视频理解**
+   - 视觉特征提取
+   - 音频特征提取
+   - 文本特征提取
+
+2. **时序建模**
+   - 帧级特征提取
+   - 时序注意力机制
+   - 动作识别
+
+3. **检索策略**
+   - 文本到视频检索
+   - 图像到视频检索
+   - 视频到视频检索
+
+#### 代码实现
+
+```javascript
+class VideoRetrieval {
+  constructor() {
+    this.videoEncoder = null;
+    this.textEncoder = null;
+    this.index = new Map();
+  }
+
+  /**
+   * 加载模型
+   */
+  async loadModels() {
+    // 加载视频编码器
+    this.videoEncoder = await this.loadVideoEncoder();
+    
+    // 加载文本编码器
+    this.textEncoder = await this.loadTextEncoder();
+  }
+
+  /**
+   * 加载视频编码器
+   * 
+   * @returns {Promise<Object>} - 视频编码器
+   */
+  async loadVideoEncoder() {
+    // 使用预训练的视频编码器
+    // 这里简化为返回一个模拟编码器
+    return {
+      encode: async (videoUrl) => {
+        // 提取视频帧
+        const frames = await this.extractFrames(videoUrl);
+        
+        // 编码每一帧
+        const frameEmbeddings = [];
+        for (const frame of frames) {
+          const embedding = await this.encodeFrame(frame);
+          frameEmbeddings.push(embedding);
+        }
+        
+        // 聚合帧级特征
+        return this.aggregateFrameFeatures(frameEmbeddings);
+      }
+    };
+  }
+
+  /**
+   * 加载文本编码器
+   * 
+   * @returns {Promise<Object>} - 文本编码器
+   */
+  async loadTextEncoder() {
+    // 使用预训练的文本编码器
+    return {
+      encode: async (text) => {
+        // 简化的文本编码
+        const words = text.split(' ');
+        const embedding = new Array(512).fill(0);
+        
+        for (let i = 0; i < Math.min(words.length, 128); i++) {
+          const wordHash = this.hashWord(words[i]);
+          embedding[i * 4] = wordHash % 256;
+          embedding[i * 4 + 1] = (wordHash >> 8) % 256;
+          embedding[i * 4 + 2] = (wordHash >> 16) % 256;
+          embedding[i * 4 + 3] = (wordHash >> 24) % 256;
+        }
+        
+        return embedding;
+      }
+    };
+  }
+
+  /**
+   * 提取视频帧
+   * 
+   * @param {string} videoUrl - 视频 URL
+   * @returns {Promise<Array>} - 视频帧列表
+   */
+  async extractFrames(videoUrl) {
+    // 使用 HTML5 Video 元素提取帧
+    return new Promise((resolve, reject) => {
+      const video = document.createElement('video');
+      video.src = videoUrl;
+      video.crossOrigin = 'anonymous';
+      
+      const frames = [];
+      const frameInterval = 1; // 每秒提取 1 帧
+      
+      video.addEventListener('loadeddata', async () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        
+        const duration = video.duration;
+        const numFrames = Math.floor(duration * frameInterval);
+        
+        for (let i = 0; i < numFrames; i++) {
+          video.currentTime = i / frameInterval;
+          
+          await new Promise(resolve => {
+            video.addEventListener('seeked', resolve, { once: true });
+          });
+          
+          ctx.drawImage(video, 0, 0);
+          const frame = canvas.toDataURL('image/jpeg');
+          frames.push(frame);
+        }
+        
+        resolve(frames);
+      });
+      
+      video.addEventListener('error', reject);
+    });
+  }
+
+  /**
+   * 编码帧
+   * 
+   * @param {string} frame - 帧数据
+   * @returns {Promise<Array>} - 帧嵌入向量
+   */
+  async encodeFrame(frame) {
+    // 简化的帧编码
+    // 实际实现中应该使用预训练的视觉编码器
+    const frameHash = this.hashString(frame);
+    const embedding = new Array(512).fill(0);
+    
+    for (let i = 0; i < 128; i++) {
+      embedding[i * 4] = frameHash % 256;
+      embedding[i * 4 + 1] = (frameHash >> 8) % 256;
+      embedding[i * 4 + 2] = (frameHash >> 16) % 256;
+      embedding[i * 4 + 3] = (frameHash >> 24) % 256;
+    }
+    
+    return embedding;
+  }
+
+  /**
+   * 聚合帧级特征
+   * 
+   * @param {Array<Array>} frameEmbeddings - 帧嵌入列表
+   * @returns {Array} - 聚合后的嵌入向量
+   */
+  aggregateFrameFeatures(frameEmbeddings) {
+    if (frameEmbeddings.length === 0) {
+      return new Array(512).fill(0);
+    }
+
+    // 平均聚合
+    const aggregated = new Array(512).fill(0);
+    
+    for (const frameEmbedding of frameEmbeddings) {
+      for (let i = 0; i < frameEmbedding.length; i++) {
+        aggregated[i] += frameEmbedding[i];
+      }
+    }
+    
+    for (let i = 0; i < aggregated.length; i++) {
+      aggregated[i] /= frameEmbeddings.length;
+    }
+    
+    return aggregated;
+  }
+
+  /**
+   * 建立索引
+   * 
+   * @param {Array<Object>} items - 索引项列表
+   * @returns {Promise<void>}
+   */
+  async buildIndex(items) {
+    if (!this.videoEncoder || !this.textEncoder) {
+      await this.loadModels();
+    }
+
+    for (const item of items) {
+      const videoEmbedding = await this.videoEncoder.encode(item.videoUrl);
+      const textEmbedding = await this.textEncoder.encode(item.description);
+
+      this.index.set(item.id, {
+        id: item.id,
+        videoUrl: item.videoUrl,
+        title: item.title,
+        description: item.description,
+        videoEmbedding: videoEmbedding,
+        textEmbedding: textEmbedding
+      });
+    }
+
+    console.log(`视频索引建立完成，共 ${this.index.size} 项`);
+  }
+
+  /**
+   * 文本到视频检索
+   * 
+   * @param {string} query - 查询文本
+   * @param {number} topK - 返回结果数量
+   * @returns {Promise<Array>} - 检索结果
+   */
+  async textToVideo(query, topK = 10) {
+    if (!this.textEncoder) {
+      await this.loadModels();
+    }
+
+    // 编码查询文本
+    const queryEmbedding = await this.textEncoder.encode(query);
+
+    // 计算相似度
+    const results = [];
+
+    for (const [id, item] of this.index) {
+      const similarity = this.cosineSimilarity(
+        queryEmbedding,
+        item.videoEmbedding
+      );
+
+      results.push({
+        id: item.id,
+        videoUrl: item.videoUrl,
+        title: item.title,
+        description: item.description,
+        similarity: similarity
+      });
+    }
+
+    // 排序并返回 topK
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.slice(0, topK);
+  }
+
+  /**
+   * 图像到视频检索
+   * 
+   * @param {string} imageUrl - 图像 URL
+   * @param {number} topK - 返回结果数量
+   * @returns {Promise<Array>} - 检索结果
+   */
+  async imageToVideo(imageUrl, topK = 10) {
+    if (!this.videoEncoder) {
+      await this.loadModels();
+    }
+
+    // 编码查询图像
+    const imageEmbedding = await this.encodeImage(imageUrl);
+
+    // 计算相似度
+    const results = [];
+
+    for (const [id, item] of this.index) {
+      const similarity = this.cosineSimilarity(
+        imageEmbedding,
+        item.videoEmbedding
+      );
+
+      results.push({
+        id: item.id,
+        videoUrl: item.videoUrl,
+        title: item.title,
+        description: item.description,
+        similarity: similarity
+      });
+    }
+
+    // 排序并返回 topK
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.slice(0, topK);
+  }
+
+  /**
+   * 编码图像
+   * 
+   * @param {string} imageUrl - 图像 URL
+   * @returns {Promise<Array>} - 图像嵌入向量
+   */
+  async encodeImage(imageUrl) {
+    // 简化的图像编码
+    // 实际实现中应该使用预训练的视觉编码器
+    const imageHash = this.hashString(imageUrl);
+    const embedding = new Array(512).fill(0);
+    
+    for (let i = 0; i < 128; i++) {
+      embedding[i * 4] = imageHash % 256;
+      embedding[i * 4 + 1] = (imageHash >> 8) % 256;
+      embedding[i * 4 + 2] = (imageHash >> 16) % 256;
+      embedding[i * 4 + 3] = (imageHash >> 24) % 256;
+    }
+    
+    return embedding;
+  }
+
+  /**
+   * 余弦相似度计算
+   * 
+   * @param {Array} vec1 - 向量 1
+   * @param {Array} vec2 - 向量 2
+   * @returns {number} - 相似度
+   */
+  cosineSimilarity(vec1, vec2) {
+    const dotProduct = vec1.reduce((sum, val, i) => sum + val * vec2[i], 0);
+    const norm1 = Math.sqrt(vec1.reduce((sum, val) => sum + val * val, 0));
+    const norm2 = Math.sqrt(vec2.reduce((sum, val) => sum + val * val, 0));
+    
+    return dotProduct / (norm1 * norm2);
+  }
+
+  /**
+   * 哈希字符串
+   * 
+   * @param {string} str - 字符串
+   * @returns {number} - 哈希值
+   */
+  hashString(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return Math.abs(hash);
+  }
+
+  /**
+   * 哈希单词
+   * 
+   * @param {string} word - 单词
+   * @returns {number} - 哈希值
+   */
+  hashWord(word) {
+    return this.hashString(word);
+  }
+}
+
+// 使用示例
+async function example() {
+  const videoRetrieval = new VideoRetrieval();
+  
+  // 建立索引
+  const items = [
+    {
+      id: '1',
+      videoUrl: 'https://example.com/video1.mp4',
+      title: 'Cat Video',
+      description: 'A cute cat playing with a toy'
+    },
+    {
+      id: '2',
+      videoUrl: 'https://example.com/video2.mp4',
+      title: 'Dog Video',
+      description: 'A dog running in the park'
+    }
+  ];
+  
+  await videoRetrieval.buildIndex(items);
+  
+  // 文本到视频检索
+  const textResults = await videoRetrieval.textToVideo('cat playing', 3);
+  console.log('文本到视频检索结果:', textResults);
+}
+```
+
+#### 应用场景
+
+1. **视频搜索**
+   - 关键词搜索
+   - 语义搜索
+   - 内容发现
+
+2. **视频推荐**
+   - 相关视频推荐
+   - 个性化推荐
+   - 趋势推荐
+
+3. **视频管理**
+   - 内容分类
+   - 标签生成
+   - 重复检测
+
+### 3. 音频检索
+
+#### 核心思想
+
+音频检索是指使用文本、音频片段或其他模态查询音频内容的技术。通过理解音频的声学特征和语义信息，实现精准的音频内容检索。
+
+#### 技术方法
+
+1. **音频特征提取**
+   - 声学特征
+   - 语音特征
+   - 音乐特征
+
+2. **跨模态对齐**
+   - 文本-音频对齐
+   - 图像-音频对齐
+   - 视频-音频对齐
+
+3. **检索策略**
+   - 文本到音频检索
+   - 音频到音频检索
+   - 混合模态检索
+
+#### 代码实现
+
+```javascript
+class AudioRetrieval {
+  constructor() {
+    this.audioEncoder = null;
+    this.textEncoder = null;
+    this.index = new Map();
+  }
+
+  /**
+   * 加载模型
+   */
+  async loadModels() {
+    // 加载音频编码器
+    this.audioEncoder = await this.loadAudioEncoder();
+    
+    // 加载文本编码器
+    this.textEncoder = await this.loadTextEncoder();
+  }
+
+  /**
+   * 加载音频编码器
+   * 
+   * @returns {Promise<Object>} - 音频编码器
+   */
+  async loadAudioEncoder() {
+    // 使用预训练的音频编码器
+    return {
+      encode: async (audioData) => {
+        // 提取音频特征
+        const features = await this.extractAudioFeatures(audioData);
+        
+        // 编码特征
+        return this.encodeAudioFeatures(features);
+      }
+    };
+  }
+
+  /**
+   * 加载文本编码器
+   * 
+   * @returns {Promise<Object>} - 文本编码器
+   */
+  async loadTextEncoder() {
+    // 使用预训练的文本编码器
+    return {
+      encode: async (text) => {
+        // 简化的文本编码
+        const words = text.split(' ');
+        const embedding = new Array(512).fill(0);
+        
+        for (let i = 0; i < Math.min(words.length, 128); i++) {
+          const wordHash = this.hashWord(words[i]);
+          embedding[i * 4] = wordHash % 256;
+          embedding[i * 4 + 1] = (wordHash >> 8) % 256;
+          embedding[i * 4 + 2] = (wordHash >> 16) % 256;
+          embedding[i * 4 + 3] = (wordHash >> 24) % 256;
+        }
+        
+        return embedding;
+      }
+    };
+  }
+
+  /**
+   * 提取音频特征
+   * 
+   * @param {ArrayBuffer} audioData - 音频数据
+   * @returns {Promise<Object>} - 音频特征
+   */
+  async extractAudioFeatures(audioData) {
+    // 使用 Web Audio API 提取特征
+    const audioContext = new AudioContext({ sampleRate: 16000 });
+    const audioBuffer = await audioContext.decodeAudioData(audioData);
+    
+    // 提取 MFCC 特征
+    const mfcc = await this.extractMFCC(audioBuffer);
+    
+    // 提取频谱特征
+    const spectrum = await this.extractSpectrum(audioBuffer);
+    
+    // 提取节奏特征
+    const tempo = await this.extractTempo(audioBuffer);
+    
+    return {
+      mfcc: mfcc,
+      spectrum: spectrum,
+      tempo: tempo
+    };
+  }
+
+  /**
+   * 提取 MFCC 特征
+   * 
+   * @param {AudioBuffer} audioBuffer - 音频缓冲区
+   * @returns {Promise<Array>} - MFCC 特征
+   */
+  async extractMFCC(audioBuffer) {
+    // 简化的 MFCC 提取
+    const channelData = audioBuffer.getChannelData(0);
+    const mfcc = new Array(13).fill(0);
+    
+    // 计算简单的统计特征
+    let sum = 0;
+    let sumSquares = 0;
+    
+    for (let i = 0; i < channelData.length; i++) {
+      sum += channelData[i];
+      sumSquares += channelData[i] * channelData[i];
+    }
+    
+    const mean = sum / channelData.length;
+    const variance = sumSquares / channelData.length - mean * mean;
+    const stdDev = Math.sqrt(variance);
+    
+    mfcc[0] = mean;
+    mfcc[1] = stdDev;
+    
+    return mfcc;
+  }
+
+  /**
+   * 提取频谱特征
+   * 
+   * @param {AudioBuffer} audioBuffer - 音频缓冲区
+   * @returns {Promise<Array>} - 频谱特征
+   */
+  async extractSpectrum(audioBuffer) {
+    // 使用 FFT 提取频谱
+    const channelData = audioBuffer.getChannelData(0);
+    const fftSize = 2048;
+    const spectrum = new Array(fftSize / 2).fill(0);
+    
+    // 简化的频谱计算
+    for (let i = 0; i < spectrum.length; i++) {
+      let real = 0;
+      let imag = 0;
+      
+      for (let j = 0; j < fftSize; j++) {
+        const angle = 2 * Math.PI * i * j / fftSize;
+        real += channelData[j] * Math.cos(angle);
+        imag += channelData[j] * Math.sin(angle);
+      }
+      
+      spectrum[i] = Math.sqrt(real * real + imag * imag);
+    }
+    
+    return spectrum;
+  }
+
+  /**
+   * 提取节奏特征
+   * 
+   * @param {AudioBuffer} audioBuffer - 音频缓冲区
+   * @returns {Promise<number>} - 节奏（BPM）
+   */
+  async extractTempo(audioBuffer) {
+    // 简化的节奏检测
+    const channelData = audioBuffer.getChannelData(0);
+    const sampleRate = audioBuffer.sampleRate;
+    
+    // 检测峰值
+    const peaks = [];
+    const threshold = 0.5;
+    
+    for (let i = 1; i < channelData.length - 1; i++) {
+      if (channelData[i] > threshold &&
+          channelData[i] > channelData[i - 1] &&
+          channelData[i] > channelData[i + 1]) {
+        peaks.push(i / sampleRate);
+      }
+    }
+    
+    // 计算平均间隔
+    if (peaks.length < 2) {
+      return 120; // 默认 BPM
+    }
+    
+    const intervals = [];
+    for (let i = 1; i < peaks.length; i++) {
+      intervals.push(peaks[i] - peaks[i - 1]);
+    }
+    
+    const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+    const bpm = 60 / avgInterval;
+    
+    return bpm;
+  }
+
+  /**
+   * 编码音频特征
+   * 
+   * @param {Object} features - 音频特征
+   * @returns {Array} - 嵌入向量
+   */
+  encodeAudioFeatures(features) {
+    const embedding = new Array(512).fill(0);
+    
+    // 编码 MFCC 特征
+    for (let i = 0; i < features.mfcc.length; i++) {
+      embedding[i] = features.mfcc[i];
+    }
+    
+    // 编码频谱特征（降采样）
+    const spectrumStep = Math.floor(features.spectrum.length / 128);
+    for (let i = 0; i < 128; i++) {
+      embedding[13 + i] = features.spectrum[i * spectrumStep];
+    }
+    
+    // 编码节奏特征
+    embedding[141] = features.tempo / 200; // 归一化
+    
+    return embedding;
+  }
+
+  /**
+   * 建立索引
+   * 
+   * @param {Array<Object>} items - 索引项列表
+   * @returns {Promise<void>}
+   */
+  async buildIndex(items) {
+    if (!this.audioEncoder || !this.textEncoder) {
+      await this.loadModels();
+    }
+
+    for (const item of items) {
+      const audioEmbedding = await this.audioEncoder.encode(item.audioData);
+      const textEmbedding = await this.textEncoder.encode(item.description);
+
+      this.index.set(item.id, {
+        id: item.id,
+        audioUrl: item.audioUrl,
+        title: item.title,
+        description: item.description,
+        audioEmbedding: audioEmbedding,
+        textEmbedding: textEmbedding
+      });
+    }
+
+    console.log(`音频索引建立完成，共 ${this.index.size} 项`);
+  }
+
+  /**
+   * 文本到音频检索
+   * 
+   * @param {string} query - 查询文本
+   * @param {number} topK - 返回结果数量
+   * @returns {Promise<Array>} - 检索结果
+   */
+  async textToAudio(query, topK = 10) {
+    if (!this.textEncoder) {
+      await this.loadModels();
+    }
+
+    // 编码查询文本
+    const queryEmbedding = await this.textEncoder.encode(query);
+
+    // 计算相似度
+    const results = [];
+
+    for (const [id, item] of this.index) {
+      const similarity = this.cosineSimilarity(
+        queryEmbedding,
+        item.audioEmbedding
+      );
+
+      results.push({
+        id: item.id,
+        audioUrl: item.audioUrl,
+        title: item.title,
+        description: item.description,
+        similarity: similarity
+      });
+    }
+
+    // 排序并返回 topK
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.slice(0, topK);
+  }
+
+  /**
+   * 音频到音频检索
+   * 
+   * @param {ArrayBuffer} queryAudio - 查询音频
+   * @param {number} topK - 返回结果数量
+   * @returns {Promise<Array>} - 检索结果
+   */
+  async audioToAudio(queryAudio, topK = 10) {
+    if (!this.audioEncoder) {
+      await this.loadModels();
+    }
+
+    // 编码查询音频
+    const queryEmbedding = await this.audioEncoder.encode(queryAudio);
+
+    // 计算相似度
+    const results = [];
+
+    for (const [id, item] of this.index) {
+      const similarity = this.cosineSimilarity(
+        queryEmbedding,
+        item.audioEmbedding
+      );
+
+      results.push({
+        id: item.id,
+        audioUrl: item.audioUrl,
+        title: item.title,
+        description: item.description,
+        similarity: similarity
+      });
+    }
+
+    // 排序并返回 topK
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.slice(0, topK);
+  }
+
+  /**
+   * 余弦相似度计算
+   * 
+   * @param {Array} vec1 - 向量 1
+   * @param {Array} vec2 - 向量 2
+   * @returns {number} - 相似度
+   */
+  cosineSimilarity(vec1, vec2) {
+    const dotProduct = vec1.reduce((sum, val, i) => sum + val * vec2[i], 0);
+    const norm1 = Math.sqrt(vec1.reduce((sum, val) => sum + val * val, 0));
+    const norm2 = Math.sqrt(vec2.reduce((sum, val) => sum + val * val, 0));
+    
+    return dotProduct / (norm1 * norm2);
+  }
+
+  /**
+   * 哈希单词
+   * 
+   * @param {string} word - 单词
+   * @returns {number} - 哈希值
+   */
+  hashWord(word) {
+    let hash = 0;
+    for (let i = 0; i < word.length; i++) {
+      const char = word.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return Math.abs(hash);
+  }
+}
+
+// 使用示例
+async function example() {
+  const audioRetrieval = new AudioRetrieval();
+  
+  // 建立索引
+  const items = [
+    {
+      id: '1',
+      audioUrl: 'https://example.com/audio1.mp3',
+      title: 'Cat Meowing',
+      description: 'A cat meowing sound',
+      audioData: await fetchAudio('https://example.com/audio1.mp3')
+    },
+    {
+      id: '2',
+      audioUrl: 'https://example.com/audio2.mp3',
+      title: 'Dog Barking',
+      description: 'A dog barking sound',
+      audioData: await fetchAudio('https://example.com/audio2.mp3')
+    }
+  ];
+  
+  await audioRetrieval.buildIndex(items);
+  
+  // 文本到音频检索
+  const textResults = await audioRetrieval.textToAudio('cat meowing', 3);
+  console.log('文本到音频检索结果:', textResults);
+}
+
+// 辅助函数
+async function fetchAudio(url) {
+  const response = await fetch(url);
+  return await response.arrayBuffer();
+}
+```
+
+#### 应用场景
+
+1. **音乐搜索**
+   - 歌曲搜索
+   - 旋律搜索
+   - 相似音乐推荐
+
+2. **语音搜索**
+   - 关键词搜索
+   - 语音内容检索
+   - 说话人识别
+
+3. **音效搜索**
+   - 音效库搜索
+   - 相似音效推荐
+   - 声音分类
+
+## 📊 技术对比
+
+| 特性 | 图文检索 | 视频检索 | 音频检索 |
+|------|----------|----------|----------|
+| **主要技术** | CLIP、BLIP | VideoCLIP、VideoMAE | AudioCLIP、Wav2Vec |
+| **特征维度** | 图像+文本 | 视频+文本+音频 | 音频+文本 |
+| **时序性** | 无 | 有 | 有 |
+| **计算复杂度** | 低 | 高 | 中等 |
+| **检索精度** | 高 | 中等 | 中等 |
+| **应用场景** | 电商、社交媒体 | 视频、娱乐 | 音乐、语音 |
+| **成熟度** | 很高 | 高 | 高 |
+
+## 🎓 学习路径
+
+### 初级阶段
+1. 理解跨模态检索基本原理
+2. 掌握 CLIP 的基本使用
+3. 实现简单的图文检索
+
+### 中级阶段
+1. 学习视频检索技术
+2. 掌握音频特征提取
+3. 实现多模态检索系统
+
+### 高级阶段
+1. 深入理解检索优化方法
+2. 实现大规模检索系统
+3. 探索实时检索技术
+
+## 🔗 相关资源
+
+- [CLIP 论文](https://arxiv.org/abs/2103.00020)
+- [VideoCLIP 论文](https://arxiv.org/abs/2104.06890)
+- [AudioCLIP 论文](https://arxiv.org/abs/2106.13043)
+- [FAISS 向量检索](https://github.com/facebookresearch/faiss)
+- [Milvus 向量数据库](https://milvus.io/)
+- [Hugging Face Multimodal](https://huggingface.co/models?pipeline_tag=feature-extraction)
