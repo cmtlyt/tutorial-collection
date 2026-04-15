@@ -1,0 +1,3601 @@
+# 自主 Agent
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-15
+
+## 📖 概述
+
+自主 Agent（Autonomous Agent）是指能够在最小人类干预下独立运行、自主决策、持续学习和改进的智能系统。与传统的响应式 Agent 不同，自主 Agent 具备自我意识、目标设定、自我评估和自我改进的能力，能够在复杂环境中长期自主运行。
+
+## 🔧 基础组件
+
+在深入自主 Agent 的核心功能之前，我们需要先实现一些基础组件。
+
+### LLM 客户端
+
+```javascript
+class LLMClient {
+  constructor(config) {
+    /**
+     * LLM 客户端
+     * 
+     * 参数:
+     *   config: 配置对象 { apiKey, model, baseUrl, temperature, maxTokens }
+     */
+    this.config = {
+      apiKey: config.apiKey || '',
+      model: config.model || 'gpt-4',
+      baseUrl: config.baseUrl || 'https://api.openai.com/v1',
+      temperature: config.temperature || 0.7,
+      maxTokens: config.maxTokens || 2000
+    };
+  }
+
+  async generate(prompt, options = {}) {
+    /**
+     * 生成文本
+     * 
+     * 参数:
+     *   prompt: 提示文本
+     *   options: 选项 { temperature, maxTokens, model }
+     * 
+     * 返回:
+     *   生成的文本
+     */
+    const config = {
+      ...this.config,
+      ...options
+    };
+
+    try {
+      const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.apiKey}`
+        },
+        body: JSON.stringify({
+          model: config.model,
+          messages: [
+            { role: 'user', content: prompt }
+          ],
+          temperature: config.temperature,
+          max_tokens: config.maxTokens
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.choices[0].message.content;
+    } catch (error) {
+      console.error('LLM generation error:', error);
+      throw error;
+    }
+  }
+
+  async predict(prompt) {
+    /**
+     * 预测（别名方法）
+     * 
+     * 参数:
+     *   prompt: 提示文本
+     * 
+     * 返回:
+     *   生成的文本
+     */
+    return await this.generate(prompt);
+  }
+}
+```
+
+### 长期记忆系统
+
+```javascript
+class LongTermMemory {
+  constructor(config = {}) {
+    /**
+     * 长期记忆系统
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.storage = new Map();
+    this.vectorIndex = new Map();
+    this.config = {
+      maxItems: config.maxItems || 10000,
+      enableVectorSearch: config.enableVectorSearch !== false
+    };
+  }
+
+  async store(key, value, metadata = {}) {
+    /**
+     * 存储数据
+     * 
+     * 参数:
+     *   key: 键
+     *   value: 值
+     *   metadata: 元数据
+     * 
+     * 返回:
+     *   存储结果
+     */
+    const item = {
+      key,
+      value,
+      metadata: {
+        ...metadata,
+        timestamp: Date.now()
+      }
+    };
+
+    this.storage.set(key, item);
+
+    // 如果启用了向量搜索，创建索引
+    if (this.config.enableVectorSearch) {
+      await this._indexItem(item);
+    }
+
+    // 检查容量
+    if (this.storage.size > this.config.maxItems) {
+      await this._evictOldest();
+    }
+
+    return { success: true, key };
+  }
+
+  async retrieve(key) {
+    /**
+     * 检索数据
+     * 
+     * 参数:
+     *   key: 键
+     * 
+     * 返回:
+     *   检索到的值
+     */
+    const item = this.storage.get(key);
+    return item ? item.value : null;
+  }
+
+  async search(query, options = {}) {
+    /**
+     * 搜索数据
+     * 
+     * 参数:
+     *   query: 查询内容
+     *   options: 选项 { limit, threshold }
+     * 
+     * 返回:
+     *   搜索结果
+     */
+    const limit = options.limit || 10;
+    const threshold = options.threshold || 0.5;
+
+    const results = [];
+
+    for (const [key, item] of this.storage.entries()) {
+      const score = this._calculateSimilarity(query, item);
+
+      if (score >= threshold) {
+        results.push({
+          key,
+          value: item.value,
+          metadata: item.metadata,
+          score
+        });
+      }
+    }
+
+    // 按相似度排序
+    results.sort((a, b) => b.score - a.score);
+
+    return results.slice(0, limit);
+  }
+
+  async delete(key) {
+    /**
+     * 删除数据
+     * 
+     * 参数:
+     *   key: 键
+     * 
+     * 返回:
+     *   删除结果
+     */
+    const deleted = this.storage.delete(key);
+    return { success: deleted, key };
+  }
+
+  async _indexItem(item) {
+    /**
+     * 为项目创建索引
+     * 
+     * 参数:
+     *   item: 数据项
+     */
+    // 简化实现：使用关键词索引
+    const text = JSON.stringify(item.value);
+    const keywords = this._extractKeywords(text);
+
+    for (const keyword of keywords) {
+      if (!this.vectorIndex.has(keyword)) {
+        this.vectorIndex.set(keyword, []);
+      }
+      this.vectorIndex.get(keyword).push(item.key);
+    }
+  }
+
+  _extractKeywords(text) {
+    /**
+     * 提取关键词
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   关键词数组
+     */
+    // 简化实现：提取单词
+    return text
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(word => word.length > 2)
+      .slice(0, 10);
+  }
+
+  _calculateSimilarity(query, item) {
+    /**
+     * 计算相似度
+     * 
+     * 参数:
+     *   query: 查询
+     *   item: 数据项
+     * 
+     * 返回:
+     *   相似度分数
+     */
+    // 简化实现：基于关键词重叠
+    const queryKeywords = this._extractKeywords(query);
+    const itemText = JSON.stringify(item.value);
+    const itemKeywords = this._extractKeywords(itemText);
+
+    const querySet = new Set(queryKeywords);
+    const itemSet = new Set(itemKeywords);
+
+    const intersection = new Set([...querySet].filter(x => itemSet.has(x)));
+    const union = new Set([...querySet, ...itemSet]);
+
+    if (union.size === 0) {
+      return 0;
+    }
+
+    return intersection.size / union.size;
+  }
+
+  async _evictOldest() {
+    /**
+     * 淘汰最旧的数据
+     */
+    let oldestKey = null;
+    let oldestTimestamp = Infinity;
+
+    for (const [key, item] of this.storage.entries()) {
+      if (item.metadata.timestamp < oldestTimestamp) {
+        oldestTimestamp = item.metadata.timestamp;
+        oldestKey = key;
+      }
+    }
+
+    if (oldestKey) {
+      this.storage.delete(oldestKey);
+    }
+  }
+
+  getStats() {
+    /**
+     * 获取统计信息
+     * 
+     * 返回:
+     *   统计信息对象
+     */
+    return {
+      totalItems: this.storage.size,
+      maxItems: this.config.maxItems,
+      indexSize: this.vectorIndex.size,
+      usage: this.storage.size / this.config.maxItems
+    };
+  }
+
+  clear() {
+    /**
+     * 清空存储
+     */
+    this.storage.clear();
+    this.vectorIndex.clear();
+    return { success: true };
+  }
+}
+```
+
+### 辅助函数
+
+```javascript
+/**
+ * 解析列表
+ * 
+ * 参数:
+ *   text: 文本内容
+ * 
+ * 返回:
+ *   解析后的列表
+ */
+function parse_list(text) {
+  // 尝试解析 JSON 数组
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (e) {
+    // 不是 JSON，继续其他解析方式
+  }
+
+  // 尝试解析 Markdown 列表
+  const lines = text.split('\n');
+  const items = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    
+    // 匹配 "- item", "1. item", "* item" 等格式
+    const match = trimmed.match(/^[-*•]\s+(.+)$|^\d+\.\s+(.+)$/);
+    if (match) {
+      items.push(match[1] || match[2]);
+    }
+  }
+
+  return items;
+}
+```
+
+## 🎯 自主 Agent 的核心特征
+
+### 1. 自主决策
+
+自主 Agent 能够独立做出决策，无需人类持续干预。
+
+#### 目标设定
+
+Agent 能够自主设定和调整目标。
+
+```javascript
+class GoalSettingSystem {
+  constructor(llm) {
+    this.llm = llm;
+    this.goals = new Map();
+    this.goalHistory = [];
+  }
+
+  /**
+   * 自主设定目标
+   * 
+   * @param {string} mission - 使命描述
+   * @param {Object} context - 上下文信息
+   * @returns {Object} - 设定的目标
+   */
+  async setGoal(mission, context = {}) {
+    const prompt = `
+    基于以下使命和上下文，设定具体可执行的目标：
+    
+    使命：${mission}
+    上下文：${JSON.stringify(context)}
+    
+    请设定：
+    1. 主要目标（Primary Goal）
+    2. 子目标（Sub-goals）
+    3. 成功标准（Success Criteria）
+    4. 优先级（Priority）
+    5. 时间框架（Timeframe）
+    
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    const goal = JSON.parse(response);
+    
+    // 存储目标
+    const goalId = `goal_${Date.now()}`;
+    goal.id = goalId;
+    goal.status = 'active';
+    goal.createdAt = Date.now();
+    this.goals.set(goalId, goal);
+    
+    // 记录历史
+    this.goalHistory.push(goal);
+    
+    return goal;
+  }
+
+  /**
+   * 调整目标
+   * 
+   * @param {string} goalId - 目标 ID
+   * @param {Object} adjustments - 调整内容
+   * @returns {Object} - 调整后的目标
+   */
+  async adjustGoal(goalId, adjustments) {
+    const goal = this.goals.get(goalId);
+    
+    if (!goal) {
+      throw new Error(`Goal not found: ${goalId}`);
+    }
+
+    // 分析调整的合理性
+    const analysis = await this._analyzeAdjustments(goal, adjustments);
+    
+    if (analysis.approved) {
+      // 应用调整
+      Object.assign(goal, adjustments);
+      goal.adjustedAt = Date.now();
+      goal.adjustmentHistory = goal.adjustmentHistory || [];
+      goal.adjustmentHistory.push({
+        adjustments,
+        reason: analysis.reason,
+        timestamp: Date.now()
+      });
+      
+      return goal;
+    } else {
+      throw new Error(`Goal adjustment rejected: ${analysis.reason}`);
+    }
+  }
+
+  /**
+   * 分析目标调整的合理性
+   * 
+   * @param {Object} goal - 原始目标
+   * @param {Object} adjustments - 调整内容
+   * @returns {Object} - 分析结果
+   */
+  async _analyzeAdjustments(goal, adjustments) {
+    const prompt = `
+    分析以下目标调整是否合理：
+    
+    原始目标：${JSON.stringify(goal)}
+    调整内容：${JSON.stringify(adjustments)}
+    
+    请评估：
+    1. 调整是否与原始使命一致
+    2. 调整是否合理可行
+    3. 调整是否会破坏原有计划
+    
+    以 JSON 格式返回：
+    {
+      "approved": true/false,
+      "reason": "说明原因"
+    }
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 获取活跃目标
+   * 
+   * @returns {Array<Object>} - 活跃目标列表
+   */
+  getActiveGoals() {
+    return Array.from(this.goals.values()).filter(
+      goal => goal.status === 'active'
+    );
+  }
+
+  /**
+   * 获取目标状态
+   * 
+   * @param {string} goalId - 目标 ID
+   * @returns {Object} - 目标状态
+   */
+  getGoalStatus(goalId) {
+    const goal = this.goals.get(goalId);
+    
+    if (!goal) {
+      throw new Error(`Goal not found: ${goalId}`);
+    }
+
+    return {
+      id: goal.id,
+      status: goal.status,
+      progress: this._calculateProgress(goal),
+      createdAt: goal.createdAt,
+      adjustedAt: goal.adjustedAt
+    };
+  }
+
+  /**
+   * 计算目标进度
+   * 
+   * @param {Object} goal - 目标对象
+   * @returns {number} - 进度百分比
+   */
+  _calculateProgress(goal) {
+    // 简化的进度计算
+    // 实际应用中应该基于子目标的完成情况
+    if (!goal.subGoals || goal.subGoals.length === 0) {
+      return 0;
+    }
+
+    const completed = goal.subGoals.filter(
+      subGoal => subGoal.status === 'completed'
+    ).length;
+
+    return (completed / goal.subGoals.length) * 100;
+  }
+}
+
+// 使用示例
+async function goalSettingExample() {
+  const llm = new LLMClient();
+  const goalSystem = new GoalSettingSystem(llm);
+
+  // 设定目标
+  const goal = await goalSystem.setGoal(
+    '构建一个智能客服系统',
+    {
+      resources: ['开发团队', '预算'],
+      constraints: ['3个月内完成']
+    }
+  );
+
+  console.log('设定的目标:', goal);
+
+  // 调整目标
+  const adjustedGoal = await goalSystem.adjustGoal(goal.id, {
+    timeframe: '6个月内',
+    reason: '需求复杂度超出预期'
+  });
+
+  console.log('调整后的目标:', adjustedGoal);
+
+  // 获取状态
+  const status = goalSystem.getGoalStatus(goal.id);
+  console.log('目标状态:', status);
+}
+```
+
+#### 自我评估
+
+Agent 能够评估自己的表现和决策质量。
+
+```javascript
+class SelfEvaluationSystem {
+  constructor(llm) {
+    this.llm = llm;
+    this.evaluationHistory = [];
+  }
+
+  /**
+   * 评估决策质量
+   * 
+   * @param {Object} decision - 决策信息
+   * @param {Object} outcome - 决策结果
+   * @param {Object} context - 上下文信息
+   * @returns {Object} - 评估结果
+   */
+  async evaluateDecision(decision, outcome, context = {}) {
+    const prompt = `
+    评估以下决策的质量：
+    
+    决策：${JSON.stringify(decision)}
+    结果：${JSON.stringify(outcome)}
+    上下文：${JSON.stringify(context)}
+    
+    请评估：
+    1. 决策的合理性（1-10分）
+    2. 决策的有效性（1-10分）
+    3. 决策的效率（1-10分）
+    4. 是否有更好的替代方案
+    5. 改进建议
+    
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    const evaluation = JSON.parse(response);
+    
+    // 存储评估结果
+    evaluation.id = `eval_${Date.now()}`;
+    evaluation.timestamp = Date.now();
+    evaluation.decision = decision;
+    evaluation.outcome = outcome;
+    this.evaluationHistory.push(evaluation);
+    
+    return evaluation;
+  }
+
+  /**
+   * 评估任务完成质量
+   * 
+   * @param {string} task - 任务描述
+   * @param {string} output - 任务输出
+   * @param {Object} criteria - 评估标准
+   * @returns {Object} - 评估结果
+   */
+  async evaluateTask(task, output, criteria = {}) {
+    const defaultCriteria = {
+      accuracy: '准确性',
+      completeness: '完整性',
+      clarity: '清晰度',
+      usefulness: '实用性',
+      efficiency: '效率'
+    };
+
+    const evaluationCriteria = { ...defaultCriteria, ...criteria };
+
+    const prompt = `
+    评估以下任务完成的质量：
+    
+    任务：${task}
+    输出：${output}
+    
+    评估标准：
+    ${Object.entries(evaluationCriteria)
+      .map(([key, label]) => `- ${label} (${key})`)
+      .join('\n')}
+    
+    请为每个标准打分（1-10分），并提供总体评价和改进建议。
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    const evaluation = JSON.parse(response);
+    
+    // 计算总分
+    evaluation.overallScore = this._calculateOverallScore(evaluation);
+    
+    return evaluation;
+  }
+
+  /**
+   * 计算总体评分
+   * 
+   * @param {Object} evaluation - 评估结果
+   * @returns {number} - 总体评分
+   */
+  _calculateOverallScore(evaluation) {
+    const scores = Object.values(evaluation)
+      .filter(value => typeof value === 'number' && value >= 1 && value <= 10);
+    
+    if (scores.length === 0) {
+      return 0;
+    }
+
+    return scores.reduce((sum, score) => sum + score, 0) / scores.length;
+  }
+
+  /**
+   * 获取性能趋势
+   * 
+   * @param {number} window - 时间窗口（毫秒）
+   * @returns {Object} - 性能趋势
+   */
+  getPerformanceTrend(window = 86400000) {
+    const now = Date.now();
+    const recentEvaluations = this.evaluationHistory.filter(
+      eval => now - eval.timestamp <= window
+    );
+
+    if (recentEvaluations.length === 0) {
+      return {
+        trend: 'stable',
+        averageScore: 0,
+        improvement: 0
+      };
+    }
+
+    const scores = recentEvaluations.map(eval => eval.overallScore);
+    const averageScore = this._calculateOverallScore({
+      ...recentEvaluations[0],
+      ...scores
+    });
+
+    // 计算趋势
+    const firstHalf = scores.slice(0, Math.floor(scores.length / 2));
+    const secondHalf = scores.slice(Math.floor(scores.length / 2));
+
+    const firstAvg = firstHalf.reduce((sum, score) => sum + score, 0) / firstHalf.length;
+    const secondAvg = secondHalf.reduce((sum, score) => sum + score, 0) / secondHalf.length;
+
+    const improvement = secondAvg - firstAvg;
+    let trend = 'stable';
+
+    if (improvement > 0.5) {
+      trend = 'improving';
+    } else if (improvement < -0.5) {
+      trend = 'declining';
+    }
+
+    return {
+      trend,
+      averageScore,
+      improvement
+    };
+  }
+
+  /**
+   * 生成自我评估报告
+   * 
+   * @returns {Object} - 评估报告
+   */
+  generateReport() {
+    const trend = this.getPerformanceTrend();
+    const totalEvaluations = this.evaluationHistory.length;
+    
+    // 按类型分组
+    const byType = this.evaluationHistory.reduce((acc, eval) => {
+      const type = eval.decision?.type || 'general';
+      if (!acc[type]) {
+        acc[type] = [];
+      }
+      acc[type].push(eval);
+      return acc;
+    }, {});
+
+    const typeStats = Object.entries(byType).map(([type, evaluations]) => {
+      const scores = evaluations.map(e => e.overallScore);
+      return {
+        type,
+        count: evaluations.length,
+        averageScore: scores.reduce((sum, score) => sum + score, 0) / scores.length,
+        bestScore: Math.max(...scores),
+        worstScore: Math.min(...scores)
+      };
+    });
+
+    return {
+      summary: {
+        totalEvaluations,
+        overallTrend: trend.trend,
+        averageScore: trend.averageScore,
+        improvement: trend.improvement
+      },
+      byType: typeStats,
+      recentEvaluations: this.evaluationHistory.slice(-10)
+    };
+  }
+}
+
+// 使用示例
+async function selfEvaluationExample() {
+  const llm = new LLMClient();
+  const evaluationSystem = new SelfEvaluationSystem(llm);
+
+  // 评估决策
+  const decision = {
+    type: 'resource_allocation',
+    action: 'allocate_resources_to_project_a',
+    reason: 'higher_priority'
+  };
+
+  const outcome = {
+    success: true,
+    efficiency: 0.85,
+    cost: 1000
+  };
+
+  const evaluation = await evaluationSystem.evaluateDecision(
+    decision,
+    outcome,
+    { project: 'Project A' }
+  );
+
+  console.log('决策评估:', evaluation);
+
+  // 评估任务
+  const taskEvaluation = await evaluationSystem.evaluateTask(
+    '编写用户认证模块',
+    '完成了用户注册、登录、密码重置功能',
+    { security: '安全性', maintainability: '可维护性' }
+  );
+
+  console.log('任务评估:', taskEvaluation);
+
+  // 获取性能趋势
+  const trend = evaluationSystem.getPerformanceTrend();
+  console.log('性能趋势:', trend);
+
+  // 生成报告
+  const report = evaluationSystem.generateReport();
+  console.log('评估报告:', report);
+}
+```
+
+#### 自我改进
+
+Agent 能够根据评估结果改进自己的行为和策略。
+
+```javascript
+class SelfImprovementSystem {
+  constructor(llm, evaluationSystem) {
+    this.llm = llm;
+    this.evaluationSystem = evaluationSystem;
+    this.improvements = [];
+    this.strategies = new Map();
+  }
+
+  /**
+   * 基于评估结果生成改进建议
+   * 
+   * @param {Object} evaluation - 评估结果
+   * @returns {Object} - 改进建议
+   */
+  async generateImprovements(evaluation) {
+    const prompt = `
+    基于以下评估结果，生成具体的改进建议：
+    
+    评估结果：${JSON.stringify(evaluation)}
+    
+    请提供：
+    1. 需要改进的方面
+    2. 具体的改进措施
+    3. 实施优先级
+    4. 预期效果
+    
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    const improvements = JSON.parse(response);
+    
+    // 存储改进建议
+    improvements.id = `improvement_${Date.now()}`;
+    improvements.timestamp = Date.now();
+    improvements.status = 'pending';
+    this.improvements.push(improvements);
+    
+    return improvements;
+  }
+
+  /**
+   * 实施改进措施
+   * 
+   * @param {string} improvementId - 改进 ID
+   * @returns {Object} - 实施结果
+   */
+  async implementImprovement(improvementId) {
+    const improvement = this.improvements.find(
+      imp => imp.id === improvementId
+    );
+
+    if (!improvement) {
+      throw new Error(`Improvement not found: ${improvementId}`);
+    }
+
+    // 分析改进措施
+    const analysis = await this._analyzeImprovement(improvement);
+    
+    if (!analysis.feasible) {
+      throw new Error(`Improvement not feasible: ${analysis.reason}`);
+    }
+
+    // 实施改进
+    const result = await this._executeImprovement(improvement);
+    
+    // 更新状态
+    improvement.status = 'implemented';
+    improvement.implementedAt = Date.now();
+    improvement.result = result;
+    
+    return result;
+  }
+
+  /**
+   * 分析改进措施的可行性
+   * 
+   * @param {Object} improvement - 改进措施
+   * @returns {Object} - 分析结果
+   */
+  async _analyzeImprovement(improvement) {
+    const prompt = `
+    分析以下改进措施的可行性：
+    
+    改进措施：${JSON.stringify(improvement)}
+    
+    请评估：
+    1. 技术可行性
+    2. 资源需求
+    3. 风险评估
+    4. 实施难度
+    
+    以 JSON 格式返回：
+    {
+      "feasible": true/false,
+      "reason": "说明原因",
+      "risks": ["风险列表"],
+      "requirements": ["需求列表"]
+    }
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 执行改进措施
+   * 
+   * @param {Object} improvement - 改进措施
+   * @returns {Object} - 执行结果
+   */
+  async _executeImprovement(improvement) {
+    // 根据改进类型执行不同的改进策略
+    const strategyType = improvement.type || 'general';
+    
+    let strategy = this.strategies.get(strategyType);
+    
+    if (!strategy) {
+      // 创建默认策略
+      strategy = this._createDefaultStrategy(strategyType);
+      this.strategies.set(strategyType, strategy);
+    }
+
+    // 执行策略
+    const result = await strategy.execute(improvement);
+    
+    return result;
+  }
+
+  /**
+   * 创建默认改进策略
+   * 
+   * @param {string} type - 策略类型
+   * @returns {Object} - 策略对象
+   */
+  _createDefaultStrategy(type) {
+    return {
+      type,
+      execute: async (improvement) => {
+        // 默认执行逻辑
+        console.log(`执行改进: ${improvement.description}`);
+        
+        return {
+          success: true,
+          message: '改进措施已实施',
+          changes: improvement.measures
+        };
+      }
+    };
+  }
+
+  /**
+   * 注册自定义改进策略
+   * 
+   * @param {string} type - 策略类型
+   * @param {Function} executeFn - 执行函数
+   */
+  registerStrategy(type, executeFn) {
+    this.strategies.set(type, {
+      type,
+      execute: executeFn
+    });
+  }
+
+  /**
+   * 获取待实施的改进
+   * 
+   * @returns {Array<Object>} - 待实施的改进列表
+   */
+  getPendingImprovements() {
+    return this.improvements.filter(
+      imp => imp.status === 'pending'
+    ).sort((a, b) => b.priority - a.priority);
+  }
+
+  /**
+   * 获取改进历史
+   * 
+   * @returns {Array<Object>} - 改进历史
+   */
+  getImprovementHistory() {
+    return this.improvements.filter(
+      imp => imp.status === 'implemented'
+    );
+  }
+}
+
+// 使用示例
+async function selfImprovementExample() {
+  const llm = new LLMClient();
+  const evaluationSystem = new SelfEvaluationSystem(llm);
+  const improvementSystem = new SelfImprovementSystem(llm, evaluationSystem);
+
+  // 评估任务
+  const evaluation = await evaluationSystem.evaluateTask(
+    '处理用户查询',
+    '响应时间较长，准确率一般',
+    { efficiency: '效率', accuracy: '准确性' }
+  );
+
+  // 生成改进建议
+  const improvements = await improvementSystem.generateImprovements(evaluation);
+  console.log('改进建议:', improvements);
+
+  // 实施改进
+  const result = await improvementSystem.implementImprovement(improvements.id);
+  console.log('改进结果:', result);
+
+  // 获取待实施的改进
+  const pending = improvementSystem.getPendingImprovements();
+  console.log('待实施的改进:', pending);
+}
+```
+
+### 2. 持续学习
+
+自主 Agent 能够从经验中持续学习和改进。
+
+#### 在线学习
+
+Agent 能够在运行过程中实时学习。
+
+```javascript
+class OnlineLearningSystem {
+  constructor(llm) {
+    this.llm = llm;
+    this.experienceBuffer = [];
+    this.learningRate = 0.1;
+    this.batchSize = 32;
+  }
+
+  /**
+   * 记录经验
+   * 
+   * @param {Object} experience - 经验数据
+   */
+  recordExperience(experience) {
+    const experienceRecord = {
+      ...experience,
+      timestamp: Date.now(),
+      id: `exp_${Date.now()}`
+    };
+
+    this.experienceBuffer.push(experienceRecord);
+
+    // 如果缓冲区满了，触发学习
+    if (this.experienceBuffer.length >= this.batchSize) {
+      this.learn();
+    }
+  }
+
+  /**
+   * 从经验中学习
+   * 
+   * @returns {Object} - 学习结果
+   */
+  async learn() {
+    if (this.experienceBuffer.length === 0) {
+      return { learned: false, reason: 'No experiences to learn from' };
+    }
+
+    // 分析经验模式
+    const patterns = await this._analyzePatterns();
+
+    // 更新知识
+    const updates = await this._updateKnowledge(patterns);
+
+    // 清空缓冲区
+    this.experienceBuffer = [];
+
+    return {
+      learned: true,
+      patterns,
+      updates
+    };
+  }
+
+  /**
+   * 分析经验模式
+   * 
+   * @returns {Object} - 模式分析结果
+   */
+  async _analyzePatterns() {
+    const prompt = `
+    分析以下经验数据中的模式：
+    
+    ${JSON.stringify(this.experienceBuffer, null, 2)}
+    
+    请识别：
+    1. 成功模式（导致成功的因素）
+    2. 失败模式（导致失败的因素）
+    3. 优化机会（可以改进的地方）
+    4. 新知识（发现的新规律）
+    
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 更新知识
+   * 
+   * @param {Object} patterns - 模式分析结果
+   * @returns {Object} - 更新结果
+   */
+  async _updateKnowledge(patterns) {
+    const updates = {
+      successPatterns: [],
+      failurePatterns: [],
+      newKnowledge: []
+    };
+
+    // 更新成功模式
+    for (const pattern of patterns.successPatterns || []) {
+      const update = await this._applySuccessPattern(pattern);
+      updates.successPatterns.push(update);
+    }
+
+    // 更新失败模式
+    for (const pattern of patterns.failurePatterns || []) {
+      const update = await this._applyFailurePattern(pattern);
+      updates.failurePatterns.push(update);
+    }
+
+    // 添加新知识
+    for (const knowledge of patterns.newKnowledge || []) {
+      const update = await this._addKnowledge(knowledge);
+      updates.newKnowledge.push(update);
+    }
+
+    return updates;
+  }
+
+  /**
+   * 应用成功模式
+   * 
+   * @param {Object} pattern - 成功模式
+   * @returns {Object} - 应用结果
+   */
+  async _applySuccessPattern(pattern) {
+    // 强化成功模式
+    console.log(`强化成功模式: ${pattern.description}`);
+    
+    return {
+      pattern,
+      action: 'reinforced',
+      confidence: pattern.confidence || 0.8
+    };
+  }
+
+  /**
+   * 应用失败模式
+   * 
+   * @param {Object} pattern - 失败模式
+   * @returns {Object} - 应用结果
+   */
+  async _applyFailurePattern(pattern) {
+    // 避免失败模式
+    console.log(`避免失败模式: ${pattern.description}`);
+    
+    return {
+      pattern,
+      action: 'avoided',
+      confidence: pattern.confidence || 0.8
+    };
+  }
+
+  /**
+   * 添加新知识
+   * 
+   * @param {Object} knowledge - 新知识
+   * @returns {Object} - 添加结果
+   */
+  async _addKnowledge(knowledge) {
+    // 集成新知识
+    console.log(`集成新知识: ${knowledge.description}`);
+    
+    return {
+      knowledge,
+      action: 'integrated',
+      confidence: knowledge.confidence || 0.7
+    };
+  }
+
+  /**
+   * 获取学习统计
+   * 
+   * @returns {Object} - 学习统计
+   */
+  getLearningStats() {
+    return {
+      totalExperiences: this.experienceBuffer.length,
+      learningRate: this.learningRate,
+      batchSize: this.batchSize
+    };
+  }
+}
+
+// 使用示例
+async function onlineLearningExample() {
+  const llm = new LLMClient();
+  const learningSystem = new OnlineLearningSystem(llm);
+
+  // 记录经验
+  learningSystem.recordExperience({
+    task: '处理用户查询',
+    action: '使用快速响应策略',
+    outcome: '成功',
+    metrics: {
+      responseTime: 0.5,
+      accuracy: 0.9
+    }
+  });
+
+  learningSystem.recordExperience({
+    task: '处理用户查询',
+    action: '使用详细分析策略',
+    outcome: '失败',
+    metrics: {
+      responseTime: 2.0,
+      accuracy: 0.7
+    }
+  });
+
+  // 触发学习
+  const result = await learningSystem.learn();
+  console.log('学习结果:', result);
+
+  // 获取统计
+  const stats = learningSystem.getLearningStats();
+  console.log('学习统计:', stats);
+}
+```
+
+#### 经验回放
+
+Agent 能够回顾和重放历史经验以巩固学习。
+
+```javascript
+class ExperienceReplaySystem {
+  constructor(memory, llm) {
+    this.memory = memory;
+    this.llm = llm;
+    this.replayBuffer = [];
+    this.replayFrequency = 100; // 每100次操作后回放一次
+    this.operationCount = 0;
+  }
+
+  /**
+   * 记录操作
+   * 
+   * @param {Object} operation - 操作信息
+   */
+  recordOperation(operation) {
+    this.operationCount++;
+
+    // 存储到记忆
+    this.memory.store(
+      `operation_${this.operationCount}`,
+      operation,
+      { type: 'operation', timestamp: Date.now() }
+    );
+
+    // 检查是否需要回放
+    if (this.operationCount % this.replayFrequency === 0) {
+      this.replay();
+    }
+  }
+
+  /**
+   * 经验回放
+   * 
+   * @returns {Object} - 回放结果
+   */
+  async replay() {
+    // 获取最近的操作
+    const recentOperations = await this._getRecentOperations(
+      this.replayFrequency
+    );
+
+    if (recentOperations.length === 0) {
+      return { replayed: false, reason: 'No operations to replay' };
+    }
+
+    // 分析操作模式
+    const insights = await this._analyzeOperations(recentOperations);
+
+    // 更新策略
+    const updates = await this._updateStrategies(insights);
+
+    return {
+      replayed: true,
+      operationsCount: recentOperations.length,
+      insights,
+      updates
+    };
+  }
+
+  /**
+   * 获取最近的操作
+   * 
+   * @param {number} count - 操作数量
+   * @returns {Array<Object>} - 操作列表
+   */
+  async _getRecentOperations(count) {
+    const operations = [];
+
+    for (let i = this.operationCount; i > this.operationCount - count; i--) {
+      const operation = await this.memory.retrieve(`operation_${i}`);
+      if (operation) {
+        operations.push(operation);
+      }
+    }
+
+    return operations.reverse();
+  }
+
+  /**
+   * 分析操作模式
+   * 
+   * @param {Array<Object>} operations - 操作列表
+   * @returns {Object} - 分析结果
+   */
+  async _analyzeOperations(operations) {
+    const prompt = `
+    分析以下操作中的模式和洞察：
+    
+    ${JSON.stringify(operations, null, 2)}
+    
+    请识别：
+    1. 重复出现的模式
+    2. 成功和失败的因素
+    3. 可以优化的地方
+    4. 隐含的规律
+    
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 更新策略
+   * 
+   * @param {Object} insights - 洞察结果
+   * @returns {Object} - 更新结果
+   */
+  async _updateStrategies(insights) {
+    const updates = [];
+
+    // 根据洞察更新策略
+    for (const insight of insights.patterns || []) {
+      const update = await this._applyInsight(insight);
+      updates.push(update);
+    }
+
+    return updates;
+  }
+
+  /**
+   * 应用洞察
+   * 
+   * @param {Object} insight - 洞察
+   * @returns {Object} - 应用结果
+   */
+  async _applyInsight(insight) {
+    console.log(`应用洞察: ${insight.description}`);
+    
+    return {
+      insight,
+      action: 'applied',
+      confidence: insight.confidence || 0.8
+    };
+  }
+
+  /**
+   * 手动触发回放
+   * 
+   * @returns {Object} - 回放结果
+   */
+  async manualReplay() {
+    return await this.replay();
+  }
+}
+
+// 使用示例
+async function experienceReplayExample() {
+  const memory = new LongTermMemory();
+  const llm = new LLMClient();
+  const replaySystem = new ExperienceReplaySystem(memory, llm);
+
+  // 记录操作
+  for (let i = 0; i < 150; i++) {
+    replaySystem.recordOperation({
+      task: `操作 ${i}`,
+      action: i % 2 === 0 ? '策略A' : '策略B',
+      outcome: i % 3 === 0 ? '成功' : '失败'
+    });
+  }
+
+  // 手动触发回放
+  const result = await replaySystem.manualReplay();
+  console.log('回放结果:', result);
+}
+```
+
+#### 知识更新
+
+Agent 能够更新和优化自己的知识库。
+
+```javascript
+class KnowledgeUpdateSystem {
+  constructor(memory, llm) {
+    this.memory = memory;
+    this.llm = llm;
+    this.updateQueue = [];
+  }
+
+  /**
+   * 提交知识更新
+   * 
+   * @param {Object} update - 更新内容
+   */
+  submitUpdate(update) {
+    this.updateQueue.push({
+      ...update,
+      timestamp: Date.now(),
+      status: 'pending'
+    });
+  }
+
+  /**
+   * 处理知识更新
+   * 
+   * @returns {Object} - 处理结果
+   */
+  async processUpdates() {
+    if (this.updateQueue.length === 0) {
+      return { processed: false, reason: 'No updates to process' };
+    }
+
+    const results = [];
+
+    for (const update of this.updateQueue) {
+      const result = await this._processUpdate(update);
+      results.push(result);
+    }
+
+    // 清空队列
+    this.updateQueue = [];
+
+    return {
+      processed: true,
+      results
+    };
+  }
+
+  /**
+   * 处理单个更新
+   * 
+   * @param {Object} update - 更新内容
+   * @returns {Object} - 处理结果
+   */
+  async _processUpdate(update) {
+    // 验证更新
+    const validation = await this._validateUpdate(update);
+    
+    if (!validation.valid) {
+      return {
+        update,
+        status: 'rejected',
+        reason: validation.reason
+      };
+    }
+
+    // 应用更新
+    const result = await this._applyUpdate(update);
+
+    return {
+      update,
+      status: 'applied',
+      result
+    };
+  }
+
+  /**
+   * 验证更新
+   * 
+   * @param {Object} update - 更新内容
+   * @returns {Object} - 验证结果
+   */
+  async _validateUpdate(update) {
+    const prompt = `
+    验证以下知识更新的合理性和准确性：
+    
+    更新内容：${JSON.stringify(update)}
+    
+    请评估：
+    1. 更新是否合理
+    2. 更新是否准确
+    3. 更新是否与现有知识一致
+    4. 更新的可信度
+    
+    以 JSON 格式返回：
+    {
+      "valid": true/false,
+      "reason": "说明原因",
+      "confidence": 0-1
+    }
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 应用更新
+   * 
+   * @param {Object} update - 更新内容
+   * @returns {Object} - 应用结果
+   */
+  async _applyUpdate(update) {
+    const key = update.key || `knowledge_${Date.now()}`;
+    
+    // 存储到记忆
+    await this.memory.store(
+      key,
+      update.content,
+      {
+        type: 'knowledge',
+        source: update.source,
+        confidence: update.confidence,
+        updatedAt: Date.now()
+      }
+    );
+
+    return {
+      key,
+      stored: true
+    };
+  }
+
+  /**
+   * 获取知识
+   * 
+   * @param {string} query - 查询内容
+   * @returns {Array<Object>} - 知识列表
+   */
+  async getKnowledge(query) {
+    return await this.memory.search(query);
+  }
+
+  /**
+   * 清理过期知识
+   * 
+   * @param {number} maxAge - 最大年龄（毫秒）
+   * @returns {Object} - 清理结果
+   */
+  async cleanupKnowledge(maxAge = 2592000000) { // 30天
+    const now = Date.now();
+    const allKnowledge = await this.memory.search('');
+    
+    let cleanedCount = 0;
+
+    for (const knowledge of allKnowledge) {
+      const age = now - knowledge.metadata.updatedAt;
+      
+      if (age > maxAge) {
+        await this.memory.delete(knowledge.key);
+        cleanedCount++;
+      }
+    }
+
+    return {
+      cleaned: true,
+      cleanedCount
+    };
+  }
+}
+
+// 使用示例
+async function knowledgeUpdateExample() {
+  const memory = new LongTermMemory();
+  const llm = new LLMClient();
+  const updateSystem = new KnowledgeUpdateSystem(memory, llm);
+
+  // 提交更新
+  updateSystem.submitUpdate({
+    key: 'best_practice_api_design',
+    content: {
+      topic: 'API设计最佳实践',
+      practices: [
+        '使用RESTful设计',
+        '提供清晰的文档',
+        '实现版本控制',
+        '添加认证和授权'
+      ]
+    },
+    source: 'experience',
+    confidence: 0.9
+  });
+
+  // 处理更新
+  const result = await updateSystem.processUpdates();
+  console.log('更新结果:', result);
+
+  // 获取知识
+  const knowledge = await updateSystem.getKnowledge('API设计');
+  console.log('相关知识:', knowledge);
+}
+```
+
+### 3. 安全机制
+
+自主 Agent 必须具备完善的安全机制以确保安全运行。
+
+#### 行为约束
+
+限制 Agent 的行为范围，防止超出预期。
+
+```javascript
+class BehaviorConstraintSystem {
+  constructor() {
+    this.constraints = new Map();
+    this.violations = [];
+  }
+
+  /**
+   * 添加约束
+   * 
+   * @param {string} name - 约束名称
+   * @param {Object} constraint - 约束定义
+   */
+  addConstraint(name, constraint) {
+    this.constraints.set(name, {
+      name,
+      ...constraint,
+      active: true,
+      createdAt: Date.now()
+    });
+  }
+
+  /**
+   * 检查行为
+   * 
+   * @param {Object} action - 行为信息
+   * @returns {Object} - 检查结果
+   */
+  async checkAction(action) {
+    const results = [];
+
+    for (const constraint of this.constraints.values()) {
+      if (!constraint.active) {
+        continue;
+      }
+
+      const result = await this._checkConstraint(action, constraint);
+      results.push(result);
+
+      if (!result.passed) {
+        // 记录违规
+        this.violations.push({
+          action,
+          constraint: constraint.name,
+          reason: result.reason,
+          timestamp: Date.now()
+        });
+
+        // 如果是严重违规，立即返回
+        if (constraint.severity === 'critical') {
+          return {
+            allowed: false,
+            constraint: constraint.name,
+            reason: result.reason,
+            severity: constraint.severity
+          };
+        }
+      }
+    }
+
+    // 检查是否有任何违规
+    const violations = results.filter(r => !r.passed);
+    
+    if (violations.length > 0) {
+      return {
+        allowed: false,
+        violations: violations.map(v => ({
+          constraint: v.constraint,
+          reason: v.reason
+        }))
+      };
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * 检查单个约束
+   * 
+   * @param {Object} action - 行为信息
+   * @param {Object} constraint - 约束定义
+   * @returns {Object} - 检查结果
+   */
+  async _checkConstraint(action, constraint) {
+    switch (constraint.type) {
+      case 'resource':
+        return this._checkResourceConstraint(action, constraint);
+      case 'scope':
+        return this._checkScopeConstraint(action, constraint);
+      case 'time':
+        return this._checkTimeConstraint(action, constraint);
+      case 'rate':
+        return this._checkRateConstraint(action, constraint);
+      default:
+        return { passed: true };
+    }
+  }
+
+  /**
+   * 检查资源约束
+   * 
+   * @param {Object} action - 行为信息
+   * @param {Object} constraint - 约束定义
+   * @returns {Object} - 检查结果
+   */
+  _checkResourceConstraint(action, constraint) {
+    const resourceType = constraint.resourceType;
+    const limit = constraint.limit;
+
+    if (action.resourceUsage && action.resourceUsage[resourceType]) {
+      const usage = action.resourceUsage[resourceType];
+      
+      if (usage > limit) {
+        return {
+          passed: false,
+          constraint: constraint.name,
+          reason: `资源使用超限: ${resourceType} = ${usage}, 限制 = ${limit}`
+        };
+      }
+    }
+
+    return { passed: true };
+  }
+
+  /**
+   * 检查范围约束
+   * 
+   * @param {Object} action - 行为信息
+   * @param {Object} constraint - 约束定义
+   * @returns {Object} - 检查结果
+   */
+  _checkScopeConstraint(action, constraint) {
+    const allowedActions = constraint.allowedActions || [];
+    const forbiddenActions = constraint.forbiddenActions || [];
+
+    // 检查是否在允许列表中
+    if (allowedActions.length > 0) {
+      if (!allowedActions.includes(action.type)) {
+        return {
+          passed: false,
+          constraint: constraint.name,
+          reason: `行为类型不在允许列表中: ${action.type}`
+        };
+      }
+    }
+
+    // 检查是否在禁止列表中
+    if (forbiddenActions.includes(action.type)) {
+      return {
+        passed: false,
+        constraint: constraint.name,
+        reason: `行为类型在禁止列表中: ${action.type}`
+      };
+    }
+
+    return { passed: true };
+  }
+
+  /**
+   * 检查时间约束
+   * 
+   * @param {Object} action - 行为信息
+   * @param {Object} constraint - 约束定义
+   * @returns {Object} - 检查结果
+   */
+  _checkTimeConstraint(action, constraint) {
+    const allowedHours = constraint.allowedHours;
+    const currentHour = new Date().getHours();
+
+    if (allowedHours && !allowedHours.includes(currentHour)) {
+      return {
+        passed: false,
+        constraint: constraint.name,
+        reason: `当前时间不在允许范围内: ${currentHour}:00`
+      };
+    }
+
+    return { passed: true };
+  }
+
+  /**
+   * 检查速率约束
+   * 
+   * @param {Object} action - 行为信息
+   * @param {Object} constraint - 约束定义
+   * @returns {Object} - 检查结果
+   */
+  _checkRateConstraint(action, constraint) {
+    const maxRate = constraint.maxRate;
+    const timeWindow = constraint.timeWindow || 60000; // 默认1分钟
+
+    // 获取最近的类似操作
+    const recentActions = this.violations.filter(
+      v => v.action.type === action.type &&
+           Date.now() - v.timestamp <= timeWindow
+    );
+
+    if (recentActions.length >= maxRate) {
+      return {
+        passed: false,
+        constraint: constraint.name,
+        reason: `操作频率超限: ${recentActions.length}/${maxRate}`
+      };
+    }
+
+    return { passed: true };
+  }
+
+  /**
+   * 获取违规记录
+   * 
+   * @param {number} limit - 数量限制
+   * @returns {Array<Object>} - 违规记录
+   */
+  getViolations(limit = 100) {
+    return this.violations.slice(-limit);
+  }
+
+  /**
+   * 清除违规记录
+   * 
+   * @param {number} beforeTime - 清除此时间之前的记录
+   */
+  clearViolations(beforeTime = Date.now()) {
+    this.violations = this.violations.filter(
+      v => v.timestamp >= beforeTime
+    );
+  }
+}
+
+// 使用示例
+async function behaviorConstraintExample() {
+  const constraintSystem = new BehaviorConstraintSystem();
+
+  // 添加约束
+  constraintSystem.addConstraint('resource_limit', {
+    type: 'resource',
+    resourceType: 'memory',
+    limit: 1024 * 1024 * 1024, // 1GB
+    severity: 'critical'
+  });
+
+  constraintSystem.addConstraint('allowed_actions', {
+    type: 'scope',
+    allowedActions: ['read', 'write', 'search'],
+    forbiddenActions: ['delete', 'modify_system'],
+    severity: 'high'
+  });
+
+  constraintSystem.addConstraint('working_hours', {
+    type: 'time',
+    allowedHours: [9, 10, 11, 12, 13, 14, 15, 16, 17],
+    severity: 'medium'
+  });
+
+  // 检查行为
+  const action1 = {
+    type: 'read',
+    resourceUsage: { memory: 512 * 1024 * 1024 }
+  };
+
+  const result1 = await constraintSystem.checkAction(action1);
+  console.log('行为检查1:', result1);
+
+  const action2 = {
+    type: 'delete',
+    resourceUsage: { memory: 512 * 1024 * 1024 }
+  };
+
+  const result2 = await constraintSystem.checkAction(action2);
+  console.log('行为检查2:', result2);
+
+  // 获取违规记录
+  const violations = constraintSystem.getViolations();
+  console.log('违规记录:', violations);
+}
+```
+
+#### 人类监督
+
+确保人类能够监控和干预 Agent 的行为。
+
+```javascript
+class HumanSupervisionSystem {
+  constructor() {
+    this.supervisors = new Map();
+    this.pendingApprovals = new Map();
+    this.approvalHistory = [];
+  }
+
+  /**
+   * 注册监督者
+   * 
+   * @param {string} supervisorId - 监督者 ID
+   * @param {Object} supervisor - 监督者信息
+   */
+  registerSupervisor(supervisorId, supervisor) {
+    this.supervisors.set(supervisorId, {
+      id: supervisorId,
+      ...supervisor,
+      registeredAt: Date.now()
+    });
+  }
+
+  /**
+   * 请求批准
+   * 
+   * @param {Object} request - 请求信息
+   * @returns {Object} - 请求结果
+   */
+  async requestApproval(request) {
+    const requestId = `approval_${Date.now()}`;
+    
+    // 确定需要的监督级别
+    const supervisionLevel = this._determineSupervisionLevel(request);
+    
+    // 选择监督者
+    const supervisor = this._selectSupervisor(supervisionLevel);
+    
+    if (!supervisor) {
+      return {
+        approved: false,
+        reason: 'No available supervisor'
+      };
+    }
+
+    // 创建批准请求
+    const approvalRequest = {
+      id: requestId,
+      request,
+      supervisorId: supervisor.id,
+      status: 'pending',
+      createdAt: Date.now(),
+      supervisionLevel
+    };
+
+    this.pendingApprovals.set(requestId, approvalRequest);
+
+    // 通知监督者
+    await this._notifySupervisor(supervisor, approvalRequest);
+
+    return {
+      requestId,
+      status: 'pending',
+      supervisor: supervisor.id
+    };
+  }
+
+  /**
+   * 批准请求
+   * 
+   * @param {string} requestId - 请求 ID
+   * @param {string} supervisorId - 监督者 ID
+   * @param {Object} decision - 决策信息
+   * @returns {Object} - 批准结果
+   */
+  async approveRequest(requestId, supervisorId, decision) {
+    const approvalRequest = this.pendingApprovals.get(requestId);
+
+    if (!approvalRequest) {
+      throw new Error(`Approval request not found: ${requestId}`);
+    }
+
+    if (approvalRequest.supervisorId !== supervisorId) {
+      throw new Error('Unauthorized supervisor');
+    }
+
+    // 更新状态
+    approvalRequest.status = decision.approved ? 'approved' : 'rejected';
+    approvalRequest.decision = decision;
+    approvalRequest.decidedAt = Date.now();
+
+    // 移动到历史
+    this.approvalHistory.push(approvalRequest);
+    this.pendingApprovals.delete(requestId);
+
+    return {
+      requestId,
+      status: approvalRequest.status,
+      decision
+    };
+  }
+
+  /**
+   * 确定监督级别
+   * 
+   * @param {Object} request - 请求信息
+   * @returns {string} - 监督级别
+   */
+  _determineSupervisionLevel(request) {
+    // 根据请求类型和风险确定监督级别
+    const riskFactors = request.riskFactors || [];
+    
+    if (riskFactors.includes('critical') || riskFactors.includes('security')) {
+      return 'critical';
+    } else if (riskFactors.includes('high')) {
+      return 'high';
+    } else if (riskFactors.includes('medium')) {
+      return 'medium';
+    } else {
+      return 'low';
+    }
+  }
+
+  /**
+   * 选择监督者
+   * 
+   * @param {string} level - 监督级别
+   * @returns {Object} - 监督者信息
+   */
+  _selectSupervisor(level) {
+    // 根据级别选择合适的监督者
+    const supervisors = Array.from(this.supervisors.values())
+      .filter(s => s.level === level || s.level === 'all');
+
+    if (supervisors.length === 0) {
+      return null;
+    }
+
+    // 选择负载最低的监督者
+    return supervisors.reduce((min, s) => {
+      const pendingCount = Array.from(this.pendingApprovals.values())
+        .filter(p => p.supervisorId === s.id).length;
+      
+      const minPendingCount = Array.from(this.pendingApprovals.values())
+        .filter(p => p.supervisorId === min.id).length;
+
+      return pendingCount < minPendingCount ? s : min;
+    });
+  }
+
+  /**
+   * 通知监督者
+   * 
+   * @param {Object} supervisor - 监督者信息
+   * @param {Object} request - 批准请求
+   */
+  async _notifySupervisor(supervisor, request) {
+    console.log(`通知监督者 ${supervisor.id}:`, request);
+    
+    // 实际应用中应该通过消息队列、邮件、通知等方式通知
+    if (supervisor.notify) {
+      await supervisor.notify(request);
+    }
+  }
+
+  /**
+   * 获取待批准的请求
+   * 
+   * @param {string} supervisorId - 监督者 ID
+   * @returns {Array<Object>} - 待批准请求列表
+   */
+  getPendingApprovals(supervisorId = null) {
+    let approvals = Array.from(this.pendingApprovals.values());
+
+    if (supervisorId) {
+      approvals = approvals.filter(a => a.supervisorId === supervisorId);
+    }
+
+    return approvals;
+  }
+
+  /**
+   * 获取批准历史
+   * 
+   * @param {number} limit - 数量限制
+   * @returns {Array<Object>} - 批准历史
+   */
+  getApprovalHistory(limit = 100) {
+    return this.approvalHistory.slice(-limit);
+  }
+}
+
+// 使用示例
+async function humanSupervisionExample() {
+  const supervisionSystem = new HumanSupervisionSystem();
+
+  // 注册监督者
+  supervisionSystem.registerSupervisor('supervisor1', {
+    name: '管理员',
+    level: 'critical',
+    notify: async (request) => {
+      console.log(`收到批准请求: ${request.id}`);
+    }
+  });
+
+  supervisionSystem.registerSupervisor('supervisor2', {
+    name: '审核员',
+    level: 'high',
+    notify: async (request) => {
+      console.log(`收到批准请求: ${request.id}`);
+    }
+  });
+
+  // 请求批准
+  const request = await supervisionSystem.requestApproval({
+    type: 'system_change',
+    description: '修改系统配置',
+    riskFactors: ['high']
+  });
+
+  console.log('批准请求:', request);
+
+  // 批准请求
+  const decision = await supervisionSystem.approveRequest(
+    request.requestId,
+    'supervisor2',
+    {
+      approved: true,
+      comment: '批准执行',
+      conditions: ['需要监控执行结果']
+    }
+  );
+
+  console.log('批准决策:', decision);
+
+  // 获取历史
+  const history = supervisionSystem.getApprovalHistory();
+  console.log('批准历史:', history);
+}
+```
+
+#### 紧急停止
+
+提供立即停止 Agent 运行的机制。
+
+```javascript
+class EmergencyStopSystem {
+  constructor() {
+    this.stopped = false;
+    this.stopReason = null;
+    this.stopHandlers = [];
+    this.emergencyContacts = [];
+  }
+
+  /**
+   * 紧急停止
+   * 
+   * @param {string} reason - 停止原因
+   * @returns {Object} - 停止结果
+   */
+  async emergencyStop(reason) {
+    console.log(`紧急停止触发: ${reason}`);
+
+    this.stopped = true;
+    this.stopReason = reason;
+
+    // 执行停止处理器
+    const results = [];
+
+    for (const handler of this.stopHandlers) {
+      try {
+        const result = await handler(reason);
+        results.push({ handler: handler.name, success: true, result });
+      } catch (error) {
+        results.push({ handler: handler.name, success: false, error: error.message });
+      }
+    }
+
+    // 通知紧急联系人
+    await this._notifyContacts(reason);
+
+    return {
+      stopped: true,
+      reason,
+      results
+    };
+  }
+
+  /**
+   * 注册停止处理器
+   * 
+   * @param {Function} handler - 处理器函数
+   */
+  registerStopHandler(handler) {
+    this.stopHandlers.push(handler);
+  }
+
+  /**
+   * 注册紧急联系人
+   * 
+   * @param {Object} contact - 联系人信息
+   */
+  registerEmergencyContact(contact) {
+    this.emergencyContacts.push(contact);
+  }
+
+  /**
+   * 通知紧急联系人
+   * 
+   * @param {string} reason - 停止原因
+   */
+  async _notifyContacts(reason) {
+    console.log(`通知紧急联系人: ${reason}`);
+
+    // 实际应用中应该通过短信、邮件、电话等方式通知
+    for (const contact of this.emergencyContacts) {
+      console.log(`通知 ${contact.name}: ${contact.method} - ${reason}`);
+    }
+  }
+
+  /**
+   * 检查是否已停止
+   * 
+   * @returns {boolean} - 是否已停止
+   */
+  isStopped() {
+    return this.stopped;
+  }
+
+  /**
+   * 重置停止状态
+   * 
+   * @returns {Object} - 重置结果
+   */
+  reset() {
+    this.stopped = false;
+    this.stopReason = null;
+
+    return {
+      reset: true,
+      message: '紧急停止状态已重置'
+    };
+  }
+
+  /**
+   * 获取停止状态
+   * 
+   * @returns {Object} - 停止状态
+   */
+  getStatus() {
+    return {
+      stopped: this.stopped,
+      reason: this.stopReason,
+      handlersCount: this.stopHandlers.length,
+      contactsCount: this.emergencyContacts.length
+    };
+  }
+}
+
+// 使用示例
+async function emergencyStopExample() {
+  const emergencySystem = new EmergencyStopSystem();
+
+  // 注册停止处理器
+  emergencySystem.registerStopHandler(async (reason) => {
+    console.log('处理器1: 保存当前状态');
+    return { message: '状态已保存' };
+  });
+
+  emergencySystem.registerStopHandler(async (reason) => {
+    console.log('处理器2: 清理资源');
+    return { message: '资源已清理' };
+  });
+
+  emergencySystem.registerStopHandler(async (reason) => {
+    console.log('处理器3: 记录日志');
+    return { message: '日志已记录' };
+  });
+
+  // 注册紧急联系人
+  emergencySystem.registerEmergencyContact({
+    name: '管理员',
+    method: 'email',
+    address: 'admin@example.com'
+  });
+
+  emergencySystem.registerEmergencyContact({
+    name: '技术负责人',
+    method: 'phone',
+    address: '+1234567890'
+  });
+
+  // 触发紧急停止
+  const result = await emergencySystem.emergencyStop(
+    '检测到异常行为，需要立即停止'
+  );
+
+  console.log('停止结果:', result);
+
+  // 检查状态
+  const status = emergencySystem.getStatus();
+  console.log('停止状态:', status);
+
+  // 重置状态
+  const resetResult = emergencySystem.reset();
+  console.log('重置结果:', resetResult);
+}
+```
+
+## 🔄 整体架构
+
+将以上所有组件整合到一个完整的自主 Agent 系统中。
+
+```javascript
+class AutonomousAgent {
+  constructor(config) {
+    this.config = config;
+    this.llm = new LLMClient(config.llm);
+    this.memory = new LongTermMemory();
+
+    // 初始化各个子系统
+    this.goalSystem = new GoalSettingSystem(this.llm);
+    this.evaluationSystem = new SelfEvaluationSystem(this.llm);
+    this.improvementSystem = new SelfImprovementSystem(this.llm, this.evaluationSystem);
+    this.learningSystem = new OnlineLearningSystem(this.llm);
+    this.replaySystem = new ExperienceReplaySystem(this.memory, this.llm);
+    this.knowledgeSystem = new KnowledgeUpdateSystem(this.memory, this.llm);
+    this.constraintSystem = new BehaviorConstraintSystem();
+    this.supervisionSystem = new HumanSupervisionSystem();
+    this.emergencySystem = new EmergencyStopSystem();
+
+    // 初始化搜索工具（如果配置了）
+    this.searchTool = config.searchTool || null;
+
+    // 设置约束
+    this._setupConstraints();
+
+    // 设置停止处理器
+    this._setupStopHandlers();
+
+    // 尝试从文件恢复状态
+    if (config.loadState) {
+      this._loadStateFromFile();
+    }
+  }
+
+  /**
+   * 设置约束
+   */
+  _setupConstraints() {
+    const constraints = this.config.constraints || {};
+
+    for (const [name, constraint] of Object.entries(constraints)) {
+      this.constraintSystem.addConstraint(name, constraint);
+    }
+  }
+
+  /**
+   * 设置停止处理器
+   */
+  _setupStopHandlers() {
+    this.emergencySystem.registerStopHandler(async (reason) => {
+      // 保存状态
+      await this._saveState(reason);
+      return { message: 'State saved' };
+    });
+
+    this.emergencySystem.registerStopHandler(async (reason) => {
+      // 清理资源
+      await this._cleanupResources();
+      return { message: 'Resources cleaned' };
+    });
+  }
+
+  /**
+   * 运行 Agent
+   * 
+   * @param {string} mission - 使命描述
+   * @returns {Object} - 运行结果
+   */
+  async run(mission) {
+    console.log(`启动自主 Agent: ${mission}`);
+
+    try {
+      // 1. 设定目标
+      const goal = await this.goalSystem.setGoal(mission, this.config.context);
+      console.log('目标已设定:', goal);
+
+      // 2. 执行主循环
+      while (!this.emergencySystem.isStopped() && goal.status === 'active') {
+        // 检查约束
+        const action = await this._decideNextAction(goal);
+        const constraintCheck = await this.constraintSystem.checkAction(action);
+
+        if (!constraintCheck.allowed) {
+          console.log('行为被约束系统阻止:', constraintCheck);
+          await this._handleConstraintViolation(constraintCheck);
+          continue;
+        }
+
+        // 请求批准（如果需要）
+        if (action.requiresApproval) {
+          const approval = await this.supervisionSystem.requestApproval(action);
+          
+          if (approval.status === 'pending') {
+            console.log('等待批准...');
+            continue;
+          }
+        }
+
+        // 执行行动
+        const result = await this._executeAction(action);
+
+        // 记录经验
+        this.learningSystem.recordExperience({
+          action,
+          result,
+          timestamp: Date.now()
+        });
+
+        // 记录操作
+        this.replaySystem.recordOperation(action);
+
+        // 评估结果
+        const evaluation = await this.evaluationSystem.evaluateDecision(
+          action,
+          result
+        );
+
+        // 生成改进建议
+        if (evaluation.overallScore < 7) {
+          const improvements = await this.improvementSystem.generateImprovements(evaluation);
+          await this.improvementSystem.implementImprovement(improvements.id);
+        }
+
+        // 更新目标进度
+        await this._updateGoalProgress(goal, result);
+
+        // 检查目标是否完成
+        if (await this._isGoalComplete(goal)) {
+          goal.status = 'completed';
+          console.log('目标已完成!');
+          break;
+        }
+
+        // 短暂休眠
+        await this._sleep(1000);
+      }
+
+      return {
+        success: true,
+        goal,
+        message: 'Agent 运行完成'
+      };
+
+    } catch (error) {
+      console.error('Agent 运行出错:', error);
+
+      // 触发紧急停止
+      await this.emergencySystem.emergencyStop(error.message);
+
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * 决定下一个行动
+   * 
+   * @param {Object} goal - 目标对象
+   * @returns {Object} - 行动信息
+   */
+  async _decideNextAction(goal) {
+    // 使用 LLM 决定下一个行动
+    const prompt = `
+    基于当前目标，决定下一步行动：
+    
+    目标：${JSON.stringify(goal)}
+    
+    请决定：
+    1. 行动类型
+    2. 行动参数
+    3. 是否需要批准
+    
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 执行行动
+   * 
+   * @param {Object} action - 行动信息
+   * @returns {Object} - 执行结果
+   */
+  async _executeAction(action) {
+    console.log(`执行行动: ${action.type}`);
+
+    // 根据行动类型执行不同的操作
+    switch (action.type) {
+      case 'search':
+        return await this._executeSearch(action);
+      case 'analyze':
+        return await this._executeAnalyze(action);
+      case 'create':
+        return await this._executeCreate(action);
+      default:
+        return { success: false, message: 'Unknown action type' };
+    }
+  }
+
+  /**
+   * 执行搜索
+   * 
+   * @param {Object} action - 行动信息
+   * @returns {Object} - 执行结果
+   */
+  async _executeSearch(action) {
+    /**
+     * 执行搜索操作
+     * 
+     * 参数:
+     *   action: 包含 searchQuery, searchType, filters 等信息
+     * 
+     * 返回:
+     *   搜索结果对象
+     */
+    const searchQuery = action.searchQuery || action.query;
+    const searchType = action.searchType || 'general';
+    const filters = action.filters || {};
+
+    console.log(`执行搜索: ${searchQuery}`);
+
+    try {
+      // 从记忆中搜索相关信息
+      const memoryResults = await this.memory.search(searchQuery, {
+        limit: 10,
+        threshold: 0.3
+      });
+
+      // 如果有搜索工具，使用工具进行外部搜索
+      let externalResults = [];
+      if (this.searchTool) {
+        try {
+          externalResults = await this.searchTool.execute({
+            query: searchQuery,
+            type: searchType,
+            filters
+          });
+        } catch (error) {
+          console.warn('外部搜索失败:', error.message);
+        }
+      }
+
+      // 合并结果
+      const allResults = [
+        ...memoryResults.map(r => ({
+          source: 'memory',
+          content: r.value,
+          score: r.score,
+          metadata: r.metadata
+        })),
+        ...externalResults.map(r => ({
+          source: 'external',
+          content: r,
+          score: r.relevance || 0.5
+        }))
+      ];
+
+      // 按相关性排序
+      allResults.sort((a, b) => b.score - a.score);
+
+      return {
+        success: true,
+        results: allResults.slice(0, 10),
+        totalFound: allResults.length,
+        query: searchQuery
+      };
+    } catch (error) {
+      console.error('搜索执行失败:', error);
+      return {
+        success: false,
+        error: error.message,
+        results: []
+      };
+    }
+  }
+
+  /**
+   * 执行分析
+   * 
+   * @param {Object} action - 行动信息
+   * @returns {Object} - 执行结果
+   */
+  async _executeAnalyze(action) {
+    /**
+     * 执行分析操作
+     * 
+     * 参数:
+     *   action: 包含 data, analysisType, context 等信息
+     * 
+     * 返回:
+     *   分析结果对象
+     */
+    const data = action.data || action.content;
+    const analysisType = action.analysisType || 'general';
+    const context = action.context || {};
+
+    console.log(`执行分析: ${analysisType}`);
+
+    try {
+      // 使用 LLM 进行分析
+      const prompt = `
+      请分析以下数据：
+      
+      数据类型：${analysisType}
+      数据内容：${JSON.stringify(data)}
+      上下文：${JSON.stringify(context)}
+      
+      请提供：
+      1. 数据摘要
+      2. 关键发现
+      3. 潜在问题
+      4. 建议行动
+      
+      以 JSON 格式返回。
+      `;
+
+      const analysis = await this.llm.generate(prompt);
+      const parsedAnalysis = JSON.parse(analysis);
+
+      return {
+        success: true,
+        analysis: parsedAnalysis,
+        timestamp: Date.now(),
+        type: analysisType
+      };
+    } catch (error) {
+      console.error('分析执行失败:', error);
+      return {
+        success: false,
+        error: error.message,
+        analysis: {
+          summary: '分析失败',
+          findings: [],
+          issues: [error.message],
+          recommendations: []
+        }
+      };
+    }
+  }
+
+  /**
+   * 执行创建
+   * 
+   * @param {Object} action - 行动信息
+   * @returns {Object} - 执行结果
+   */
+  async _executeCreate(action) {
+    /**
+     * 执行创建操作
+     * 
+     * 参数:
+     *   action: 包含 type, content, parameters 等信息
+     * 
+     * 返回:
+     *   创建结果对象
+     */
+    const createType = action.type || action.createType || 'document';
+    const content = action.content || action.data;
+    const parameters = action.parameters || {};
+
+    console.log(`执行创建: ${createType}`);
+
+    try {
+      let created = null;
+
+      switch (createType) {
+        case 'document':
+          // 创建文档
+          created = await this._createDocument(content, parameters);
+          break;
+
+        case 'code':
+          // 创建代码
+          created = await this._createCode(content, parameters);
+          break;
+
+        case 'plan':
+          // 创建计划
+          created = await this._createPlan(content, parameters);
+          break;
+
+        case 'summary':
+          // 创建摘要
+          created = await this._createSummary(content, parameters);
+          break;
+
+        default:
+          // 通用创建
+          created = await this._createGeneric(content, parameters);
+      }
+
+      // 存储到记忆
+      await this.memory.store(
+        `created_${Date.now()}`,
+        created,
+        {
+          type: 'created',
+          createType,
+          timestamp: Date.now()
+        }
+      );
+
+      return {
+        success: true,
+        created,
+        type: createType,
+        timestamp: Date.now()
+      };
+    } catch (error) {
+      console.error('创建执行失败:', error);
+      return {
+        success: false,
+        error: error.message,
+        created: null
+      };
+    }
+  }
+
+  /**
+   * 创建文档
+   * 
+   * @param {Object} content - 内容
+   * @param {Object} parameters - 参数
+   * @returns {Object} - 创建的文档
+   */
+  async _createDocument(content, parameters) {
+    const prompt = `
+    基于以下内容创建文档：
+    
+    内容：${JSON.stringify(content)}
+    参数：${JSON.stringify(parameters)}
+    
+    请创建一个结构化的文档，包含标题、正文、总结等部分。
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 创建代码
+   * 
+   * @param {Object} content - 内容
+   * @param {Object} parameters - 参数
+   * @returns {Object} - 创建的代码
+   */
+  async _createCode(content, parameters) {
+    const prompt = `
+    基于以下需求创建代码：
+    
+    需求：${JSON.stringify(content)}
+    参数：${JSON.stringify(parameters)}
+    
+    请生成完整的、可运行的代码，并包含必要的注释。
+    以 JSON 格式返回，包含 code 和 language 字段。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 创建计划
+   * 
+   * @param {Object} content - 内容
+   * @param {Object} parameters - 参数
+   * @returns {Object} - 创建的计划
+   */
+  async _createPlan(content, parameters) {
+    const prompt = `
+    基于以下目标创建执行计划：
+    
+    目标：${JSON.stringify(content)}
+    参数：${JSON.stringify(parameters)}
+    
+    请创建一个详细的执行计划，包含步骤、时间估算、资源需求等。
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 创建摘要
+   * 
+   * @param {Object} content - 内容
+   * @param {Object} parameters - 参数
+   * @returns {Object} - 创建的摘要
+   */
+  async _createSummary(content, parameters) {
+    const prompt = `
+    请为以下内容创建摘要：
+    
+    内容：${JSON.stringify(content)}
+    参数：${JSON.stringify(parameters)}
+    
+    请提供一个简洁但全面的摘要，包含关键点和主要结论。
+    以 JSON 格式返回。
+    `;
+
+    const response = await this.llm.generate(prompt);
+    return JSON.parse(response);
+  }
+
+  /**
+   * 通用创建
+   * 
+   * @param {Object} content - 内容
+   * @param {Object} parameters - 参数
+   * @returns {Object} - 创建的对象
+   */
+  async _createGeneric(content, parameters) {
+    return {
+      content,
+      parameters,
+      createdAt: Date.now(),
+      createdBy: 'autonomous_agent'
+    };
+  }
+
+  /**
+   * 处理约束违规
+   * 
+   * @param {Object} violation - 违规信息
+   */
+  async _handleConstraintViolation(violation) {
+    console.log('处理约束违规:', violation);
+
+    // 记录到经验
+    this.learningSystem.recordExperience({
+      type: 'constraint_violation',
+      violation,
+      timestamp: Date.now()
+    });
+  }
+
+  /**
+   * 更新目标进度
+   * 
+   * @param {Object} goal - 目标对象
+   * @param {Object} result - 执行结果
+   */
+  async _updateGoalProgress(goal, result) {
+    /**
+     * 更新目标进度
+     * 
+     * 参数:
+     *   goal: 目标对象
+     *   result: 执行结果
+     */
+    console.log('更新目标进度');
+
+    try {
+      // 检查目标是否有子目标
+      if (goal.subGoals && goal.subGoals.length > 0) {
+        // 更新子目标进度
+        for (const subGoal of goal.subGoals) {
+          if (subGoal.status === 'active') {
+            // 检查执行结果是否与子目标相关
+            const isRelated = await this._isResultRelatedToSubGoal(result, subGoal);
+            
+            if (isRelated) {
+              // 更新子目标状态
+              subGoal.status = result.success ? 'completed' : 'failed';
+              subGoal.completedAt = Date.now();
+              subGoal.result = result;
+            }
+          }
+        }
+      }
+
+      // 计算整体进度
+      const progress = this.goalSystem._calculateProgress(goal);
+      goal.progress = progress;
+
+      // 存储更新后的目标到记忆
+      await this.memory.store(
+        `goal_progress_${goal.id}`,
+        goal,
+        {
+          type: 'goal_progress',
+          timestamp: Date.now()
+        }
+      );
+
+      console.log(`目标进度更新: ${progress}%`);
+
+    } catch (error) {
+      console.error('更新目标进度失败:', error);
+    }
+  }
+
+  /**
+   * 检查结果是否与子目标相关
+   * 
+   * @param {Object} result - 执行结果
+   * @param {Object} subGoal - 子目标
+   * @returns {boolean} - 是否相关
+   */
+  async _isResultRelatedToSubGoal(result, subGoal) {
+    /**
+     * 检查执行结果是否与子目标相关
+     * 
+     * 参数:
+     *   result: 执行结果
+     *   subGoal: 子目标
+     * 
+     * 返回:
+     *   是否相关
+     */
+    // 简化实现：基于关键词匹配
+    const resultText = JSON.stringify(result).toLowerCase();
+    const subGoalText = JSON.stringify(subGoal).toLowerCase();
+
+    // 提取子目标的关键词
+    const subGoalKeywords = this._extractKeywords(subGoalText);
+
+    // 检查结果中是否包含子目标的关键词
+    const matchedKeywords = subGoalKeywords.filter(keyword => 
+      resultText.includes(keyword)
+    );
+
+    // 如果匹配的关键词超过一定比例，认为相关
+    return matchedKeywords.length / subGoalKeywords.length > 0.3;
+  }
+
+  /**
+   * 提取关键词
+   * 
+   * @param {string} text - 文本
+   * @returns {Array<string>} - 关键词数组
+   */
+  _extractKeywords(text) {
+    /**
+     * 提取关键词
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   关键词数组
+     */
+    // 简化实现：提取有意义的单词
+    const stopWords = ['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought', 'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'between', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or', 'because', 'until', 'while', 'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again', 'further', 'then', 'once'];
+    
+    const words = text
+      .toLowerCase()
+      .replace(/[^\w\s]/g, '')
+      .split(/\s+/)
+      .filter(word => word.length > 2 && !stopWords.includes(word));
+
+    return [...new Set(words)]; // 去重
+  }
+
+  /**
+   * 检查目标是否完成
+   * 
+   * @param {Object} goal - 目标对象
+   * @returns {boolean} - 是否完成
+   */
+  async _isGoalComplete(goal) {
+    /**
+     * 检查目标是否完成
+     * 
+     * 参数:
+     *   goal: 目标对象
+     * 
+     * 返回:
+     *   是否完成
+     */
+    try {
+      // 检查进度
+      const progress = this.goalSystem._calculateProgress(goal);
+      
+      if (progress >= 100) {
+        return true;
+      }
+
+      // 如果有子目标，检查是否所有子目标都已完成
+      if (goal.subGoals && goal.subGoals.length > 0) {
+        const allCompleted = goal.subGoals.every(
+          subGoal => subGoal.status === 'completed'
+        );
+        
+        if (allCompleted) {
+          return true;
+        }
+
+        // 检查是否有失败的子目标
+        const hasFailed = goal.subGoals.some(
+          subGoal => subGoal.status === 'failed'
+        );
+
+        if (hasFailed) {
+          console.warn('目标包含失败的子目标');
+        }
+      }
+
+      // 检查成功标准
+      if (goal.successCriteria) {
+        const meetsCriteria = await this._checkSuccessCriteria(goal);
+        return meetsCriteria;
+      }
+
+      return false;
+
+    } catch (error) {
+      console.error('检查目标完成状态失败:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 检查成功标准
+   * 
+   * @param {Object} goal - 目标对象
+   * @returns {boolean} - 是否满足成功标准
+   */
+  async _checkSuccessCriteria(goal) {
+    /**
+     * 检查目标是否满足成功标准
+     * 
+     * 参数:
+     *   goal: 目标对象
+     * 
+     * 返回:
+     *   是否满足成功标准
+     */
+    const criteria = goal.successCriteria;
+
+    if (!criteria) {
+      return false;
+    }
+
+    try {
+      // 使用 LLM 评估是否满足成功标准
+      const prompt = `
+      请评估以下目标是否满足成功标准：
+      
+      目标：${JSON.stringify(goal)}
+      成功标准：${JSON.stringify(criteria)}
+      
+      请评估：
+      1. 目标是否已完全实现
+      2. 是否满足所有成功标准
+      3. 质量是否达到要求
+      
+      以 JSON 格式返回：
+      {
+        "satisfied": true/false,
+        "reason": "说明原因",
+        "score": 0-100
+      }
+      `;
+
+      const response = await this.llm.generate(prompt);
+      const evaluation = JSON.parse(response);
+
+      return evaluation.satisfied && evaluation.score >= 70;
+
+    } catch (error) {
+      console.error('检查成功标准失败:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 保存状态
+   * 
+   * @param {string} reason - 保存原因
+   */
+  async _saveState(reason) {
+    /**
+     * 保存 Agent 状态
+     * 
+     * 参数:
+     *   reason: 保存原因
+     */
+    console.log('保存状态:', reason);
+
+    try {
+      // 收集所有状态信息
+      const state = {
+        timestamp: Date.now(),
+        reason,
+        config: this.config,
+        goals: this.goalSystem.getActiveGoals(),
+        learning: this.learningSystem.getLearningStats(),
+        memory: this.memory.getStats(),
+        constraints: this.constraintSystem.getViolations(),
+        emergency: this.emergencySystem.getStatus(),
+        evaluation: this.evaluationSystem.generateReport(),
+        improvements: this.improvementSystem.getPendingImprovements()
+      };
+
+      // 存储到记忆
+      await this.memory.store(
+        `agent_state_${Date.now()}`,
+        state,
+        {
+          type: 'agent_state',
+          reason,
+          timestamp: Date.now()
+        }
+      );
+
+      // 如果配置了持久化，保存到文件
+      if (this.config.persistState) {
+        await this._persistStateToFile(state);
+      }
+
+      console.log('状态保存成功');
+
+    } catch (error) {
+      console.error('保存状态失败:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 持久化状态到文件
+   * 
+   * @param {Object} state - 状态对象
+   */
+  async _persistStateToFile(state) {
+    /**
+     * 将状态持久化到文件
+     * 
+     * 参数:
+     *   state: 状态对象
+     */
+    const fs = require('fs').promises;
+    const path = require('path');
+
+    const stateDir = this.config.stateDir || './agent_states';
+    const stateFile = path.join(stateDir, `state_${Date.now()}.json`);
+
+    try {
+      // 确保目录存在
+      await fs.mkdir(stateDir, { recursive: true });
+
+      // 写入状态文件
+      await fs.writeFile(
+        stateFile,
+        JSON.stringify(state, null, 2),
+        'utf-8'
+      );
+
+      console.log(`状态已保存到: ${stateFile}`);
+
+    } catch (error) {
+      console.error('持久化状态到文件失败:', error);
+    }
+  }
+
+  /**
+   * 清理资源
+   */
+  async _cleanupResources() {
+    /**
+     * 清理 Agent 使用的资源
+     */
+    console.log('清理资源');
+
+    try {
+      // 清理临时文件
+      if (this.config.tempDir) {
+        await this._cleanupTempFiles();
+      }
+
+      // 清理过期的记忆
+      await this._cleanupOldMemories();
+
+      // 清理过期的状态文件
+      if (this.config.stateDir) {
+        await this._cleanupOldStates();
+      }
+
+      // 保存最终状态
+      await this._saveState('cleanup');
+
+      console.log('资源清理完成');
+
+    } catch (error) {
+      console.error('清理资源失败:', error);
+    }
+  }
+
+  /**
+   * 清理临时文件
+   */
+  async _cleanupTempFiles() {
+    /**
+     * 清理临时文件
+     */
+    const fs = require('fs').promises;
+    const path = require('path');
+
+    try {
+      const files = await fs.readdir(this.config.tempDir);
+      const now = Date.now();
+      const maxAge = 24 * 60 * 60 * 1000; // 24小时
+
+      for (const file of files) {
+        const filePath = path.join(this.config.tempDir, file);
+        const stats = await fs.stat(filePath);
+
+        if (now - stats.mtimeMs > maxAge) {
+          await fs.unlink(filePath);
+          console.log(`已删除临时文件: ${file}`);
+        }
+      }
+
+    } catch (error) {
+      console.error('清理临时文件失败:', error);
+    }
+  }
+
+  /**
+   * 清理过期的记忆
+   */
+  async _cleanupOldMemories() {
+    /**
+     * 清理过期的记忆
+     */
+    try {
+      const maxAge = this.config.memoryRetentionDays * 24 * 60 * 60 * 1000 || 30 * 24 * 60 * 60 * 1000; // 默认30天
+      const now = Date.now();
+
+      // 获取所有记忆
+      const allMemories = [];
+      for (const [key, item] of this.memory.storage.entries()) {
+        allMemories.push({ key, item });
+      }
+
+      // 清理过期记忆
+      let cleanedCount = 0;
+      for (const { key, item } of allMemories) {
+        if (now - item.metadata.timestamp > maxAge) {
+          await this.memory.delete(key);
+          cleanedCount++;
+        }
+      }
+
+      if (cleanedCount > 0) {
+        console.log(`已清理 ${cleanedCount} 条过期记忆`);
+      }
+
+    } catch (error) {
+      console.error('清理过期记忆失败:', error);
+    }
+  }
+
+  /**
+   * 清理过期的状态文件
+   */
+  async _cleanupOldStates() {
+    /**
+     * 清理过期的状态文件
+     */
+    const fs = require('fs').promises;
+    const path = require('path');
+
+    try {
+      const files = await fs.readdir(this.config.stateDir);
+      const now = Date.now();
+      const maxAge = 7 * 24 * 60 * 60 * 1000; // 7天
+      const maxStates = 10; // 最多保留10个状态文件
+
+      // 按时间排序
+      const stateFiles = [];
+      for (const file of files) {
+        if (file.startsWith('state_') && file.endsWith('.json')) {
+          const filePath = path.join(this.config.stateDir, file);
+          const stats = await fs.stat(filePath);
+          stateFiles.push({ file, path: filePath, mtime: stats.mtimeMs });
+        }
+      }
+
+      stateFiles.sort((a, b) => b.mtime - a.mtime);
+
+      // 删除过期的状态文件
+      for (let i = maxStates; i < stateFiles.length; i++) {
+        await fs.unlink(stateFiles[i].path);
+        console.log(`已删除过期状态文件: ${stateFiles[i].file}`);
+      }
+
+      // 删除超过最大年龄的状态文件
+      for (const { file, path: filePath, mtime } of stateFiles) {
+        if (now - mtime > maxAge) {
+          await fs.unlink(filePath);
+          console.log(`已删除过期状态文件: ${file}`);
+        }
+      }
+
+    } catch (error) {
+      console.error('清理过期状态文件失败:', error);
+    }
+  }
+
+  /**
+   * 从文件加载状态
+   * 
+   * @param {string} stateFile - 状态文件路径
+   * @returns {Object} - 加载的状态
+   */
+  async _loadStateFromFile(stateFile = null) {
+    /**
+     * 从文件加载 Agent 状态
+     * 
+     * 参数:
+     *   stateFile: 状态文件路径，如果为 null 则加载最新的状态文件
+     * 
+     * 返回:
+     *   加载的状态对象
+     */
+    const fs = require('fs').promises;
+    const path = require('path');
+
+    try {
+      const stateDir = this.config.stateDir || './agent_states';
+
+      // 如果没有指定文件，查找最新的状态文件
+      if (!stateFile) {
+        const files = await fs.readdir(stateDir);
+        const stateFiles = files
+          .filter(f => f.startsWith('state_') && f.endsWith('.json'))
+          .map(f => ({
+            file: f,
+            path: path.join(stateDir, f)
+          }));
+
+        if (stateFiles.length === 0) {
+          console.log('没有找到状态文件');
+          return null;
+        }
+
+        // 按文件名排序（包含时间戳）
+        stateFiles.sort((a, b) => b.file.localeCompare(a.file));
+        stateFile = stateFiles[0].path;
+      }
+
+      // 读取状态文件
+      const content = await fs.readFile(stateFile, 'utf-8');
+      const state = JSON.parse(content);
+
+      console.log(`从文件加载状态: ${stateFile}`);
+
+      // 恢复状态
+      await this._restoreState(state);
+
+      return state;
+
+    } catch (error) {
+      console.error('加载状态失败:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 恢复状态
+   * 
+   * @param {Object} state - 状态对象
+   */
+  async _restoreState(state) {
+    /**
+     * 恢复 Agent 状态
+     * 
+     * 参数:
+     *   state: 状态对象
+     */
+    try {
+      console.log('恢复 Agent 状态...');
+
+      // 恢复目标
+      if (state.goals) {
+        for (const goal of state.goals) {
+          this.goalSystem.goals.set(goal.id, goal);
+        }
+      }
+
+      // 恢复记忆
+      if (state.memory && state.memory.items) {
+        for (const item of state.memory.items) {
+          await this.memory.store(item.key, item.value, item.metadata);
+        }
+      }
+
+      // 恢复学习系统
+      if (state.learning) {
+        this.learningSystem.experienceBuffer = state.learning.experienceBuffer || [];
+        this.learningSystem.learningRate = state.learning.learningRate || 0.1;
+      }
+
+      // 恢复评估系统
+      if (state.evaluation) {
+        this.evaluationSystem.evaluationHistory = state.evaluation.evaluationHistory || [];
+      }
+
+      // 恢复改进系统
+      if (state.improvements) {
+        this.improvementSystem.improvements = state.improvements.improvements || [];
+      }
+
+      console.log('状态恢复完成');
+
+    } catch (error) {
+      console.error('恢复状态失败:', error);
+    }
+  }
+
+  /**
+   * 休眠
+   * 
+   * @param {number} ms - 休眠时间（毫秒）
+   */
+  async _sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 停止 Agent
+   * 
+   * @param {string} reason - 停止原因
+   * @returns {Object} - 停止结果
+   */
+  async stop(reason) {
+    return await this.emergencySystem.emergencyStop(reason);
+  }
+
+  /**
+   * 获取状态
+   * 
+   * @returns {Object} - Agent 状态
+   */
+  getStatus() {
+    return {
+      running: !this.emergencySystem.isStopped(),
+      goal: this.goalSystem.getActiveGoals(),
+      learning: this.learningSystem.getLearningStats(),
+      constraints: this.constraintSystem.getViolations(),
+      emergency: this.emergencySystem.getStatus()
+    };
+  }
+}
+
+// 使用示例
+async function autonomousAgentExample() {
+  const config = {
+    llm: {
+      apiKey: 'your-api-key',
+      model: 'gpt-4'
+    },
+    context: {
+      resources: ['compute', 'storage'],
+      constraints: ['24小时内完成']
+    },
+    constraints: {
+      resource_limit: {
+        type: 'resource',
+        resourceType: 'memory',
+        limit: 1024 * 1024 * 1024,
+        severity: 'critical'
+      },
+      allowed_actions: {
+        type: 'scope',
+        allowedActions: ['search', 'analyze', 'create'],
+        forbiddenActions: ['delete', 'modify_system'],
+        severity: 'high'
+      }
+    }
+  };
+
+  const agent = new AutonomousAgent(config);
+
+  // 注册监督者
+  agent.supervisionSystem.registerSupervisor('supervisor1', {
+    name: '管理员',
+    level: 'critical'
+  });
+
+  // 运行 Agent
+  const result = await agent.run('构建一个智能客服系统');
+
+  console.log('运行结果:', result);
+
+  // 获取状态
+  const status = agent.getStatus();
+  console.log('Agent 状态:', status);
+
+  // 如果需要停止
+  // await agent.stop('用户请求停止');
+}
+```
+
+## 📊 技术对比
+
+| 特性 | 传统 Agent | 自主 Agent |
+|------|-----------|-----------|
+| **决策方式** | 预定义规则 | 自主决策 |
+| **学习能力** | 静态知识 | 持续学习 |
+| **目标设定** | 人类指定 | 自主设定 |
+| **自我评估** | 无 | 有 |
+| **自我改进** | 无 | 有 |
+| **安全机制** | 基础 | 完善 |
+| **人类干预** | 持续需要 | 最小干预 |
+| **适用场景** | 简单任务 | 复杂长期任务 |
+
+## 🎓 学习路径
+
+### 初级阶段
+1. 理解自主 Agent 的核心概念
+2. 掌握目标设定和自我评估
+3. 实现基础的安全机制
+
+### 中级阶段
+1. 学习持续学习和经验回放
+2. 掌握知识更新机制
+3. 实现人类监督系统
+
+### 高级阶段
+1. 深入理解自我改进机制
+2. 构建完整的自主 Agent 系统
+3. 探索自主 Agent 的应用场景
+
+## 🔗 相关资源
+
+### 论文
+- [Autonomous Agents: A Survey](https://arxiv.org/abs/2308.11432)
+- [Self-Improving AI Agents](https://arxiv.org/abs/2310.12711)
+- [Towards Autonomous AI Systems](https://arxiv.org/abs/2307.12434)
+
+### 框架和工具
+- [LangChain](https://python.langchain.com/)
+- [AutoGen](https://microsoft.github.io/autogen/)
+- [CrewAI](https://docs.crewai.com/)
+
+### 实践项目
+- [AutoGPT](https://github.com/Significant-Gravitas/AutoGPT)
+- [BabyAGI](https://github.com/yoheinakajima/babyagi)
+- [AgentGPT](https://github.com/reworkd/AgentGPT)
+
+## 📝 学习检查点
+
+完成本节学习后，你应该能够回答：
+- [ ] 自主 Agent 的核心特征是什么？
+- [ ] 如何实现自主决策机制？
+- [ ] 持续学习有哪些方式？
+- [ ] 安全机制包括哪些方面？
+- [ ] 如何构建完整的自主 Agent 系统？
+- [ ] 自主 Agent 与传统 Agent 的区别是什么？
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **Agent 部署与运维** - 学习如何部署和运维 Agent 系统
+- **AI 工程化** - 了解 AI 工程化的最佳实践
+- **实践项目** - 动手构建自主 Agent 应用
