@@ -1,0 +1,581 @@
+# 文档处理
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-15
+
+## 📖 概述
+
+文档处理是 RAG（检索增强生成）系统中的关键环节，负责将各种格式的原始文档转换为适合向量化和检索的结构化文本。高质量的文档处理直接影响 RAG 系统的检索效果和生成质量。
+
+## 🏗️ 文档解析
+
+文档解析是将各种格式的文档转换为纯文本的过程，是 RAG 系统的第一步。
+
+### PDF 解析
+
+PDF 是最常见的文档格式之一，但也是最难处理的格式之一。
+
+#### 常见挑战
+
+- **文本提取困难**：PDF 可能包含扫描图像、复杂布局、多栏排版
+- **格式保留问题**：表格、公式、图表等结构化信息难以准确提取
+- **编码问题**：不同 PDF 编码方式可能导致乱码
+
+#### JavaScript 实现示例
+
+```javascript
+import { PDFDocument } from 'pdf-lib';
+import pdf from 'pdf-parse';
+
+// 使用 pdf-parse 提取文本
+async function extractTextFromPDF(buffer) {
+  const data = await pdf(buffer);
+  return data.text;
+}
+
+// 使用 pdf-lib 进行高级操作
+async function parsePDFAdvanced(buffer) {
+  const pdfDoc = await PDFDocument.load(buffer);
+  const pages = pdfDoc.getPages();
+  
+  let text = '';
+  for (const page of pages) {
+    const pageContent = await page.getTextContent();
+    text += pageContent.items.map(item => item.str).join(' ');
+  }
+  
+  return text;
+}
+```
+
+#### 推荐工具
+
+- **pdf-parse**：简单易用的 PDF 文本提取库
+- **pdf-lib**：功能强大的 PDF 操作库
+- **pdf2image**：将 PDF 转换为图像后使用 OCR
+- **PyPDF2**：Python 生态的 PDF 处理库
+
+### Word/Excel 处理
+
+Office 文档是企业和个人用户最常用的文档格式。
+
+#### Word 文档处理
+
+```javascript
+import mammoth from 'mammoth';
+
+async function extractTextFromWord(buffer) {
+  const result = await mammoth.extractRawText({ buffer });
+  return result.value;
+}
+
+// 提取带格式的 HTML
+async function extractHTMLFromWord(buffer) {
+  const result = await mammoth.convertToHtml({ buffer });
+  return result.value;
+}
+```
+
+#### Excel 文档处理
+
+```javascript
+import xlsx from 'xlsx';
+
+async function extractTextFromExcel(buffer) {
+  const workbook = xlsx.read(buffer, { type: 'buffer' });
+  let text = '';
+  
+  for (const sheetName of workbook.SheetNames) {
+    const worksheet = workbook.Sheets[sheetName];
+    const data = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
+    text += data.map(row => row.join(' ')).join('\n');
+  }
+  
+  return text;
+}
+```
+
+#### 推荐工具
+
+- **mammoth**：Word 文档转换库
+- **xlsx**：Excel 文件处理库
+- **docx**：Word 文档操作库
+- **exceljs**：Excel 文件读写库
+
+### 网页抓取
+
+网页内容是获取实时信息和知识的重要来源。
+
+#### 基本网页抓取
+
+```javascript
+import axios from 'axios';
+import * as cheerio from 'cheerio';
+
+async function scrapeWebPage(url) {
+  const response = await axios.get(url);
+  const $ = cheerio.load(response.data);
+  
+  // 移除不需要的元素
+  $('script, style, nav, footer').remove();
+  
+  // 提取主要内容
+  const title = $('title').text();
+  const content = $('body').text().trim();
+  
+  return { title, content };
+}
+```
+
+#### 高级网页抓取
+
+```javascript
+import puppeteer from 'puppeteer';
+
+async function scrapeDynamicWebPage(url) {
+  const browser = await puppeteer.launch();
+  const page = await browser.newPage();
+  
+  await page.goto(url, { waitUntil: 'networkidle2' });
+  
+  // 等待特定内容加载
+  await page.waitForSelector('.main-content');
+  
+  const content = await page.evaluate(() => {
+    return document.querySelector('.main-content').textContent;
+  });
+  
+  await browser.close();
+  return content;
+}
+```
+
+#### 推荐工具
+
+- **axios + cheerio**：静态网页抓取
+- **puppeteer**：动态网页抓取
+- **playwright**：现代浏览器自动化工具
+- **scrapy**：Python 爬虫框架
+
+### 多模态文档处理
+
+处理包含图像、音频、视频等多媒体内容的文档。
+
+#### 图像文档处理
+
+```javascript
+import Tesseract from 'tesseract.js';
+
+async function extractTextFromImage(imageBuffer) {
+  const { data: { text } } = await Tesseract.recognize(
+    imageBuffer,
+    'eng+chi_sim',
+    { logger: m => console.log(m) }
+  );
+  return text;
+}
+```
+
+#### 音频转文字
+
+```python
+# Python 示例：使用 Whisper
+import whisper
+
+model = whisper.load_model("base")
+result = model.transcribe("audio.mp3")
+print(result["text"])
+```
+
+#### 推荐工具
+
+- **Tesseract.js**：OCR 文字识别
+- **Whisper**：OpenAI 的语音识别模型
+- **Azure Computer Vision**：云端图像识别服务
+- **Google Cloud Vision**：Google 图像识别 API
+
+## 🔄 文本分割
+
+文本分割是将长文档切分成适合向量化和检索的小块的过程。
+
+### 语义分割
+
+基于语义相似度进行分割，确保每个文本块包含完整的语义单元。
+
+#### 原理
+
+1. **计算句子相似度**：使用嵌入模型计算相邻句子的相似度
+2. **识别语义边界**：在相似度较低的位置进行分割
+3. **保持语义完整性**：确保每个文本块包含相关的语义内容
+
+#### JavaScript 实现示例
+
+```javascript
+import { OpenAIEmbeddings } from '@langchain/openai';
+
+async function semanticSplit(text, maxChunkSize = 500) {
+  const embeddings = new OpenAIEmbeddings();
+  
+  // 分割成句子
+  const sentences = text.split(/[.!?。！？]/).filter(s => s.trim());
+  
+  // 计算句子嵌入
+  const sentenceEmbeddings = await Promise.all(
+    sentences.map(s => embeddings.embedQuery(s.trim()))
+  );
+  
+  // 计算相邻句子相似度
+  const similarities = [];
+  for (let i = 0; i < sentenceEmbeddings.length - 1; i++) {
+    const similarity = cosineSimilarity(
+      sentenceEmbeddings[i],
+      sentenceEmbeddings[i + 1]
+    );
+    similarities.push(similarity);
+  }
+  
+  // 在相似度较低的位置分割
+  const chunks = [];
+  let currentChunk = sentences[0];
+  
+  for (let i = 1; i < sentences.length; i++) {
+    if (similarities[i - 1] < 0.5 || 
+        currentChunk.length + sentences[i].length > maxChunkSize) {
+      chunks.push(currentChunk.trim());
+      currentChunk = sentences[i];
+    } else {
+      currentChunk += sentences[i];
+    }
+  }
+  
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
+  
+  return chunks;
+}
+
+function cosineSimilarity(vec1, vec2) {
+  const dotProduct = vec1.reduce((sum, val, i) => sum + val * vec2[i], 0);
+  const norm1 = Math.sqrt(vec1.reduce((sum, val) => sum + val * val, 0));
+  const norm2 = Math.sqrt(vec2.reduce((sum, val) => sum + val * val, 0));
+  return dotProduct / (norm1 * norm2);
+}
+```
+
+### 固定大小分割
+
+按照固定的字符数或 token 数进行分割，简单但可能破坏语义边界。
+
+#### JavaScript 实现示例
+
+```javascript
+function fixedSizeSplit(text, chunkSize = 500, overlap = 50) {
+  const chunks = [];
+  
+  for (let i = 0; i < text.length; i += chunkSize - overlap) {
+    const chunk = text.slice(i, i + chunkSize);
+    if (chunk.trim()) {
+      chunks.push(chunk.trim());
+    }
+  }
+  
+  return chunks;
+}
+```
+
+#### 优缺点
+
+**优点**：
+- 实现简单
+- 计算效率高
+- 可控的块大小
+
+**缺点**：
+- 可能破坏语义边界
+- 不考虑文档结构
+- 可能截断重要信息
+
+### 递归分割
+
+按照文档结构（如段落、章节）递归地进行分割。
+
+#### JavaScript 实现示例
+
+```javascript
+import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
+
+async function recursiveSplit(text) {
+  const splitter = new RecursiveCharacterTextSplitter({
+    chunkSize: 500,
+    chunkOverlap: 50,
+    separators: ['\n\n', '\n', '。', '！', '？', '.', '!', '?', ' ', ''],
+  });
+  
+  const chunks = await splitter.splitText(text);
+  return chunks;
+}
+```
+
+#### 原理
+
+1. **优先使用自然分隔符**：段落、章节等
+2. **递归处理**：如果块太大，继续细分
+3. **保持重叠**：确保上下文连续性
+
+### 混合策略
+
+结合多种分割策略，根据文档类型和内容特点选择最优方案。
+
+#### JavaScript 实现示例
+
+```javascript
+async function hybridSplit(text) {
+  // 首先尝试语义分割
+  const semanticChunks = await semanticSplit(text);
+  
+  // 如果语义分割失败或块太大，使用递归分割
+  const finalChunks = [];
+  
+  for (const chunk of semanticChunks) {
+    if (chunk.length > 800) {
+      const recursiveChunks = await recursiveSplit(chunk);
+      finalChunks.push(...recursiveChunks);
+    } else {
+      finalChunks.push(chunk);
+    }
+  }
+  
+  return finalChunks;
+}
+```
+
+#### 策略选择指南
+
+| 文档类型 | 推荐策略 | 原因 |
+|---------|---------|------|
+| 技术文档 | 语义分割 | 保持概念完整性 |
+| 法律文档 | 递归分割 | 保持条款完整性 |
+| 新闻文章 | 固定大小分割 | 简单高效 |
+| 学术论文 | 混合策略 | 兼顾结构和语义 |
+
+## 💡 实践案例
+
+### 案例 1：构建完整的文档处理流程
+
+```javascript
+import mammoth from 'mammoth';
+import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
+import { OpenAIEmbeddings } from '@langchain/openai';
+
+class DocumentProcessor {
+  constructor() {
+    this.embeddings = new OpenAIEmbeddings();
+    this.textSplitter = new RecursiveCharacterTextSplitter({
+      chunkSize: 500,
+      chunkOverlap: 50,
+    });
+  }
+  
+  async processDocument(fileBuffer, fileType) {
+    // 1. 解析文档
+    const text = await this.parseDocument(fileBuffer, fileType);
+    
+    // 2. 清洗文本
+    const cleanedText = this.cleanText(text);
+    
+    // 3. 分割文本
+    const chunks = await this.textSplitter.splitText(cleanedText);
+    
+    // 4. 生成嵌入
+    const embeddings = await Promise.all(
+      chunks.map(chunk => this.embeddings.embedQuery(chunk))
+    );
+    
+    return {
+      chunks,
+      embeddings,
+      metadata: {
+        fileType,
+        chunkCount: chunks.length,
+        totalTokens: cleanedText.length,
+      },
+    };
+  }
+  
+  async parseDocument(buffer, fileType) {
+    switch (fileType) {
+      case 'pdf':
+        return await this.parsePDF(buffer);
+      case 'docx':
+        return await this.parseWord(buffer);
+      case 'xlsx':
+        return await this.parseExcel(buffer);
+      default:
+        throw new Error(`Unsupported file type: ${fileType}`);
+    }
+  }
+  
+  async parsePDF(buffer) {
+    const pdf = await import('pdf-parse');
+    const data = await pdf.default(buffer);
+    return data.text;
+  }
+  
+  async parseWord(buffer) {
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value;
+  }
+  
+  async parseExcel(buffer) {
+    const xlsx = await import('xlsx');
+    const workbook = xlsx.read(buffer, { type: 'buffer' });
+    let text = '';
+    
+    for (const sheetName of workbook.SheetNames) {
+      const worksheet = workbook.Sheets[sheetName];
+      const data = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
+      text += data.map(row => row.join(' ')).join('\n');
+    }
+    
+    return text;
+  }
+  
+  cleanText(text) {
+    return text
+      .replace(/\s+/g, ' ')  // 合并多个空格
+      .replace(/\n\s*\n/g, '\n')  // 移除空行
+      .trim();
+  }
+}
+
+// 使用示例
+async function main() {
+  const processor = new DocumentProcessor();
+  const fs = await import('fs');
+  
+  const fileBuffer = fs.readFileSync('document.pdf');
+  const result = await processor.processDocument(fileBuffer, 'pdf');
+  
+  console.log(`处理完成：${result.metadata.chunkCount} 个文本块`);
+  console.log(`总 Token 数：${result.metadata.totalTokens}`);
+}
+
+main().catch(console.error);
+```
+
+### 案例 2：处理批量文档
+
+```javascript
+import fs from 'fs/promises';
+import path from 'path';
+
+async function processBatchDocuments(directory) {
+  const processor = new DocumentProcessor();
+  const results = [];
+  
+  const files = await fs.readdir(directory);
+  
+  for (const file of files) {
+    const filePath = path.join(directory, file);
+    const stats = await fs.stat(filePath);
+    
+    if (stats.isFile()) {
+      const fileBuffer = await fs.readFile(filePath);
+      const fileType = path.extname(file).slice(1);
+      
+      try {
+        const result = await processor.processDocument(fileBuffer, fileType);
+        results.push({
+          file,
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        results.push({
+          file,
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+  }
+  
+  return results;
+}
+```
+
+## 🎯 最佳实践
+
+### 1. 文档解析
+
+- **选择合适的工具**：根据文档类型选择最优解析工具
+- **处理异常情况**：添加错误处理和重试机制
+- **保留元数据**：保存文档标题、作者、日期等元信息
+- **批量处理优化**：使用并发处理提高效率
+
+### 2. 文本分割
+
+- **保持语义完整性**：优先使用语义分割
+- **设置合理的重叠**：通常设置为 chunkSize 的 10-20%
+- **考虑文档结构**：尊重段落、章节等自然边界
+- **测试不同策略**：根据具体应用场景调整参数
+
+### 3. 性能优化
+
+```javascript
+// 使用缓存避免重复处理
+const cache = new Map();
+
+async function getCachedDocument(documentId) {
+  if (cache.has(documentId)) {
+    return cache.get(documentId);
+  }
+  
+  const result = await processDocument(documentId);
+  cache.set(documentId, result);
+  return result;
+}
+
+// 使用并发处理
+async function processConcurrently(documents, concurrency = 5) {
+  const chunks = [];
+  for (let i = 0; i < documents.length; i += concurrency) {
+    const batch = documents.slice(i, i + concurrency);
+    const results = await Promise.all(
+      batch.map(doc => processDocument(doc))
+    );
+    chunks.push(...results);
+  }
+  return chunks;
+}
+```
+
+## 🔗 相关资源
+
+### 官方文档
+- [LangChain 文档处理](https://js.langchain.com/docs/modules/data_connection/document_loaders)
+- [LlamaIndex 文档处理](https://docs.llamaindex.ai/en/stable/examples/data_connectors/simple_directory_reader/)
+
+### 学习资源
+- [文档处理最佳实践](https://www.pinecone.io/learn/document-processing/)
+- [文本分割策略](https://www.pinecone.io/learn/chunking-strategies/)
+
+### 开源项目
+- [LangChain GitHub](https://github.com/langchain-ai/langchainjs)
+- [LlamaIndex GitHub](https://github.com/run-llama/llama_index)
+
+## ✅ 学习检查点
+
+- [ ] 理解文档处理在 RAG 系统中的重要性
+- [ ] 掌握常见文档格式的解析方法
+- [ ] 了解不同的文本分割策略
+- [ ] 能够实现完整的文档处理流程
+- [ ] 理解如何优化文档处理性能
+
+## 🚀 下一步
+
+继续学习以下内容：
+
+- RAG 高级技术
+- Agent 基础
