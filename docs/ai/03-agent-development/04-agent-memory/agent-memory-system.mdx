@@ -1,0 +1,2702 @@
+# Agent 记忆系统
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-15  
+> **预计学习时间**：10-14 小时
+
+## 📖 概述
+
+记忆系统是 Agent 的核心组件之一，它使 Agent 能够存储、检索和利用过去的信息，从而实现连续对话、长期学习和个性化交互。本章节将详细介绍 Agent 记忆系统的设计原理、实现方法和最佳实践。
+
+> **注意**：本章节中的代码示例展示了记忆系统的核心架构和实现逻辑。在实际生产环境中，以下组件需要使用真实的库和模型：
+> - **嵌入模型**：应使用 OpenAI Embeddings、Hugging Face Transformers 等真实的嵌入模型
+> - **向量数据库**：应使用 Pinecone、Weaviate、Milvus 等专业的向量数据库
+> - **Token 计算**：应使用 tiktoken、sentencepiece 等专门的 tokenizer
+> - **NLP 处理**：应使用 spaCy、NLTK 等专业的 NLP 库进行实体和关系提取
+> - **总结生成**：应使用 GPT-4、Claude 等大语言模型生成高质量总结
+
+## 🎯 为什么需要记忆系统？
+
+### 无记忆 Agent 的局限性
+
+1. **上下文丢失**
+   - 无法记住之前的对话内容
+   - 每次交互都是独立的
+   - 难以进行多轮对话
+
+2. **学习能力缺失**
+   - 无法从历史经验中学习
+   - 重复犯错
+   - 无法适应个性化需求
+
+3. **信息碎片化**
+   - 无法关联相关信息
+   - 缺乏知识积累
+   - 难以进行复杂推理
+
+### 记忆系统的价值
+
+1. **连续性**
+   - 维持对话上下文
+   - 支持多轮交互
+   - 保持角色一致性
+
+2. **个性化**
+   - 记住用户偏好
+   - 学习用户习惯
+   - 提供定制化服务
+
+3. **智能性**
+   - 利用历史经验
+   - 优化决策过程
+   - 提升响应质量
+
+## 🧠 记忆架构
+
+### 记忆层次模型
+
+```
+┌─────────────────────────────────────────┐
+│         Agent 记忆系统                    │
+├─────────────────────────────────────────┤
+│  感知记忆 (Sensory Memory)              │
+│  - 短期存储 (秒级)                       │
+│  - 感官输入缓冲                          │
+│  - 注意力筛选                            │
+├─────────────────────────────────────────┤
+│  工作记忆 (Working Memory)              │
+│  - 短期存储 (分钟级)                     │
+│  - 当前任务处理                          │
+│  - 上下文窗口                            │
+├─────────────────────────────────────────┤
+│  语义记忆 (Semantic Memory)             │
+│  - 长期存储 (永久)                       │
+│  - 事实和概念                            │
+│  - 知识图谱                             │
+├─────────────────────────────────────────┤
+│  情景记忆 (Episodic Memory)             │
+│  - 长期存储 (永久)                       │
+│  - 个人经历和事件                        │
+│  - 时间序列                             │
+├─────────────────────────────────────────┤
+│  程序记忆 (Procedural Memory)           │
+│  - 长期存储 (永久)                       │
+│  - 技能和习惯                            │
+│  - 操作模式                             │
+└─────────────────────────────────────────┘
+```
+
+### 记忆类型详解
+
+#### 1. 感知记忆 (Sensory Memory)
+
+感知记忆是 Agent 接收信息的第一个阶段，持续时间极短（通常几秒），负责暂存感官输入。
+
+```javascript
+class SensoryMemory {
+  constructor(capacity = 1000, duration = 5000) {
+    /**
+     * 感知记忆
+     * 
+     * 参数:
+     *   capacity: 容量（毫秒）
+     *   duration: 持续时间（毫秒）
+     */
+    this.capacity = capacity;
+    this.duration = duration;
+    this.buffer = new Map();
+    this.cleanupInterval = null;
+  }
+
+  start() {
+    /**
+     * 启动感知记忆
+     */
+    this.cleanupInterval = setInterval(() => {
+      this.cleanup();
+    }, this.duration / 2);
+  }
+
+  stop() {
+    /**
+     * 停止感知记忆
+     */
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+  }
+
+  store(input) {
+    /**
+     * 存储输入
+     * 
+     * 参数:
+     *   input: 输入对象 { type, content, timestamp }
+     */
+    const id = this.generateId();
+    const timestamp = Date.now();
+    
+    this.buffer.set(id, {
+      id: id,
+      type: input.type,
+      content: input.content,
+      timestamp: timestamp,
+      expiresAt: timestamp + this.duration,
+    });
+
+    // 检查容量
+    this.checkCapacity();
+    
+    return id;
+  }
+
+  retrieve(id) {
+    /**
+     * 检索记忆
+     * 
+     * 参数:
+     *   id: 记忆 ID
+     * 
+     * 返回:
+     *   记忆内容
+     */
+    const memory = this.buffer.get(id);
+    
+    if (!memory) {
+      return null;
+    }
+    
+    // 检查是否过期
+    if (Date.now() > memory.expiresAt) {
+      this.buffer.delete(id);
+      return null;
+    }
+    
+    return memory;
+  }
+
+  retrieveByType(type) {
+    /**
+     * 按类型检索
+     * 
+     * 参数:
+     *   type: 记忆类型
+     * 
+     * 返回:
+     *   记忆数组
+     */
+    const now = Date.now();
+    const memories = [];
+    
+    for (const [id, memory] of this.buffer.entries()) {
+      if (memory.type === type && now <= memory.expiresAt) {
+        memories.push(memory);
+      }
+    }
+    
+    return memories;
+  }
+
+  cleanup() {
+    /**
+     * 清理过期记忆
+     */
+    const now = Date.now();
+    
+    for (const [id, memory] of this.buffer.entries()) {
+      if (now > memory.expiresAt) {
+        this.buffer.delete(id);
+      }
+    }
+  }
+
+  checkCapacity() {
+    /**
+     * 检查容量
+     */
+    if (this.buffer.size > this.capacity) {
+      // 删除最旧的记忆
+      const sortedMemories = Array.from(this.buffer.entries())
+        .sort((a, b) => a[1].timestamp - b[1].timestamp);
+      
+      const toDelete = sortedMemories.slice(0, this.buffer.size - this.capacity);
+      
+      for (const [id] of toDelete) {
+        this.buffer.delete(id);
+      }
+    }
+  }
+
+  generateId() {
+    /**
+     * 生成唯一 ID
+     */
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  getStats() {
+    /**
+     * 获取统计信息
+     */
+    return {
+      total: this.buffer.size,
+      byType: this.groupByType(),
+      oldest: this.getOldest(),
+      newest: this.getNewest(),
+    };
+  }
+
+  groupByType() {
+    /**
+     * 按类型分组
+     */
+    const groups = {};
+    
+    for (const memory of this.buffer.values()) {
+      if (!groups[memory.type]) {
+        groups[memory.type] = 0;
+      }
+      groups[memory.type]++;
+    }
+    
+    return groups;
+  }
+
+  getOldest() {
+    /**
+     * 获取最旧的记忆
+     */
+    const memories = Array.from(this.buffer.values());
+    if (memories.length === 0) {
+      return null;
+    }
+    return memories.reduce((oldest, current) => 
+      current.timestamp < oldest.timestamp ? current : oldest
+    );
+  }
+
+  getNewest() {
+    /**
+     * 获取最新的记忆
+     */
+    const memories = Array.from(this.buffer.values());
+    if (memories.length === 0) {
+      return null;
+    }
+    return memories.reduce((newest, current) => 
+      current.timestamp > newest.timestamp ? current : newest
+    );
+  }
+}
+
+// 使用示例
+function sensoryMemoryExample() {
+  const sensoryMemory = new SensoryMemory(100, 5000);
+  sensoryMemory.start();
+  
+  // 存储不同类型的输入
+  sensoryMemory.store({
+    type: 'text',
+    content: '用户说: 你好',
+  });
+  
+  sensoryMemory.store({
+    type: 'image',
+    content: 'base64_image_data',
+  });
+  
+  sensoryMemory.store({
+    type: 'audio',
+    content: 'audio_data',
+  });
+  
+  // 检索记忆
+  const textMemories = sensoryMemory.retrieveByType('text');
+  console.log('文本记忆:', textMemories);
+  
+  // 获取统计信息
+  const stats = sensoryMemory.getStats();
+  console.log('统计信息:', stats);
+  
+  // 停止感知记忆
+  sensoryMemory.stop();
+}
+```
+
+#### 2. 工作记忆 (Working Memory)
+
+工作记忆是 Agent 处理当前任务时使用的短期记忆，持续时间较短（通常几分钟），负责维护对话上下文和当前任务状态。
+
+```javascript
+class WorkingMemory {
+  constructor(maxTokens = 4000, windowSize = 10) {
+    /**
+     * 工作记忆
+     * 
+     * 参数:
+     *   maxTokens: 最大 token 数
+     *   windowSize: 窗口大小
+     */
+    this.maxTokens = maxTokens;
+    this.windowSize = windowSize;
+    this.context = [];
+    this.taskState = new Map();
+    this.tokenCounter = 0;
+  }
+
+  addMessage(role, content) {
+    /**
+     * 添加消息
+     * 
+     * 参数:
+     *   role: 角色 (user, assistant, system)
+     *   content: 消息内容
+     */
+    const message = {
+      role: role,
+      content: content,
+      timestamp: Date.now(),
+      tokens: this.estimateTokens(content),
+    };
+    
+    this.context.push(message);
+    this.tokenCounter += message.tokens;
+    
+    // 检查容量
+    this.checkCapacity();
+  }
+
+  addSystemMessage(content) {
+    /**
+     * 添加系统消息
+     * 
+     * 参数:
+     *   content: 系统消息内容
+     */
+    this.addMessage('system', content);
+  }
+
+  addUserMessage(content) {
+    /**
+     * 添加用户消息
+     * 
+     * 参数:
+     *   content: 用户消息内容
+     */
+    this.addMessage('user', content);
+  }
+
+  addAssistantMessage(content) {
+    /**
+     * 添加助手消息
+     * 
+     * 参数:
+     *   content: 助手消息内容
+     */
+    this.addMessage('assistant', content);
+  }
+
+  getContext() {
+    /**
+     * 获取上下文
+     * 
+     * 返回:
+     *   上下文数组
+     */
+    return this.context.map(msg => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+  }
+
+  getRecentContext(n = 5) {
+    /**
+     * 获取最近的上下文
+     * 
+     * 参数:
+     *   n: 消息数量
+     * 
+     * 返回:
+     *   最近的上下文
+     */
+    const start = Math.max(0, this.context.length - n);
+    return this.context.slice(start).map(msg => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+  }
+
+  setTaskState(key, value) {
+    /**
+     * 设置任务状态
+     * 
+     * 参数:
+     *   key: 状态键
+     *   value: 状态值
+     */
+    this.taskState.set(key, {
+      value: value,
+      timestamp: Date.now(),
+    });
+  }
+
+  getTaskState(key) {
+    /**
+     * 获取任务状态
+     * 
+     * 参数:
+     *   key: 状态键
+     * 
+     * 返回:
+     *   状态值
+     */
+    const state = this.taskState.get(key);
+    return state ? state.value : null;
+  }
+
+  getAllTaskState() {
+    /**
+     * 获取所有任务状态
+     * 
+     * 返回:
+     *   状态对象
+     */
+    const state = {};
+    for (const [key, value] of this.taskState.entries()) {
+      state[key] = value.value;
+    }
+    return state;
+  }
+
+  clearTaskState(key) {
+    /**
+     * 清除任务状态
+     * 
+     * 参数:
+     *   key: 状态键
+     */
+    this.taskState.delete(key);
+  }
+
+  clearAllTaskState() {
+    /**
+     * 清除所有任务状态
+     */
+    this.taskState.clear();
+  }
+
+  checkCapacity() {
+    /**
+     * 检查容量
+     */
+    // 检查 token 数量
+    while (this.tokenCounter > this.maxTokens && this.context.length > 0) {
+      const removed = this.context.shift();
+      this.tokenCounter -= removed.tokens;
+    }
+    
+    // 检查窗口大小
+    while (this.context.length > this.windowSize) {
+      const removed = this.context.shift();
+      this.tokenCounter -= removed.tokens;
+    }
+  }
+
+  estimateTokens(text) {
+    /**
+     * 估算 token 数量
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   token 数量
+     */
+    // 简单估算：1 token ≈ 4 字符
+    return Math.ceil(text.length / 4);
+  }
+
+  summarize() {
+    /**
+     * 总结上下文
+     * 
+     * 返回:
+     *   总结内容
+     */
+    if (this.context.length === 0) {
+      return '';
+    }
+    
+    // 简单总结：提取关键信息
+    const summary = this.context.map(msg => {
+      const role = msg.role === 'user' ? '用户' : '助手';
+      const content = msg.content.substring(0, 50) + '...';
+      return `${role}: ${content}`;
+    }).join('\n');
+    
+    return summary;
+  }
+
+  compress() {
+    /**
+     * 压缩上下文
+     */
+    if (this.context.length <= 2) {
+      return;
+    }
+    
+    // 保留系统消息
+    const systemMessages = this.context.filter(msg => msg.role === 'system');
+    
+    // 保留最近的对话
+    const recentMessages = this.context.slice(-4);
+    
+    // 重建上下文
+    this.context = [...systemMessages, ...recentMessages];
+    
+    // 重新计算 token
+    this.tokenCounter = this.context.reduce((sum, msg) => sum + msg.tokens, 0);
+  }
+
+  reset() {
+    /**
+     * 重置工作记忆
+     */
+    this.context = [];
+    this.taskState.clear();
+    this.tokenCounter = 0;
+  }
+
+  getStats() {
+    /**
+     * 获取统计信息
+     */
+    return {
+      totalMessages: this.context.length,
+      totalTokens: this.tokenCounter,
+      byRole: this.groupByRole(),
+      taskStateKeys: Array.from(this.taskState.keys()),
+    };
+  }
+
+  groupByRole() {
+    /**
+     * 按角色分组
+     */
+    const groups = {
+      system: 0,
+      user: 0,
+      assistant: 0,
+    };
+    
+    for (const msg of this.context) {
+      groups[msg.role]++;
+    }
+    
+    return groups;
+  }
+}
+
+// 使用示例
+function workingMemoryExample() {
+  const workingMemory = new WorkingMemory(4000, 10);
+  
+  // 添加系统消息
+  workingMemory.addSystemMessage('你是一个有帮助的助手。');
+  
+  // 添加对话
+  workingMemory.addUserMessage('你好，我想了解机器学习。');
+  workingMemory.addAssistantMessage('你好！机器学习是人工智能的一个分支...');
+  workingMemory.addUserMessage('能详细解释一下吗？');
+  
+  // 设置任务状态
+  workingMemory.setTaskState('topic', 'machine learning');
+  workingMemory.setTaskState('intent', 'explanation');
+  
+  // 获取上下文
+  const context = workingMemory.getContext();
+  console.log('上下文:', context);
+  
+  // 获取任务状态
+  const topic = workingMemory.getTaskState('topic');
+  console.log('当前主题:', topic);
+  
+  // 获取统计信息
+  const stats = workingMemory.getStats();
+  console.log('统计信息:', stats);
+  
+  // 压缩上下文
+  workingMemory.compress();
+  console.log('压缩后的上下文:', workingMemory.getContext());
+}
+```
+
+#### 3. 语义记忆 (Semantic Memory)
+
+语义记忆存储 Agent 的知识和事实，包括概念、定义、规则等，是长期记忆的重要组成部分。
+
+```javascript
+class SemanticMemory {
+  constructor(vectorStore, embeddingModel) {
+    /**
+     * 语义记忆
+     * 
+     * 参数:
+     *   vectorStore: 向量存储
+     *   embeddingModel: 嵌入模型
+     */
+    this.vectorStore = vectorStore;
+    this.embeddingModel = embeddingModel;
+    this.knowledgeGraph = new Map();
+  }
+
+  async storeKnowledge(knowledge) {
+    /**
+     * 存储知识
+     * 
+     * 参数:
+     *   knowledge: 知识对象 { id, content, type, metadata }
+     * 
+     * 返回:
+     *   存储结果
+     */
+    try {
+      // 生成嵌入向量
+      const embedding = await this.embeddingModel.embed(knowledge.content);
+      
+      // 存储到向量数据库
+      await this.vectorStore.insertVectors([embedding], {
+        id: knowledge.id,
+        content: knowledge.content,
+        type: knowledge.type,
+        metadata: knowledge.metadata || {},
+        timestamp: Date.now(),
+      });
+      
+      // 更新知识图谱
+      this.updateKnowledgeGraph(knowledge);
+      
+      return {
+        success: true,
+        id: knowledge.id,
+      };
+    } catch (error) {
+      console.error('Store knowledge error:', error);
+      throw new Error(`存储知识失败: ${error.message}`);
+    }
+  }
+
+  async retrieveKnowledge(query, topK = 5, filters = {}) {
+    /**
+     * 检索知识
+     * 
+     * 参数:
+     *   query: 查询内容
+     *   topK: 返回结果数量
+     *   filters: 过滤条件
+     * 
+     * 返回:
+     *   检索结果
+     */
+    try {
+      // 生成查询向量
+      const queryEmbedding = await this.embeddingModel.embed(query);
+      
+      // 向量搜索
+      const searchResults = await this.vectorStore.searchVectors(
+        queryEmbedding,
+        topK,
+        filters
+      );
+      
+      // 格式化结果
+      const results = searchResults.results.map(result => ({
+        id: result.id,
+        content: result.metadata.content,
+        type: result.metadata.type,
+        score: result.score,
+        metadata: result.metadata,
+      }));
+      
+      return {
+        success: true,
+        results: results,
+      };
+    } catch (error) {
+      console.error('Retrieve knowledge error:', error);
+      throw new Error(`检索知识失败: ${error.message}`);
+    }
+  }
+
+  async updateKnowledge(knowledge) {
+    /**
+     * 更新知识
+     * 
+     * 参数:
+     *   knowledge: 知识对象
+     * 
+     * 返回:
+     *   更新结果
+     */
+    try {
+      // 先删除旧知识
+      await this.deleteKnowledge(knowledge.id);
+      
+      // 存储新知识
+      return await this.storeKnowledge(knowledge);
+    } catch (error) {
+      console.error('Update knowledge error:', error);
+      throw new Error(`更新知识失败: ${error.message}`);
+    }
+  }
+
+  async deleteKnowledge(id) {
+    /**
+     * 删除知识
+     * 
+     * 参数:
+     *   id: 知识 ID
+     * 
+     * 返回:
+     *   删除结果
+     */
+    try {
+      await this.vectorStore.deleteVectors([id]);
+      
+      // 从知识图谱中删除
+      this.knowledgeGraph.delete(id);
+      
+      return {
+        success: true,
+        id: id,
+      };
+    } catch (error) {
+      console.error('Delete knowledge error:', error);
+      throw new Error(`删除知识失败: ${error.message}`);
+    }
+  }
+
+  updateKnowledgeGraph(knowledge) {
+    /**
+     * 更新知识图谱
+     * 
+     * 参数:
+     *   knowledge: 知识对象
+     */
+    // 提取实体和关系
+    const entities = this.extractEntities(knowledge.content);
+    const relations = this.extractRelations(knowledge.content);
+    
+    // 更新知识图谱
+    this.knowledgeGraph.set(knowledge.id, {
+      content: knowledge.content,
+      entities: entities,
+      relations: relations,
+      type: knowledge.type,
+      timestamp: Date.now(),
+    });
+  }
+
+  extractEntities(text) {
+    /**
+     * 提取实体
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   实体数组
+     */
+    // 简单实现：提取大写单词
+    const entities = text.match(/[A-Z][a-z]+/g) || [];
+    return [...new Set(entities)];
+  }
+
+  extractRelations(text) {
+    /**
+     * 提取关系
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   关系数组
+     */
+    // 简单实现：提取 "X 是 Y" 模式
+    const relations = [];
+    const patterns = [
+      /(\w+)\s+是\s+(\w+)/g,
+      /(\w+)\s+属于\s+(\w+)/g,
+    ];
+    
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        relations.push({
+          subject: match[1],
+          predicate: 'is',
+          object: match[2],
+        });
+      }
+    }
+    
+    return relations;
+  }
+
+  async searchByType(type, limit = 10) {
+    /**
+     * 按类型搜索
+     * 
+     * 参数:
+     *   type: 知识类型
+     *   limit: 返回数量
+     * 
+     * 返回:
+     *   搜索结果
+     */
+    const results = [];
+    
+    for (const [id, knowledge] of this.knowledgeGraph.entries()) {
+      if (knowledge.type === type && results.length < limit) {
+        results.push({
+          id: id,
+          content: knowledge.content,
+          entities: knowledge.entities,
+          relations: knowledge.relations,
+        });
+      }
+    }
+    
+    return {
+      success: true,
+      results: results,
+    };
+  }
+
+  async getRelatedEntities(entity, limit = 10) {
+    /**
+     * 获取相关实体
+     * 
+     * 参数:
+     *   entity: 实体名称
+     *   limit: 返回数量
+     * 
+     * 返回:
+     *   相关实体
+     */
+    const related = new Map();
+    
+    for (const [id, knowledge] of this.knowledgeGraph.entries()) {
+      if (knowledge.entities.includes(entity)) {
+        for (const otherEntity of knowledge.entities) {
+          if (otherEntity !== entity) {
+            const count = related.get(otherEntity) || 0;
+            related.set(otherEntity, count + 1);
+          }
+        }
+      }
+    }
+    
+    // 按关联度排序
+    const sorted = Array.from(related.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit);
+    
+    return {
+      success: true,
+      entity: entity,
+      related: sorted.map(([entity, count]) => ({
+        entity: entity,
+        count: count,
+      })),
+    };
+  }
+
+  getStats() {
+    /**
+     * 获取统计信息
+     */
+    const typeCount = {};
+    
+    for (const knowledge of this.knowledgeGraph.values()) {
+      const type = knowledge.type;
+      typeCount[type] = (typeCount[type] || 0) + 1;
+    }
+    
+    return {
+      totalKnowledge: this.knowledgeGraph.size,
+      byType: typeCount,
+      totalEntities: this.countEntities(),
+      totalRelations: this.countRelations(),
+    };
+  }
+
+  countEntities() {
+    /**
+     * 统计实体数量
+     */
+    const entities = new Set();
+    
+    for (const knowledge of this.knowledgeGraph.values()) {
+      for (const entity of knowledge.entities) {
+        entities.add(entity);
+      }
+    }
+    
+    return entities.size;
+  }
+
+  countRelations() {
+    /**
+     * 统计关系数量
+     */
+    let count = 0;
+    
+    for (const knowledge of this.knowledgeGraph.values()) {
+      count += knowledge.relations.length;
+    }
+    
+    return count;
+  }
+}
+
+// 使用示例
+async function semanticMemoryExample() {
+  // 假设有向量存储和嵌入模型
+  const vectorStore = new VectorDatabaseTool({
+    type: 'pinecone',
+    apiKey: 'your-api-key',
+    endpoint: 'https://your-index.pinecone.io',
+    collection: 'semantic_memory',
+  });
+  
+  const embeddingModel = {
+    embed: async (text) => {
+      // 模拟嵌入生成
+      return Array(768).fill(0).map(() => Math.random());
+    },
+  };
+  
+  const semanticMemory = new SemanticMemory(vectorStore, embeddingModel);
+  
+  // 存储知识
+  await semanticMemory.storeKnowledge({
+    id: 'knowledge-1',
+    content: '机器学习是人工智能的一个分支，它使计算机能够从数据中学习。',
+    type: 'definition',
+    metadata: {
+      category: 'AI',
+      importance: 'high',
+    },
+  });
+  
+  // 检索知识
+  const results = await semanticMemory.retrieveKnowledge('什么是机器学习？', 3);
+  console.log('检索结果:', results);
+  
+  // 获取相关实体
+  const related = await semanticMemory.getRelatedEntities('机器学习', 5);
+  console.log('相关实体:', related);
+  
+  // 获取统计信息
+  const stats = semanticMemory.getStats();
+  console.log('统计信息:', stats);
+}
+```
+
+#### 4. 情景记忆 (Episodic Memory)
+
+情景记忆存储 Agent 的个人经历和事件，包括时间序列和上下文信息。
+
+```javascript
+class EpisodicMemory {
+  constructor(vectorStore, embeddingModel) {
+    /**
+     * 情景记忆
+     * 
+     * 参数:
+     *   vectorStore: 向量存储
+     *   embeddingModel: 嵌入模型
+     */
+    this.vectorStore = vectorStore;
+    this.embeddingModel = embeddingModel;
+    this.episodes = new Map();
+    this.episodeIndex = new Map();
+  }
+
+  async createEpisode(context, metadata = {}) {
+    /**
+     * 创建情景
+     * 
+     * 参数:
+     *   context: 上下文
+     *   metadata: 元数据
+     * 
+     * 返回:
+     *   情景 ID
+     */
+    const episodeId = this.generateId();
+    const timestamp = Date.now();
+    
+    const episode = {
+      id: episodeId,
+      context: context,
+      timestamp: timestamp,
+      metadata: metadata,
+      events: [],
+      embedding: null,
+    };
+    
+    this.episodes.set(episodeId, episode);
+    this.episodeIndex.set(timestamp, episodeId);
+    
+    return episodeId;
+  }
+
+  async addEvent(episodeId, event) {
+    /**
+     * 添加事件
+     * 
+     * 参数:
+     *   episodeId: 情景 ID
+     *   event: 事件对象 { type, content, metadata }
+     * 
+     * 返回:
+     *   添加结果
+     */
+    const episode = this.episodes.get(episodeId);
+    
+    if (!episode) {
+      throw new Error(`情景 ${episodeId} 不存在`);
+    }
+    
+    const eventRecord = {
+      id: this.generateId(),
+      type: event.type,
+      content: event.content,
+      metadata: event.metadata || {},
+      timestamp: Date.now(),
+    };
+    
+    episode.events.push(eventRecord);
+    
+    return {
+      success: true,
+      eventId: eventRecord.id,
+    };
+  }
+
+  async closeEpisode(episodeId, summary = '') {
+    /**
+     * 关闭情景
+     * 
+     * 参数:
+     *   episodeId: 情景 ID
+     *   summary: 情景总结
+     * 
+     * 返回:
+     *   关闭结果
+     */
+    const episode = this.episodes.get(episodeId);
+    
+    if (!episode) {
+      throw new Error(`情景 ${episodeId} 不存在`);
+    }
+    
+    // 生成总结
+    episode.summary = summary || this.generateSummary(episode);
+    
+    // 生成嵌入向量
+    episode.embedding = await this.embeddingModel.embed(episode.summary);
+    
+    // 存储到向量数据库
+    await this.vectorStore.insertVectors([episode.embedding], {
+      id: episodeId,
+      type: 'episode',
+      summary: episode.summary,
+      context: episode.context,
+      metadata: episode.metadata,
+      timestamp: episode.timestamp,
+    });
+    
+    return {
+      success: true,
+      id: episodeId,
+    };
+  }
+
+  async retrieveEpisodes(query, topK = 5, timeRange = null) {
+    /**
+     * 检索情景
+     * 
+     * 参数:
+     *   query: 查询内容
+     *   topK: 返回结果数量
+     *   timeRange: 时间范围 { start, end }
+     * 
+     * 返回:
+     *   检索结果
+     */
+    try {
+      // 生成查询向量
+      const queryEmbedding = await this.embeddingModel.embed(query);
+      
+      // 向量搜索
+      const searchResults = await this.vectorStore.searchVectors(
+        queryEmbedding,
+        topK * 2, // 获取更多结果以便过滤
+        { type: 'episode' }
+      );
+      
+      // 过滤和格式化结果
+      const results = searchResults.results
+        .filter(result => {
+          if (!timeRange) {
+            return true;
+          }
+          const timestamp = result.metadata.timestamp;
+          return timestamp >= timeRange.start && timestamp <= timeRange.end;
+        })
+        .slice(0, topK)
+        .map(result => ({
+          id: result.id,
+          summary: result.metadata.summary,
+          context: result.metadata.context,
+          score: result.score,
+          timestamp: result.metadata.timestamp,
+          metadata: result.metadata,
+        }));
+      
+      return {
+        success: true,
+        results: results,
+      };
+    } catch (error) {
+      console.error('Retrieve episodes error:', error);
+      throw new Error(`检索情景失败: ${error.message}`);
+    }
+  }
+
+  async getEpisode(episodeId) {
+    /**
+     * 获取情景详情
+     * 
+     * 参数:
+     *   episodeId: 情景 ID
+     * 
+     * 返回:
+     *   情景详情
+     */
+    const episode = this.episodes.get(episodeId);
+    
+    if (!episode) {
+      return null;
+    }
+    
+    return {
+      id: episode.id,
+      context: episode.context,
+      summary: episode.summary,
+      timestamp: episode.timestamp,
+      events: episode.events,
+      metadata: episode.metadata,
+    };
+  }
+
+  async getEpisodesByTimeRange(start, end) {
+    /**
+     * 按时间范围获取情景
+     * 
+     * 参数:
+     *   start: 开始时间
+     *   end: 结束时间
+     * 
+     * 返回:
+     *   情景列表
+     */
+    const episodes = [];
+    
+    for (const [timestamp, episodeId] of this.episodeIndex.entries()) {
+      if (timestamp >= start && timestamp <= end) {
+        const episode = await this.getEpisode(episodeId);
+        if (episode) {
+          episodes.push(episode);
+        }
+      }
+    }
+    
+    return {
+      success: true,
+      results: episodes,
+    };
+  }
+
+  async searchByEventType(eventType, limit = 10) {
+    /**
+     * 按事件类型搜索
+     * 
+     * 参数:
+     *   eventType: 事件类型
+     *   limit: 返回数量
+     * 
+     * 返回:
+     *   搜索结果
+     */
+    const results = [];
+    
+    for (const episode of this.episodes.values()) {
+      const matchingEvents = episode.events.filter(
+        event => event.type === eventType
+      );
+      
+      if (matchingEvents.length > 0) {
+        results.push({
+          episodeId: episode.id,
+          summary: episode.summary,
+          events: matchingEvents,
+          timestamp: episode.timestamp,
+        });
+      }
+      
+      if (results.length >= limit) {
+        break;
+      }
+    }
+    
+    return {
+      success: true,
+      results: results,
+    };
+  }
+
+  generateSummary(episode) {
+    /**
+     * 生成情景总结
+     * 
+     * 参数:
+     *   episode: 情景对象
+     * 
+     * 返回:
+     *   总结内容
+     */
+    // 简单总结：提取关键事件
+    const keyEvents = episode.events.slice(0, 3);
+    const summary = keyEvents
+      .map(event => `${event.type}: ${event.content.substring(0, 50)}...`)
+      .join('; ');
+    
+    return summary || '无关键事件';
+  }
+
+  generateId() {
+    /**
+     * 生成唯一 ID
+     */
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  getStats() {
+    /**
+     * 获取统计信息
+     */
+    const eventTypeCount = {};
+    
+    for (const episode of this.episodes.values()) {
+      for (const event of episode.events) {
+        const type = event.type;
+        eventTypeCount[type] = (eventTypeCount[type] || 0) + 1;
+      }
+    }
+    
+    return {
+      totalEpisodes: this.episodes.size,
+      totalEvents: this.countTotalEvents(),
+      byEventType: eventTypeCount,
+      oldestEpisode: this.getOldestEpisode(),
+      newestEpisode: this.getNewestEpisode(),
+    };
+  }
+
+  countTotalEvents() {
+    /**
+     * 统计总事件数
+     */
+    let count = 0;
+    for (const episode of this.episodes.values()) {
+      count += episode.events.length;
+    }
+    return count;
+  }
+
+  getOldestEpisode() {
+    /**
+     * 获取最旧的情景
+     */
+    const episodes = Array.from(this.episodes.values());
+    if (episodes.length === 0) {
+      return null;
+    }
+    return episodes.reduce((oldest, current) => 
+      current.timestamp < oldest.timestamp ? current : oldest
+    );
+  }
+
+  getNewestEpisode() {
+    /**
+     * 获取最新的情景
+     */
+    const episodes = Array.from(this.episodes.values());
+    if (episodes.length === 0) {
+      return null;
+    }
+    return episodes.reduce((newest, current) => 
+      current.timestamp > newest.timestamp ? current : newest
+    );
+  }
+}
+
+// 使用示例
+async function episodicMemoryExample() {
+  const vectorStore = new VectorDatabaseTool({
+    type: 'pinecone',
+    apiKey: 'your-api-key',
+    endpoint: 'https://your-index.pinecone.io',
+    collection: 'episodic_memory',
+  });
+  
+  const embeddingModel = {
+    embed: async (text) => {
+      return Array(768).fill(0).map(() => Math.random());
+    },
+  };
+  
+  const episodicMemory = new EpisodicMemory(vectorStore, embeddingModel);
+  
+  // 创建情景
+  const episodeId = await episodicMemory.createEpisode({
+    user: 'alice',
+    session: 'session-123',
+  }, {
+    category: 'conversation',
+  });
+  
+  // 添加事件
+  await episodicMemory.addEvent(episodeId, {
+    type: 'user_message',
+    content: '你好，我想了解机器学习。',
+  });
+  
+  await episodicMemory.addEvent(episodeId, {
+    type: 'assistant_message',
+    content: '你好！机器学习是人工智能的一个分支...',
+  });
+  
+  // 关闭情景
+  await episodicMemory.closeEpisode(episodeId, '用户询问机器学习相关内容');
+  
+  // 检索情景
+  const results = await episodicMemory.retrieveEpisodes('机器学习', 3);
+  console.log('检索结果:', results);
+  
+  // 获取统计信息
+  const stats = episodicMemory.getStats();
+  console.log('统计信息:', stats);
+}
+```
+
+#### 5. 程序记忆 (Procedural Memory)
+
+程序记忆存储 Agent 的技能、习惯和操作模式，包括如何执行特定任务的程序性知识。
+
+```javascript
+class ProceduralMemory {
+  constructor() {
+    /**
+     * 程序记忆
+     */
+    this.skills = new Map();
+    this.patterns = new Map();
+    this.routines = new Map();
+  }
+
+  addSkill(skill) {
+    /**
+     * 添加技能
+     * 
+     * 参数:
+     *   skill: 技能对象 { id, name, description, execute, metadata }
+     * 
+     * 返回:
+     *   添加结果
+     */
+    const skillRecord = {
+      id: skill.id || this.generateId(),
+      name: skill.name,
+      description: skill.description,
+      execute: skill.execute,
+      metadata: skill.metadata || {},
+      usageCount: 0,
+      lastUsed: null,
+      createdAt: Date.now(),
+    };
+    
+    this.skills.set(skillRecord.id, skillRecord);
+    
+    return {
+      success: true,
+      id: skillRecord.id,
+    };
+  }
+
+  async executeSkill(skillId, inputs = {}) {
+    /**
+     * 执行技能
+     * 
+     * 参数:
+     *   skillId: 技能 ID
+     *   inputs: 输入参数
+     * 
+     * 返回:
+     *   执行结果
+     */
+    const skill = this.skills.get(skillId);
+    
+    if (!skill) {
+      throw new Error(`技能 ${skillId} 不存在`);
+    }
+    
+    try {
+      // 执行技能
+      const result = await skill.execute(inputs);
+      
+      // 更新使用统计
+      skill.usageCount++;
+      skill.lastUsed = Date.now();
+      
+      return {
+        success: true,
+        result: result,
+        skillId: skillId,
+      };
+    } catch (error) {
+      console.error('Execute skill error:', error);
+      throw new Error(`执行技能失败: ${error.message}`);
+    }
+  }
+
+  addPattern(pattern) {
+    /**
+     * 添加模式
+     * 
+     * 参数:
+     *   pattern: 模式对象 { id, name, trigger, action, metadata }
+     * 
+     * 返回:
+     *   添加结果
+     */
+    const patternRecord = {
+      id: pattern.id || this.generateId(),
+      name: pattern.name,
+      trigger: pattern.trigger,
+      action: pattern.action,
+      metadata: pattern.metadata || {},
+      matchCount: 0,
+      lastMatched: null,
+      createdAt: Date.now(),
+    };
+    
+    this.patterns.set(patternRecord.id, patternRecord);
+    
+    return {
+      success: true,
+      id: patternRecord.id,
+    };
+  }
+
+  matchPattern(context) {
+    /**
+     * 匹配模式
+     * 
+     * 参数:
+     *   context: 上下文对象
+     * 
+     * 返回:
+     *   匹配结果
+     */
+    const matches = [];
+    
+    for (const pattern of this.patterns.values()) {
+      if (this.evaluateTrigger(pattern.trigger, context)) {
+        matches.push({
+          patternId: pattern.id,
+          name: pattern.name,
+          action: pattern.action,
+          confidence: this.calculateConfidence(pattern.trigger, context),
+        });
+        
+        // 更新匹配统计
+        pattern.matchCount++;
+        pattern.lastMatched = Date.now();
+      }
+    }
+    
+    // 按置信度排序
+    matches.sort((a, b) => b.confidence - a.confidence);
+    
+    return {
+      success: true,
+      matches: matches,
+    };
+  }
+
+  addRoutine(routine) {
+    /**
+     * 添加例程
+     * 
+     * 参数:
+     *   routine: 例程对象 { id, name, steps, metadata }
+     * 
+     * 返回:
+     *   添加结果
+     */
+    const routineRecord = {
+      id: routine.id || this.generateId(),
+      name: routine.name,
+      steps: routine.steps,
+      metadata: routine.metadata || {},
+      executionCount: 0,
+      lastExecuted: null,
+      createdAt: Date.now(),
+    };
+    
+    this.routines.set(routineRecord.id, routineRecord);
+    
+    return {
+      success: true,
+      id: routineRecord.id,
+    };
+  }
+
+  async executeRoutine(routineId, context = {}) {
+    /**
+     * 执行例程
+     * 
+     * 参数:
+     *   routineId: 例程 ID
+     *   context: 上下文
+     * 
+     * 返回:
+     *   执行结果
+     */
+    const routine = this.routines.get(routineId);
+    
+    if (!routine) {
+      throw new Error(`例程 ${routineId} 不存在`);
+    }
+    
+    const results = [];
+    
+    try {
+      // 按顺序执行步骤
+      for (const step of routine.steps) {
+        const stepResult = await this.executeStep(step, context);
+        results.push(stepResult);
+        
+        // 如果步骤失败且要求停止，则中断执行
+        if (!stepResult.success && step.stopOnFailure) {
+          break;
+        }
+      }
+      
+      // 更新执行统计
+      routine.executionCount++;
+      routine.lastExecuted = Date.now();
+      
+      return {
+        success: true,
+        results: results,
+        routineId: routineId,
+      };
+    } catch (error) {
+      console.error('Execute routine error:', error);
+      throw new Error(`执行例程失败: ${error.message}`);
+    }
+  }
+
+  async executeStep(step, context) {
+    /**
+     * 执行步骤
+     * 
+     * 参数:
+     *   step: 步骤对象
+     *   context: 上下文
+     * 
+     * 返回:
+     *   执行结果
+     */
+    try {
+      if (step.type === 'skill') {
+        return await this.executeSkill(step.skillId, step.inputs);
+      } else if (step.type === 'pattern') {
+        const matches = this.matchPattern(context);
+        if (matches.matches.length > 0) {
+          const action = matches.matches[0].action;
+          return await action(context);
+        }
+        return { success: true, skipped: true };
+      } else if (step.type === 'routine') {
+        return await this.executeRoutine(step.routineId, context);
+      } else if (step.type === 'custom') {
+        return await step.execute(context);
+      } else {
+        throw new Error(`未知步骤类型: ${step.type}`);
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message,
+        step: step,
+      };
+    }
+  }
+
+  evaluateTrigger(trigger, context) {
+    /**
+     * 评估触发器
+     * 
+     * 参数:
+     *   trigger: 触发器
+     *   context: 上下文
+     * 
+     * 返回:
+     *   是否匹配
+     */
+    if (typeof trigger === 'function') {
+      return trigger(context);
+    } else if (typeof trigger === 'object') {
+      // 简单对象匹配
+      for (const [key, value] of Object.entries(trigger)) {
+        if (context[key] !== value) {
+          return false;
+        }
+      }
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  calculateConfidence(trigger, context) {
+    /**
+     * 计算置信度
+     * 
+     * 参数:
+     *   trigger: 触发器
+     *   context: 上下文
+     * 
+     * 返回:
+     *   置信度 (0-1)
+     */
+    // 简单实现：固定置信度
+    return 0.8;
+  }
+
+  getSkill(skillId) {
+    /**
+     * 获取技能
+     * 
+     * 参数:
+     *   skillId: 技能 ID
+     * 
+     * 返回:
+     *   技能对象
+     */
+    return this.skills.get(skillId);
+  }
+
+  searchSkills(query) {
+    /**
+     * 搜索技能
+     * 
+     * 参数:
+     *   query: 搜索查询
+     * 
+     * 返回:
+     *   搜索结果
+     */
+    const results = [];
+    const lowerQuery = query.toLowerCase();
+    
+    for (const skill of this.skills.values()) {
+      const nameMatch = skill.name.toLowerCase().includes(lowerQuery);
+      const descMatch = skill.description.toLowerCase().includes(lowerQuery);
+      
+      if (nameMatch || descMatch) {
+        results.push({
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          usageCount: skill.usageCount,
+          lastUsed: skill.lastUsed,
+        });
+      }
+    }
+    
+    return {
+      success: true,
+      results: results,
+    };
+  }
+
+  generateId() {
+    /**
+     * 生成唯一 ID
+     */
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  getStats() {
+    /**
+     * 获取统计信息
+     */
+    return {
+      totalSkills: this.skills.size,
+      totalPatterns: this.patterns.size,
+      totalRoutines: this.routines.size,
+      totalSkillExecutions: this.countSkillExecutions(),
+      totalPatternMatches: this.countPatternMatches(),
+      totalRoutineExecutions: this.countRoutineExecutions(),
+    };
+  }
+
+  countSkillExecutions() {
+    /**
+     * 统计技能执行次数
+     */
+    let count = 0;
+    for (const skill of this.skills.values()) {
+      count += skill.usageCount;
+    }
+    return count;
+  }
+
+  countPatternMatches() {
+    /**
+     * 统计模式匹配次数
+     */
+    let count = 0;
+    for (const pattern of this.patterns.values()) {
+      count += pattern.matchCount;
+    }
+    return count;
+  }
+
+  countRoutineExecutions() {
+    /**
+     * 统计例程执行次数
+     */
+    let count = 0;
+    for (const routine of this.routines.values()) {
+      count += routine.executionCount;
+    }
+    return count;
+  }
+}
+
+// 使用示例
+async function proceduralMemoryExample() {
+  const proceduralMemory = new ProceduralMemory();
+  
+  // 添加技能
+  proceduralMemory.addSkill({
+    name: 'greeting',
+    description: '向用户打招呼',
+    execute: async (inputs) => {
+      const name = inputs.name || '用户';
+      return { message: `你好，${name}！` };
+    },
+  });
+  
+  // 添加模式
+  proceduralMemory.addPattern({
+    name: 'greeting_pattern',
+    trigger: (context) => {
+      return context.message && context.message.toLowerCase().includes('你好');
+    },
+    action: async (context) => {
+      return { response: '你好！有什么我可以帮助你的吗？' };
+    },
+  });
+  
+  // 添加例程
+  proceduralMemory.addRoutine({
+    name: 'welcome_routine',
+    steps: [
+      {
+        type: 'skill',
+        skillId: 'greeting',
+        inputs: { name: '新用户' },
+      },
+      {
+        type: 'custom',
+        execute: async (context) => {
+          return { message: '欢迎使用我们的服务！' };
+        },
+      },
+    ],
+  });
+  
+  // 执行技能
+  const skillResult = await proceduralMemory.executeSkill(
+    Object.keys(proceduralMemory.skills)[0],
+    { name: 'Alice' }
+  );
+  console.log('技能执行结果:', skillResult);
+  
+  // 匹配模式
+  const patternMatch = proceduralMemory.matchPattern({
+    message: '你好，我想咨询一些问题',
+  });
+  console.log('模式匹配结果:', patternMatch);
+  
+  // 执行例程
+  const routineResult = await proceduralMemory.executeRoutine(
+    Object.keys(proceduralMemory.routines)[0]
+  );
+  console.log('例程执行结果:', routineResult);
+  
+  // 获取统计信息
+  const stats = proceduralMemory.getStats();
+  console.log('统计信息:', stats);
+}
+```
+
+## 🔄 记忆集成与管理
+
+### 统一记忆管理器
+
+```javascript
+class MemoryManager {
+  constructor(config) {
+    /**
+     * 记忆管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = config;
+    
+    // 初始化各层记忆
+    this.sensoryMemory = new SensoryMemory(
+      config.sensory?.capacity || 1000,
+      config.sensory?.duration || 5000
+    );
+    
+    this.workingMemory = new WorkingMemory(
+      config.working?.maxTokens || 4000,
+      config.working?.windowSize || 10
+    );
+    
+    this.semanticMemory = new SemanticMemory(
+      config.semantic?.vectorStore,
+      config.semantic?.embeddingModel
+    );
+    
+    this.episodicMemory = new EpisodicMemory(
+      config.episodic?.vectorStore,
+      config.episodic?.embeddingModel
+    );
+    
+    this.proceduralMemory = new ProceduralMemory();
+    
+    // 启动感知记忆
+    this.sensoryMemory.start();
+  }
+
+  async storeInput(input) {
+    /**
+     * 存储输入
+     * 
+     * 参数:
+     *   input: 输入对象
+     * 
+     * 返回:
+     *   存储结果
+     */
+    // 存储到感知记忆
+    const sensoryId = this.sensoryMemory.store(input);
+    
+    // 根据输入类型存储到其他记忆层
+    if (input.type === 'user_message') {
+      this.workingMemory.addUserMessage(input.content);
+    } else if (input.type === 'assistant_message') {
+      this.workingMemory.addAssistantMessage(input.content);
+    }
+    
+    return {
+      sensoryId: sensoryId,
+      success: true,
+    };
+  }
+
+  async retrieveMemory(query, options = {}) {
+    /**
+     * 检索记忆
+     * 
+     * 参数:
+     *   query: 查询内容
+     *   options: 选项 { layers, topK, filters }
+     * 
+     * 返回:
+     *   检索结果
+     */
+    const results = {
+      sensory: [],
+      working: [],
+      semantic: [],
+      episodic: [],
+      procedural: [],
+    };
+    
+    const layers = options.layers || ['semantic', 'episodic'];
+    
+    // 从指定层检索
+    if (layers.includes('semantic')) {
+      const semanticResults = await this.semanticMemory.retrieveKnowledge(
+        query,
+        options.topK || 5,
+        options.filters || {}
+      );
+      results.semantic = semanticResults.results;
+    }
+    
+    if (layers.includes('episodic')) {
+      const episodicResults = await this.episodicMemory.retrieveEpisodes(
+        query,
+        options.topK || 5,
+        options.timeRange || null
+      );
+      results.episodic = episodicResults.results;
+    }
+    
+    if (layers.includes('working')) {
+      results.working = this.workingMemory.getRecentContext(
+        options.topK || 5
+      );
+    }
+    
+    if (layers.includes('procedural')) {
+      const skillResults = this.proceduralMemory.searchSkills(query);
+      results.procedural = skillResults.results;
+    }
+    
+    return {
+      success: true,
+      results: results,
+    };
+  }
+
+  async consolidateMemory() {
+    /**
+     * 巩固记忆
+     * 
+     * 将工作记忆中的重要信息转移到长期记忆
+     */
+    const context = this.workingMemory.getContext();
+    
+    if (context.length === 0) {
+      return { success: true, consolidated: 0 };
+    }
+    
+    let consolidated = 0;
+    
+    // 提取重要信息
+    const importantMessages = this.extractImportantMessages(context);
+    
+    // 存储到语义记忆
+    for (const message of importantMessages) {
+      if (message.importance > 0.7) {
+        await this.semanticMemory.storeKnowledge({
+          id: this.generateId(),
+          content: message.content,
+          type: 'conversation',
+          metadata: {
+            role: message.role,
+            timestamp: message.timestamp,
+          },
+        });
+        consolidated++;
+      }
+    }
+    
+    return {
+      success: true,
+      consolidated: consolidated,
+    };
+  }
+
+  extractImportantMessages(context) {
+    /**
+     * 提取重要消息
+     * 
+     * 参数:
+     *   context: 上下文
+     * 
+     * 返回:
+     *   重要消息数组
+     */
+    // 简单实现：基于长度和关键词
+    const important = [];
+    const keywords = ['重要', '关键', '记住', '学习', '问题', '解决'];
+    
+    for (const message of context) {
+      let importance = 0.5;
+      
+      // 长度加权
+      importance += Math.min(message.content.length / 100, 0.3);
+      
+      // 关键词加权
+      for (const keyword of keywords) {
+        if (message.content.includes(keyword)) {
+          importance += 0.1;
+        }
+      }
+      
+      important.push({
+        ...message,
+        importance: Math.min(importance, 1.0),
+      });
+    }
+    
+    // 按重要性排序
+    important.sort((a, b) => b.importance - a.importance);
+    
+    return important;
+  }
+
+  async startEpisode(context, metadata = {}) {
+    /**
+     * 开始情景
+     * 
+     * 参数:
+     *   context: 上下文
+     *   metadata: 元数据
+     * 
+     * 返回:
+     *   情景 ID
+     */
+    return await this.episodicMemory.createEpisode(context, metadata);
+  }
+
+  async endEpisode(episodeId, summary = '') {
+    /**
+     * 结束情景
+     * 
+     * 参数:
+     *   episodeId: 情景 ID
+     *   summary: 总结
+     * 
+     * 返回:
+     *   结束结果
+     */
+    return await this.episodicMemory.closeEpisode(episodeId, summary);
+  }
+
+  async addEvent(episodeId, event) {
+    /**
+     * 添加事件
+     * 
+     * 参数:
+     *   episodeId: 情景 ID
+     *   event: 事件对象
+     * 
+     * 返回:
+     *   添加结果
+     */
+    return await this.episodicMemory.addEvent(episodeId, event);
+  }
+
+  getContext() {
+    /**
+     * 获取当前上下文
+     * 
+     * 返回:
+     *   上下文对象
+     */
+    return {
+      working: this.workingMemory.getContext(),
+      taskState: this.workingMemory.getAllTaskState(),
+      sensory: this.sensoryMemory.getStats(),
+    };
+  }
+
+  async compressWorkingMemory() {
+    /**
+     * 压缩工作记忆
+     */
+    this.workingMemory.compress();
+    return { success: true };
+  }
+
+  resetWorkingMemory() {
+    /**
+     * 重置工作记忆
+     */
+    this.workingMemory.reset();
+    return { success: true };
+  }
+
+  getMemoryStats() {
+    /**
+     * 获取记忆统计信息
+     * 
+     * 返回:
+     *   统计信息对象
+     */
+    return {
+      sensory: this.sensoryMemory.getStats(),
+      working: this.workingMemory.getStats(),
+      semantic: this.semanticMemory.getStats(),
+      episodic: this.episodicMemory.getStats(),
+      procedural: this.proceduralMemory.getStats(),
+    };
+  }
+
+  generateId() {
+    /**
+     * 生成唯一 ID
+     */
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  async shutdown() {
+    /**
+     * 关闭记忆系统
+     */
+    this.sensoryMemory.stop();
+    
+    // 巩固记忆
+    await this.consolidateMemory();
+    
+    return { success: true };
+  }
+}
+
+// 使用示例
+async function memoryManagerExample() {
+  const memoryManager = new MemoryManager({
+    sensory: {
+      capacity: 1000,
+      duration: 5000,
+    },
+    working: {
+      maxTokens: 4000,
+      windowSize: 10,
+    },
+    semantic: {
+      vectorStore: new VectorDatabaseTool({
+        type: 'pinecone',
+        apiKey: 'your-api-key',
+        endpoint: 'https://your-index.pinecone.io',
+        collection: 'semantic_memory',
+      }),
+      embeddingModel: {
+        embed: async (text) => {
+          return Array(768).fill(0).map(() => Math.random());
+        },
+      },
+    },
+    episodic: {
+      vectorStore: new VectorDatabaseTool({
+        type: 'pinecone',
+        apiKey: 'your-api-key',
+        endpoint: 'https://your-index.pinecone.io',
+        collection: 'episodic_memory',
+      }),
+      embeddingModel: {
+        embed: async (text) => {
+          return Array(768).fill(0).map(() => Math.random());
+        },
+      },
+    },
+  });
+  
+  // 存储输入
+  await memoryManager.storeInput({
+    type: 'user_message',
+    content: '你好，我想了解机器学习。',
+  });
+  
+  // 开始情景
+  const episodeId = await memoryManager.startEpisode({
+    user: 'alice',
+    session: 'session-123',
+  });
+  
+  // 添加事件
+  await memoryManager.addEvent(episodeId, {
+    type: 'conversation',
+    content: '用户询问机器学习',
+  });
+  
+  // 检索记忆
+  const results = await memoryManager.retrieveMemory('机器学习', {
+    layers: ['semantic', 'episodic'],
+    topK: 3,
+  });
+  console.log('检索结果:', results);
+  
+  // 巩固记忆
+  const consolidation = await memoryManager.consolidateMemory();
+  console.log('巩固结果:', consolidation);
+  
+  // 获取统计信息
+  const stats = memoryManager.getMemoryStats();
+  console.log('记忆统计:', stats);
+  
+  // 关闭记忆系统
+  await memoryManager.shutdown();
+}
+```
+
+## 📊 记忆优化策略
+
+### 1. 上下文窗口优化
+
+#### Token 管理
+
+```javascript
+class TokenManager {
+  constructor(maxTokens = 4000) {
+    /**
+     * Token 管理器
+     * 
+     * 参数:
+     *   maxTokens: 最大 token 数
+     */
+    this.maxTokens = maxTokens;
+    this.currentTokens = 0;
+    this.reservedTokens = 500; // 保留给响应
+  }
+
+  estimateTokens(text) {
+    /**
+     * 估算 token 数量
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   token 数量
+     */
+    // 简单估算：1 token ≈ 4 字符
+    return Math.ceil(text.length / 4);
+  }
+
+  canAdd(text) {
+    /**
+     * 检查是否可以添加
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   是否可以添加
+     */
+    const tokens = this.estimateTokens(text);
+    return (this.currentTokens + tokens) <= (this.maxTokens - this.reservedTokens);
+  }
+
+  add(text) {
+    /**
+     * 添加文本
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   是否添加成功
+     */
+    const tokens = this.estimateTokens(text);
+    
+    if (!this.canAdd(text)) {
+      return false;
+    }
+    
+    this.currentTokens += tokens;
+    return true;
+  }
+
+  remove(tokens) {
+    /**
+     * 移除 token
+     * 
+     * 参数:
+     *   tokens: token 数量
+     */
+    this.currentTokens = Math.max(0, this.currentTokens - tokens);
+  }
+
+  getAvailableTokens() {
+    /**
+     * 获取可用 token 数
+     * 
+     * 返回:
+     *   可用 token 数
+     */
+    return this.maxTokens - this.reservedTokens - this.currentTokens;
+  }
+
+  reset() {
+    /**
+     * 重置
+     */
+    this.currentTokens = 0;
+  }
+
+  getStats() {
+    /**
+     * 获取统计信息
+     */
+    return {
+      current: this.currentTokens,
+      max: this.maxTokens,
+      reserved: this.reservedTokens,
+      available: this.getAvailableTokens(),
+      usage: this.currentTokens / (this.maxTokens - this.reservedTokens),
+    };
+  }
+}
+```
+
+### 2. 滑动窗口策略
+
+```javascript
+class SlidingWindow {
+  constructor(windowSize = 10, overlap = 2) {
+    /**
+     * 滑动窗口
+     * 
+     * 参数:
+     *   windowSize: 窗口大小
+     *   overlap: 重叠大小
+     */
+    this.windowSize = windowSize;
+    this.overlap = overlap;
+    this.messages = [];
+  }
+
+  addMessage(message) {
+    /**
+     * 添加消息
+     * 
+     * 参数:
+     *   message: 消息对象
+     */
+    this.messages.push(message);
+    this.checkCapacity();
+  }
+
+  getCurrentWindow() {
+    /**
+     * 获取当前窗口
+     * 
+     * 返回:
+     *   当前窗口的消息
+     */
+    return this.messages.slice(-this.windowSize);
+  }
+
+  getPreviousWindow() {
+    /**
+     * 获取前一个窗口
+     * 
+     * 返回:
+     *   前一个窗口的消息
+     */
+    const start = Math.max(0, this.messages.length - this.windowSize - this.overlap);
+    const end = Math.max(0, this.messages.length - this.windowSize);
+    return this.messages.slice(start, end);
+  }
+
+  checkCapacity() {
+    /**
+     * 检查容量
+     */
+    // 保持总消息数在合理范围内
+    const maxMessages = this.windowSize * 3;
+    if (this.messages.length > maxMessages) {
+      this.messages = this.messages.slice(-maxMessages);
+    }
+  }
+
+  getSummary() {
+    /**
+     * 获取窗口总结
+     * 
+     * 返回:
+     *   总结内容
+     */
+    const currentWindow = this.getCurrentWindow();
+    const previousWindow = this.getPreviousWindow();
+    
+    return {
+      current: currentWindow,
+      previous: previousWindow,
+      total: this.messages.length,
+    };
+  }
+
+  reset() {
+    /**
+     * 重置
+     */
+    this.messages = [];
+  }
+}
+```
+
+### 3. 总结压缩
+
+```javascript
+class MemoryCompressor {
+  constructor() {
+    /**
+     * 记忆压缩器
+     */
+    this.compressionStrategies = [
+      this.removeRedundant,
+      this.summarizeOld,
+      this.extractKeyPoints,
+    ];
+  }
+
+  compress(context, targetTokens) {
+    /**
+     * 压缩上下文
+     * 
+     * 参数:
+     *   context: 上下文数组
+     *   targetTokens: 目标 token 数
+     * 
+     * 返回:
+     *   压缩后的上下文
+     */
+    let compressed = [...context];
+    let currentTokens = this.estimateTotalTokens(compressed);
+    
+    while (currentTokens > targetTokens && compressed.length > 2) {
+      // 应用压缩策略
+      for (const strategy of this.compressionStrategies) {
+        const result = strategy(compressed);
+        if (result) {
+          compressed = result;
+          currentTokens = this.estimateTotalTokens(compressed);
+          break;
+        }
+      }
+    }
+    
+    return compressed;
+  }
+
+  removeRedundant(context) {
+    /**
+     * 移除冗余消息
+     * 
+     * 参数:
+     *   context: 上下文
+     * 
+     * 返回:
+     *   处理后的上下文
+     */
+    // 移除重复或相似的消息
+    const unique = [];
+    const seen = new Set();
+    
+    for (const message of context) {
+      const signature = this.getSignature(message);
+      if (!seen.has(signature)) {
+        seen.add(signature);
+        unique.push(message);
+      }
+    }
+    
+    return unique.length < context.length ? unique : null;
+  }
+
+  summarizeOld(context) {
+    /**
+     * 总结旧消息
+     * 
+     * 参数:
+     *   context: 上下文
+     * 
+     * 返回:
+     *   处理后的上下文
+     */
+    if (context.length <= 4) {
+      return null;
+    }
+    
+    // 保留系统消息和最近的对话
+    const systemMessages = context.filter(msg => msg.role === 'system');
+    const recentMessages = context.slice(-3);
+    
+    // 总结中间的消息
+    const oldMessages = context.slice(
+      systemMessages.length,
+      context.length - 3
+    );
+    
+    const summary = this.generateSummary(oldMessages);
+    
+    return [
+      ...systemMessages,
+      {
+        role: 'system',
+        content: `[之前的对话总结]: ${summary}`,
+      },
+      ...recentMessages,
+    ];
+  }
+
+  extractKeyPoints(context) {
+    /**
+     * 提取关键点
+     * 
+     * 参数:
+     *   context: 上下文
+     * 
+     * 返回:
+     *   处理后的上下文
+     */
+    // 提取包含关键词的消息
+    const keywords = ['重要', '关键', '问题', '解决', '记住'];
+    const keyMessages = context.filter(msg => 
+      keywords.some(keyword => msg.content.includes(keyword))
+    );
+    
+    if (keyMessages.length === 0) {
+      return null;
+    }
+    
+    // 保留系统消息、关键消息和最近的消息
+    const systemMessages = context.filter(msg => msg.role === 'system');
+    const recentMessages = context.slice(-2);
+    
+    return [...systemMessages, ...keyMessages, ...recentMessages];
+  }
+
+  getSignature(message) {
+    /**
+     * 获取消息签名
+     * 
+     * 参数:
+     *   message: 消息对象
+     * 
+     * 返回:
+     *   签名
+     */
+    return `${message.role}:${message.content.substring(0, 50)}`;
+  }
+
+  generateSummary(messages) {
+    /**
+     * 生成总结
+     * 
+     * 参数:
+     *   messages: 消息数组
+     * 
+     * 返回:
+     *   总结内容
+     */
+    const points = messages.map(msg => {
+      const role = msg.role === 'user' ? '用户' : '助手';
+      return `${role}: ${msg.content.substring(0, 30)}...`;
+    });
+    
+    return points.join('; ');
+  }
+
+  estimateTotalTokens(context) {
+    /**
+     * 估算总 token 数
+     * 
+     * 参数:
+     *   context: 上下文
+     * 
+     * 返回:
+     *   token 数
+     */
+    return context.reduce((sum, msg) => {
+      return sum + Math.ceil(msg.content.length / 4);
+    }, 0);
+  }
+}
+```
+
+## 🎯 最佳实践
+
+### 1. 记忆分层策略
+
+- **感知记忆**：暂存所有输入，快速筛选重要信息
+- **工作记忆**：维护当前对话上下文，定期清理
+- **语义记忆**：存储长期知识，支持快速检索
+- **情景记忆**：记录重要事件，支持时间序列查询
+- **程序记忆**：存储技能和模式，支持自动化执行
+
+### 2. 性能优化
+
+- **异步操作**：所有记忆操作都应该是异步的
+- **批量处理**：支持批量存储和检索
+- **缓存机制**：对频繁访问的数据实现缓存
+- **索引优化**：为常用查询建立索引
+
+### 3. 数据安全
+
+- **加密存储**：敏感数据加密存储
+- **访问控制**：实现细粒度的访问控制
+- **数据备份**：定期备份重要记忆
+- **隐私保护**：支持数据删除和匿名化
+
+### 4. 监控与维护
+
+- **使用统计**：记录记忆使用情况
+- **性能监控**：监控记忆操作性能
+- **容量管理**：监控和优化存储容量
+- **数据清理**：定期清理过期或无用的记忆
+
+## 🔗 相关资源
+
+### 论文
+- [Transformer-XL](https://arxiv.org/abs/1901.02860)
+- [Recurrent Memory Transformer](https://arxiv.org/abs/2106.07403)
+- [MemGPT](https://arxiv.org/abs/2310.08560)
+
+### 工具库
+- [LangChain Memory](https://python.langchain.com/docs/modules/memory/)
+- [LlamaIndex Memory](https://docs.llamaindex.ai/en/stable/module_guides/indexing/memory/)
+- [AutoGen Memory](https://microsoft.github.io/autogen/docs/topics/groupchat/customized_speaker_selection)
+
+### 向量数据库
+- [Pinecone](https://www.pinecone.io/)
+- [Weaviate](https://weaviate.io/)
+- [Milvus](https://milvus.io/)
+
+## ✅ 学习检查点
+
+- [ ] 理解记忆系统的重要性
+- [ ] 掌握五种记忆类型的特点
+- [ ] 能够实现基本的记忆管理
+- [ ] 理解记忆集成的方法
+- [ ] 掌握记忆优化策略
+- [ ] 了解记忆系统的最佳实践
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **Agent 规划与执行** - 学习如何规划和执行复杂任务
+- **多 Agent 协作** - 探索多 Agent 协作模式
+- **Agent 高级应用** - 了解 Agent 的高级应用场景

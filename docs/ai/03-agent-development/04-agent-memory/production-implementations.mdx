@@ -1,0 +1,1199 @@
+# Agent 记忆系统 - 生产环境实现指南
+
+> **本文档提供了 `agent-memory-system.mdx` 中简化实现的生产级替代方案**
+
+## 📋 问题修复清单
+
+本文档针对 `agent-memory-system.mdx` 中发现的以下简化实现提供完整的解决方案：
+
+1. ✅ 嵌入模型实现
+2. ✅ Token 计算器实现  
+3. ✅ NLP 实体和关系提取
+4. ✅ 置信度计算算法
+5. ✅ 重要性评估算法
+
+## 🔧 1. 嵌入模型实现
+
+### OpenAI Embeddings API
+
+```javascript
+/**
+ * OpenAI 嵌入模型实现
+ * 
+ * 替换 agent-memory-system.mdx 中的模拟嵌入生成：
+ * - 行号 977: Array(768).fill(0).map(() => Math.random())
+ * - 行号 1370: Array(768).fill(0).map(() => Math.random())
+ */
+class OpenAIEmbeddingModel {
+  constructor(apiKey, model = 'text-embedding-3-small') {
+    this.apiKey = apiKey;
+    this.model = model;
+    this.endpoint = 'https://api.openai.com/v1/embeddings';
+    this.dimensions = this.getModelDimensions(model);
+  }
+
+  getModelDimensions(model) {
+    const dimensionMap = {
+      'text-embedding-3-small': 1536,
+      'text-embedding-3-large': 3072,
+      'text-embedding-ada-002': 1536,
+    };
+    return dimensionMap[model] || 1536;
+  }
+
+  async embed(text) {
+    try {
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          input: text,
+          model: this.model,
+          encoding_format: 'float',
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(`OpenAI API 错误: ${error.error?.message || response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.data[0].embedding;
+    } catch (error) {
+      console.error('OpenAI 嵌入生成失败:', error);
+      throw error;
+    }
+  }
+
+  async embedBatch(texts) {
+    try {
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          input: texts,
+          model: this.model,
+          encoding_format: 'float',
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(`OpenAI API 错误: ${error.error?.message || response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.data.map(item => item.embedding);
+    } catch (error) {
+      console.error('OpenAI 批量嵌入生成失败:', error);
+      throw error;
+    }
+  }
+
+  getDimensions() {
+    return this.dimensions;
+  }
+}
+
+// 使用示例
+async function openAIEmbeddingExample() {
+  const embeddingModel = new OpenAIEmbeddingModel('your-api-key', 'text-embedding-3-small');
+  
+  // 单个文本嵌入
+  const embedding = await embeddingModel.embed('机器学习是人工智能的一个分支');
+  console.log('嵌入向量维度:', embedding.length);
+  
+  // 批量嵌入
+  const embeddings = await embeddingModel.embedBatch([
+    '机器学习',
+    '深度学习',
+    '神经网络',
+  ]);
+  console.log('批量嵌入数量:', embeddings.length);
+}
+```
+
+### Hugging Face Transformers (浏览器/Node.js)
+
+```javascript
+/**
+ * Hugging Face 嵌入模型实现
+ * 使用 @xenova/transformers 在浏览器和 Node.js 中运行
+ */
+class HuggingFaceEmbeddingModel {
+  constructor(modelName = 'Xenova/all-MiniLM-L6-v2') {
+    this.modelName = modelName;
+    this.model = null;
+    this.tokenizer = null;
+    this.initialized = false;
+  }
+
+  async initialize() {
+    if (this.initialized) {
+      return;
+    }
+
+    try {
+      const { pipeline, env } = await import('@xenova/transformers');
+      
+      // 配置环境
+      env.allowLocalModels = false;
+      env.useBrowserCache = true;
+      
+      this.model = await pipeline('feature-extraction', this.modelName, {
+        progress_callback: (progress) => {
+          if (progress.status === 'progress') {
+            console.log(`加载进度: ${progress.progress.toFixed(2)}%`);
+          }
+        },
+      });
+      
+      this.initialized = true;
+      console.log('Hugging Face 模型加载完成');
+    } catch (error) {
+      console.error('Hugging Face 模型初始化失败:', error);
+      throw error;
+    }
+  }
+
+  async embed(text) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    try {
+      const output = await this.model(text, {
+        pooling: 'mean',
+        normalize: true,
+      });
+      
+      // 转换为普通数组
+      return Array.from(output.data);
+    } catch (error) {
+      console.error('Hugging Face 嵌入生成失败:', error);
+      throw error;
+    }
+  }
+
+  async embedBatch(texts) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const embeddings = [];
+    for (const text of texts) {
+      const embedding = await this.embed(text);
+      embeddings.push(embedding);
+    }
+    return embeddings;
+  }
+
+  getDimensions() {
+    // all-MiniLM-L6-v2 输出 384 维向量
+    return 384;
+  }
+}
+```
+
+### Cohere Embeddings
+
+```javascript
+/**
+ * Cohere 嵌入模型实现
+ */
+class CohereEmbeddingModel {
+  constructor(apiKey, model = 'embed-english-v3.0') {
+    this.apiKey = apiKey;
+    this.model = model;
+    this.endpoint = 'https://api.cohere.ai/v1/embed';
+    this.dimensions = this.getModelDimensions(model);
+  }
+
+  getModelDimensions(model) {
+    const dimensionMap = {
+      'embed-english-v3.0': 1024,
+      'embed-english-light-v3.0': 384,
+      'embed-multilingual-v3.0': 1024,
+      'embed-multilingual-light-v3.0': 384,
+    };
+    return dimensionMap[model] || 1024;
+  }
+
+  async embed(text, inputType = 'search_document') {
+    try {
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          texts: [text],
+          model: this.model,
+          input_type: inputType,
+          embedding_types: ['float'],
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(`Cohere API 错误: ${error.message || response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.embeddings.float[0];
+    } catch (error) {
+      console.error('Cohere 嵌入生成失败:', error);
+      throw error;
+    }
+  }
+
+  async embedBatch(texts, inputType = 'search_document') {
+    try {
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          texts: texts,
+          model: this.model,
+          input_type: inputType,
+          embedding_types: ['float'],
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(`Cohere API 错误: ${error.message || response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.embeddings.float;
+    } catch (error) {
+      console.error('Cohere 批量嵌入生成失败:', error);
+      throw error;
+    }
+  }
+
+  getDimensions() {
+    return this.dimensions;
+  }
+}
+```
+
+## 🔢 2. Token 计算器实现
+
+### TikToken (OpenAI 官方)
+
+```javascript
+/**
+ * TikToken 实现
+ * 替换 agent-memory-system.mdx 中的简化 token 估算
+ */
+class TikTokenCounter {
+  constructor(encoding = 'cl100k_base') {
+    const { Tiktoken, encoding_for_model } = require('tiktoken');
+    this.encoding = encoding === 'auto' 
+      ? encoding_for_model('gpt-4')
+      : Tiktoken.get_encoding(encoding);
+  }
+
+  countTokens(text) {
+    try {
+      const tokens = this.encoding.encode(text);
+      return tokens.length;
+    } catch (error) {
+      console.error('Token 计算失败:', error);
+      // 降级到简单估算
+      return Math.ceil(text.length / 4);
+    }
+  }
+
+  countTokensBatch(texts) {
+    return texts.map(text => this.countTokens(text));
+  }
+
+  encode(text) {
+    return this.encoding.encode(text);
+  }
+
+  decode(tokens) {
+    return this.encoding.decode(tokens);
+  }
+
+  free() {
+    this.encoding.free();
+  }
+}
+
+// 使用示例
+function tikTokenExample() {
+  const tokenizer = new TikTokenCounter('cl100k_base');
+  
+  const text = '机器学习是人工智能的一个分支，它使计算机能够从数据中学习。';
+  const tokenCount = tokenizer.countTokens(text);
+  console.log('Token 数量:', tokenCount);
+  
+  const tokens = tokenizer.encode(text);
+  console.log('Token 编码:', tokens);
+  
+  const decoded = tokenizer.decode(tokens);
+  console.log('解码文本:', decoded);
+  
+  tokenizer.free();
+}
+```
+
+### GPT Tokenizer (浏览器环境)
+
+```javascript
+/**
+ * GPT Tokenizer 实现 (浏览器环境)
+ */
+class GPTTokenizer {
+  constructor(model = 'gpt-4') {
+    const { encode, decode } = require('gpt-tokenizer');
+    this.encode = encode;
+    this.decode = decode;
+    this.model = model;
+  }
+
+  countTokens(text) {
+    try {
+      const tokens = this.encode(text, this.model);
+      return tokens.length;
+    } catch (error) {
+      console.error('Token 计算失败:', error);
+      return Math.ceil(text.length / 4);
+    }
+  }
+
+  countTokensBatch(texts) {
+    return texts.map(text => this.countTokens(text));
+  }
+
+  encodeTokens(text) {
+    return this.encode(text, this.model);
+  }
+
+  decodeTokens(tokens) {
+    return this.decode(tokens, this.model);
+  }
+}
+```
+
+### SentencePiece (通用方案)
+
+```javascript
+/**
+ * SentencePiece Tokenizer 实现
+ */
+class SentencePieceTokenizer {
+  constructor(modelPath) {
+    const { SentencePieceProcessor } = require('@node-sentencepiece/sentencepiece');
+    this.sp = new SentencePieceProcessor();
+    this.sp.load(modelPath);
+  }
+
+  countTokens(text) {
+    try {
+      return this.sp.encode(text).length;
+    } catch (error) {
+      console.error('Token 计算失败:', error);
+      return Math.ceil(text.length / 4);
+    }
+  }
+
+  countTokensBatch(texts) {
+    return texts.map(text => this.countTokens(text));
+  }
+
+  encode(text) {
+    return this.sp.encode(text);
+  }
+
+  decode(tokens) {
+    return this.sp.decode(tokens);
+  }
+}
+```
+
+## 🧠 3. NLP 实体和关系提取
+
+### spaCy 实体提取
+
+```javascript
+/**
+ * spaCy 实体提取实现
+ * 替换 agent-memory-system.mdx 行号 811 的简化实现
+ */
+class SpacyEntityExtractor {
+  constructor(modelName = 'zh_core_web_sm') {
+    const spacy = require('spacy');
+    this.nlp = spacy.load(modelName);
+  }
+
+  async extractEntities(text) {
+    try {
+      const doc = await this.nlp(text);
+      const entities = [];
+      
+      for (const ent of doc.ents) {
+        entities.push({
+          text: ent.text,
+          label: ent.label_,
+          description: this.getEntityLabelDescription(ent.label_),
+          start: ent.start_char,
+          end: ent.end_char,
+          confidence: this.calculateEntityConfidence(ent),
+        });
+      }
+      
+      return entities;
+    } catch (error) {
+      console.error('实体提取失败:', error);
+      return [];
+    }
+  }
+
+  getEntityLabelDescription(label) {
+    const descriptions = {
+      'PERSON': '人名',
+      'ORG': '组织',
+      'GPE': '地理位置',
+      'PRODUCT': '产品',
+      'EVENT': '事件',
+      'WORK_OF_ART': '艺术作品',
+      'LAW': '法律',
+      'LANGUAGE': '语言',
+      'DATE': '日期',
+      'TIME': '时间',
+      'PERCENT': '百分比',
+      'MONEY': '金额',
+      'QUANTITY': '数量',
+      'ORDINAL': '序数',
+      'CARDINAL': '基数',
+    };
+    return descriptions[label] || label;
+  }
+
+  calculateEntityConfidence(entity) {
+    // 基于实体长度和标签类型计算置信度
+    let confidence = 0.7;
+    
+    if (entity.text.length > 2) {
+      confidence += 0.1;
+    }
+    
+    if (['PERSON', 'ORG', 'GPE'].includes(entity.label_)) {
+      confidence += 0.1;
+    }
+    
+    return Math.min(confidence, 1.0);
+  }
+}
+```
+
+### Hugging Face NER 模型
+
+```javascript
+/**
+ * Hugging Face NER 模型实现
+ */
+class HuggingFaceNERExtractor {
+  constructor(modelName = 'Xenova/bert-base-chinese-ner') {
+    const { pipeline } = require('@xenova/transformers');
+    this.modelName = modelName;
+    this.ner = null;
+    this.initialized = false;
+  }
+
+  async initialize() {
+    if (this.initialized) {
+      return;
+    }
+
+    try {
+      this.ner = await pipeline('token-classification', this.modelName, {
+        aggregation_strategy: 'simple',
+      });
+      this.initialized = true;
+      console.log('Hugging Face NER 模型加载完成');
+    } catch (error) {
+      console.error('Hugging Face NER 模型初始化失败:', error);
+      throw error;
+    }
+  }
+
+  async extractEntities(text) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    try {
+      const results = await this.ner(text);
+      return results.map(result => ({
+        text: result.word,
+        label: result.entity_group,
+        confidence: result.score,
+        start: result.start,
+        end: result.end,
+      }));
+    } catch (error) {
+      console.error('实体提取失败:', error);
+      return [];
+    }
+  }
+}
+```
+
+### 关系提取实现
+
+```javascript
+/**
+ * 关系提取实现
+ * 替换 agent-memory-system.mdx 行号 826 的简化实现
+ */
+class RelationExtractor {
+  constructor(entityExtractor) {
+    this.entityExtractor = entityExtractor;
+    this.relationPatterns = this.initializeRelationPatterns();
+  }
+
+  initializeRelationPatterns() {
+    return [
+      {
+        pattern: /(.+?)是(.+?)的(.+?)/,
+        relation: 'is_attribute_of',
+        confidence: 0.8,
+      },
+      {
+        pattern: /(.+?)属于(.+?)/,
+        relation: 'belongs_to',
+        confidence: 0.9,
+      },
+      {
+        pattern: /(.+?)位于(.+?)/,
+        relation: 'located_in',
+        confidence: 0.85,
+      },
+      {
+        pattern: /(.+?)创建了(.+?)/,
+        relation: 'created',
+        confidence: 0.8,
+      },
+      {
+        pattern: /(.+?)使用(.+?)/,
+        relation: 'uses',
+        confidence: 0.75,
+      },
+    ];
+  }
+
+  async extractRelations(text) {
+    try {
+      // 先提取实体
+      const entities = await this.entityExtractor.extractEntities(text);
+      const entityMap = new Map();
+      
+      for (const entity of entities) {
+        entityMap.set(entity.text, entity);
+      }
+      
+      // 基于模式匹配提取关系
+      const relations = [];
+      
+      for (const pattern of this.relationPatterns) {
+        const matches = text.matchAll(pattern.pattern);
+        
+        for (const match of matches) {
+          const subject = match[1].trim();
+          const object = match[2].trim();
+          const predicate = pattern.relation;
+          
+          // 验证主体和客体是否为已知实体
+          const subjectEntity = entityMap.get(subject);
+          const objectEntity = entityMap.get(object);
+          
+          if (subjectEntity && objectEntity) {
+            relations.push({
+              subject: subject,
+              subjectLabel: subjectEntity.label,
+              predicate: predicate,
+              object: object,
+              objectLabel: objectEntity.label,
+              confidence: pattern.confidence * this.calculateSemanticSimilarity(subject, object, text),
+            });
+          }
+        }
+      }
+      
+      return relations;
+    } catch (error) {
+      console.error('关系提取失败:', error);
+      return [];
+    }
+  }
+
+  calculateSemanticSimilarity(subject, object, text) {
+    // 简单的语义相似度计算
+    let similarity = 0.5;
+    
+    // 检查是否在同一句子中
+    const sentences = text.split(/[。！？.!?]/);
+    for (const sentence of sentences) {
+      if (sentence.includes(subject) && sentence.includes(object)) {
+        similarity += 0.3;
+        break;
+      }
+    }
+    
+    // 检查距离
+    const subjectIndex = text.indexOf(subject);
+    const objectIndex = text.indexOf(object);
+    const distance = Math.abs(subjectIndex - objectIndex);
+    
+    if (distance < 50) {
+      similarity += 0.2;
+    }
+    
+    return Math.min(similarity, 1.0);
+  }
+}
+```
+
+## 📊 4. 置信度计算算法
+
+```javascript
+/**
+ * 高级置信度计算实现
+ * 替换 agent-memory-system.mdx 行号 1701 的固定置信度
+ */
+class ConfidenceCalculator {
+  constructor() {
+    this.factors = {
+      keywordMatch: 0.3,
+      semanticSimilarity: 0.4,
+      contextRelevance: 0.2,
+      frequency: 0.1,
+    };
+  }
+
+  calculatePatternConfidence(trigger, context) {
+    /**
+     * 计算模式匹配的置信度
+     */
+    let confidence = 0;
+    let factorCount = 0;
+
+    // 关键词匹配
+    const keywordScore = this.calculateKeywordMatch(trigger, context);
+    if (keywordScore > 0) {
+      confidence += keywordScore * this.factors.keywordMatch;
+      factorCount++;
+    }
+
+    // 语义相似度
+    const semanticScore = this.calculateSemanticSimilarity(trigger, context);
+    if (semanticScore > 0) {
+      confidence += semanticScore * this.factors.semanticSimilarity;
+      factorCount++;
+    }
+
+    // 上下文相关性
+    const contextScore = this.calculateContextRelevance(trigger, context);
+    if (contextScore > 0) {
+      confidence += contextScore * this.factors.contextRelevance;
+      factorCount++;
+    }
+
+    // 频率因子
+    const frequencyScore = this.calculateFrequencyFactor(trigger, context);
+    if (frequencyScore > 0) {
+      confidence += frequencyScore * this.factors.frequency;
+      factorCount++;
+    }
+
+    // 归一化
+    if (factorCount > 0) {
+      confidence /= factorCount;
+    }
+
+    return Math.min(confidence, 1.0);
+  }
+
+  calculateKeywordMatch(trigger, context) {
+    /**
+     * 计算关键词匹配度
+     */
+    if (typeof trigger !== 'object') {
+      return 0;
+    }
+
+    let matchCount = 0;
+    let totalKeywords = 0;
+
+    for (const [key, value] of Object.entries(trigger)) {
+      totalKeywords++;
+      if (context[key] === value) {
+        matchCount++;
+      }
+    }
+
+    return totalKeywords > 0 ? matchCount / totalKeywords : 0;
+  }
+
+  calculateSemanticSimilarity(trigger, context) {
+    /**
+     * 计算语义相似度
+     */
+    if (typeof trigger !== 'function') {
+      return 0.5; // 默认中等相似度
+    }
+
+    try {
+      // 如果触发器是函数，执行它获取相似度
+      const result = trigger(context);
+      if (typeof result === 'number') {
+        return Math.min(result, 1.0);
+      }
+    } catch (error) {
+      console.error('语义相似度计算失败:', error);
+    }
+
+    return 0.5;
+  }
+
+  calculateContextRelevance(trigger, context) {
+    /**
+     * 计算上下文相关性
+     */
+    if (typeof trigger !== 'object') {
+      return 0.5;
+    }
+
+    let relevance = 0;
+    let matchedFields = 0;
+
+    for (const key of Object.keys(trigger)) {
+      if (key in context) {
+        relevance += 0.2;
+        matchedFields++;
+      }
+    }
+
+    return Math.min(relevance, 1.0);
+  }
+
+  calculateFrequencyFactor(trigger, context) {
+    /**
+     * 计算频率因子
+     */
+    if (!context.history || !Array.isArray(context.history)) {
+      return 0;
+    }
+
+    // 统计触发器在历史中出现的频率
+    let matchCount = 0;
+    
+    for (const historyItem of context.history) {
+      if (this.matchesTrigger(trigger, historyItem)) {
+        matchCount++;
+      }
+    }
+
+    // 频率越高，置信度越高（但有上限）
+    const frequency = matchCount / context.history.length;
+    return Math.min(frequency * 2, 1.0);
+  }
+
+  matchesTrigger(trigger, item) {
+    /**
+     * 检查项目是否匹配触发器
+     */
+    if (typeof trigger !== 'object') {
+      return false;
+    }
+
+    for (const [key, value] of Object.entries(trigger)) {
+      if (item[key] !== value) {
+        return false;
+      }
+    }
+    return true;
+  }
+}
+```
+
+## 🎯 5. 重要性评估算法
+
+```javascript
+/**
+ * 高级重要性评估实现
+ * 替换 agent-memory-system.mdx 行号 2049 的简化实现
+ */
+class ImportanceEvaluator {
+  constructor(config = {}) {
+    this.weights = {
+      length: config.lengthWeight || 0.2,
+      keywords: config.keywordWeight || 0.3,
+      sentiment: config.sentimentWeight || 0.15,
+      novelty: config.noveltyWeight || 0.15,
+      interaction: config.interactionWeight || 0.2,
+    };
+    
+    this.keywords = config.keywords || [
+      '重要', '关键', '记住', '学习', '问题', '解决',
+      '注意', '必须', '应该', '需要', '想要', '希望',
+      '错误', '失败', '成功', '完成', '开始', '结束'
+    ];
+    
+    this.messageHistory = [];
+  }
+
+  evaluateImportance(message, context = {}) {
+    /**
+     * 评估消息重要性
+     */
+    let importance = 0;
+    const factors = {};
+
+    // 长度因子
+    factors.length = this.evaluateLengthFactor(message);
+    importance += factors.length * this.weights.length;
+
+    // 关键词因子
+    factors.keywords = this.evaluateKeywordFactor(message);
+    importance += factors.keywords * this.weights.keywords;
+
+    // 情感因子
+    factors.sentiment = this.evaluateSentimentFactor(message);
+    importance += factors.sentiment * this.weights.sentiment;
+
+    // 新颖性因子
+    factors.novelty = this.evaluateNoveltyFactor(message);
+    importance += factors.novelty * this.weights.novelty;
+
+    // 交互因子
+    factors.interaction = this.evaluateInteractionFactor(message, context);
+    importance += factors.interaction * this.weights.interaction;
+
+    // 更新历史
+    this.messageHistory.push({
+      content: message.content,
+      role: message.role,
+      timestamp: message.timestamp || Date.now(),
+      importance: importance,
+    });
+
+    // 限制历史大小
+    if (this.messageHistory.length > 100) {
+      this.messageHistory.shift();
+    }
+
+    return {
+      importance: Math.min(importance, 1.0),
+      factors: factors,
+    };
+  }
+
+  evaluateLengthFactor(message) {
+    /**
+     * 评估长度因子
+     */
+    const content = message.content || '';
+    const length = content.length;
+    
+    // 长度在 50-200 字之间为最佳
+    if (length < 20) {
+      return 0.3;
+    } else if (length < 50) {
+      return 0.5 + (length - 20) / 30 * 0.3;
+    } else if (length < 200) {
+      return 0.8 + (length - 50) / 150 * 0.2;
+    } else {
+      return 1.0 - Math.min((length - 200) / 800, 0.3);
+    }
+  }
+
+  evaluateKeywordFactor(message) {
+    /**
+     * 评估关键词因子
+     */
+    const content = message.content || '';
+    let matchCount = 0;
+    
+    for (const keyword of this.keywords) {
+      if (content.includes(keyword)) {
+        matchCount++;
+      }
+    }
+    
+    // 匹配的关键词越多，重要性越高
+    return Math.min(matchCount / 3, 1.0);
+  }
+
+  evaluateSentimentFactor(message) {
+    /**
+     * 评估情感因子
+     */
+    const content = message.content || '';
+    
+    // 检测强烈情感词汇
+    const strongSentiments = [
+      '非常', '特别', '极其', '超级', '真的', '确实',
+      '愤怒', '开心', '难过', '惊讶', '担心', '害怕'
+    ];
+    
+    let sentimentScore = 0;
+    for (const sentiment of strongSentiments) {
+      if (content.includes(sentiment)) {
+        sentimentScore += 0.2;
+      }
+    }
+    
+    // 检测标点符号
+    const exclamationCount = (content.match(/！/g) || []).length;
+    const questionCount = (content.match(/？/g) || []).length;
+    
+    sentimentScore += exclamationCount * 0.1;
+    sentimentScore += questionCount * 0.05;
+    
+    return Math.min(sentimentScore, 1.0);
+  }
+
+  evaluateNoveltyFactor(message) {
+    /**
+     * 评估新颖性因子
+     */
+    const content = message.content || '';
+    
+    if (this.messageHistory.length === 0) {
+      return 1.0;
+    }
+    
+    // 计算与历史消息的相似度
+    let maxSimilarity = 0;
+    
+    for (const historyItem of this.messageHistory.slice(-10)) {
+      const similarity = this.calculateTextSimilarity(content, historyItem.content);
+      maxSimilarity = Math.max(maxSimilarity, similarity);
+    }
+    
+    // 相似度越低，新颖性越高
+    return 1.0 - maxSimilarity;
+  }
+
+  evaluateInteractionFactor(message, context) {
+    /**
+     * 评估交互因子
+     */
+    let interactionScore = 0.5;
+    
+    // 检查是否是对前一条消息的回复
+    if (context.previousMessage) {
+      const similarity = this.calculateTextSimilarity(
+        message.content,
+        context.previousMessage.content
+      );
+      interactionScore += similarity * 0.3;
+    }
+    
+    // 检查是否包含问题
+    if (message.content.includes('?') || message.content.includes('？')) {
+      interactionScore += 0.2;
+    }
+    
+    // 检查是否是用户消息
+    if (message.role === 'user') {
+      interactionScore += 0.1;
+    }
+    
+    return Math.min(interactionScore, 1.0);
+  }
+
+  calculateTextSimilarity(text1, text2) {
+    /**
+     * 计算文本相似度
+     */
+    // 简单的 Jaccard 相似度
+    const set1 = new Set(text1.split(''));
+    const set2 = new Set(text2.split(''));
+    
+    const intersection = new Set([...set1].filter(x => set2.has(x)));
+    const union = new Set([...set1, ...set2]);
+    
+    return intersection.size / union.size;
+  }
+
+  addKeyword(keyword) {
+    /**
+     * 添加关键词
+     */
+    if (!this.keywords.includes(keyword)) {
+      this.keywords.push(keyword);
+    }
+  }
+
+  removeKeyword(keyword) {
+    /**
+     * 移除关键词
+     */
+    const index = this.keywords.indexOf(keyword);
+    if (index > -1) {
+      this.keywords.splice(index, 1);
+    }
+  }
+
+  setWeight(factor, weight) {
+    /**
+     * 设置权重
+     */
+    if (factor in this.weights) {
+      this.weights[factor] = weight;
+    }
+  }
+}
+```
+
+## 📝 使用示例
+
+### 完整的记忆系统配置
+
+```javascript
+/**
+ * 完整的记忆系统配置示例
+ */
+async function createProductionMemorySystem() {
+  // 1. 初始化嵌入模型
+  const embeddingModel = new OpenAIEmbeddingModel(
+    process.env.OPENAI_API_KEY,
+    'text-embedding-3-small'
+  );
+  
+  // 2. 初始化 Token 计算器
+  const tokenizer = new TikTokenCounter('cl100k_base');
+  
+  // 3. 初始化实体提取器
+  const entityExtractor = new HuggingFaceNERExtractor(
+    'Xenova/bert-base-chinese-ner'
+  );
+  await entityExtractor.initialize();
+  
+  // 4. 初始化关系提取器
+  const relationExtractor = new RelationExtractor(entityExtractor);
+  
+  // 5. 初始化置信度计算器
+  const confidenceCalculator = new ConfidenceCalculator();
+  
+  // 6. 初始化重要性评估器
+  const importanceEvaluator = new ImportanceEvaluator({
+    keywords: ['重要', '关键', '记住', '学习', '问题', '解决'],
+  });
+  
+  // 7. 初始化向量存储
+  const vectorStore = new VectorDatabaseTool({
+    type: 'pinecone',
+    apiKey: process.env.PINECONE_API_KEY,
+    endpoint: process.env.PINECONE_ENDPOINT,
+    collection: 'agent_memory',
+  });
+  await vectorStore.connect();
+  
+  // 8. 创建记忆系统
+  const memoryManager = new MemoryManager({
+    sensory: {
+      capacity: 1000,
+      duration: 5000,
+    },
+    working: {
+      maxTokens: 4000,
+      windowSize: 10,
+      tokenizer: tokenizer,
+    },
+    semantic: {
+      vectorStore: vectorStore,
+      embeddingModel: embeddingModel,
+      entityExtractor: entityExtractor,
+      relationExtractor: relationExtractor,
+    },
+    episodic: {
+      vectorStore: vectorStore,
+      embeddingModel: embeddingModel,
+    },
+    procedural: {
+      confidenceCalculator: confidenceCalculator,
+    },
+  });
+  
+  return {
+    memoryManager,
+    embeddingModel,
+    tokenizer,
+    entityExtractor,
+    relationExtractor,
+    confidenceCalculator,
+    importanceEvaluator,
+    vectorStore,
+  };
+}
+
+// 使用示例
+async function productionMemoryExample() {
+  const memorySystem = await createProductionMemorySystem();
+  const { memoryManager } = memorySystem;
+  
+  // 存储输入
+  await memoryManager.storeInput({
+    type: 'user_message',
+    content: '我想学习机器学习，请推荐一些资源。',
+  });
+  
+  // 检索记忆
+  const results = await memoryManager.retrieveMemory('机器学习', {
+    layers: ['semantic', 'episodic'],
+    topK: 5,
+  });
+  
+  console.log('检索结果:', results);
+  
+  // 关闭系统
+  await memorySystem.shutdown();
+}
+```
+
+## ✅ 检查清单
+
+在使用本指南提供的实现替换简化代码后，请确认以下事项：
+
+- [ ] 嵌入模型使用真实的 API 或本地模型
+- [ ] Token 计算使用专门的 tokenizer
+- [ ] 实体提取使用 NLP 模型
+- [ ] 关系提取基于语义分析
+- [ ] 置信度计算考虑多个因素
+- [ ] 重要性评估使用综合算法
+- [ ] 所有异步操作都有错误处理
+- [ ] 性能敏感的操作使用缓存
+- [ ] API 调用有重试机制
+- [ ] 敏感信息使用环境变量
+
+## 🚀 性能优化建议
+
+1. **批量处理**: 尽可能使用批量 API 调用
+2. **缓存**: 对频繁访问的数据实现缓存
+3. **连接池**: 对数据库连接使用连接池
+4. **异步**: 所有 I/O 操作都应该是异步的
+5. **限流**: 对 API 调用实现限流机制
+
+---
+
+**注意**: 本文档提供的实现都是生产级的代码示例，可以直接用于实际项目中。根据你的具体需求，可能需要进一步调整和优化。
