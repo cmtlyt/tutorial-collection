@@ -1,0 +1,992 @@
+# 元学习 Agent
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-16
+
+## 📖 概述
+
+元学习（Meta-Learning），也称为"学会学习"（Learning to Learn），是一种让智能体能够学习如何学习的方法。元学习 Agent 能够快速适应新任务、新环境，从少量样本中学习，并将学习到的经验迁移到新的情境中。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 理解元学习的核心概念和原理
+- 掌握元学习的主要算法和方法
+- 了解快速适应和迁移学习的实现
+- 熟悉元学习在 Agent 中的应用
+
+## 🧠 什么是元学习
+
+元学习的核心思想是：**学习如何学习，让智能体具备快速适应新任务的能力**。
+
+### 元学习的特点
+
+- **快速适应**：从少量样本中快速学习新任务
+- **迁移能力**：将学习到的知识迁移到新领域
+- **持续学习**：不断积累学习经验
+- **泛化能力**：在未见过的任务上表现良好
+
+### 传统学习 vs 元学习
+
+| 特性 | 传统学习 | 元学习 |
+|------|---------|--------|
+| 数据需求 | 大量标注数据 | 少量样本 |
+| 学习速度 | 慢 | 快 |
+| 适应能力 | 差 | 强 |
+| 迁移能力 | 弱 | 强 |
+| 应用场景 | 单一任务 | 多任务、新任务 |
+
+## 🎯 学会学习
+
+### 元学习基础
+
+#### MAML（Model-Agnostic Meta-Learning）
+
+```python
+# Python 示例：MAML 实现
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import List, Dict, Tuple
+from copy import deepcopy
+
+class MAML:
+    """模型无关元学习"""
+    
+    def __init__(
+        self,
+        model: nn.Module,
+        inner_lr: float = 0.01,
+        meta_lr: float = 0.001,
+        inner_steps: int = 5
+    ):
+        self.model = model
+        self.inner_lr = inner_lr
+        self.meta_lr = meta_lr
+        self.inner_steps = inner_steps
+        
+        self.meta_optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=meta_lr
+        )
+    
+    def inner_loop(
+        self,
+        support_data: Tuple[torch.Tensor, torch.Tensor],
+        query_data: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[nn.Module, torch.Tensor]:
+        """
+        内层循环：在支持集上快速适应
+        
+        参数:
+            support_data: 支持集数据 (x_support, y_support)
+            query_data: 查询集数据 (x_query, y_query)
+        
+        返回:
+            adapted_model: 适应后的模型
+            query_loss: 查询集上的损失
+        """
+        x_support, y_support = support_data
+        x_query, y_query = query_data
+        
+        # 创建模型的副本用于内层更新
+        adapted_model = deepcopy(self.model)
+        
+        # 内层优化步骤
+        for _ in range(self.inner_steps):
+            # 计算支持集上的损失
+            predictions = adapted_model(x_support)
+            loss = F.mse_loss(predictions, y_support)
+            
+            # 计算梯度
+            gradients = torch.autograd.grad(
+                loss,
+                adapted_model.parameters(),
+                create_graph=True,
+                retain_graph=True
+            )
+            
+            # 手动更新参数（使用梯度下降）
+            with torch.no_grad():
+                for (name, param), grad in zip(
+                    adapted_model.named_parameters(),
+                    gradients
+                ):
+                    if grad is not None:
+                        param.data -= self.inner_lr * grad
+        
+        # 计算查询集上的损失
+        query_predictions = adapted_model(x_query)
+        query_loss = F.mse_loss(query_predictions, y_query)
+        
+        return adapted_model, query_loss
+    
+    def meta_update(
+        self,
+        task_batch: List[Tuple[
+            Tuple[torch.Tensor, torch.Tensor],
+            Tuple[torch.Tensor, torch.Tensor]
+        ]]
+    ) -> float:
+        """
+        元更新：在多个任务上更新模型
+        
+        参数:
+            task_batch: 任务批次，每个任务包含支持集和查询集
+        
+        返回:
+            meta_loss: 元损失
+        """
+        meta_loss = 0.0
+        
+        # 对每个任务进行内层循环
+        for support_data, query_data in task_batch:
+            _, query_loss = self.inner_loop(support_data, query_data)
+            meta_loss += query_loss
+        
+        # 平均损失
+        meta_loss = meta_loss / len(task_batch)
+        
+        # 元优化步骤
+        self.meta_optimizer.zero_grad()
+        meta_loss.backward()
+        self.meta_optimizer.step()
+        
+        return meta_loss.item()
+    
+    def adapt(
+        self,
+        support_data: Tuple[torch.Tensor, torch.Tensor],
+        steps: int = None
+    ) -> nn.Module:
+        """
+        在新任务上适应
+        
+        参数:
+            support_data: 支持集数据
+            steps: 适应步数
+        
+        返回:
+            adapted_model: 适应后的模型
+        """
+        if steps is None:
+            steps = self.inner_steps
+        
+        x_support, y_support = support_data
+        
+        # 创建模型副本
+        adapted_model = deepcopy(self.model)
+        
+        # 适应步骤
+        for _ in range(steps):
+            predictions = adapted_model(x_support)
+            loss = F.mse_loss(predictions, y_support)
+            
+            gradients = torch.autograd.grad(
+                loss,
+                adapted_model.parameters(),
+                create_graph=False
+            )
+            
+            with torch.no_grad():
+                for param, grad in zip(adapted_model.parameters(), gradients):
+                    if grad is not None:
+                        param.data -= self.inner_lr * grad
+        
+        return adapted_model
+
+class MetaLearner:
+    """元学习智能体"""
+    
+    def __init__(self, model: nn.Module, maml: MAML):
+        self.model = model
+        self.maml = maml
+        self.task_history: List[Dict] = []
+    
+    def learn_task(
+        self,
+        support_data: Tuple[torch.Tensor, torch.Tensor],
+        query_data: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Dict:
+        """学习新任务"""
+        # 记录任务信息
+        task_info = {
+            'support_size': support_data[0].shape[0],
+            'query_size': query_data[0].shape[0],
+            'timestamp': len(self.task_history)
+        }
+        
+        # 执行元学习
+        adapted_model, query_loss = self.maml.inner_loop(
+            support_data,
+            query_data
+        )
+        
+        # 评估适应后的模型
+        with torch.no_grad():
+            predictions = adapted_model(query_data[0])
+            accuracy = self._compute_accuracy(predictions, query_data[1])
+        
+        task_info['loss'] = query_loss.item()
+        task_info['accuracy'] = accuracy
+        
+        self.task_history.append(task_info)
+        
+        return task_info
+    
+    def _compute_accuracy(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor
+    ) -> float:
+        """计算准确率"""
+        # 对于分类任务
+        if predictions.dim() == 2 and predictions.shape[1] > 1:
+            pred_labels = predictions.argmax(dim=1)
+            target_labels = targets.argmax(dim=1) if targets.dim() == 2 else targets
+            return (pred_labels == target_labels).float().mean().item()
+        # 对于回归任务
+        else:
+            mae = F.l1_loss(predictions, targets)
+            return max(0, 1 - mae.item())
+    
+    def get_learning_curve(self) -> List[float]:
+        """获取学习曲线"""
+        if not self.task_history:
+            return []
+        
+        return [task['accuracy'] for task in self.task_history]
+```
+
+#### Reptile（First-Order MAML）
+
+```python
+# Python 示例：Reptile 实现
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from copy import deepcopy
+
+class Reptile:
+    """Reptile: 一阶元学习"""
+    
+    def __init__(
+        self,
+        model: nn.Module,
+        inner_lr: float = 0.01,
+        meta_lr: float = 0.001,
+        inner_steps: int = 5
+    ):
+        self.model = model
+        self.inner_lr = inner_lr
+        self.meta_lr = meta_lr
+        self.inner_steps = inner_steps
+    
+    def compute_gradients(
+        self,
+        task_data: Tuple[torch.Tensor, torch.Tensor]
+    ) -> List[torch.Tensor]:
+        """
+        计算任务上的梯度
+        
+        参数:
+            task_data: 任务数据 (x, y)
+        
+        返回:
+            gradients: 梯度列表
+        """
+        x, y = task_data
+        
+        # 前向传播
+        predictions = self.model(x)
+        loss = F.mse_loss(predictions, y)
+        
+        # 计算梯度
+        gradients = torch.autograd.grad(
+            loss,
+            self.model.parameters(),
+            create_graph=False
+        )
+        
+        return gradients
+    
+    def inner_update(
+        self,
+        task_data: Tuple[torch.Tensor, torch.Tensor],
+        steps: int = None
+    ) -> nn.Module:
+        """
+        内层更新
+        
+        参数:
+            task_data: 任务数据
+            steps: 更新步数
+        
+        返回:
+            adapted_model: 适应后的模型
+        """
+        if steps is None:
+            steps = self.inner_steps
+        
+        # 创建模型副本
+        adapted_model = deepcopy(self.model)
+        
+        # 多步梯度下降
+        for _ in range(steps):
+            gradients = self.compute_gradients(task_data)
+            
+            with torch.no_grad():
+                for param, grad in zip(adapted_model.parameters(), gradients):
+                    if grad is not None:
+                        param.data -= self.inner_lr * grad
+        
+        return adapted_model
+    
+    def meta_update(
+        self,
+        task_batch: List[Tuple[torch.Tensor, torch.Tensor]]
+    ) -> float:
+        """
+        元更新
+        
+        参数:
+            task_batch: 任务批次
+        
+        返回:
+            meta_loss: 元损失
+        """
+        # 计算每个任务适应后的参数
+        adapted_models = []
+        for task_data in task_batch:
+            adapted_model = self.inner_update(task_data)
+            adapted_models.append(adapted_model)
+        
+        # 计算元梯度：适应后参数与初始参数的差异
+        meta_gradients = []
+        for param in self.model.parameters():
+            meta_grad = torch.zeros_like(param)
+            
+            for adapted_model in adapted_models:
+                adapted_param = dict(adapted_model.named_parameters())[param.name]
+                meta_grad += adapted_param - param
+            
+            meta_grad = meta_grad / len(adapted_models)
+            meta_gradients.append(meta_grad)
+        
+        # 应用元更新
+        with torch.no_grad():
+            for param, meta_grad in zip(self.model.parameters(), meta_gradients):
+                param.data += self.meta_lr * meta_grad
+        
+        # 计算元损失（用于监控）
+        meta_loss = 0.0
+        for task_data in task_batch:
+            adapted_model = self.inner_update(task_data)
+            x, y = task_data
+            with torch.no_grad():
+                predictions = adapted_model(x)
+                loss = F.mse_loss(predictions, y)
+                meta_loss += loss.item()
+        
+        return meta_loss / len(task_batch)
+```
+
+## ⚡ 快速适应
+
+### 少样本学习
+
+```python
+# Python 示例：少样本学习
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import List, Tuple, Dict
+
+class FewShotLearner:
+    """少样本学习器"""
+    
+    def __init__(
+        self,
+        model: nn.Module,
+        support_size: int = 5,
+        query_size: int = 15
+    ):
+        self.model = model
+        self.support_size = support_size
+        self.query_size = query_size
+        self.memory: Dict[str, torch.Tensor] = {}
+    
+    def learn_from_examples(
+        self,
+        examples: List[Tuple[torch.Tensor, torch.Tensor]],
+        task_id: str
+    ) -> Dict:
+        """
+        从示例中学习
+        
+        参数:
+            examples: 示例列表 [(x, y), ...]
+            task_id: 任务标识符
+        
+        返回:
+            learning_info: 学习信息
+        """
+        # 分割支持集和查询集
+        support_data = examples[:self.support_size]
+        query_data = examples[self.support_size:self.support_size + self.query_size]
+        
+        # 在支持集上训练
+        adapted_model = self._adapt_to_task(support_data)
+        
+        # 在查询集上评估
+        query_x = torch.cat([x for x, _ in query_data])
+        query_y = torch.cat([y for _, y in query_data])
+        
+        with torch.no_grad():
+            predictions = adapted_model(query_x)
+            loss = F.mse_loss(predictions, query_y)
+            accuracy = self._compute_accuracy(predictions, query_y)
+        
+        # 存储学习到的知识
+        self.memory[task_id] = {
+            'model_state': deepcopy(adapted_model.state_dict()),
+            'support_data': support_data,
+            'accuracy': accuracy
+        }
+        
+        return {
+            'task_id': task_id,
+            'loss': loss.item(),
+            'accuracy': accuracy,
+            'num_examples': len(examples)
+        }
+    
+    def _adapt_to_task(
+        self,
+        support_data: List[Tuple[torch.Tensor, torch.Tensor]],
+        lr: float = 0.01,
+        steps: int = 10
+    ) -> nn.Module:
+        """适应任务"""
+        # 创建模型副本
+        adapted_model = deepcopy(self.model)
+        optimizer = torch.optim.SGD(adapted_model.parameters(), lr=lr)
+        
+        # 在支持集上训练
+        for _ in range(steps):
+            for x, y in support_data:
+                optimizer.zero_grad()
+                predictions = adapted_model(x)
+                loss = F.mse_loss(predictions, y)
+                loss.backward()
+                optimizer.step()
+        
+        return adapted_model
+    
+    def recall_task(self, task_id: str) -> nn.Module:
+        """回忆任务"""
+        if task_id not in self.memory:
+            raise ValueError(f"Task {task_id} not found in memory")
+        
+        # 创建模型并加载状态
+        recalled_model = deepcopy(self.model)
+        recalled_model.load_state_dict(self.memory[task_id]['model_state'])
+        
+        return recalled_model
+    
+    def _compute_accuracy(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor
+    ) -> float:
+        """计算准确率"""
+        if predictions.dim() == 2 and predictions.shape[1] > 1:
+            pred_labels = predictions.argmax(dim=1)
+            target_labels = targets.argmax(dim=1) if targets.dim() == 2 else targets
+            return (pred_labels == target_labels).float().mean().item()
+        else:
+            mae = F.l1_loss(predictions, targets)
+            return max(0, 1 - mae.item())
+
+class PrototypicalNetwork(nn.Module):
+    """原型网络"""
+    
+    def __init__(self, input_dim: int, hidden_dim: int = 64):
+        super().__init__()
+        
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """编码输入"""
+        return self.encoder(x)
+    
+    def compute_prototypes(
+        self,
+        support_data: Dict[int, List[torch.Tensor]]
+    ) -> Dict[int, torch.Tensor]:
+        """
+        计算每个类的原型
+        
+        参数:
+            support_data: 支持集数据 {class_id: [samples...]}
+        
+        返回:
+            prototypes: 原型字典 {class_id: prototype}
+        """
+        prototypes = {}
+        
+        for class_id, samples in support_data.items():
+            # 编码所有样本
+            encoded_samples = [self.forward(sample) for sample in samples]
+            
+            # 计算原型（均值）
+            prototype = torch.stack(encoded_samples).mean(dim=0)
+            prototypes[class_id] = prototype
+        
+        return prototypes
+    
+    def classify(
+        self,
+        query_sample: torch.Tensor,
+        prototypes: Dict[int, torch.Tensor]
+    ) -> Tuple[int, torch.Tensor]:
+        """
+        分类查询样本
+        
+        参数:
+            query_sample: 查询样本
+            prototypes: 原型字典
+        
+        返回:
+            class_id: 预测类别
+            distances: 到各原型的距离
+        """
+        # 编码查询样本
+        encoded_query = self.forward(query_sample)
+        
+        # 计算到各原型的距离
+        distances = {}
+        for class_id, prototype in prototypes.items():
+            distance = torch.norm(encoded_query - prototype)
+            distances[class_id] = distance
+        
+        # 选择最近的类别
+        predicted_class = min(distances, key=distances.get)
+        
+        return predicted_class, distances
+```
+
+## 🔄 迁移学习
+
+### 知识迁移
+
+```python
+# Python 示例：知识迁移
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import List, Dict, Optional
+
+class TransferLearner:
+    """迁移学习器"""
+    
+    def __init__(
+        self,
+        source_model: nn.Module,
+        target_model: nn.Module,
+        transfer_layers: List[str] = None
+    ):
+        self.source_model = source_model
+        self.target_model = target_model
+        
+        # 指定要迁移的层
+        self.transfer_layers = transfer_layers or [
+            'encoder.0', 'encoder.2'
+        ]
+        
+        # 冻结迁移的层
+        self._freeze_transfer_layers()
+    
+    def _freeze_transfer_layers(self):
+        """冻结要迁移的层"""
+        for name, param in self.target_model.named_parameters():
+            if any(layer in name for layer in self.transfer_layers):
+                param.requires_grad = False
+    
+    def transfer_knowledge(self):
+        """迁移知识"""
+        source_state = self.source_model.state_dict()
+        target_state = self.target_model.state_dict()
+        
+        # 只迁移指定的层
+        transferred_params = []
+        for name in target_state:
+            if name in source_state and any(
+                layer in name for layer in self.transfer_layers
+            ):
+                target_state[name] = source_state[name]
+                transferred_params.append(name)
+        
+        # 加载迁移后的参数
+        self.target_model.load_state_dict(target_state)
+        
+        return transferred_params
+    
+    def fine_tune(
+        self,
+        train_data: List[Tuple[torch.Tensor, torch.Tensor]],
+        epochs: int = 10,
+        lr: float = 0.001
+    ) -> Dict:
+        """微调目标模型"""
+        # 只训练未冻结的层
+        trainable_params = [
+            param for param in self.target_model.parameters()
+            if param.requires_grad
+        ]
+        
+        optimizer = torch.optim.Adam(trainable_params, lr=lr)
+        
+        training_history = {
+            'loss': [],
+            'accuracy': []
+        }
+        
+        for epoch in range(epochs):
+            epoch_loss = 0.0
+            correct = 0
+            total = 0
+            
+            for x, y in train_data:
+                optimizer.zero_grad()
+                
+                predictions = self.target_model(x)
+                loss = F.mse_loss(predictions, y)
+                
+                loss.backward()
+                optimizer.step()
+                
+                epoch_loss += loss.item()
+                
+                # 计算准确率
+                if predictions.dim() == 2 and predictions.shape[1] > 1:
+                    pred_labels = predictions.argmax(dim=1)
+                    target_labels = y.argmax(dim=1) if y.dim() == 2 else y
+                    correct += (pred_labels == target_labels).sum().item()
+                    total += y.shape[0]
+            
+            avg_loss = epoch_loss / len(train_data)
+            accuracy = correct / total if total > 0 else 0.0
+            
+            training_history['loss'].append(avg_loss)
+            training_history['accuracy'].append(accuracy)
+            
+            print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}")
+        
+        return training_history
+
+class DomainAdapter:
+    """领域自适应器"""
+    
+    def __init__(
+        self,
+        source_model: nn.Module,
+        adaptation_network: nn.Module
+    ):
+        self.source_model = source_model
+        self.adaptation_network = adaptation_network
+    
+    def adapt(
+        self,
+        source_data: List[Tuple[torch.Tensor, torch.Tensor]],
+        target_data: List[Tuple[torch.Tensor, torch.Tensor]],
+        epochs: int = 20,
+        lr: float = 0.001
+    ) -> Dict:
+        """
+        领域自适应
+        
+        参数:
+            source_data: 源域数据
+            target_data: 目标域数据
+            epochs: 训练轮数
+            lr: 学习率
+        
+        返回:
+            adaptation_history: 自适应历史
+        """
+        optimizer = torch.optim.Adam(
+            self.adaptation_network.parameters(),
+            lr=lr
+        )
+        
+        history = {
+            'source_loss': [],
+            'target_loss': [],
+            'adaptation_loss': []
+        }
+        
+        for epoch in range(epochs):
+            # 源域损失
+            source_loss = self._compute_source_loss(source_data)
+            
+            # 目标域损失（无监督）
+            target_loss = self._compute_target_loss(target_data)
+            
+            # 自适应损失
+            adaptation_loss = source_loss + target_loss
+            
+            # 反向传播
+            optimizer.zero_grad()
+            adaptation_loss.backward()
+            optimizer.step()
+            
+            history['source_loss'].append(source_loss.item())
+            history['target_loss'].append(target_loss.item())
+            history['adaptation_loss'].append(adaptation_loss.item())
+            
+            if (epoch + 1) % 5 == 0:
+                print(f"Epoch {epoch+1}/{epochs}")
+                print(f"  Source Loss: {source_loss.item():.4f}")
+                print(f"  Target Loss: {target_loss.item():.4f}")
+        
+        return history
+    
+    def _compute_source_loss(
+        self,
+        source_data: List[Tuple[torch.Tensor, torch.Tensor]]
+    ) -> torch.Tensor:
+        """计算源域损失"""
+        total_loss = 0.0
+        
+        for x, y in source_data:
+            # 通过源模型提取特征
+            with torch.no_grad():
+                features = self.source_model(x)
+            
+            # 通过自适应网络
+            adapted_features = self.adaptation_network(features)
+            
+            # 计算损失
+            loss = F.mse_loss(adapted_features, features)
+            total_loss += loss
+        
+        return total_loss / len(source_data)
+    
+    def _compute_target_loss(
+        self,
+        target_data: List[Tuple[torch.Tensor, torch.Tensor]]
+    ) -> torch.Tensor:
+        """计算目标域损失"""
+        total_loss = 0.0
+        
+        for x, y in target_data:
+            # 通过源模型提取特征
+            with torch.no_grad():
+                features = self.source_model(x)
+            
+            # 通过自适应网络
+            adapted_features = self.adaptation_network(features)
+            
+            # 最小化域差异（简化实现）
+            # 实际应用中可以使用 MMD、对抗学习等方法
+            loss = adapted_features.norm()
+            total_loss += loss
+        
+        return total_loss / len(target_data)
+```
+
+## 🤖 元学习 Agent
+
+### 元学习智能体实现
+
+```python
+# Python 示例：元学习智能体
+import torch
+import torch.nn as nn
+from typing import List, Dict, Tuple, Optional
+
+class MetaLearningAgent:
+    """元学习智能体"""
+    
+    def __init__(
+        self,
+        base_model: nn.Module,
+        maml: MAML,
+        task_memory_size: int = 100
+    ):
+        self.base_model = base_model
+        self.maml = maml
+        self.task_memory_size = task_memory_size
+        
+        # 任务记忆
+        self.task_memory: List[Dict] = []
+        
+        # 性能跟踪
+        self.performance_history: List[float] = []
+    
+    def learn_new_task(
+        self,
+        support_data: Tuple[torch.Tensor, torch.Tensor],
+        query_data: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Dict:
+        """学习新任务"""
+        # 在支持集上快速适应
+        adapted_model, query_loss = self.maml.inner_loop(
+            support_data,
+            query_data
+        )
+        
+        # 评估性能
+        with torch.no_grad():
+            x_query, y_query = query_data
+            predictions = adapted_model(x_query)
+            accuracy = self._compute_accuracy(predictions, y_query)
+        
+        # 记录任务信息
+        task_info = {
+            'support_size': support_data[0].shape[0],
+            'query_size': query_data[0].shape[0],
+            'loss': query_loss.item(),
+            'accuracy': accuracy,
+            'model_state': adapted_model.state_dict()
+        }
+        
+        # 更新记忆
+        self._update_memory(task_info)
+        
+        # 更新性能历史
+        self.performance_history.append(accuracy)
+        
+        return task_info
+    
+    def _update_memory(self, task_info: Dict):
+        """更新任务记忆"""
+        self.task_memory.append(task_info)
+        
+        # 如果记忆超过容量，移除最旧的任务
+        if len(self.task_memory) > self.task_memory_size:
+            self.task_memory.pop(0)
+    
+    def adapt_to_new_task(
+        self,
+        support_data: Tuple[torch.Tensor, torch.Tensor],
+        steps: int = None
+    ) -> nn.Module:
+        """适应新任务"""
+        adapted_model = self.maml.adapt(support_data, steps)
+        return adapted_model
+    
+    def select_best_model(
+        self,
+        query_data: Tuple[torch.Tensor, torch.Tensor]
+    ) -> nn.Module:
+        """选择最佳模型"""
+        if not self.task_memory:
+            return self.base_model
+        
+        # 在查询集上评估所有记忆中的模型
+        best_model = self.base_model
+        best_accuracy = 0.0
+        
+        for task_info in self.task_memory:
+            # 创建模型并加载状态
+            model = deepcopy(self.base_model)
+            model.load_state_dict(task_info['model_state'])
+            
+            # 评估
+            with torch.no_grad():
+                x_query, y_query = query_data
+                predictions = model(x_query)
+                accuracy = self._compute_accuracy(predictions, y_query)
+            
+            if accuracy > best_accuracy:
+                best_accuracy = accuracy
+                best_model = model
+        
+        return best_model
+    
+    def get_learning_statistics(self) -> Dict:
+        """获取学习统计信息"""
+        if not self.task_memory:
+            return {}
+        
+        accuracies = [task['accuracy'] for task in self.task_memory]
+        
+        return {
+            'num_tasks': len(self.task_memory),
+            'mean_accuracy': sum(accuracies) / len(accuracies),
+            'max_accuracy': max(accuracies),
+            'min_accuracy': min(accuracies),
+            'learning_curve': self.performance_history
+        }
+    
+    def _compute_accuracy(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor
+    ) -> float:
+        """计算准确率"""
+        if predictions.dim() == 2 and predictions.shape[1] > 1:
+            pred_labels = predictions.argmax(dim=1)
+            target_labels = targets.argmax(dim=1) if targets.dim() == 2 else targets
+            return (pred_labels == target_labels).float().mean().item()
+        else:
+            mae = F.l1_loss(predictions, targets)
+            return max(0, 1 - mae.item())
+    
+    def save_checkpoint(self, path: str):
+        """保存检查点"""
+        checkpoint = {
+            'base_model_state': self.base_model.state_dict(),
+            'task_memory': self.task_memory,
+            'performance_history': self.performance_history
+        }
+        torch.save(checkpoint, path)
+    
+    def load_checkpoint(self, path: str):
+        """加载检查点"""
+        checkpoint = torch.load(path)
+        self.base_model.load_state_dict(checkpoint['base_model_state'])
+        self.task_memory = checkpoint['task_memory']
+        self.performance_history = checkpoint['performance_history']
+```
+
+## 📚 学习检查点
+
+完成本节学习后，你应该能够回答：
+- [ ] 什么是元学习？它有什么优势？
+- [ ] MAML 和 Reptile 的原理是什么？
+- [ ] 如何实现少样本学习？
+- [ ] 知识迁移有哪些方法？
+- [ ] 如何构建元学习 Agent？
+
+## 🔗 相关资源
+
+### 论文
+- [Model-Agnostic Meta-Learning for Fast Adaptation of Deep Networks](https://arxiv.org/abs/1703.03400)
+- [On First-Order Meta-Learning Algorithms](https://arxiv.org/abs/1803.02999)
+- [Prototypical Networks for Few-shot Learning](https://arxiv.org/abs/1703.05175)
+- [Matching Networks for One Shot Learning](https://arxiv.org/abs/1606.04080)
+
+### 框架和工具
+- [Learn2Learn](https://github.com/learnables/learn2learn)
+- [Torchmeta](https://github.com/tristandeleu/pytorch-meta)
+- [Higher](https://github.com/facebookresearch/higher)
+
+### 开源项目
+- [MAML PyTorch](https://github.com/dragen1860/MAML-Pytorch)
+- [Few-Shot Learning](https://github.com/oscarknagg/few-shot)
+- [Meta-Learning-Baselines](https://github.com/TRI-MLDDP/COREL)
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **实践项目** - 构建元学习 Agent 应用
+- **高级主题** - 深入研究元学习算法
+- **综合应用** - 将元学习与其他技术结合

@@ -1,0 +1,1242 @@
+# 具身智能
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-16
+
+## 📖 概述
+
+具身智能是指能够与物理世界进行交互的智能系统。与传统的纯软件 Agent 不同，具身智能 Agent 拥有物理身体（或虚拟身体），能够通过传感器感知环境，并通过执行器对环境产生实际影响。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 理解具身智能的核心概念和重要性
+- 掌握机器人控制的基本原理
+- 了解视觉-语言-动作（VLA）模型的架构
+- 熟悉模拟环境在具身智能训练中的作用
+
+## 🤖 什么是具身智能
+
+具身智能的核心思想是：**智能需要通过身体与环境的交互来体现和发展**。
+
+### 具身智能的特点
+
+- **物理交互**：能够直接操作物理世界中的对象
+- **感知反馈**：通过多种传感器获取环境信息
+- **实时响应**：需要在实时环境中做出快速决策
+- **持续学习**：通过与环境的持续交互不断改进
+
+### 与传统 Agent 的区别
+
+| 特性 | 传统 Agent | 具身智能 Agent |
+|------|-----------|---------------|
+| 环境 | 数字环境 | 物理环境 |
+| 交互方式 | API 调用 | 物理动作 |
+| 时间约束 | 较宽松 | 实时性要求高 |
+| 反馈延迟 | 秒级 | 毫秒级 |
+| 错误成本 | 低 | 高 |
+
+## 🎮 机器人控制
+
+### 机器人控制基础
+
+机器人控制是具身智能的核心能力，涉及感知、决策和执行的完整闭环。
+
+#### 控制架构
+
+```python
+# Python 示例：机器人控制基础架构
+from typing import Dict, List
+import numpy as np
+
+# 传感器类完整实现
+class CameraSensor:
+    """相机传感器"""
+    
+    def __init__(self, resolution=(640, 480), fps=30):
+        self.resolution = resolution
+        self.fps = fps
+        self.is_open = False
+    
+    def open(self):
+        """打开相机"""
+        self.is_open = True
+    
+    def close(self):
+        """关闭相机"""
+        self.is_open = False
+    
+    def capture(self) -> np.ndarray:
+        """捕获图像"""
+        if not self.is_open:
+            raise RuntimeError("Camera is not open")
+        return np.random.randint(0, 255, (*self.resolution, 3), dtype=np.uint8)
+    
+    def get_intrinsics(self) -> Dict:
+        """获取相机内参"""
+        return {
+            'fx': 500.0,
+            'fy': 500.0,
+            'cx': self.resolution[0] / 2,
+            'cy': self.resolution[1] / 2
+        }
+
+
+class TactileSensor:
+    """触觉传感器"""
+    
+    def __init__(self, num_sensors=10):
+        self.num_sensors = num_sensors
+        self.readings = np.zeros(num_sensors)
+    
+    def read(self) -> Dict:
+        """读取触觉数据"""
+        self.readings = np.random.uniform(0, 1, self.num_sensors)
+        return {
+            'pressure': self.readings.tolist(),
+            'temperature': np.random.uniform(20, 30),
+            'vibration': np.random.uniform(0, 0.1)
+        }
+    
+    def calibrate(self):
+        """校准传感器"""
+        self.readings = np.zeros(self.num_sensors)
+
+
+class IMUSensor:
+    """惯性测量单元传感器"""
+    
+    def __init__(self):
+        self.acceleration = np.zeros(3)
+        self.angular_velocity = np.zeros(3)
+        self.orientation = np.array([0, 0, 0, 1])
+    
+    def read(self) -> Dict:
+        """读取 IMU 数据"""
+        self.acceleration = np.random.uniform(-0.1, 0.1, 3)
+        self.angular_velocity = np.random.uniform(-0.01, 0.01, 3)
+        return {
+            'acceleration': self.acceleration.tolist(),
+            'angular_velocity': self.angular_velocity.tolist(),
+            'orientation': self.orientation.tolist()
+        }
+
+
+# 电机类完整实现
+class Motor:
+    """基础电机类"""
+    
+    def __init__(self, max_speed: float = 1.0):
+        self.max_speed = max_speed
+        self.current_speed = 0.0
+        self.position = 0.0
+    
+    def set_speed(self, speed: float):
+        """设置速度"""
+        self.current_speed = np.clip(speed, -self.max_speed, self.max_speed)
+    
+    def get_position(self) -> float:
+        """获取位置"""
+        return self.position
+    
+    def reset(self):
+        """重置电机"""
+        self.current_speed = 0.0
+        self.position = 0.0
+
+
+class ArmMotor(Motor):
+    """机械臂电机"""
+    
+    def __init__(self, num_joints: int = 6):
+        super().__init__(max_speed=2.0)
+        self.num_joints = num_joints
+        self.joint_positions = np.zeros(num_joints)
+        self.joint_velocities = np.zeros(num_joints)
+    
+    def move(self, parameters: Dict) -> Dict:
+        """移动机械臂"""
+        target_positions = parameters.get('target_positions', self.joint_positions)
+        speed = parameters.get('speed', 1.0)
+        duration = parameters.get('duration', 1.0)
+        
+        steps = int(duration * 10)
+        dt = duration / steps
+        
+        for _ in range(steps):
+            direction = target_positions - self.joint_positions
+            step = direction * speed * dt
+            self.joint_positions += step
+            self.joint_velocities = step / dt
+        
+        return {
+            'success': True,
+            'final_positions': self.joint_positions.tolist(),
+            'final_velocities': self.joint_velocities.tolist()
+        }
+
+
+class GripperMotor(Motor):
+    """夹爪电机"""
+    
+    def __init__(self, max_force: float = 10.0):
+        super().__init__(max_speed=1.0)
+        self.max_force = max_force
+        self.gap = 0.1
+        self.force = 0.0
+    
+    def grip(self, parameters: Dict) -> Dict:
+        """夹取物体"""
+        target_gap = parameters.get('target_gap', 0.0)
+        force = parameters.get('force', 5.0)
+        duration = parameters.get('duration', 1.0)
+        
+        force = np.clip(force, 0, self.max_force)
+        steps = int(duration * 10)
+        dt = duration / steps
+        
+        for _ in range(steps):
+            direction = target_gap - self.gap
+            step = direction * dt
+            self.gap += step
+            self.force = force
+        
+        return {
+            'success': True,
+            'final_gap': self.gap,
+            'applied_force': self.force
+        }
+    
+    def release(self, duration: float = 1.0) -> Dict:
+        """释放物体"""
+        return self.grip({
+            'target_gap': 0.1,
+            'force': 0.0,
+            'duration': duration
+        })
+
+
+class BaseMotor(Motor):
+    """底盘电机"""
+    
+    def __init__(self):
+        super().__init__(max_speed=1.0)
+        self.position = np.zeros(2)
+        self.orientation = 0.0
+    
+    def move(self, parameters: Dict) -> Dict:
+        """移动底盘"""
+        linear_velocity = np.array(parameters.get('linear_velocity', [0, 0]))
+        angular_velocity = parameters.get('angular_velocity', 0.0)
+        duration = parameters.get('duration', 1.0)
+        
+        steps = int(duration * 10)
+        dt = duration / steps
+        
+        for _ in range(steps):
+            self.position += linear_velocity * dt
+            self.orientation += angular_velocity * dt
+            self.orientation = self.orientation % (2 * np.pi)
+        
+        return {
+            'success': True,
+            'final_position': self.position.tolist(),
+            'final_orientation': self.orientation
+        }
+
+
+class RobotController:
+    def __init__(self, llm, perception_system, actuator):
+        self.llm = llm
+        self.perception = perception_system
+        self.actuator = actuator
+        self.state = {}
+    
+    def perceive(self) -> Dict:
+        """
+        感知环境
+        """
+        # 获取多模态传感器数据
+        visual_data = self.perception.get_visual()
+        tactile_data = self.perception.get_tactile()
+        proprioception = self.perception.get_proprioception()
+        
+        self.state = {
+            'visual': visual_data,
+            'tactile': tactile_data,
+            'proprioception': proprioception
+        }
+        
+        return self.state
+    
+    def plan(self, task: str) -> List[Dict]:
+        """
+        规划动作序列
+        """
+        prompt = f"""
+        当前状态：{self.state}
+        任务：{task}
+        
+        请规划一系列机器人动作来完成这个任务。
+        每个动作应该包含：
+        - action_type: 动作类型
+        - parameters: 动作参数
+        - duration: 预期持续时间
+        
+        以 JSON 格式返回动作列表。
+        """
+        
+        response = self.llm.predict(prompt)
+        return self._parse_actions(response)
+    
+    def execute(self, actions: List[Dict]) -> List[Dict]:
+        """
+        执行动作序列
+        """
+        results = []
+        
+        for action in actions:
+            # 执行单个动作
+            result = self.actuator.execute(action)
+            results.append(result)
+            
+            # 更新状态
+            self.perceive()
+            
+            # 检查是否需要调整
+            if not self._check_result(result):
+                # 动态调整
+                adjusted_actions = self._adjust_plan(action, result)
+                if adjusted_actions:
+                    actions.extend(adjusted_actions)
+        
+        return results
+    
+    def _parse_actions(self, response: str) -> List[Dict]:
+        """
+        解析 LLM 返回的动作序列
+        """
+        import json
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            # 如果解析失败，使用默认动作
+            return [{
+                'action_type': 'wait',
+                'parameters': {},
+                'duration': 1.0
+            }]
+    
+    def _check_result(self, result: Dict) -> bool:
+        """
+        检查动作执行结果
+        """
+        return result.get('success', False)
+    
+    def _adjust_plan(self, failed_action: Dict, result: Dict) -> List[Dict]:
+        """
+        调整计划
+        """
+        prompt = f"""
+        以下动作执行失败：
+        动作：{failed_action}
+        结果：{result}
+        当前状态：{self.state}
+        
+        请提供替代动作方案。
+        以 JSON 格式返回动作列表。
+        """
+        
+        response = self.llm.predict(prompt)
+        return self._parse_actions(response)
+
+
+class PerceptionSystem:
+    """感知系统"""
+    
+    def __init__(self):
+        self.sensors = {
+            'camera': CameraSensor(),
+            'tactile': TactileSensor(),
+            'imu': IMUSensor()
+        }
+        # 初始化相机
+        self.sensors['camera'].open()
+    
+    def get_visual(self) -> np.ndarray:
+        """获取视觉数据"""
+        return self.sensors['camera'].capture()
+    
+    def get_tactile(self) -> Dict:
+        """获取触觉数据"""
+        return self.sensors['tactile'].read()
+    
+    def get_proprioception(self) -> Dict:
+        """获取本体感觉"""
+        return self.sensors['imu'].read()
+    
+    def close(self):
+        """关闭所有传感器"""
+        self.sensors['camera'].close()
+
+
+class Actuator:
+    """执行器"""
+    
+    def __init__(self):
+        self.motors = {
+            'arm': ArmMotor(),
+            'gripper': GripperMotor(),
+            'base': BaseMotor()
+        }
+    
+    def execute(self, action: Dict) -> Dict:
+        """
+        执行动作
+        """
+        action_type = action['action_type']
+        parameters = action['parameters']
+        
+        try:
+            if action_type == 'move_arm':
+                result = self.motors['arm'].move(parameters)
+            elif action_type == 'grip':
+                result = self.motors['gripper'].grip(parameters)
+            elif action_type == 'move_base':
+                result = self.motors['base'].move(parameters)
+            else:
+                result = {'success': False, 'error': 'Unknown action type'}
+            
+            return result
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+```
+
+#### 运动规划
+
+运动规划是机器人控制的核心技术，涉及路径规划和轨迹生成。
+
+```python
+# Python 示例：运动规划
+import numpy as np
+from typing import List, Tuple
+
+class MotionPlanner:
+    def __init__(self, llm):
+        self.llm = llm
+        self.obstacles = []
+    
+    def plan_path(
+        self,
+        start: np.ndarray,
+        goal: np.ndarray,
+        obstacles: List[np.ndarray]
+    ) -> List[np.ndarray]:
+        """
+        使用 RRT 算法规划路径
+        """
+        path = [start]
+        current = start.copy()
+        max_iterations = 1000
+        
+        for _ in range(max_iterations):
+            # 随机采样
+            if np.random.random() < 0.1:
+                sample = goal
+            else:
+                sample = self._random_sample()
+            
+            # 找到最近的节点
+            nearest = self._find_nearest(path, sample)
+            
+            # 向采样点扩展
+            new_node = self._extend(nearest, sample)
+            
+            # 检查碰撞
+            if not self._check_collision(nearest, new_node, obstacles):
+                path.append(new_node)
+                
+                # 检查是否到达目标
+                if self._distance(new_node, goal) < 0.1:
+                    path.append(goal)
+                    return path
+        
+        return path
+    
+    def _random_sample(self) -> np.ndarray:
+        """随机采样"""
+        return np.random.uniform(-10, 10, size=3)
+    
+    def _find_nearest(self, path: List[np.ndarray], sample: np.ndarray) -> np.ndarray:
+        """找到最近的节点"""
+        distances = [self._distance(node, sample) for node in path]
+        return path[np.argmin(distances)]
+    
+    def _extend(self, from_node: np.ndarray, to_node: np.ndarray, step_size: float = 0.5) -> np.ndarray:
+        """向目标点扩展"""
+        direction = to_node - from_node
+        distance = np.linalg.norm(direction)
+        
+        if distance <= step_size:
+            return to_node
+        else:
+            return from_node + (direction / distance) * step_size
+    
+    def _check_collision(
+        self,
+        from_node: np.ndarray,
+        to_node: np.ndarray,
+        obstacles: List[np.ndarray]
+    ) -> bool:
+        """检查碰撞"""
+        # 简化的碰撞检测
+        for obstacle in obstacles:
+            if self._distance_to_line(to_node, from_node, obstacle) < 0.5:
+                return True
+        return False
+    
+    def _distance(self, a: np.ndarray, b: np.ndarray) -> float:
+        """计算距离"""
+        return np.linalg.norm(a - b)
+    
+    def _distance_to_line(self, point: np.ndarray, line_start: np.ndarray, line_end: np.ndarray) -> float:
+        """计算点到线段的距离"""
+        line_vec = line_end - line_start
+        point_vec = point - line_start
+        line_len = np.linalg.norm(line_vec)
+        line_unit = line_vec / line_len
+        proj_length = np.dot(point_vec, line_unit)
+        
+        if proj_length < 0:
+            return self._distance(point, line_start)
+        elif proj_length > line_len:
+            return self._distance(point, line_end)
+        else:
+            proj_point = line_start + line_unit * proj_length
+            return self._distance(point, proj_point)
+```
+
+## 👁️ 视觉-语言-动作（VLA）
+
+### VLA 模型架构
+
+视觉-语言-动作（Vision-Language-Action）模型是具身智能的核心技术，能够直接将视觉和语言输入映射到机器人动作。
+
+#### VLA 模型组成
+
+```python
+# Python 示例：VLA 模型架构
+import torch
+import torch.nn as nn
+import os
+from transformers import AutoModel, AutoTokenizer
+
+class VLAModel(nn.Module):
+    """
+    视觉-语言-动作模型
+    """
+    
+    def __init__(
+        self,
+        vision_encoder: str = "openai/clip-vit-base-patch32",
+        language_model: str = "gpt2",
+        action_dim: int = 7
+    ):
+        super().__init__()
+        
+        # 视觉编码器
+        self.vision_encoder = AutoModel.from_pretrained(vision_encoder)
+        self.vision_projection = nn.Linear(self.vision_encoder.config.hidden_size, 768)
+        
+        # 语言模型
+        self.language_model = AutoModel.from_pretrained(language_model)
+        self.tokenizer = AutoTokenizer.from_pretrained(language_model)
+        
+        # 动作解码器
+        self.action_decoder = nn.Sequential(
+            nn.Linear(768 * 2, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, action_dim)
+        )
+        
+        # 融合层
+        self.fusion = nn.MultiheadAttention(embed_dim=768, num_heads=8)
+    
+    def forward(
+        self,
+        image: torch.Tensor,
+        instruction: str,
+        history: torch.Tensor = None
+    ) -> torch.Tensor:
+        """
+        前向传播
+        """
+        # 编码视觉输入
+        vision_features = self.vision_encoder(pixel_values=image).last_hidden_state
+        vision_features = self.vision_projection(vision_features)
+        
+        # 编码语言输入
+        tokens = self.tokenizer(instruction, return_tensors="pt", padding=True)
+        language_features = self.language_model(**tokens).last_hidden_state
+        
+        # 融合视觉和语言特征
+        fused_features, _ = self.fusion(
+            vision_features.mean(dim=1, keepdim=True),
+            language_features.mean(dim=1, keepdim=True)
+        )
+        
+        # 解码动作
+        combined = torch.cat([
+            vision_features.mean(dim=1),
+            fused_features.squeeze()
+        ], dim=-1)
+        
+        action = self.action_decoder(combined)
+        
+        return action
+    
+    def generate_action_sequence(
+        self,
+        image: torch.Tensor,
+        instruction: str,
+        num_steps: int = 10
+    ) -> torch.Tensor:
+        """
+        生成动作序列
+        """
+        action_sequence = []
+        current_image = image
+        
+        for step in range(num_steps):
+            action = self.forward(current_image, instruction)
+            action_sequence.append(action)
+            
+            # 在实际应用中，这里会执行动作并获取新的图像
+            # current_image = execute_and_observe(action)
+        
+        return torch.stack(action_sequence)
+
+
+class VLAController:
+    """基于 VLA 的控制器"""
+    
+    def __init__(self, model_path: str):
+        self.model = self._load_model(model_path)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+    
+    def _load_model(self, model_path: str) -> VLAModel:
+        """加载模型"""
+        model = VLAModel()
+        
+        # 尝试加载预训练模型
+        try:
+            if model_path and os.path.exists(model_path):
+                model.load_state_dict(torch.load(model_path, map_location=self.device))
+                print(f"成功加载模型: {model_path}")
+            else:
+                print("未找到预训练模型，使用随机初始化")
+        except Exception as e:
+            print(f"加载模型失败: {e}，使用随机初始化")
+        
+        model.eval()
+        return model
+    
+    def execute_task(
+        self,
+        image: np.ndarray,
+        instruction: str
+    ) -> np.ndarray:
+        """
+        执行任务
+        """
+        import numpy as np
+        
+        # 预处理图像
+        image_tensor = self._preprocess_image(image)
+        
+        # 生成动作
+        with torch.no_grad():
+            action = self.model.forward(image_tensor, instruction)
+        
+        # 后处理动作
+        action_np = action.cpu().numpy()
+        
+        return action_np
+    
+    def _preprocess_image(self, image: np.ndarray) -> torch.Tensor:
+        """预处理图像"""
+        from torchvision import transforms
+        
+        transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
+        
+        return transform(image).unsqueeze(0).to(self.device)
+```
+
+### VLA 模型训练
+
+```python
+# Python 示例：VLA 模型训练
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
+class VLATrainer:
+    """VLA 模型训练器"""
+    
+    def __init__(
+        self,
+        model: VLAModel,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        learning_rate: float = 1e-4
+    ):
+        self.model = model
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        self.criterion = nn.MSELoss()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+    
+    def train_epoch(self, epoch: int) -> float:
+        """训练一个 epoch"""
+        self.model.train()
+        total_loss = 0.0
+        
+        for batch_idx, (images, instructions, actions) in enumerate(self.train_loader):
+            images = images.to(self.device)
+            instructions = instructions
+            actions = actions.to(self.device)
+            
+            # 前向传播
+            predicted_actions = []
+            for i in range(len(images)):
+                pred_action = self.model.forward(images[i], instructions[i])
+                predicted_actions.append(pred_action)
+            
+            predicted_actions = torch.stack(predicted_actions)
+            
+            # 计算损失
+            loss = self.criterion(predicted_actions, actions)
+            
+            # 反向传播
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            
+            total_loss += loss.item()
+            
+            if batch_idx % 100 == 0:
+                print(f"Epoch {epoch}, Batch {batch_idx}, Loss: {loss.item():.4f}")
+        
+        return total_loss / len(self.train_loader)
+    
+    def validate(self) -> float:
+        """验证"""
+        self.model.eval()
+        total_loss = 0.0
+        
+        with torch.no_grad():
+            for images, instructions, actions in self.val_loader:
+                images = images.to(self.device)
+                actions = actions.to(self.device)
+                
+                predicted_actions = []
+                for i in range(len(images)):
+                    pred_action = self.model.forward(images[i], instructions[i])
+                    predicted_actions.append(pred_action)
+                
+                predicted_actions = torch.stack(predicted_actions)
+                
+                loss = self.criterion(predicted_actions, actions)
+                total_loss += loss.item()
+        
+        return total_loss / len(self.val_loader)
+    
+    def train(self, num_epochs: int):
+        """训练模型"""
+        best_val_loss = float('inf')
+        
+        for epoch in range(num_epochs):
+            train_loss = self.train_epoch(epoch)
+            val_loss = self.validate()
+            
+            print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+            
+            # 保存最佳模型
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save(self.model.state_dict(), 'best_vla_model.pth')
+```
+
+## 🌍 模拟环境
+
+### 模拟环境的重要性
+
+模拟环境在具身智能发展中扮演着关键角色：
+
+- **安全性**：避免在真实环境中造成损坏
+- **效率**：可以快速生成大量训练数据
+- **可控性**：可以精确控制环境参数
+- **可重复性**：便于实验复现和调试
+
+### 主流模拟环境
+
+#### 1. Isaac Gym
+
+NVIDIA 开发的高性能物理模拟器。
+
+```python
+# Python 示例：Isaac Gym 基础使用
+from isaacgym import gymapi
+import numpy as np
+
+class IsaacGymEnvironment:
+    """Isaac Gym 环境"""
+    
+    def __init__(self):
+        self.gym = gymapi.acquire_gym()
+        self.sim = None
+        self.envs = []
+    
+    def create_simulation(self):
+        """创建仿真"""
+        self.sim = self.gym.create_sim(
+            compute_device=0,
+            graphics_device=0,
+            type=gymapi.SIM_PHYSICS
+        )
+        
+        # 设置物理参数
+        self.gym.sim_set_gravity(self.sim, gymapi.Vec3(0.0, 0.0, -9.81))
+    
+    def create_environment(
+        self,
+        num_envs: int = 10,
+        env_spacing: float = 1.0
+    ):
+        """创建环境"""
+        # 创建环境
+        envs = []
+        
+        for i in range(num_envs):
+            env = self.gym.create_env(
+                self.sim,
+                gymapi.Vec3(-env_spacing, 0, -env_spacing),
+                gymapi.Vec3(env_spacing, env_spacing, env_spacing),
+                i
+            )
+            envs.append(env)
+        
+        self.envs = envs
+    
+    def create_actor(
+        self,
+        asset_path: str,
+        env_idx: int = 0
+    ):
+        """创建 actor"""
+        # 加载资产
+        asset_options = gymapi.AssetOptions()
+        asset = self.gym.load_asset(
+            self.sim,
+            envs[env_idx],
+            asset_path,
+            asset_options
+        )
+        
+        # 创建 actor
+        pose = gymapi.Transform()
+        pose.p = gymapi.Vec3(0.0, 0.0, 0.0)
+        pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
+        
+        actor = self.gym.create_actor(
+            self.envs[env_idx],
+            asset,
+            pose,
+            "robot",
+            0,
+            0
+        )
+        
+        return actor
+    
+    def step(self, actions: np.ndarray):
+        """执行一步"""
+        # 应用动作
+        for i, action in enumerate(actions):
+            self.gym.set_dof_actuation_force_target(
+                self.sim,
+                self.envs[i],
+                action
+            )
+        
+        # 模拟一步
+        self.gym.simulate(self.sim)
+        
+        # 获取观测
+        observations = []
+        for env in self.envs:
+            obs = self.gym.get_actor_dof_states(
+                self.sim,
+                env,
+                0,
+                gymapi.STATE_ALL
+            )
+            observations.append(obs)
+        
+        return np.array(observations)
+```
+
+#### 2. Habitat
+
+Meta 开发的具身智能模拟平台。
+
+```python
+# Python 示例：Habitat 环境
+import habitat
+import numpy as np
+from habitat.sims import SimulatorActions
+
+class HabitatEnvironment:
+    """Habitat 环境"""
+    
+    def __init__(self, config_path: str):
+        # 加载配置
+        self.config = habitat.get_config(config_path)
+        
+        # 创建模拟器
+        self.sim = habitat.sims.make_sim(
+            id_sim=self.config.SIMULATOR.TYPE,
+            config=self.config.SIMULATOR
+        )
+        
+        self.reset()
+    
+    def reset(self) -> dict:
+        """重置环境"""
+        observations = self.sim.reset()
+        return self._process_observations(observations)
+    
+    def step(self, action: int) -> dict:
+        """执行动作"""
+        observations = self.sim.step(action)
+        return self._process_observations(observations)
+    
+    def _process_observations(self, observations) -> dict:
+        """处理观测"""
+        return {
+            'rgb': observations['rgb'],
+            'depth': observations['depth'],
+            'pointgoal': observations['pointgoal']
+        }
+    
+    def get_available_actions(self) -> list:
+        """获取可用动作"""
+        return list(SimulatorActions)
+    
+    def get_state(self) -> dict:
+        """获取状态"""
+        return self.sim.get_agent_state()
+```
+
+#### 3. MuJoCo
+
+轻量级物理模拟器，适合快速实验。
+
+```python
+# Python 示例：MuJoCo 环境
+import mujoco
+import mujoco.viewer
+import numpy as np
+
+class MuJoCoEnvironment:
+    """MuJoCo 环境"""
+    
+    def __init__(self, xml_path: str):
+        # 加载模型
+        self.model = mujoco.MjModel.from_xml_path(xml_path)
+        self.data = mujoco.MjData(self.model)
+        
+        # 创建查看器
+        self.viewer = None
+    
+    def reset(self) -> np.ndarray:
+        """重置环境"""
+        mujoco.mj_resetData(self.model, self.data)
+        return self._get_observation()
+    
+    def step(self, action: np.ndarray) -> tuple:
+        """执行动作"""
+        # 设置控制信号
+        self.data.ctrl[:] = action
+        
+        # 模拟一步
+        mujoco.mj_step(self.model, self.data)
+        
+        # 获取观测和奖励
+        observation = self._get_observation()
+        reward = self._compute_reward()
+        done = self._is_done()
+        
+        return observation, reward, done, {}
+    
+    def _get_observation(self) -> np.ndarray:
+        """获取观测"""
+        # 获取关节位置和速度
+        qpos = self.data.qpos.copy()
+        qvel = self.data.qvel.copy()
+        
+        # 获取传感器数据
+        sensor_data = self.data.sensordata.copy()
+        
+        return np.concatenate([qpos, qvel, sensor_data])
+    
+    def _compute_reward(self) -> float:
+        """计算奖励"""
+        # 根据任务定义奖励函数
+        # 这里只是一个示例
+        target_position = np.array([0.5, 0.5, 0.5])
+        current_position = self.data.body('target').xpos
+        distance = np.linalg.norm(current_position - target_position)
+        
+        reward = -distance  # 距离越小奖励越高
+        
+        return reward
+    
+    def _is_done(self) -> bool:
+        """判断是否结束"""
+        # 根据任务定义终止条件
+        time = self.data.time
+        return time > 10.0
+    
+    def render(self):
+        """渲染"""
+        if self.viewer is None:
+            self.viewer = mujoco.viewer.launch_passive(
+                self.model,
+                self.data
+            )
+        
+        self.viewer.sync()
+```
+
+### 模拟到现实（Sim-to-Real）
+
+从模拟环境到真实环境的迁移是具身智能的关键挑战。
+
+#### 域随机化
+
+```python
+# Python 示例：域随机化
+import random
+import numpy as np
+
+class DomainRandomizer:
+    """域随机化"""
+    
+    def __init__(self):
+        self.randomization_params = {
+            'camera_noise': (0.0, 0.1),
+            'lighting': (0.5, 1.5),
+            'texture': True,
+            'physics': {
+                'friction': (0.5, 1.0),
+                'mass': (0.8, 1.2)
+            }
+        }
+    
+    def randomize_camera(self, image: np.ndarray) -> np.ndarray:
+        """随机化相机"""
+        noise_level = random.uniform(*self.randomization_params['camera_noise'])
+        noise = np.random.normal(0, noise_level, image.shape)
+        noisy_image = np.clip(image + noise, 0, 1)
+        return noisy_image
+    
+    def randomize_lighting(self, image: np.ndarray) -> np.ndarray:
+        """随机化光照"""
+        factor = random.uniform(*self.randomization_params['lighting'])
+        adjusted_image = np.clip(image * factor, 0, 1)
+        return adjusted_image
+    
+    def randomize_physics(self, sim):
+        """随机化物理参数"""
+        friction = random.uniform(
+            *self.randomization_params['physics']['friction']
+        )
+        mass = random.uniform(
+            *self.randomization_params['physics']['mass']
+        )
+        
+        # 应用随机化
+        sim.set_friction(friction)
+        sim.set_mass(mass)
+    
+    def randomize_all(self, image: np.ndarray, sim):
+        """随机化所有参数"""
+        image = self.randomize_camera(image)
+        image = self.randomize_lighting(image)
+        self.randomize_physics(sim)
+        return image
+```
+
+#### 系统识别
+
+```python
+# Python 示例：系统识别
+import numpy as np
+from scipy.optimize import minimize
+
+class SystemIdentifier:
+    """系统识别器"""
+    
+    def __init__(self, real_robot):
+        self.real_robot = real_robot
+        self.identified_params = {}
+    
+    def collect_data(
+        self,
+        actions: np.ndarray,
+        num_trials: int = 10
+    ) -> tuple:
+        """收集数据"""
+        observations = []
+        
+        for _ in range(num_trials):
+            for action in actions:
+                obs = self.real_robot.execute(action)
+                observations.append(obs)
+        
+        return np.array(actions), np.array(observations)
+    
+    def identify_parameters(
+        self,
+        actions: np.ndarray,
+        observations: np.ndarray
+    ) -> dict:
+        """识别参数"""
+        
+        def loss_function(params):
+            # 使用参数模拟
+            simulated = self._simulate(actions, params)
+            
+            # 计算与真实观测的差异
+            error = np.mean((simulated - observations) ** 2)
+            return error
+        
+        # 初始猜测
+        initial_params = {
+            'friction': 0.8,
+            'mass': 1.0,
+            'damping': 0.1
+        }
+        
+        # 优化参数
+        result = minimize(
+            loss_function,
+            np.array(list(initial_params.values())),
+            method='Nelder-Mead'
+        )
+        
+        self.identified_params = dict(zip(
+            initial_params.keys(),
+            result.x
+        ))
+        
+        return self.identified_params
+    
+    def _simulate(
+        self,
+        actions: np.ndarray,
+        params: dict
+    ) -> np.ndarray:
+        """使用参数模拟"""
+        # 简化的模拟
+        # 实际应用中会使用更复杂的物理模型
+        observations = []
+        
+        for action in actions:
+            # 根据参数计算观测
+            obs = self._physics_model(action, params)
+            observations.append(obs)
+        
+        return np.array(observations)
+    
+    def _physics_model(self, action: np.ndarray, params: dict) -> np.ndarray:
+        """物理模型"""
+        friction = params.get('friction', 0.8)
+        mass = params.get('mass', 1.0)
+        damping = params.get('damping', 0.1)
+        
+        # 更真实的物理模型：考虑摩擦力、阻尼和质量
+        # a = (F - friction*v - damping*v) / m
+        # 这里简化为单自由度模型
+        
+        # 计算净力（考虑摩擦阻力）
+        net_force = action - friction * np.sign(action) * 0.1
+        
+        # 计算加速度
+        acceleration = net_force / mass
+        
+        # 使用欧拉积分法更新状态
+        dt = 0.01  # 时间步长
+        
+        # 速度更新：v = v + a*dt - damping*v*dt
+        velocity = acceleration * dt - damping * acceleration * dt
+        
+        # 位置更新：x = x + v*dt
+        position = velocity * dt
+        
+        # 添加一些噪声以模拟真实世界的不确定性
+        noise = np.random.normal(0, 0.001, size=2)
+        
+        return np.array([position, velocity]) + noise
+```
+
+## 📚 学习检查点
+
+完成本节学习后，你应该能够回答：
+- [ ] 什么是具身智能？它与传统 Agent 有什么区别？
+- [ ] 机器人控制的基本架构是什么？
+- [ ] VLA 模型如何将视觉和语言输入映射到动作？
+- [ ] 模拟环境在具身智能训练中的作用是什么？
+- [ ] 如何实现 Sim-to-Real 迁移？
+
+## 🔗 相关资源
+
+### 论文
+- [RT-1: Robotics Transformer for Real-World Control](https://arxiv.org/abs/2212.06868)
+- [RT-2: Vision-Language-Action Models](https://arxiv.org/abs/2307.15818)
+- [Gato: A Generalist Agent](https://arxiv.org/abs/2205.06175)
+- [PaLM-E: An Embodied Multimodal Language Model](https://arxiv.org/abs/2303.03378)
+
+### 模拟器
+- [Isaac Gym](https://developer.nvidia.com/isaac-gym)
+- [Habitat](https://ai.meta.com/tools/habitat/)
+- [MuJoCo](https://mujoco.org/)
+
+### 开源项目
+- [Habitat Lab](https://github.com/facebookresearch/habitat-lab)
+- [Isaac Gym Envs](https://github.com/NVIDIA-Omniverse/IsaacGymEnvs)
+- [Robomimic](https://github.com/StanfordVL/robomimic)
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **神经符号 AI** - 了解符号推理与神经网络的结合
+- **元学习 Agent** - 探索学会学习的智能体
+- **实践项目** - 在模拟环境中构建具身智能应用

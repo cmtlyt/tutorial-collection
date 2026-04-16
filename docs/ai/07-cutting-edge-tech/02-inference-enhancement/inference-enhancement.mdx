@@ -1,0 +1,2280 @@
+# 推理增强
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-16
+
+## 📖 概述
+
+推理增强技术通过在推理时优化模型的表现、增强模型的知识储备和扩展模型的能力边界，显著提升 AI 系统的性能和实用性。本章节将详细介绍推理时优化、知识增强和工具学习等关键技术，帮助读者构建更强大的 AI 系统。
+
+## 🧠 推理时优化
+
+推理时优化通过在推理过程中应用各种技术来提升模型的推理质量和效率。
+
+### 思维链优化
+
+思维链（Chain of Thought）是一种通过引导模型逐步思考来提升推理能力的技术。
+
+```javascript
+// inference/chain-of-thought.js
+class ChainOfThoughtOptimizer {
+  constructor(config) {
+    /**
+     * 思维链优化器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      maxSteps: config.maxSteps || 5,
+      temperature: config.temperature || 0.7,
+      useSelfConsistency: config.useSelfConsistency || true,
+      numSamples: config.numSamples || 5,
+      ...config
+    };
+
+    this.llmClient = new LLMClient({
+      model: config.model || 'gpt-4',
+      temperature: this.config.temperature
+    });
+  }
+
+  async optimize(prompt) {
+    /**
+     * 优化思维链推理
+     * 
+     * 参数:
+     *   prompt: 提示词
+     * 
+     * 返回:
+     *   优化结果
+     */
+    if (this.config.useSelfConsistency) {
+      return await this._selfConsistencyReasoning(prompt);
+    } else {
+      return await this._singleStepReasoning(prompt);
+    }
+  }
+
+  async _singleStepReasoning(prompt) {
+    /**
+     * 单步推理
+     * 
+     * 参数:
+     *   prompt: 提示词
+     * 
+     * 返回:
+     *   推理结果
+     */
+    const cotPrompt = this._buildCoTPrompt(prompt);
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: cotPrompt }]
+    });
+
+    return this._parseCoTResponse(response);
+  }
+
+  async _selfConsistencyReasoning(prompt) {
+    /**
+     * 自我一致性推理
+     * 
+     * 参数:
+     *   prompt: 提示词
+     * 
+     * 返回:
+     *   推理结果
+     */
+    const samples = [];
+
+    // 生成多个样本
+    for (let i = 0; i < this.config.numSamples; i++) {
+      const response = await this._singleStepReasoning(prompt);
+      samples.push(response);
+    }
+
+    // 投票选择最一致的结果
+    return this._voteBestAnswer(samples);
+  }
+
+  _buildCoTPrompt(prompt) {
+    /**
+     * 构建思维链提示词
+     * 
+     * 参数:
+     *   prompt: 原始提示词
+     * 
+     * 返回:
+     *   思维链提示词
+     */
+    return `请逐步思考以下问题，并在每一步中清晰说明你的推理过程：
+
+${prompt}
+
+请按照以下格式回答：
+思考步骤 1: [你的思考过程]
+思考步骤 2: [你的思考过程]
+...
+最终答案: [你的答案]`;
+  }
+
+  _parseCoTResponse(response) {
+    /**
+     * 解析思维链响应
+     * 
+     * 参数:
+     *   response: LLM 响应
+     * 
+     * 返回:
+     *   解析结果
+     */
+    const content = response.choices[0].message.content;
+    const steps = [];
+    let finalAnswer = '';
+
+    const lines = content.split('\n');
+    let currentStep = '';
+
+    for (const line of lines) {
+      if (line.startsWith('思考步骤')) {
+        if (currentStep) {
+          steps.push(currentStep.trim());
+        }
+        currentStep = line;
+      } else if (line.startsWith('最终答案')) {
+        if (currentStep) {
+          steps.push(currentStep.trim());
+        }
+        finalAnswer = line.replace('最终答案:', '').trim();
+      } else {
+        currentStep += '\n' + line;
+      }
+    }
+
+    return {
+      steps,
+      finalAnswer,
+      rawResponse: content
+    };
+  }
+
+  _voteBestAnswer(samples) {
+    /**
+     * 投票选择最佳答案
+     * 
+     * 参数:
+     *   samples: 样本数组
+     * 
+     * 返回:
+     *   最佳答案
+     */
+    const answerCounts = new Map();
+
+    // 统计答案出现次数
+    for (const sample of samples) {
+      const answer = sample.finalAnswer;
+      answerCounts.set(answer, (answerCounts.get(answer) || 0) + 1);
+    }
+
+    // 找出出现次数最多的答案
+    let bestAnswer = '';
+    let maxCount = 0;
+
+    for (const [answer, count] of answerCounts) {
+      if (count > maxCount) {
+        maxCount = count;
+        bestAnswer = answer;
+      }
+    }
+
+    // 选择第一个最佳答案的样本
+    const bestSample = samples.find(s => s.finalAnswer === bestAnswer);
+
+    return {
+      ...bestSample,
+      consensus: maxCount / this.config.numSamples,
+      allSamples: samples
+    };
+  }
+}
+
+// 使用示例
+async function chainOfThoughtExample() {
+  const optimizer = new ChainOfThoughtOptimizer({
+    maxSteps: 5,
+    temperature: 0.7,
+    useSelfConsistency: true,
+    numSamples: 5
+  });
+
+  const prompt = '一个农场有鸡和兔子，共有 35 个头，94 只脚。问鸡和兔子各有多少只？';
+
+  const result = await optimizer.optimize(prompt);
+  console.log('推理步骤:', result.steps);
+  console.log('最终答案:', result.finalAnswer);
+  console.log('一致性:', result.consensus);
+}
+```
+
+### 自我验证
+
+自我验证通过让模型检查自己的答案来提升准确性。
+
+```javascript
+// inference/self-verification.js
+class SelfVerificationOptimizer {
+  constructor(config) {
+    /**
+     * 自我验证优化器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      maxIterations: config.maxIterations || 3,
+      verificationThreshold: config.verificationThreshold || 0.8,
+      ...config
+    };
+
+    this.llmClient = new LLMClient({
+      model: config.model || 'gpt-4',
+      temperature: 0.3
+    });
+  }
+
+  async verify(prompt, answer) {
+    /**
+     * 验证答案
+     * 
+     * 参数:
+     *   prompt: 问题
+     *   answer: 答案
+     * 
+     * 返回:
+     *   验证结果
+     */
+    const verificationPrompt = this._buildVerificationPrompt(prompt, answer);
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: verificationPrompt }]
+    });
+
+    return this._parseVerificationResponse(response);
+  }
+
+  async optimizeWithVerification(prompt) {
+    /**
+     * 带验证的优化推理
+     * 
+     * 参数:
+     *   prompt: 问题
+     * 
+     * 返回:
+     *   优化结果
+     */
+    let currentAnswer = null;
+    let currentConfidence = 0;
+    let iterations = 0;
+
+    while (iterations < this.config.maxIterations && 
+           currentConfidence < this.config.verificationThreshold) {
+      // 生成答案
+      if (currentAnswer === null) {
+        const response = await this.llmClient.complete({
+          messages: [{ role: 'user', content: prompt }]
+        });
+        currentAnswer = response.choices[0].message.content;
+      }
+
+      // 验证答案
+      const verification = await this.verify(prompt, currentAnswer);
+      currentConfidence = verification.confidence;
+
+      console.log(`迭代 ${iterations + 1}: 置信度 = ${currentConfidence}`);
+
+      if (currentConfidence < this.config.verificationThreshold) {
+        // 根据反馈改进答案
+        currentAnswer = await this._improveAnswer(
+          prompt,
+          currentAnswer,
+          verification.feedback
+        );
+      }
+
+      iterations++;
+    }
+
+    return {
+      answer: currentAnswer,
+      confidence: currentConfidence,
+      iterations
+    };
+  }
+
+  _buildVerificationPrompt(prompt, answer) {
+    /**
+     * 构建验证提示词
+     * 
+     * 参数:
+     *   prompt: 问题
+     *   answer: 答案
+     * 
+     * 返回:
+     *   验证提示词
+     */
+    return `请验证以下答案的正确性：
+
+问题: ${prompt}
+
+答案: ${answer}
+
+请评估：
+1. 答案是否正确？
+2. 推理过程是否合理？
+3. 是否存在逻辑错误？
+
+请按照以下格式回答：
+置信度: [0-1 之间的数值]
+反馈: [你的反馈意见]`;
+  }
+
+  _parseVerificationResponse(response) {
+    /**
+     * 解析验证响应
+     * 
+     * 参数:
+     *   response: LLM 响应
+     * 
+     * 返回:
+     *   解析结果
+     */
+    const content = response.choices[0].message.content;
+    const lines = content.split('\n');
+
+    let confidence = 0;
+    let feedback = '';
+
+    for (const line of lines) {
+      if (line.startsWith('置信度:')) {
+        const match = line.match(/置信度:\s*([\d.]+)/);
+        if (match) {
+          confidence = parseFloat(match[1]);
+        }
+      } else if (line.startsWith('反馈:')) {
+        feedback = line.replace('反馈:', '').trim();
+      }
+    }
+
+    return {
+      confidence,
+      feedback,
+      rawResponse: content
+    };
+  }
+
+  async _improveAnswer(prompt, currentAnswer, feedback) {
+    /**
+     * 改进答案
+     * 
+     * 参数:
+     *   prompt: 问题
+     *   currentAnswer: 当前答案
+     *   feedback: 反馈
+     * 
+     * 返回:
+     *   改进后的答案
+     */
+    const improvementPrompt = `根据以下反馈改进你的答案：
+
+问题: ${prompt}
+
+当前答案: ${currentAnswer}
+
+反馈: ${feedback}
+
+请提供改进后的答案。`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: improvementPrompt }]
+    });
+
+    return response.choices[0].message.content;
+  }
+}
+
+// 使用示例
+async function selfVerificationExample() {
+  const optimizer = new SelfVerificationOptimizer({
+    maxIterations: 3,
+    verificationThreshold: 0.8
+  });
+
+  const prompt = '计算 123 × 456 的结果。';
+
+  const result = await optimizer.optimizeWithVerification(prompt);
+  console.log('最终答案:', result.answer);
+  console.log('置信度:', result.confidence);
+  console.log('迭代次数:', result.iterations);
+}
+```
+
+### 多步推理
+
+多步推理通过分解复杂问题为多个子问题来提升推理能力。
+
+```javascript
+// inference/multi-step-reasoning.js
+class MultiStepReasoningOptimizer {
+  constructor(config) {
+    /**
+     * 多步推理优化器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      maxSteps: config.maxSteps || 10,
+      allowSubQuestions: config.allowSubQuestions !== false,
+      ...config
+    };
+
+    this.llmClient = new LLMClient({
+      model: config.model || 'gpt-4',
+      temperature: 0.5
+    });
+  }
+
+  async reason(prompt) {
+    /**
+     * 多步推理
+     * 
+     * 参数:
+     *   prompt: 提示词
+     * 
+     * 返回:
+     *   推理结果
+     */
+    // 分解问题
+    const decomposition = await this._decomposeProblem(prompt);
+
+    // 逐步解决
+    const steps = [];
+    let context = '';
+
+    for (let i = 0; i < decomposition.steps.length; i++) {
+      const step = decomposition.steps[i];
+
+      const stepResult = await this._solveStep(
+        step,
+        context,
+        decomposition.subQuestions[i] || []
+      );
+
+      steps.push({
+        step: i + 1,
+        description: step,
+        result: stepResult,
+        subQuestions: decomposition.subQuestions[i] || []
+      });
+
+      context += `\n步骤 ${i + 1}: ${step}\n结果: ${stepResult}\n`;
+    }
+
+    // 综合结果
+    const finalAnswer = await this._synthesizeAnswer(steps);
+
+    return {
+      steps,
+      finalAnswer,
+      decomposition
+    };
+  }
+
+  async _decomposeProblem(prompt) {
+    /**
+     * 分解问题
+     * 
+     * 参数:
+     *   prompt: 提示词
+     * 
+     * 返回:
+     *   分解结果
+     */
+    const decompositionPrompt = `请将以下问题分解为多个可执行的步骤：
+
+${prompt}
+
+请按照以下格式回答：
+步骤 1: [步骤描述]
+步骤 2: [步骤描述]
+...`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: decompositionPrompt }]
+    });
+
+    const steps = this._parseSteps(response.choices[0].message.content);
+
+    // 如果允许，生成子问题
+    let subQuestions = [];
+    if (this.config.allowSubQuestions) {
+      subQuestions = await this._generateSubQuestions(prompt, steps);
+    }
+
+    return {
+      steps,
+      subQuestions
+    };
+  }
+
+  _parseSteps(content) {
+    /**
+     * 解析步骤
+     * 
+     * 参数:
+     *   content: 内容
+     * 
+     * 返回:
+     *   步骤数组
+     */
+    const steps = [];
+    const lines = content.split('\n');
+
+    for (const line of lines) {
+      if (line.startsWith('步骤')) {
+        const match = line.match(/步骤\s*\d+:\s*(.+)/);
+        if (match) {
+          steps.push(match[1].trim());
+        }
+      }
+    }
+
+    return steps;
+  }
+
+  async _generateSubQuestions(prompt, steps) {
+    /**
+     * 生成子问题
+     * 
+     * 参数:
+     *   prompt: 原始问题
+     *   steps: 步骤数组
+     * 
+     * 返回:
+     *   子问题数组
+     */
+    const subQuestions = [];
+
+    for (const step of steps) {
+      const subQuestionPrompt = `为以下步骤生成需要回答的子问题：
+
+原始问题: ${prompt}
+
+步骤: ${step}
+
+请列出需要回答的子问题（每行一个）：`;
+
+      const response = await this.llmClient.complete({
+        messages: [{ role: 'user', content: subQuestionPrompt }]
+      });
+
+      const questions = response.choices[0].message.content
+        .split('\n')
+        .filter(line => line.trim())
+        .map(line => line.replace(/^\d+\.\s*/, '').trim());
+
+      subQuestions.push(questions);
+    }
+
+    return subQuestions;
+  }
+
+  async _solveStep(step, context, subQuestions) {
+    /**
+     * 解决步骤
+     * 
+     * 参数:
+     *   step: 步骤描述
+     *   context: 上下文
+     *   subQuestions: 子问题数组
+     * 
+     * 返回:
+     *   解决结果
+     */
+    let stepPrompt = `请完成以下步骤：
+
+步骤: ${step}
+
+`;
+
+    if (context) {
+      stepPrompt += `之前的步骤和结果：\n${context}\n`;
+    }
+
+    if (subQuestions.length > 0) {
+      stepPrompt += `需要回答的子问题：\n${subQuestions.join('\n')}\n`;
+    }
+
+    stepPrompt += `请提供该步骤的结果。`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: stepPrompt }]
+    });
+
+    return response.choices[0].message.content;
+  }
+
+  async _synthesizeAnswer(steps) {
+    /**
+     * 综合答案
+     * 
+     * 参数:
+     *   steps: 步骤数组
+     * 
+     * 返回:
+     *   综合答案
+     */
+    const synthesisPrompt = `根据以下步骤的结果，综合出最终答案：
+
+${steps.map((step, i) => 
+  `步骤 ${i + 1}: ${step.description}\n结果: ${step.result}`
+).join('\n\n')}
+
+请提供最终答案。`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: synthesisPrompt }]
+    });
+
+    return response.choices[0].message.content;
+  }
+}
+
+// 使用示例
+async function multiStepReasoningExample() {
+  const optimizer = new MultiStepReasoningOptimizer({
+    maxSteps: 10,
+    allowSubQuestions: true
+  });
+
+  const prompt = '设计一个完整的电商系统，包括用户管理、商品管理、订单管理和支付功能。';
+
+  const result = await optimizer.reason(prompt);
+  console.log('分解的步骤:', result.decomposition.steps);
+  console.log('推理步骤:', result.steps);
+  console.log('最终答案:', result.finalAnswer);
+}
+```
+
+## 📚 知识增强
+
+知识增强通过为模型提供额外的知识来提升其能力和准确性。
+
+### 参数化知识
+
+参数化知识是通过模型训练将知识编码到模型参数中的方式。
+
+```javascript
+// knowledge/parametric-knowledge.js
+class ParametricKnowledgeManager {
+  constructor(config) {
+    /**
+     * 参数化知识管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      modelPath: config.modelPath,
+      knowledgeBase: config.knowledgeBase || [],
+      ...config
+    };
+
+    this.llmClient = new LLMClient({
+      model: config.model || 'gpt-4',
+      temperature: 0.3
+    });
+
+    this.knowledgeIndex = this._buildKnowledgeIndex();
+  }
+
+  _buildKnowledgeIndex() {
+    /**
+     * 构建知识索引
+     * 
+     * 返回:
+     *   知识索引
+     */
+    const index = new Map();
+
+    for (const knowledge of this.config.knowledgeBase) {
+      const keywords = this._extractKeywords(knowledge.content);
+
+      for (const keyword of keywords) {
+        if (!index.has(keyword)) {
+          index.set(keyword, []);
+        }
+        index.get(keyword).push(knowledge);
+      }
+    }
+
+    return index;
+  }
+
+  _extractKeywords(content) {
+    /**
+     * 提取关键词
+     * 
+     * 参数:
+     *   content: 内容
+     * 
+     * 返回:
+     *   关键词数组
+     */
+    // 简化实现：使用分词
+    const words = content.toLowerCase()
+      .replace(/[^\w\s]/g, '')
+      .split(/\s+/)
+      .filter(word => word.length > 3);
+
+    return [...new Set(words)];
+  }
+
+  async query(queryText) {
+    /**
+     * 查询知识
+     * 
+     * 参数:
+     *   queryText: 查询文本
+     * 
+     * 返回:
+     *   查询结果
+     */
+    // 检索相关知识
+    const relevantKnowledge = this._retrieveKnowledge(queryText);
+
+    // 使用模型生成答案
+    const prompt = this._buildQueryPrompt(queryText, relevantKnowledge);
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    return {
+      answer: response.choices[0].message.content,
+      usedKnowledge: relevantKnowledge,
+      confidence: this._calculateConfidence(relevantKnowledge)
+    };
+  }
+
+  _retrieveKnowledge(queryText) {
+    /**
+     * 检索知识
+     * 
+     * 参数:
+     *   queryText: 查询文本
+     * 
+     * 返回:
+     *   相关知识数组
+     */
+    const keywords = this._extractKeywords(queryText);
+    const knowledgeScores = new Map();
+
+    for (const keyword of keywords) {
+      const knowledgeList = this.knowledgeIndex.get(keyword);
+
+      if (knowledgeList) {
+        for (const knowledge of knowledgeList) {
+          knowledgeScores.set(
+            knowledge,
+            (knowledgeScores.get(knowledge) || 0) + 1
+          );
+        }
+      }
+    }
+
+    // 排序并返回前 N 个
+    const sorted = Array.from(knowledgeScores.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    return sorted.map(entry => entry[0]);
+  }
+
+  _buildQueryPrompt(queryText, relevantKnowledge) {
+    /**
+     * 构建查询提示词
+     * 
+     * 参数:
+     *   queryText: 查询文本
+     *   relevantKnowledge: 相关知识
+     * 
+     * 返回:
+     *   提示词
+     */
+    let prompt = `基于以下知识回答问题：\n\n`;
+
+    for (const knowledge of relevantKnowledge) {
+      prompt += `知识: ${knowledge.content}\n\n`;
+    }
+
+    prompt += `问题: ${queryText}\n\n请提供答案。`;
+
+    return prompt;
+  }
+
+  _calculateConfidence(relevantKnowledge) {
+    /**
+     * 计算置信度
+     * 
+     * 参数:
+     *   relevantKnowledge: 相关知识
+     * 
+     * 返回:
+     *   置信度
+     */
+    if (relevantKnowledge.length === 0) {
+      return 0;
+    }
+
+    // 简化实现：基于知识数量
+    return Math.min(relevantKnowledge.length / 3, 1);
+  }
+
+  async addKnowledge(knowledge) {
+    /**
+     * 添加知识
+     * 
+     * 参数:
+     *   knowledge: 知识对象
+     */
+    this.config.knowledgeBase.push(knowledge);
+
+    // 更新索引
+    const keywords = this._extractKeywords(knowledge.content);
+
+    for (const keyword of keywords) {
+      if (!this.knowledgeIndex.has(keyword)) {
+        this.knowledgeIndex.set(keyword, []);
+      }
+      this.knowledgeIndex.get(keyword).push(knowledge);
+    }
+  }
+}
+
+// 使用示例
+async function parametricKnowledgeExample() {
+  const manager = new ParametricKnowledgeManager({
+    model: 'gpt-4',
+    knowledgeBase: [
+      { id: 1, content: 'Python 是一种高级编程语言，由 Guido van Rossum 于 1991 年创建。' },
+      { id: 2, content: 'JavaScript 是一种脚本语言，主要用于 Web 开发。' },
+      { id: 3, content: '机器学习是人工智能的一个子领域，专注于算法和统计模型。' }
+    ]
+  });
+
+  const result = await manager.query('什么是 Python？');
+  console.log('答案:', result.answer);
+  console.log('使用的知识:', result.usedKnowledge);
+  console.log('置信度:', result.confidence);
+}
+```
+
+### 非参数化知识
+
+非参数化知识通过外部知识库和检索系统为模型提供知识。
+
+```javascript
+// knowledge/non-parametric-knowledge.js
+class NonParametricKnowledgeManager {
+  constructor(config) {
+    /**
+     * 非参数化知识管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      vectorStore: config.vectorStore,
+      embeddingModel: config.embeddingModel || 'text-embedding-ada-002',
+      topK: config.topK || 5,
+      ...config
+    };
+
+    this.llmClient = new LLMClient({
+      model: config.model || 'gpt-4',
+      temperature: 0.3
+    });
+
+    this.embeddingClient = new EmbeddingClient({
+      model: this.config.embeddingModel
+    });
+  }
+
+  async query(queryText) {
+    /**
+     * 查询知识
+     * 
+     * 参数:
+     *   queryText: 查询文本
+     * 
+     * 返回:
+     *   查询结果
+     */
+    // 生成查询向量
+    const queryEmbedding = await this.embeddingClient.embed(queryText);
+
+    // 检索相关知识
+    const relevantDocs = await this._retrieveDocuments(queryEmbedding);
+
+    // 生成答案
+    const prompt = this._buildRAGPrompt(queryText, relevantDocs);
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    return {
+      answer: response.choices[0].message.content,
+      sourceDocuments: relevantDocs,
+      confidence: this._calculateConfidence(relevantDocs)
+    };
+  }
+
+  async _retrieveDocuments(queryEmbedding) {
+    /**
+     * 检索文档
+     * 
+     * 参数:
+     *   queryEmbedding: 查询向量
+     * 
+     * 返回:
+     *   相关文档数组
+     */
+    // 简化实现：假设有向量存储
+    const documents = [];
+
+    // 模拟检索
+    for (let i = 0; i < this.config.topK; i++) {
+      documents.push({
+        id: `doc_${i}`,
+        content: `这是文档 ${i + 1} 的内容...`,
+        score: 0.9 - i * 0.1
+      });
+    }
+
+    return documents;
+  }
+
+  _buildRAGPrompt(queryText, relevantDocs) {
+    /**
+     * 构建 RAG 提示词
+     * 
+     * 参数:
+     *   queryText: 查询文本
+     *   relevantDocs: 相关文档
+     * 
+     * 返回:
+     *   提示词
+     */
+    let prompt = `基于以下文档回答问题：\n\n`;
+
+    for (const doc of relevantDocs) {
+      prompt += `文档 ${doc.id}:\n${doc.content}\n\n`;
+    }
+
+    prompt += `问题: ${queryText}\n\n请提供答案，并引用相关文档。`;
+
+    return prompt;
+  }
+
+  _calculateConfidence(relevantDocs) {
+    /**
+     * 计算置信度
+     * 
+     * 参数:
+     *   relevantDocs: 相关文档
+     * 
+     * 返回:
+     *   置信度
+     */
+    if (relevantDocs.length === 0) {
+      return 0;
+    }
+
+    // 基于检索分数
+    const avgScore = relevantDocs.reduce((sum, doc) => sum + doc.score, 0) / relevantDocs.length;
+    return avgScore;
+  }
+
+  async addDocument(document) {
+    /**
+     * 添加文档
+     * 
+     * 参数:
+     *   document: 文档对象
+     */
+    // 生成文档向量
+    const embedding = await this.embeddingClient.embed(document.content);
+
+    // 存储到向量存储
+    await this.config.vectorStore.add({
+      id: document.id,
+      embedding,
+      metadata: document.metadata
+    });
+  }
+}
+
+// 使用示例
+async function nonParametricKnowledgeExample() {
+  const manager = new NonParametricKnowledgeManager({
+    model: 'gpt-4',
+    vectorStore: new VectorStore(),
+    topK: 5
+  });
+
+  const result = await manager.query('什么是机器学习？');
+  console.log('答案:', result.answer);
+  console.log('源文档:', result.sourceDocuments);
+  console.log('置信度:', result.confidence);
+}
+```
+
+### 混合检索
+
+混合检索结合多种检索方法来提升知识检索的准确性和覆盖面。
+
+```javascript
+// knowledge/hybrid-retrieval.js
+class HybridRetrievalManager {
+  constructor(config) {
+    /**
+     * 混合检索管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      vectorStore: config.vectorStore,
+      keywordStore: config.keywordStore,
+      embeddingModel: config.embeddingModel || 'text-embedding-ada-002',
+      vectorWeight: config.vectorWeight || 0.7,
+      keywordWeight: config.keywordWeight || 0.3,
+      topK: config.topK || 10,
+      ...config
+    };
+
+    this.llmClient = new LLMClient({
+      model: config.model || 'gpt-4',
+      temperature: 0.3
+    });
+
+    this.embeddingClient = new EmbeddingClient({
+      model: this.config.embeddingModel
+    });
+  }
+
+  async query(queryText) {
+    /**
+     * 混合查询
+     * 
+     * 参数:
+     *   queryText: 查询文本
+     * 
+     * 返回:
+     *   查询结果
+     */
+    // 并行检索
+    const [vectorResults, keywordResults] = await Promise.all([
+      this._vectorRetrieval(queryText),
+      this._keywordRetrieval(queryText)
+    ]);
+
+    // 融合结果
+    const fusedResults = this._fuseResults(
+      vectorResults,
+      keywordResults
+    );
+
+    // 生成答案
+    const prompt = this._buildRAGPrompt(queryText, fusedResults);
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    return {
+      answer: response.choices[0].message.content,
+      sourceDocuments: fusedResults,
+      vectorResults,
+      keywordResults
+    };
+  }
+
+  async _vectorRetrieval(queryText) {
+    /**
+     * 向量检索
+     * 
+     * 参数:
+     *   queryText: 查询文本
+     * 
+     * 返回:
+     *   向量检索结果
+     */
+    const queryEmbedding = await this.embeddingClient.embed(queryText);
+
+    // 简化实现
+    const results = [];
+
+    for (let i = 0; i < this.config.topK; i++) {
+      results.push({
+        id: `doc_${i}`,
+        content: `向量检索文档 ${i + 1}`,
+        score: 0.9 - i * 0.1,
+        type: 'vector'
+      });
+    }
+
+    return results;
+  }
+
+  async _keywordRetrieval(queryText) {
+    /**
+     * 关键词检索
+     * 
+     * 参数:
+     *   queryText: 查询文本
+     * 
+     * 返回:
+     *   关键词检索结果
+     */
+    const keywords = this._extractKeywords(queryText);
+
+    // 简化实现
+    const results = [];
+
+    for (let i = 0; i < this.config.topK; i++) {
+      results.push({
+        id: `doc_${i + 100}`,
+        content: `关键词检索文档 ${i + 1}`,
+        score: 0.8 - i * 0.1,
+        type: 'keyword'
+      });
+    }
+
+    return results;
+  }
+
+  _extractKeywords(text) {
+    /**
+     * 提取关键词
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   关键词数组
+     */
+    return text.toLowerCase()
+      .replace(/[^\w\s]/g, '')
+      .split(/\s+/)
+      .filter(word => word.length > 3);
+  }
+
+  _fuseResults(vectorResults, keywordResults) {
+    /**
+     * 融合结果
+     * 
+     * 参数:
+     *   vectorResults: 向量检索结果
+     *   keywordResults: 关键词检索结果
+     * 
+     * 返回:
+     *   融合结果
+     */
+    const fusedMap = new Map();
+
+    // 处理向量检索结果
+    for (const result of vectorResults) {
+      const score = result.score * this.config.vectorWeight;
+      fusedMap.set(result.id, {
+        ...result,
+        fusedScore: score,
+        sources: ['vector']
+      });
+    }
+
+    // 处理关键词检索结果
+    for (const result of keywordResults) {
+      const score = result.score * this.config.keywordWeight;
+
+      if (fusedMap.has(result.id)) {
+        const existing = fusedMap.get(result.id);
+        existing.fusedScore += score;
+        existing.sources.push('keyword');
+      } else {
+        fusedMap.set(result.id, {
+          ...result,
+          fusedScore: score,
+          sources: ['keyword']
+        });
+      }
+    }
+
+    // 排序并返回
+    return Array.from(fusedMap.values())
+      .sort((a, b) => b.fusedScore - a.fusedScore)
+      .slice(0, this.config.topK);
+  }
+
+  _buildRAGPrompt(queryText, relevantDocs) {
+    /**
+     * 构建 RAG 提示词
+     * 
+     * 参数:
+     *   queryText: 查询文本
+     *   relevantDocs: 相关文档
+     * 
+     * 返回:
+     *   提示词
+     */
+    let prompt = `基于以下文档回答问题：\n\n`;
+
+    for (const doc of relevantDocs) {
+      prompt += `文档 ${doc.id} (${doc.sources.join(', ')}):\n${doc.content}\n\n`;
+    }
+
+    prompt += `问题: ${queryText}\n\n请提供答案。`;
+
+    return prompt;
+  }
+}
+
+// 使用示例
+async function hybridRetrievalExample() {
+  const manager = new HybridRetrievalManager({
+    model: 'gpt-4',
+    vectorStore: new VectorStore(),
+    keywordStore: new KeywordStore(),
+    vectorWeight: 0.7,
+    keywordWeight: 0.3,
+    topK: 10
+  });
+
+  const result = await manager.query('什么是深度学习？');
+  console.log('答案:', result.answer);
+  console.log('融合结果:', result.sourceDocuments);
+}
+```
+
+## 🛠️ 工具学习
+
+工具学习使模型能够发现、组合和创造工具来扩展其能力。
+
+### 工具发现
+
+工具发现使模型能够自动发现和选择合适的工具来完成任务。
+
+```javascript
+// tools/tool-discovery.js
+class ToolDiscoveryManager {
+  constructor(config) {
+    /**
+     * 工具发现管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      toolRegistry: config.toolRegistry || new Map(),
+      maxDiscoveryAttempts: config.maxDiscoveryAttempts || 3,
+      ...config
+    };
+
+    this.llmClient = new LLMClient({
+      model: config.model || 'gpt-4',
+      temperature: 0.3
+    });
+  }
+
+  async discoverTools(task) {
+    /**
+     * 发现工具
+     * 
+     * 参数:
+     *   task: 任务描述
+     * 
+     * 返回:
+     *   发现的工具
+     */
+    // 分析任务需求
+    const taskAnalysis = await this._analyzeTask(task);
+
+    // 搜索相关工具
+    const candidateTools = await this._searchTools(taskAnalysis);
+
+    // 评估工具适用性
+    const evaluatedTools = await this._evaluateTools(task, candidateTools);
+
+    // 选择最佳工具
+    const selectedTools = this._selectBestTools(evaluatedTools);
+
+    return {
+      task,
+      taskAnalysis,
+      candidateTools,
+      selectedTools
+    };
+  }
+
+  async _analyzeTask(task) {
+    /**
+     * 分析任务
+     * 
+     * 参数:
+     *   task: 任务描述
+     * 
+     * 返回:
+     *   任务分析结果
+     */
+    const analysisPrompt = `分析以下任务，提取关键信息：
+
+任务: ${task}
+
+请提供：
+1. 任务类型
+2. 所需功能
+3. 输入输出格式
+4. 约束条件`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: analysisPrompt }]
+    });
+
+    return this._parseTaskAnalysis(response.choices[0].message.content);
+  }
+
+  _parseTaskAnalysis(content) {
+    /**
+     * 解析任务分析
+     * 
+     * 参数:
+     *   content: 内容
+     * 
+     * 返回:
+     *   分析结果
+     */
+    const lines = content.split('\n');
+    const result = {};
+
+    for (const line of lines) {
+      const match = line.match(/^(\d+)\.\s*(.+):\s*(.+)$/);
+      if (match) {
+        result[match[2]] = match[3];
+      }
+    }
+
+    return result;
+  }
+
+  async _searchTools(taskAnalysis) {
+    /**
+     * 搜索工具
+     * 
+     * 参数:
+     *   taskAnalysis: 任务分析结果
+     * 
+     * 返回:
+     *   候选工具数组
+     */
+    const candidates = [];
+
+    // 简化实现：从注册表中搜索
+    for (const [toolId, toolInfo] of this.config.toolRegistry) {
+      // 检查工具是否匹配任务需求
+      if (this._matchesRequirements(toolInfo, taskAnalysis)) {
+        candidates.push({
+          id: toolId,
+          ...toolInfo
+        });
+      }
+    }
+
+    return candidates;
+  }
+
+  _matchesRequirements(toolInfo, taskAnalysis) {
+    /**
+     * 检查是否匹配需求
+     * 
+     * 参数:
+     *   toolInfo: 工具信息
+     *   taskAnalysis: 任务分析结果
+     * 
+     * 返回:
+     *   是否匹配
+     */
+    // 简化实现：检查关键词匹配
+    const taskKeywords = Object.values(taskAnalysis).join(' ').toLowerCase();
+    const toolKeywords = Object.values(toolInfo).join(' ').toLowerCase();
+
+    return taskKeywords.split(/\s+/).some(keyword => 
+      toolKeywords.includes(keyword)
+    );
+  }
+
+  async _evaluateTools(task, candidateTools) {
+    /**
+     * 评估工具
+     * 
+     * 参数:
+     *   task: 任务
+     *   candidateTools: 候选工具
+     * 
+     * 返回:
+     *   评估后的工具
+     */
+    const evaluated = [];
+
+    for (const tool of candidateTools) {
+      const evaluation = await this._evaluateSingleTool(task, tool);
+      evaluated.push({
+        ...tool,
+        evaluation
+      });
+    }
+
+    return evaluated;
+  }
+
+  async _evaluateSingleTool(task, tool) {
+    /**
+     * 评估单个工具
+     * 
+     * 参数:
+     *   task: 任务
+     *   tool: 工具
+     * 
+     * 返回:
+     *   评估结果
+     */
+    const evaluationPrompt = `评估以下工具是否适合完成指定任务：
+
+任务: ${task}
+
+工具:
+- 名称: ${tool.name}
+- 功能: ${tool.description}
+- 输入: ${tool.input}
+- 输出: ${tool.output}
+
+请评估：
+1. 适用性 (0-1)
+2. 可靠性 (0-1)
+3. 效率 (0-1)
+4. 综合评分 (0-1)`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: evaluationPrompt }]
+    });
+
+    return this._parseEvaluation(response.choices[0].message.content);
+  }
+
+  _parseEvaluation(content) {
+    /**
+     * 解析评估结果
+     * 
+     * 参数:
+     *   content: 内容
+     * 
+     * 返回:
+     *   评估结果
+     */
+    const lines = content.split('\n');
+    const result = {};
+
+    for (const line of lines) {
+      const match = line.match(/^(\d+)\.\s*(.+):\s*([\d.]+)$/);
+      if (match) {
+        result[match[2]] = parseFloat(match[3]);
+      }
+    }
+
+    return result;
+  }
+
+  _selectBestTools(evaluatedTools) {
+    /**
+     * 选择最佳工具
+     * 
+     * 参数:
+     *   evaluatedTools: 评估后的工具
+     * 
+     * 返回:
+     *   最佳工具数组
+     */
+    // 按综合评分排序
+    evaluatedTools.sort((a, b) => 
+      b.evaluation['综合评分'] - a.evaluation['综合评分']
+    );
+
+    // 返回评分最高的工具
+    return evaluatedTools.filter(tool => 
+      tool.evaluation['综合评分'] > 0.5
+    );
+  }
+
+  registerTool(toolId, toolInfo) {
+    /**
+     * 注册工具
+     * 
+     * 参数:
+     *   toolId: 工具 ID
+     *   toolInfo: 工具信息
+     */
+    this.config.toolRegistry.set(toolId, toolInfo);
+  }
+}
+
+// 使用示例
+async function toolDiscoveryExample() {
+  const manager = new ToolDiscoveryManager({
+    model: 'gpt-4'
+  });
+
+  // 注册工具
+  manager.registerTool('calculator', {
+    name: '计算器',
+    description: '执行数学计算',
+    input: '数学表达式',
+    output: '计算结果'
+  });
+
+  manager.registerTool('web_search', {
+    name: '网络搜索',
+    description: '搜索网络信息',
+    input: '搜索查询',
+    output: '搜索结果'
+  });
+
+  // 发现工具
+  const result = await manager.discoverTools('计算 123 + 456 的结果');
+  console.log('发现的工具:', result.selectedTools);
+}
+```
+
+### 工具组合
+
+工具组合使模型能够将多个工具组合起来完成复杂任务。
+
+```javascript
+// tools/tool-composition.js
+class ToolCompositionManager {
+  constructor(config) {
+    /**
+     * 工具组合管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      toolRegistry: config.toolRegistry || new Map(),
+      maxCompositionDepth: config.maxCompositionDepth || 3,
+      ...config
+    };
+
+    this.llmClient = new LLMClient({
+      model: config.model || 'gpt-4',
+      temperature: 0.3
+    });
+  }
+
+  async composeTools(task) {
+    /**
+     * 组合工具
+     * 
+     * 参数:
+     *   task: 任务描述
+     * 
+     * 返回:
+     *   组合结果
+     */
+    // 分解任务
+    const decomposition = await this._decomposeTask(task);
+
+    // 为每个子任务选择工具
+    const toolAssignments = await this._assignTools(decomposition);
+
+    // 构建工作流
+    const workflow = this._buildWorkflow(toolAssignments);
+
+    // 执行工作流
+    const executionResult = await this._executeWorkflow(workflow);
+
+    return {
+      task,
+      decomposition,
+      toolAssignments,
+      workflow,
+      executionResult
+    };
+  }
+
+  async _decomposeTask(task) {
+    /**
+     * 分解任务
+     * 
+     * 参数:
+     *   task: 任务描述
+     * 
+     * 返回:
+     *   任务分解结果
+     */
+    const decompositionPrompt = `将以下任务分解为多个子任务：
+
+任务: ${task}
+
+请列出子任务（每行一个）：`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: decompositionPrompt }]
+    });
+
+    const subTasks = response.choices[0].message.content
+      .split('\n')
+      .filter(line => line.trim())
+      .map((line, index) => ({
+        id: `subtask_${index}`,
+        description: line.replace(/^\d+\.\s*/, '').trim()
+      }));
+
+    return subTasks;
+  }
+
+  async _assignTools(subTasks) {
+    /**
+     * 分配工具
+     * 
+     * 参数:
+     *   subTasks: 子任务数组
+     * 
+     * 返回:
+     *   工具分配结果
+     */
+    const assignments = [];
+
+    for (const subTask of subTasks) {
+      const tool = await this._selectToolForTask(subTask);
+      assignments.push({
+        subTask,
+        tool
+      });
+    }
+
+    return assignments;
+  }
+
+  async _selectToolForTask(subTask) {
+    /**
+     * 为任务选择工具
+     * 
+     * 参数:
+     *   subTask: 子任务
+     * 
+     * 返回:
+     *   选择的工具
+     */
+    const selectionPrompt = `为以下子任务选择最合适的工具：
+
+子任务: ${subTask.description}
+
+可用工具:
+${Array.from(this.config.toolRegistry.entries())
+  .map(([id, info]) => `- ${id}: ${info.description}`)
+  .join('\n')}
+
+请返回工具 ID。`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: selectionPrompt }]
+    });
+
+    const toolId = response.choices[0].message.content.trim();
+    return this.config.toolRegistry.get(toolId);
+  }
+
+  _buildWorkflow(toolAssignments) {
+    /**
+     * 构建工作流
+     * 
+     * 参数:
+     *   toolAssignments: 工具分配结果
+     * 
+     * 返回:
+     *   工作流
+     */
+    const steps = [];
+
+    for (const assignment of toolAssignments) {
+      steps.push({
+        subTask: assignment.subTask,
+        tool: assignment.tool,
+        dependencies: [] // 简化实现：无依赖
+      });
+    }
+
+    return {
+      steps,
+      graph: this._buildDependencyGraph(steps)
+    };
+  }
+
+  _buildDependencyGraph(steps) {
+    /**
+     * 构建依赖图
+     * 
+     * 参数:
+     *   steps: 步骤数组
+     * 
+     * 返回:
+     *   依赖图
+     */
+    // 简化实现：线性依赖
+    const graph = {};
+
+    for (let i = 0; i < steps.length; i++) {
+      graph[steps[i].subTask.id] = {
+        dependencies: i > 0 ? [steps[i - 1].subTask.id] : [],
+        dependents: i < steps.length - 1 ? [steps[i + 1].subTask.id] : []
+      };
+    }
+
+    return graph;
+  }
+
+  async _executeWorkflow(workflow) {
+    /**
+     * 执行工作流
+     * 
+     * 参数:
+     *   workflow: 工作流
+     * 
+     * 返回:
+     *   执行结果
+     */
+    const results = [];
+    let context = {};
+
+    for (const step of workflow.steps) {
+      const stepResult = await this._executeStep(step, context);
+      results.push({
+        subTask: step.subTask,
+        result: stepResult
+      });
+
+      context[step.subTask.id] = stepResult;
+    }
+
+    return results;
+  }
+
+  async _executeStep(step, context) {
+    /**
+     * 执行步骤
+     * 
+     * 参数:
+     *   step: 步骤
+     *   context: 上下文
+     * 
+     * 返回:
+     *   执行结果
+     */
+    // 简化实现：调用工具
+    const tool = step.tool;
+
+    // 构建工具输入
+    const input = this._buildToolInput(step, context);
+
+    // 执行工具
+    const result = await this._executeTool(tool, input);
+
+    return result;
+  }
+
+  _buildToolInput(step, context) {
+    /**
+     * 构建工具输入
+     * 
+     * 参数:
+     *   step: 步骤
+     *   context: 上下文
+     * 
+     * 返回:
+     *   工具输入
+     */
+    // 简化实现：使用子任务描述
+    return step.subTask.description;
+  }
+
+  async _executeTool(tool, input) {
+    /**
+     * 执行工具
+     * 
+     * 参数:
+     *   tool: 工具
+     *   input: 输入
+     * 
+     * 返回:
+     *   执行结果
+     */
+    // 简化实现：模拟工具执行
+    return `工具 ${tool.name} 的执行结果`;
+  }
+
+  registerTool(toolId, toolInfo) {
+    /**
+     * 注册工具
+     * 
+     * 参数:
+     *   toolId: 工具 ID
+     *   toolInfo: 工具信息
+     */
+    this.config.toolRegistry.set(toolId, toolInfo);
+  }
+}
+
+// 使用示例
+async function toolCompositionExample() {
+  const manager = new ToolCompositionManager({
+    model: 'gpt-4'
+  });
+
+  // 注册工具
+  manager.registerTool('web_search', {
+    name: '网络搜索',
+    description: '搜索网络信息',
+    execute: async (input) => `搜索结果: ${input}`
+  });
+
+  manager.registerTool('data_analyzer', {
+    name: '数据分析器',
+    description: '分析数据',
+    execute: async (input) => `分析结果: ${input}`
+  });
+
+  manager.registerTool('report_generator', {
+    name: '报告生成器',
+    description: '生成报告',
+    execute: async (input) => `报告: ${input}`
+  });
+
+  // 组合工具
+  const result = await manager.composeTools('搜索最新 AI 研究并生成分析报告');
+  console.log('工作流:', result.workflow);
+  console.log('执行结果:', result.executionResult);
+}
+```
+
+### 工具创造
+
+工具创造使模型能够根据需求创建新的工具。
+
+```javascript
+// tools/tool-creation.js
+class ToolCreationManager {
+  constructor(config) {
+    /**
+     * 工具创造管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      toolRegistry: config.toolRegistry || new Map(),
+      maxCreationAttempts: config.maxCreationAttempts || 3,
+      ...config
+    };
+
+    this.llmClient = new LLMClient({
+      model: config.model || 'gpt-4',
+      temperature: 0.5
+    });
+  }
+
+  async createTool(requirement) {
+    /**
+     * 创建工具
+     * 
+     * 参数:
+     *   requirement: 需求描述
+     * 
+     * 返回:
+     *   创建的工具
+     */
+    // 分析需求
+    const analysis = await this._analyzeRequirement(requirement);
+
+    // 检查是否已有类似工具
+    const existingTools = await this._checkExistingTools(analysis);
+
+    if (existingTools.length > 0) {
+      return {
+        requirement,
+        analysis,
+        existingTools,
+        suggestion: '已有类似工具，建议使用现有工具'
+      };
+    }
+
+    // 设计工具
+    const toolDesign = await this._designTool(analysis);
+
+    // 实现工具
+    const toolImplementation = await this._implementTool(toolDesign);
+
+    // 测试工具
+    const testResult = await this._testTool(toolImplementation);
+
+    // 注册工具
+    const toolId = `custom_${Date.now()}`;
+    this.registerTool(toolId, toolImplementation);
+
+    return {
+      requirement,
+      analysis,
+      toolDesign,
+      toolImplementation,
+      testResult,
+      toolId
+    };
+  }
+
+  async _analyzeRequirement(requirement) {
+    /**
+     * 分析需求
+     * 
+     * 参数:
+     *   requirement: 需求描述
+     * 
+     * 返回:
+     *   需求分析结果
+     */
+    const analysisPrompt = `分析以下工具需求：
+
+需求: ${requirement}
+
+请提供：
+1. 工具功能
+2. 输入格式
+3. 输出格式
+4. 关键算法
+5. 依赖项`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: analysisPrompt }]
+    });
+
+    return this._parseAnalysis(response.choices[0].message.content);
+  }
+
+  _parseAnalysis(content) {
+    /**
+     * 解析分析结果
+     * 
+     * 参数:
+     *   content: 内容
+     * 
+     * 返回:
+     *   分析结果
+     */
+    const lines = content.split('\n');
+    const result = {};
+
+    for (const line of lines) {
+      const match = line.match(/^(\d+)\.\s*(.+):\s*(.+)$/);
+      if (match) {
+        result[match[2]] = match[3];
+      }
+    }
+
+    return result;
+  }
+
+  async _checkExistingTools(analysis) {
+    /**
+     * 检查现有工具
+     * 
+     * 参数:
+     *   analysis: 需求分析结果
+     * 
+     * 返回:
+     *   现有工具数组
+     */
+    const existing = [];
+
+    for (const [toolId, toolInfo] of this.config.toolRegistry) {
+      // 简化实现：检查功能相似性
+      if (this._isSimilar(toolInfo, analysis)) {
+        existing.push({
+          id: toolId,
+          ...toolInfo
+        });
+      }
+    }
+
+    return existing;
+  }
+
+  _isSimilar(toolInfo, analysis) {
+    /**
+     * 检查是否相似
+     * 
+     * 参数:
+     *   toolInfo: 工具信息
+     *   analysis: 需求分析结果
+     * 
+     * 返回:
+     *   是否相似
+     */
+    // 简化实现：检查关键词匹配
+    const analysisKeywords = Object.values(analysis).join(' ').toLowerCase();
+    const toolKeywords = Object.values(toolInfo).join(' ').toLowerCase();
+
+    return analysisKeywords.split(/\s+/).some(keyword => 
+      toolKeywords.includes(keyword)
+    );
+  }
+
+  async _designTool(analysis) {
+    /**
+     * 设计工具
+     * 
+     * 参数:
+     *   analysis: 需求分析结果
+     * 
+     * 返回:
+     *   工具设计
+     */
+    const designPrompt = `基于以下分析设计一个工具：
+
+分析:
+${Object.entries(analysis)
+  .map(([key, value]) => `${key}: ${value}`)
+  .join('\n')}
+
+请提供：
+1. 工具名称
+2. 工具描述
+3. API 接口设计
+4. 算法流程
+5. 错误处理`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: designPrompt }]
+    });
+
+    return this._parseDesign(response.choices[0].message.content);
+  }
+
+  _parseDesign(content) {
+    /**
+     * 解析设计结果
+     * 
+     * 参数:
+     *   content: 内容
+     * 
+     * 返回:
+     *   设计结果
+     */
+    const lines = content.split('\n');
+    const result = {};
+
+    for (const line of lines) {
+      const match = line.match(/^(\d+)\.\s*(.+):\s*(.+)$/);
+      if (match) {
+        result[match[2]] = match[3];
+      }
+    }
+
+    return result;
+  }
+
+  async _implementTool(toolDesign) {
+    /**
+     * 实现工具
+     * 
+     * 参数:
+     *   toolDesign: 工具设计
+     * 
+     * 返回:
+     *   工具实现
+     */
+    const implementationPrompt = `基于以下设计实现工具代码：
+
+设计:
+${Object.entries(toolDesign)
+  .map(([key, value]) => `${key}: ${value}`)
+  .join('\n')}
+
+请提供 JavaScript 实现。`;
+
+    const response = await this.llmClient.complete({
+      messages: [{ role: 'user', content: implementationPrompt }]
+    });
+
+    const code = response.choices[0].message.content;
+
+    return {
+      name: toolDesign['工具名称'],
+      description: toolDesign['工具描述'],
+      code,
+      execute: this._createExecutable(code)
+    };
+  }
+
+  _createExecutable(code) {
+    /**
+     * 创建可执行函数
+     * 
+     * 参数:
+     *   code: 代码
+     * 
+     * 返回:
+     *   可执行函数
+     */
+    // 简化实现：使用 eval（生产环境应使用更安全的方式）
+    try {
+      const func = new Function('input', code);
+      return async (input) => func(input);
+    } catch (error) {
+      return async (input) => `执行错误: ${error.message}`;
+    }
+  }
+
+  async _testTool(toolImplementation) {
+    /**
+     * 测试工具
+     * 
+     * 参数:
+     *   toolImplementation: 工具实现
+     * 
+     * 返回:
+     *   测试结果
+     */
+    // 简化实现：使用测试输入
+    const testInput = 'test input';
+    const testOutput = await toolImplementation.execute(testInput);
+
+    return {
+      passed: testOutput !== null,
+      input: testInput,
+      output: testOutput
+    };
+  }
+
+  registerTool(toolId, toolInfo) {
+    /**
+     * 注册工具
+     * 
+     * 参数:
+     *   toolId: 工具 ID
+     *   toolInfo: 工具信息
+     */
+    this.config.toolRegistry.set(toolId, toolInfo);
+  }
+}
+
+// 使用示例
+async function toolCreationExample() {
+  const manager = new ToolCreationManager({
+    model: 'gpt-4'
+  });
+
+  // 创建工具
+  const result = await manager.createTool('创建一个工具，可以将文本转换为大写');
+  console.log('创建的工具:', result.toolImplementation);
+  console.log('测试结果:', result.testResult);
+}
+```
+
+## 📊 技术对比
+
+### 推理时优化方法对比
+
+| 方法 | 优点 | 缺点 | 适用场景 |
+|------|------|------|---------|
+| **思维链优化** | 提升推理能力 | 增加计算成本 | 复杂推理任务 |
+| **自我验证** | 提高准确性 | 增加推理时间 | 高精度要求任务 |
+| **多步推理** | 处理复杂问题 | 需要任务分解 | 多步骤任务 |
+
+### 知识增强方法对比
+
+| 方法 | 优点 | 缺点 | 适用场景 |
+|------|------|------|---------|
+| **参数化知识** | 快速访问 | 难以更新 | 稳定知识 |
+| **非参数化知识** | 易于更新 | 需要检索 | 动态知识 |
+| **混合检索** | 综合优势 | 复杂度高 | 综合知识需求 |
+
+### 工具学习方法对比
+
+| 方法 | 优点 | 缺点 | 适用场景 |
+|------|------|------|---------|
+| **工具发现** | 自动化选择 | 需要工具注册 | 工具库丰富 |
+| **工具组合** | 处理复杂任务 | 依赖分解准确性 | 复杂工作流 |
+| **工具创造** | 扩展能力 | 需要测试验证 | 新功能需求 |
+
+## 🎓 学习路径
+
+### 初级阶段
+1. 理解推理时优化基本概念
+2. 掌握知识增强原理
+3. 学习工具学习基础
+
+### 中级阶段
+1. 实现思维链优化
+2. 掌握 RAG 技术
+3. 实现工具发现
+
+### 高级阶段
+1. 深入理解多步推理
+2. 优化混合检索
+3. 实现工具创造
+
+## 🔗 相关资源
+
+### 推理时优化
+- [Chain of Thought Prompting](https://arxiv.org/abs/2201.11903)
+- [Self-Consistency](https://arxiv.org/abs/2203.11171)
+- [Tree of Thoughts](https://arxiv.org/abs/2305.10601)
+
+### 知识增强
+- [RAG Paper](https://arxiv.org/abs/2005.11401)
+- [Hybrid Retrieval](https://arxiv.org/abs/2201.10099)
+- [Knowledge Distillation](https://arxiv.org/abs/1503.02531)
+
+### 工具学习
+- [Toolformer](https://arxiv.org/abs/2302.04761)
+- [Chameleon](https://arxiv.org/abs/2304.09842)
+- [Gorilla](https://arxiv.org/abs/2305.15334)
+
+## 📝 学习检查点
+
+完成本节学习后，你应该能够回答：
+- [ ] 思维链优化如何提升推理能力？
+- [ ] 自我验证的工作原理是什么？
+- [ ] 多步推理如何分解复杂任务？
+- [ ] 参数化知识和非参数化知识的区别是什么？
+- [ ] RAG 技术的核心思想是什么？
+- [ ] 混合检索如何提升检索效果？
+- [ ] 工具发现如何自动选择工具？
+- [ ] 工具组合如何构建工作流？
+- [ ] 工具创造如何扩展模型能力？
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **多模态 AI** - 了解视觉-语言模型
+- **AI 伦理** - 深入研究 AI 伦理问题
+- **Agent 进阶** - 掌握高级 Agent 技术
