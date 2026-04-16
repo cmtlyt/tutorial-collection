@@ -1,0 +1,3023 @@
+# 模型优化
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-16
+
+## 📖 概述
+
+模型优化是提高大语言模型（LLM）性能、降低部署成本的关键技术。通过模型压缩、推理优化和成本优化等技术，可以在保持模型精度的同时，显著提升推理速度、减少内存占用、降低计算成本。本章节将详细介绍各种模型优化技术的原理、实现方法和最佳实践。
+
+## 🎯 模型压缩
+
+模型压缩旨在减少模型的大小和计算复杂度，同时尽可能保持模型的性能。
+
+### 量化（Quantization）
+
+量化是将模型参数从高精度（如 FP32）转换为低精度（如 INT8、FP16）的技术。
+
+#### 基本原理
+
+```javascript
+// optimization/quantization/quantizer.js
+class Quantizer {
+  constructor(config) {
+    /**
+     * 量化器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      dtype: config.dtype || 'int8', // 'int8', 'int4', 'fp16', 'bf16'
+      calibration: config.calibration || true,
+      ...config
+    };
+
+    this.scale = null;
+    this.zeroPoint = null;
+  }
+
+  calibrate(model, calibrationData) {
+    /**
+     * 校准量化参数
+     * 
+     * 参数:
+     *   model: 模型参数
+     *   calibrationData: 校准数据
+     * 
+     * 返回:
+     *   校准结果
+     */
+    console.log('开始校准量化参数...');
+
+    // 收集参数统计信息
+    const stats = this._collectStatistics(model, calibrationData);
+
+    // 计算量化参数
+    this._computeQuantizationParams(stats);
+
+    console.log('校准完成');
+    return {
+      scale: this.scale,
+      zeroPoint: this.zeroPoint,
+      dtype: this.config.dtype
+    };
+  }
+
+  _collectStatistics(model, calibrationData) {
+    /**
+     * 收集参数统计信息
+     * 
+     * 参数:
+     *   model: 模型参数
+     *   calibrationData: 校准数据
+     * 
+     * 返回:
+     *   统计信息
+     */
+    const stats = {
+      min: Infinity,
+      max: -Infinity,
+      mean: 0,
+      std: 0,
+      values: []
+    };
+
+    // 遍历模型参数
+    for (const [name, tensor] of Object.entries(model)) {
+      const values = Array.isArray(tensor) ? tensor : Array.from(tensor.data);
+      
+      for (const value of values) {
+        stats.min = Math.min(stats.min, value);
+        stats.max = Math.max(stats.max, value);
+        stats.values.push(value);
+      }
+    }
+
+    // 计算均值和标准差
+    stats.mean = stats.values.reduce((sum, v) => sum + v, 0) / stats.values.length;
+    const variance = stats.values.reduce((sum, v) => sum + Math.pow(v - stats.mean, 2), 0) / stats.values.length;
+    stats.std = Math.sqrt(variance);
+
+    return stats;
+  }
+
+  _computeQuantizationParams(stats) {
+    /**
+     * 计算量化参数
+     * 
+     * 参数:
+     *   stats: 统计信息
+     */
+    switch (this.config.dtype) {
+      case 'int8':
+        // INT8: [-128, 127]
+        const qMin = -128;
+        const qMax = 127;
+        this.scale = (stats.max - stats.min) / (qMax - qMin);
+        this.zeroPoint = Math.round(qMin - stats.min / this.scale);
+        break;
+
+      case 'int4':
+        // INT4: [-8, 7]
+        const qMin4 = -8;
+        const qMax4 = 7;
+        this.scale = (stats.max - stats.min) / (qMax4 - qMin4);
+        this.zeroPoint = Math.round(qMin4 - stats.min / this.scale);
+        break;
+
+      case 'fp16':
+      case 'bf16':
+        // 半精度浮点不需要缩放和零点
+        this.scale = 1.0;
+        this.zeroPoint = 0;
+        break;
+
+      default:
+        throw new Error(`Unsupported dtype: ${this.config.dtype}`);
+    }
+  }
+
+  quantize(tensor) {
+    /**
+     * 量化张量
+     * 
+     * 参数:
+     *   tensor: 输入张量
+     * 
+     * 返回:
+     *   量化后的张量
+     */
+    if (!this.scale) {
+      throw new Error('Quantizer not calibrated. Call calibrate() first.');
+    }
+
+    const values = Array.isArray(tensor) ? tensor : Array.from(tensor.data);
+    const quantized = [];
+
+    switch (this.config.dtype) {
+      case 'int8':
+        for (const value of values) {
+          const qValue = Math.round(value / this.scale + this.zeroPoint);
+          quantized.push(Math.max(-128, Math.min(127, qValue)));
+        }
+        break;
+
+      case 'int4':
+        for (const value of values) {
+          const qValue = Math.round(value / this.scale + this.zeroPoint);
+          quantized.push(Math.max(-8, Math.min(7, qValue)));
+        }
+        break;
+
+      case 'fp16':
+        for (const value of values) {
+          quantized.push(this._floatToHalf(value));
+        }
+        break;
+
+      case 'bf16':
+        for (const value of values) {
+          quantized.push(this._floatToBFloat16(value));
+        }
+        break;
+
+      default:
+        throw new Error(`Unsupported dtype: ${this.config.dtype}`);
+    }
+
+    return quantized;
+  }
+
+  dequantize(quantizedTensor) {
+    /**
+     * 反量化张量
+     * 
+     * 参数:
+     *   quantizedTensor: 量化后的张量
+     * 
+     * 返回:
+     *   反量化后的张量
+     */
+    const dequantized = [];
+
+    switch (this.config.dtype) {
+      case 'int8':
+      case 'int4':
+        for (const qValue of quantizedTensor) {
+          dequantized.push((qValue - this.zeroPoint) * this.scale);
+        }
+        break;
+
+      case 'fp16':
+        for (const hValue of quantizedTensor) {
+          dequantized.push(this._halfToFloat(hValue));
+        }
+        break;
+
+      case 'bf16':
+        for (const bValue of quantizedTensor) {
+          dequantized.push(this._bFloat16ToFloat(bValue));
+        }
+        break;
+
+      default:
+        throw new Error(`Unsupported dtype: ${this.config.dtype}`);
+    }
+
+    return dequantized;
+  }
+
+  _floatToHalf(value) {
+    /**
+     * FP32 转 FP16
+     * 
+     * 参数:
+     *   value: FP32 值
+     * 
+     * 返回:
+     *   FP16 值
+     */
+    // 简化实现：直接截断
+    const buffer = new ArrayBuffer(4);
+    const view = new DataView(buffer);
+    view.setFloat32(0, value, false);
+
+    const uint32 = view.getUint32(0, false);
+    const sign = (uint32 >> 31) & 0x1;
+    const exponent = (uint32 >> 23) & 0xFF;
+    const mantissa = uint32 & 0x7FFFFF;
+
+    if (exponent === 0) {
+      // 次正规数
+      return (sign << 15) | (0 << 10) | (mantissa >> 13);
+    } else if (exponent === 0xFF) {
+      // 无穷大或 NaN
+      return (sign << 15) | (0x1F << 10) | (mantissa >> 13);
+    } else {
+      // 正规数
+      const newExponent = exponent - 127 + 15;
+      if (newExponent <= 0) {
+        // 溢出到次正规数
+        return (sign << 15) | (0 << 10) | (mantissa >> (23 - newExponent + 1));
+      } else if (newExponent >= 0x1F) {
+        // 溢出到无穷大
+        return (sign << 15) | (0x1F << 10);
+      } else {
+        return (sign << 15) | (newExponent << 10) | (mantissa >> 13);
+      }
+    }
+  }
+
+  _halfToFloat(hValue) {
+    /**
+     * FP16 转 FP32
+     * 
+     * 参数:
+     *   hValue: FP16 值
+     * 
+     * 返回:
+     *   FP32 值
+     */
+    const buffer = new ArrayBuffer(4);
+    const view = new DataView(buffer);
+
+    const sign = (hValue >> 15) & 0x1;
+    const exponent = (hValue >> 10) & 0x1F;
+    const mantissa = hValue & 0x3FF;
+
+    if (exponent === 0) {
+      if (mantissa === 0) {
+        // 零
+        view.setUint32(0, sign << 31, false);
+      } else {
+        // 次正规数
+        view.setUint32(0, (sign << 31) | ((exponent + 127 - 15) << 23) | (mantissa << 13), false);
+      }
+    } else if (exponent === 0x1F) {
+      // 无穷大或 NaN
+      view.setUint32(0, (sign << 31) | (0xFF << 23) | (mantissa << 13), false);
+    } else {
+      // 正规数
+      view.setUint32(0, (sign << 31) | ((exponent + 127 - 15) << 23) | (mantissa << 13), false);
+    }
+
+    return view.getFloat32(0, false);
+  }
+
+  _floatToBFloat16(value) {
+    /**
+     * FP32 转 BF16
+     * 
+     * 参数:
+     *   value: FP32 值
+     * 
+     * 返回:
+     *   BF16 值
+     */
+    const buffer = new ArrayBuffer(4);
+    const view = new DataView(buffer);
+    view.setFloat32(0, value, false);
+
+    const uint32 = view.getUint32(0, false);
+    return uint32 >> 16;
+  }
+
+  _bFloat16ToFloat(bValue) {
+    /**
+     * BF16 转 FP32
+     * 
+     * 参数:
+     *   bValue: BF16 值
+     * 
+     * 返回:
+     *   FP32 值
+     */
+    const buffer = new ArrayBuffer(4);
+    const view = new DataView(buffer);
+
+    view.setUint32(0, bValue << 16, false);
+    return view.getFloat32(0, false);
+  }
+
+  estimateCompression(originalSize) {
+    /**
+     * 估算压缩比例
+     * 
+     * 参数:
+     *   originalSize: 原始大小（字节）
+     * 
+     * 返回:
+     *   压缩信息
+     */
+    let compressionRatio;
+
+    switch (this.config.dtype) {
+      case 'int8':
+        compressionRatio = 4; // FP32 (4 bytes) -> INT8 (1 byte)
+        break;
+      case 'int4':
+        compressionRatio = 8; // FP32 (4 bytes) -> INT4 (0.5 bytes)
+        break;
+      case 'fp16':
+        compressionRatio = 2; // FP32 (4 bytes) -> FP16 (2 bytes)
+        break;
+      case 'bf16':
+        compressionRatio = 2; // FP32 (4 bytes) -> BF16 (2 bytes)
+        break;
+      default:
+        compressionRatio = 1;
+    }
+
+    return {
+      originalSize,
+      compressedSize: originalSize / compressionRatio,
+      compressionRatio,
+      dtype: this.config.dtype
+    };
+  }
+}
+
+// 使用示例
+async function quantizationExample() {
+  const quantizer = new Quantizer({
+    dtype: 'int8',
+    calibration: true
+  });
+
+  // 模拟模型参数
+  const model = {
+    'layer1.weights': [0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8],
+    'layer2.weights': [0.15, -0.25, 0.35, -0.45, 0.55, -0.65, 0.75, -0.85]
+  };
+
+  // 模拟校准数据
+  const calibrationData = [
+    { input: [1, 2, 3], output: [0.5, 0.6, 0.7] },
+    { input: [4, 5, 6], output: [0.8, 0.9, 1.0] }
+  ];
+
+  // 校准
+  const calibrationResult = quantizer.calibrate(model, calibrationData);
+  console.log('校准结果:', calibrationResult);
+
+  // 量化
+  const quantized = quantizer.quantize(model['layer1.weights']);
+  console.log('量化结果:', quantized);
+
+  // 反量化
+  const dequantized = quantizer.dequantize(quantized);
+  console.log('反量化结果:', dequantized);
+
+  // 估算压缩比例
+  const compression = quantizer.estimateCompression(1000000000); // 1GB
+  console.log('压缩信息:', compression);
+}
+```
+
+#### 动态量化
+
+```javascript
+// optimization/quantization/dynamic-quantizer.js
+class DynamicQuantizer extends Quantizer {
+  constructor(config) {
+    /**
+     * 动态量化器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    super(config);
+    this.config.perTensor = config.perTensor || true;
+    this.config.perChannel = config.perChannel || false;
+  }
+
+  quantizeModel(model) {
+    /**
+     * 量化整个模型
+     * 
+     * 参数:
+     *   model: 模型对象
+     * 
+     * 返回:
+     *   量化后的模型
+     */
+    console.log('开始动态量化模型...');
+
+    const quantizedModel = {};
+
+    for (const [name, tensor] of Object.entries(model)) {
+      console.log(`量化层: ${name}`);
+
+      if (this.config.perChannel) {
+        // 按通道量化
+        quantizedModel[name] = this._quantizePerChannel(tensor);
+      } else {
+        // 按张量量化
+        quantizedModel[name] = this._quantizePerTensor(tensor);
+      }
+    }
+
+    console.log('模型量化完成');
+    return quantizedModel;
+  }
+
+  _quantizePerTensor(tensor) {
+    /**
+     * 按张量量化
+     * 
+     * 参数:
+     *   tensor: 输入张量
+     * 
+     * 返回:
+     *   量化结果
+     */
+    const values = Array.isArray(tensor) ? tensor : Array.from(tensor.data);
+
+    // 计算统计信息
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const qMin = this.config.dtype === 'int8' ? -128 : -8;
+    const qMax = this.config.dtype === 'int8' ? 127 : 7;
+
+    const scale = (max - min) / (qMax - qMin);
+    const zeroPoint = Math.round(qMin - min / scale);
+
+    // 量化
+    const quantized = values.map(value => {
+      const qValue = Math.round(value / scale + zeroPoint);
+      return Math.max(qMin, Math.min(qMax, qValue));
+    });
+
+    return {
+      data: quantized,
+      scale,
+      zeroPoint,
+      dtype: this.config.dtype
+    };
+  }
+
+  _quantizePerChannel(tensor) {
+    /**
+     * 按通道量化
+     * 
+     * 参数:
+     *   tensor: 输入张量
+     * 
+     * 返回:
+     *   量化结果
+     */
+    // 假设张量形状为 [channels, ...]
+    const channels = tensor.length;
+    const quantizedChannels = [];
+
+    for (let c = 0; c < channels; c++) {
+      const channelData = tensor[c];
+      const values = Array.isArray(channelData) ? channelData : Array.from(channelData.data);
+
+      // 计算通道统计信息
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const qMin = this.config.dtype === 'int8' ? -128 : -8;
+      const qMax = this.config.dtype === 'int8' ? 127 : 7;
+
+      const scale = (max - min) / (qMax - qMin);
+      const zeroPoint = Math.round(qMin - min / scale);
+
+      // 量化通道
+      const quantized = values.map(value => {
+        const qValue = Math.round(value / scale + zeroPoint);
+        return Math.max(qMin, Math.min(qMax, qValue));
+      });
+
+      quantizedChannels.push({
+        data: quantized,
+        scale,
+        zeroPoint,
+        dtype: this.config.dtype
+      });
+    }
+
+    return quantizedChannels;
+  }
+}
+```
+
+### 剪枝（Pruning）
+
+剪枝是通过移除模型中不重要的参数或连接来减少模型大小的技术。
+
+#### 结构化剪枝
+
+```javascript
+// optimization/pruning/structured-pruner.js
+class StructuredPruner {
+  constructor(config) {
+    /**
+     * 结构化剪枝器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      sparsity: config.sparsity || 0.5, // 稀疏度
+      method: config.method || 'magnitude', // 'magnitude', 'gradient', 'taylor'
+      ...config
+    };
+
+    this.masks = {};
+  }
+
+  prune(model) {
+    /**
+     * 剪枝模型
+     * 
+     * 参数:
+     *   model: 模型对象
+     * 
+     * 返回:
+     *   剪枝后的模型
+     */
+    console.log('开始结构化剪枝...');
+
+    const prunedModel = {};
+
+    for (const [name, tensor] of Object.entries(model)) {
+      console.log(`剪枝层: ${name}`);
+
+      const mask = this._computeMask(tensor);
+      this.masks[name] = mask;
+
+      const pruned = this._applyMask(tensor, mask);
+      prunedModel[name] = pruned;
+    }
+
+    console.log('剪枝完成');
+    return prunedModel;
+  }
+
+  _computeMask(tensor) {
+    /**
+     * 计算剪枝掩码
+     * 
+     * 参数:
+     *   tensor: 输入张量
+     * 
+     * 返回:
+     *   掩码数组
+     */
+    switch (this.config.method) {
+      case 'magnitude':
+        return this._magnitudePruning(tensor);
+      case 'gradient':
+        return this._gradientPruning(tensor);
+      case 'taylor':
+        return this._taylorPruning(tensor);
+      default:
+        throw new Error(`Unsupported pruning method: ${this.config.method}`);
+    }
+  }
+
+  _magnitudePruning(tensor) {
+    /**
+     * 基于幅度的剪枝
+     * 
+     * 参数:
+     *   tensor: 输入张量
+     * 
+     * 返回:
+     *   掩码数组
+     */
+    const values = Array.isArray(tensor) ? tensor : Array.from(tensor.data);
+    
+    // 计算绝对值
+    const absValues = values.map(v => Math.abs(v));
+    
+    // 找到阈值
+    const sortedAbsValues = [...absValues].sort((a, b) => a - b);
+    const thresholdIndex = Math.floor(sortedAbsValues.length * this.config.sparsity);
+    const threshold = sortedAbsValues[thresholdIndex];
+    
+    // 创建掩码
+    const mask = absValues.map(v => v > threshold ? 1 : 0);
+    
+    return mask;
+  }
+
+  _gradientPruning(tensor) {
+    /**
+     * 基于梯度的剪枝
+     * 
+     * 参数:
+     *   tensor: 输入张量
+     * 
+     * 返回:
+     *   掩码数组
+     */
+    // 这里需要梯度信息，简化实现
+    const values = Array.isArray(tensor) ? tensor : Array.from(tensor.data);
+    
+    // 假设我们有梯度信息
+    const gradients = values.map(() => Math.random()); // 模拟梯度
+    
+    // 找到梯度最小的参数
+    const sortedGradients = [...gradients].sort((a, b) => a - b);
+    const thresholdIndex = Math.floor(sortedGradients.length * this.config.sparsity);
+    const threshold = sortedGradients[thresholdIndex];
+    
+    // 创建掩码
+    const mask = gradients.map(g => g > threshold ? 1 : 0);
+    
+    return mask;
+  }
+
+  _taylorPruning(tensor) {
+    /**
+     * 基于 Taylor 展开的剪枝
+     * 
+     * 参数:
+     *   tensor: 输入张量
+     * 
+     * 返回:
+     *   掩码数组
+     */
+    const values = Array.isArray(tensor) ? tensor : Array.from(tensor.data);
+    
+    // Taylor 重要性 = 参数 * 梯度
+    const gradients = values.map(() => Math.random()); // 模拟梯度
+    const importance = values.map((v, i) => Math.abs(v * gradients[i]));
+    
+    // 找到重要性最小的参数
+    const sortedImportance = [...importance].sort((a, b) => a - b);
+    const thresholdIndex = Math.floor(sortedImportance.length * this.config.sparsity);
+    const threshold = sortedImportance[thresholdIndex];
+    
+    // 创建掩码
+    const mask = importance.map(imp => imp > threshold ? 1 : 0);
+    
+    return mask;
+  }
+
+  _applyMask(tensor, mask) {
+    /**
+     * 应用掩码
+     * 
+     * 参数:
+     *   tensor: 输入张量
+     *   mask: 掩码数组
+     * 
+     * 返回:
+     *   掩码后的张量
+     */
+    const values = Array.isArray(tensor) ? tensor : Array.from(tensor.data);
+    const masked = values.map((v, i) => v * mask[i]);
+    
+    return masked;
+  }
+
+  getSparsity(model) {
+    /**
+     * 获取模型稀疏度
+     * 
+     * 参数:
+     *   model: 模型对象
+     * 
+     * 返回:
+     *   稀疏度信息
+     */
+    let totalParams = 0;
+    let zeroParams = 0;
+
+    for (const [name, tensor] of Object.entries(model)) {
+      const values = Array.isArray(tensor) ? tensor : Array.from(tensor.data);
+      
+      totalParams += values.length;
+      zeroParams += values.filter(v => v === 0).length;
+    }
+
+    return {
+      totalParams,
+      zeroParams,
+      sparsity: zeroParams / totalParams,
+      nonZeroParams: totalParams - zeroParams
+    };
+  }
+
+  exportMasks(filePath) {
+    /**
+     * 导出掩码
+     * 
+     * 参数:
+     *   filePath: 文件路径
+     */
+    const fs = require('fs').promises;
+    fs.writeFile(filePath, JSON.stringify(this.masks, null, 2), 'utf-8');
+    console.log(`掩码已导出到: ${filePath}`);
+  }
+
+  importMasks(filePath) {
+    /**
+     * 导入掩码
+     * 
+     * 参数:
+     *   filePath: 文件路径
+     */
+    const fs = require('fs');
+    const content = fs.readFileSync(filePath, 'utf-8');
+    this.masks = JSON.parse(content);
+    console.log(`掩码已从 ${filePath} 导入`);
+  }
+}
+
+// 使用示例
+async function structuredPruningExample() {
+  const pruner = new StructuredPruner({
+    sparsity: 0.5,
+    method: 'magnitude'
+  });
+
+  // 模拟模型参数
+  const model = {
+    'layer1.weights': [
+      0.1, 0.2, 0.3, 0.4, 0.5,
+      0.6, 0.7, 0.8, 0.9, 1.0
+    ],
+    'layer2.weights': [
+      0.01, 0.02, 0.03, 0.04, 0.05,
+      0.06, 0.07, 0.08, 0.09, 0.10
+    ]
+  };
+
+  // 剪枝
+  const prunedModel = pruner.prune(model);
+  console.log('剪枝后的模型:', prunedModel);
+
+  // 获取稀疏度
+  const sparsity = pruner.getSparsity(prunedModel);
+  console.log('稀疏度:', sparsity);
+
+  // 导出掩码
+  pruner.exportMasks('masks.json');
+}
+```
+
+### 蒸馏（Distillation）
+
+知识蒸馏是通过将大模型（教师模型）的知识迁移到小模型（学生模型）的技术。
+
+#### 蒸馏训练
+
+```javascript
+// optimization/distillation/knowledge-distiller.js
+class KnowledgeDistiller {
+  constructor(config) {
+    /**
+     * 知识蒸馏器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      temperature: config.temperature || 5.0,
+      alpha: config.alpha || 0.5, // 蒸馏损失权重
+      beta: config.beta || 0.5,   // 学生损失权重
+      ...config
+    };
+
+    this.teacherModel = null;
+    this.studentModel = null;
+  }
+
+  async train(teacherModel, studentModel, trainingData, epochs = 10) {
+    /**
+     * 训练学生模型
+     * 
+     * 参数:
+     *   teacherModel: 教师模型
+     *   studentModel: 学生模型
+     *   trainingData: 训练数据
+     *   epochs: 训练轮数
+     * 
+     * 返回:
+     *   训练结果
+     */
+    console.log('开始知识蒸馏训练...');
+
+    this.teacherModel = teacherModel;
+    this.studentModel = studentModel;
+
+    const history = {
+      loss: [],
+      distillationLoss: [],
+      studentLoss: []
+    };
+
+    for (let epoch = 0; epoch < epochs; epoch++) {
+      console.log(`Epoch ${epoch + 1}/${epochs}`);
+
+      let totalLoss = 0;
+      let totalDistillationLoss = 0;
+      let totalStudentLoss = 0;
+      let batchCount = 0;
+
+      // 遍历训练数据
+      for (const batch of trainingData) {
+        // 前向传播
+        const results = await this._forwardPass(batch);
+
+        // 计算损失
+        const losses = this._computeLoss(results);
+
+        // 反向传播
+        await this._backwardPass(losses);
+
+        totalLoss += losses.total;
+        totalDistillationLoss += losses.distillation;
+        totalStudentLoss += losses.student;
+        batchCount++;
+      }
+
+      // 记录历史
+      history.loss.push(totalLoss / batchCount);
+      history.distillationLoss.push(totalDistillationLoss / batchCount);
+      history.studentLoss.push(totalStudentLoss / batchCount);
+
+      console.log(`Loss: ${totalLoss / batchCount}`);
+    }
+
+    console.log('知识蒸馏训练完成');
+    return {
+      studentModel: this.studentModel,
+      history
+    };
+  }
+
+  async _forwardPass(batch) {
+    /**
+     * 前向传播
+     * 
+     * 参数:
+     *   batch: 批次数据
+     * 
+     * 返回:
+     *   前向传播结果
+     */
+    // 教师模型前向传播
+    const teacherOutput = await this.teacherModel.predict(batch.input);
+    const teacherSoftmax = this._softmax(teacherOutput / this.config.temperature);
+
+    // 学生模型前向传播
+    const studentOutput = await this.studentModel.predict(batch.input);
+    const studentSoftmax = this._softmax(studentOutput / this.config.temperature);
+
+    return {
+      teacherSoftmax,
+      studentSoftmax,
+      teacherOutput,
+      studentOutput,
+      labels: batch.labels
+    };
+  }
+
+  _computeLoss(results) {
+    /**
+     * 计算损失
+     * 
+     * 参数:
+     *   results: 前向传播结果
+     * 
+     * 返回:
+     *   损失对象
+     */
+    // 蒸馏损失（KL 散度）
+    const distillationLoss = this._computeKLDivergence(
+      results.teacherSoftmax,
+      results.studentSoftmax
+    );
+
+    // 学生损失（交叉熵）
+    const studentLoss = this._computeCrossEntropy(
+      results.studentOutput,
+      results.labels
+    );
+
+    // 总损失
+    const totalLoss = this.config.alpha * distillationLoss + 
+                     this.config.beta * studentLoss;
+
+    return {
+      total: totalLoss,
+      distillation: distillationLoss,
+      student: studentLoss
+    };
+  }
+
+  _computeKLDivergence(p, q) {
+    /**
+     * 计算 KL 散度
+     * 
+     * 参数:
+     *   p: 教师模型的 softmax 输出
+     *   q: 学生模型的 softmax 输出
+     * 
+     * 返回:
+     *   KL 散度值
+     */
+    let kl = 0;
+
+    for (let i = 0; i < p.length; i++) {
+      if (p[i] > 0 && q[i] > 0) {
+        kl += p[i] * Math.log(p[i] / q[i]);
+      }
+    }
+
+    return kl;
+  }
+
+  _computeCrossEntropy(predictions, labels) {
+    /**
+     * 计算交叉熵损失
+     * 
+     * 参数:
+     *   predictions: 预测值
+     *   labels: 真实标签
+     * 
+     * 返回:
+     *   交叉熵值
+     */
+    const softmax = this._softmax(predictions);
+    let ce = 0;
+
+    for (let i = 0; i < labels.length; i++) {
+      if (labels[i] === 1) {
+        ce -= Math.log(softmax[i] + 1e-10);
+      }
+    }
+
+    return ce;
+  }
+
+  _softmax(logits) {
+    /**
+     * Softmax 函数
+     * 
+     * 参数:
+     *   logits: 对数几率
+     * 
+     * 返回:
+     *   Softmax 概率
+     */
+    const maxLogit = Math.max(...logits);
+    const expLogits = logits.map(l => Math.exp(l - maxLogit));
+    const sumExp = expLogits.reduce((sum, e) => sum + e, 0);
+
+    return expLogits.map(e => e / sumExp);
+  }
+
+  async _backwardPass(losses) {
+    /**
+     * 反向传播
+     * 
+     * 参数:
+     *   losses: 损失对象
+     */
+    // 这里实现反向传播逻辑
+    // 简化实现：直接调用学生模型的优化器
+    if (this.studentModel.optimizer) {
+      await this.studentModel.optimizer.step(losses.total);
+    }
+  }
+
+  evaluate(testData) {
+    /**
+     * 评估学生模型
+     * 
+     * 参数:
+     *   testData: 测试数据
+     * 
+     * 返回:
+     *   评估结果
+     */
+    let correct = 0;
+    let total = 0;
+
+    for (const sample of testData) {
+      const prediction = this.studentModel.predict(sample.input);
+      const predictedClass = this._argmax(prediction);
+      const trueClass = this._argmax(sample.labels);
+
+      if (predictedClass === trueClass) {
+        correct++;
+      }
+      total++;
+    }
+
+    return {
+      accuracy: correct / total,
+      correct,
+      total
+    };
+  }
+
+  _argmax(array) {
+    /**
+     * 找到最大值的索引
+     * 
+     * 参数:
+     *   array: 数组
+     * 
+     * 返回:
+     *   最大值的索引
+     */
+    return array.indexOf(Math.max(...array));
+  }
+}
+
+// 使用示例
+async function knowledgeDistillationExample() {
+  const distiller = new KnowledgeDistiller({
+    temperature: 5.0,
+    alpha: 0.5,
+    beta: 0.5
+  });
+
+  // 模拟教师模型
+  const teacherModel = {
+    predict: async (input) => {
+      // 模拟教师模型的预测
+      return input.map(() => Math.random());
+    }
+  };
+
+  // 模拟学生模型
+  const studentModel = {
+    predict: async (input) => {
+      // 模拟学生模型的预测
+      return input.map(() => Math.random() * 0.5);
+    },
+    optimizer: {
+      step: async (loss) => {
+        console.log(`优化器步骤，损失: ${loss}`);
+      }
+    }
+  };
+
+  // 模拟训练数据
+  const trainingData = [
+    { input: [1, 2, 3], labels: [1, 0, 0] },
+    { input: [4, 5, 6], labels: [0, 1, 0] },
+    { input: [7, 8, 9], labels: [0, 0, 1] }
+  ];
+
+  // 训练
+  const result = await distiller.train(
+    teacherModel,
+    studentModel,
+    trainingData,
+    5
+  );
+
+  console.log('训练结果:', result.history);
+
+  // 评估
+  const testData = [
+    { input: [1, 2, 3], labels: [1, 0, 0] },
+    { input: [4, 5, 6], labels: [0, 1, 0] }
+  ];
+
+  const evaluation = distiller.evaluate(testData);
+  console.log('评估结果:', evaluation);
+}
+```
+
+## 🚀 推理优化
+
+推理优化旨在提高模型推理速度，减少延迟和内存占用。
+
+### TensorRT
+
+TensorRT 是 NVIDIA 的高性能深度学习推理优化器和运行时库。
+
+```javascript
+// optimization/inference/tensorrt-optimizer.js
+class TensorRTOptimizer {
+  constructor(config) {
+    /**
+     * TensorRT 优化器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      precision: config.precision || 'fp16', // 'fp32', 'fp16', 'int8'
+      maxBatchSize: config.maxBatchSize || 1,
+      workspaceSize: config.workspaceSize || 1024 * 1024 * 1024, // 1GB
+      ...config
+    };
+
+    this.engine = null;
+  }
+
+  async buildEngine(modelPath, calibrationData = null) {
+    /**
+     * 构建 TensorRT 引擎
+     * 
+     * 参数:
+     *   modelPath: 模型路径
+     *   calibrationData: 校准数据（INT8 需要）
+     * 
+     * 返回:
+     *   引擎对象
+     */
+    console.log('开始构建 TensorRT 引擎...');
+
+    try {
+      // 这里需要调用 TensorRT C++ API 或 Python API
+      // 以下是一个简化的示例
+
+      const builder = this._createBuilder();
+      const network = this._createNetwork(builder, modelPath);
+      const config = this._createConfig(builder, calibrationData);
+
+      // 设置精度
+      this._setPrecision(network, config);
+
+      // 构建引擎
+      this.engine = builder.buildEngine(network, config);
+
+      if (!this.engine) {
+        throw new Error('Failed to build TensorRT engine');
+      }
+
+      console.log('TensorRT 引擎构建完成');
+      return this.engine;
+
+    } catch (error) {
+      console.error('构建 TensorRT 引擎失败:', error);
+      throw error;
+    }
+  }
+
+  _createBuilder() {
+    /**
+     * 创建构建器
+     * 
+     * 返回:
+     *   构建器对象
+     */
+    // 模拟 TensorRT Builder
+    return {
+      createNetwork: () => ({}),
+      createBuilderConfig: () => ({}),
+      buildEngine: (network, config) => ({
+        serialize: () => Buffer.alloc(0),
+        getNbBindings: () => 0,
+        getBindingName: (index) => '',
+        getBindingDataType: (name) => 'float32'
+      })
+    };
+  }
+
+  _createNetwork(builder, modelPath) {
+    /**
+     * 创建网络
+     * 
+     * 参数:
+     *   builder: 构建器
+     *   modelPath: 模型路径
+     * 
+     * 返回:
+     *   网络对象
+     */
+    // 这里实现网络创建逻辑
+    // 解析 ONNX 或其他格式的模型
+    console.log(`加载模型: ${modelPath}`);
+    return {};
+  }
+
+  _createConfig(builder, calibrationData) {
+    /**
+     * 创建配置
+     * 
+     * 参数:
+     *   builder: 构建器
+     *   calibrationData: 校准数据
+     * 
+     * 返回:
+     *   配置对象
+     */
+    const config = builder.createBuilderConfig();
+
+    // 设置最大批次大小
+    config.setMaxBatchSize(this.config.maxBatchSize);
+
+    // 设置工作空间大小
+    config.setMaxWorkspaceSize(this.config.workspaceSize);
+
+    // INT8 需要校准
+    if (this.config.precision === 'int8' && calibrationData) {
+      config.setInt8Calibrator(this._createInt8Calibrator(calibrationData));
+    }
+
+    return config;
+  }
+
+  _setPrecision(network, config) {
+    /**
+     * 设置精度
+     * 
+     * 参数:
+     *   network: 网络对象
+     *   config: 配置对象
+     */
+    switch (this.config.precision) {
+      case 'fp16':
+        config.setFlag(1); // kFP16
+        break;
+      case 'int8':
+        config.setFlag(2); // kINT8
+        break;
+      case 'fp32':
+      default:
+        // 默认 FP32
+        break;
+    }
+  }
+
+  _createInt8Calibrator(calibrationData) {
+    /**
+     * 创建 INT8 校准器
+     * 
+     * 参数:
+     *   calibrationData: 校准数据
+     * 
+     * 返回:
+     *   校准器对象
+     */
+    // 这里实现 INT8 校准器
+    return {
+      getBatch: () => calibrationData,
+      getBatchSize: () => calibrationData.length,
+      readCalibrationCache: () => null,
+      writeCalibrationCache: () => {}
+    };
+  }
+
+  async saveEngine(enginePath) {
+    /**
+     * 保存引擎
+     * 
+     * 参数:
+     *   enginePath: 引擎保存路径
+     */
+    if (!this.engine) {
+      throw new Error('No engine to save');
+    }
+
+    const fs = require('fs').promises;
+    const serializedEngine = this.engine.serialize();
+    await fs.writeFile(enginePath, serializedEngine);
+
+    console.log(`引擎已保存到: ${enginePath}`);
+  }
+
+  async loadEngine(enginePath) {
+    /**
+     * 加载引擎
+     * 
+     * 参数:
+     *   enginePath: 引擎路径
+     */
+    const fs = require('fs');
+    const engineData = fs.readFileSync(enginePath);
+
+    // 这里实现引擎加载逻辑
+    this.engine = {
+      data: engineData,
+      getNbBindings: () => 2,
+      getBindingName: (index) => index === 0 ? 'input' : 'output',
+      getBindingDataType: (name) => 'float16'
+    };
+
+    console.log(`引擎已从 ${enginePath} 加载`);
+  }
+
+  async infer(input) {
+    /**
+     * 执行推理
+     * 
+     * 参数:
+     *   input: 输入数据
+     * 
+     * 返回:
+     *   推理结果
+     */
+    if (!this.engine) {
+      throw new Error('No engine loaded');
+    }
+
+    console.log('执行 TensorRT 推理...');
+
+    // 这里实现推理逻辑
+    // 分配内存、执行推理、获取结果
+
+    // 模拟推理结果
+    const output = input.map(() => Math.random());
+
+    return output;
+  }
+
+  benchmark(input, iterations = 100) {
+    /**
+     * 性能基准测试
+     * 
+     * 参数:
+     *   input: 输入数据
+     *   iterations: 迭代次数
+     * 
+     * 返回:
+     *   性能统计
+     */
+    console.log(`开始基准测试，迭代 ${iterations} 次...`);
+
+    const times = [];
+
+    for (let i = 0; i < iterations; i++) {
+      const startTime = performance.now();
+      this.infer(input);
+      const endTime = performance.now();
+      times.push(endTime - startTime);
+    }
+
+    const avgTime = times.reduce((sum, t) => sum + t, 0) / times.length;
+    const minTime = Math.min(...times);
+    const maxTime = Math.max(...times);
+    const stdTime = Math.sqrt(
+      times.reduce((sum, t) => sum + Math.pow(t - avgTime, 2), 0) / times.length
+    );
+
+    return {
+      avgTime,
+      minTime,
+      maxTime,
+      stdTime,
+      throughput: 1000 / avgTime
+    };
+  }
+}
+
+// 使用示例
+async function tensorRTExample() {
+  const optimizer = new TensorRTOptimizer({
+    precision: 'fp16',
+    maxBatchSize: 1,
+    workspaceSize: 1024 * 1024 * 1024
+  });
+
+  // 构建引擎
+  await optimizer.buildEngine('model.onnx');
+
+  // 保存引擎
+  await optimizer.saveEngine('model.engine');
+
+  // 加载引擎
+  await optimizer.loadEngine('model.engine');
+
+  // 推理
+  const input = [1, 2, 3, 4, 5];
+  const output = await optimizer.infer(input);
+  console.log('推理结果:', output);
+
+  // 基准测试
+  const benchmark = optimizer.benchmark(input, 100);
+  console.log('性能基准:', benchmark);
+}
+```
+
+### ONNX Runtime
+
+ONNX Runtime 是一个跨平台的高性能推理引擎。
+
+```javascript
+// optimization/inference/onnx-runtime.js
+class ONNXRuntime {
+  constructor(config) {
+    /**
+     * ONNX Runtime 推理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      executionMode: config.executionMode || 'sequential', // 'sequential', 'parallel'
+      interOpNumThreads: config.interOpNumThreads || 1,
+      intraOpNumThreads: config.intraOpNumThreads || 1,
+      ...config
+    };
+
+    this.session = null;
+  }
+
+  async createSession(modelPath) {
+    /**
+     * 创建推理会话
+     * 
+     * 参数:
+     *   modelPath: 模型路径
+     * 
+     * 返回:
+     *   会话对象
+     */
+    console.log('创建 ONNX Runtime 会话...');
+
+    try {
+      // 这里需要调用 ONNX Runtime C++ API 或 JavaScript API
+      // 以下是一个简化的示例
+
+      const sessionOptions = {
+        executionMode: this.config.executionMode,
+        interOpNumThreads: this.config.interOpNumThreads,
+        intraOpNumThreads: this.config.intraOpNumThreads
+      };
+
+      this.session = {
+        modelPath,
+        options: sessionOptions,
+        inputNames: ['input'],
+        outputNames: ['output'],
+        run: async (feeds, fetches) => {
+          // 模拟推理
+          const input = feeds['input'];
+          const output = input.map(() => Math.random());
+          return { 'output': output };
+        }
+      };
+
+      console.log('ONNX Runtime 会话创建完成');
+      return this.session;
+
+    } catch (error) {
+      console.error('创建 ONNX Runtime 会话失败:', error);
+      throw error;
+    }
+  }
+
+  async run(input) {
+    /**
+     * 执行推理
+     * 
+     * 参数:
+     *   input: 输入数据
+     * 
+     * 返回:
+     *   推理结果
+     */
+    if (!this.session) {
+      throw new Error('No session created');
+    }
+
+    console.log('执行 ONNX Runtime 推理...');
+
+    const feeds = {
+      'input': input
+    };
+
+    const fetches = {
+      'output': null
+    };
+
+    const results = await this.session.run(feeds, fetches);
+
+    return results['output'];
+  }
+
+  profile(input, iterations = 100) {
+    /**
+     * 性能分析
+     * 
+     * 参数:
+     *   input: 输入数据
+     *   iterations: 迭代次数
+     * 
+     * 返回:
+     *   性能分析结果
+     */
+    console.log(`开始性能分析，迭代 ${iterations} 次...`);
+
+    const times = [];
+
+    for (let i = 0; i < iterations; i++) {
+      const startTime = performance.now();
+      this.run(input);
+      const endTime = performance.now();
+      times.push(endTime - startTime);
+    }
+
+    const avgTime = times.reduce((sum, t) => sum + t, 0) / times.length;
+    const minTime = Math.min(...times);
+    const maxTime = Math.max(...times);
+
+    return {
+      avgTime,
+      minTime,
+      maxTime,
+      throughput: 1000 / avgTime
+    };
+  }
+
+  getMetadata() {
+    /**
+     * 获取模型元数据
+     * 
+     * 返回:
+     *   元数据对象
+     */
+    if (!this.session) {
+      throw new Error('No session created');
+    }
+
+    return {
+      modelPath: this.session.modelPath,
+      inputNames: this.session.inputNames,
+      outputNames: this.session.outputNames,
+      options: this.session.options
+    };
+  }
+}
+
+// 使用示例
+async function onnxRuntimeExample() {
+  const runtime = new ONNXRuntime({
+    executionMode: 'sequential',
+    interOpNumThreads: 1,
+    intraOpNumThreads: 4
+  });
+
+  // 创建会话
+  await runtime.createSession('model.onnx');
+
+  // 推理
+  const input = [1, 2, 3, 4, 5];
+  const output = await runtime.run(input);
+  console.log('推理结果:', output);
+
+  // 性能分析
+  const profile = runtime.profile(input, 100);
+  console.log('性能分析:', profile);
+
+  // 获取元数据
+  const metadata = runtime.getMetadata();
+  console.log('模型元数据:', metadata);
+}
+```
+
+### vLLM
+
+vLLM 是一个高性能的 LLM 推理服务，支持 PagedAttention 和连续批处理。
+
+```javascript
+// optimization/inference/vllm-inference.js
+class VLLMInference {
+  constructor(config) {
+    /**
+     * vLLM 推理引擎
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      modelPath: config.modelPath || '',
+      tensorParallelSize: config.tensorParallelSize || 1,
+      pipelineParallelSize: config.pipelineParallelSize || 1,
+      maxModelLen: config.maxModelLen || 2048,
+      gpuMemoryUtilization: config.gpuMemoryUtilization || 0.9,
+      ...config
+    };
+
+    this.engine = null;
+    this.requestQueue = [];
+  }
+
+  async initialize() {
+    /**
+     * 初始化推理引擎
+     */
+    console.log('初始化 vLLM 推理引擎...');
+
+    try {
+      // 这里需要调用 vLLM Python API
+      // 以下是一个简化的示例
+
+      this.engine = {
+        modelPath: this.config.modelPath,
+        tensorParallelSize: this.config.tensorParallelSize,
+        pipelineParallelSize: this.config.pipelineParallelSize,
+        maxModelLen: this.config.maxModelLen,
+        generate: async (prompt, options) => {
+          // 模拟生成
+          const tokens = this._tokenize(prompt);
+          const generated = await this._generateTokens(tokens, options);
+          return this._detokenize(generated);
+        }
+      };
+
+      console.log('vLLM 推理引擎初始化完成');
+
+    } catch (error) {
+      console.error('初始化 vLLM 推理引擎失败:', error);
+      throw error;
+    }
+  }
+
+  async generate(prompt, options = {}) {
+    /**
+     * 生成文本
+     * 
+     * 参数:
+     *   prompt: 提示文本
+     *   options: 生成选项
+     * 
+     * 返回:
+     *   生成的文本
+     */
+    if (!this.engine) {
+      throw new Error('Engine not initialized');
+    }
+
+    console.log('生成文本...');
+
+    const defaultOptions = {
+      maxTokens: options.maxTokens || 100,
+      temperature: options.temperature || 0.7,
+      topP: options.topP || 0.95,
+      topK: options.topK || 40,
+      stopTokens: options.stopTokens || []
+    };
+
+    return await this.engine.generate(prompt, defaultOptions);
+  }
+
+  async generateBatch(prompts, options = {}) {
+    /**
+     * 批量生成文本
+     * 
+     * 参数:
+     *   prompts: 提示文本数组
+     *   options: 生成选项
+     * 
+     * 返回:
+     *   生成的文本数组
+     */
+    console.log(`批量生成 ${prompts.length} 个文本...`);
+
+    const results = await Promise.all(
+      prompts.map(prompt => this.generate(prompt, options))
+    );
+
+    return results;
+  }
+
+  _tokenize(text) {
+    /**
+     * 文本分词
+     * 
+     * 参数:
+     *   text: 输入文本
+     * 
+     * 返回:
+     *   Token 数组
+     */
+    // 简化实现：按字符分词
+    return text.split('').map(c => c.charCodeAt(0));
+  }
+
+  async _generateTokens(tokens, options) {
+    /**
+     * 生成 Token
+     * 
+     * 参数:
+     *   tokens: 输入 Token
+     *   options: 生成选项
+     * 
+     * 返回:
+     *   生成的 Token 数组
+     */
+    const generated = [...tokens];
+
+    for (let i = 0; i < options.maxTokens; i++) {
+      // 模拟 Token 生成
+      const newToken = Math.floor(Math.random() * 1000);
+      generated.push(newToken);
+
+      // 检查停止条件
+      if (options.stopTokens.includes(newToken)) {
+        break;
+      }
+    }
+
+    return generated.slice(tokens.length);
+  }
+
+  _detokenize(tokens) {
+    /**
+     * Token 反分词
+     * 
+     * 参数:
+     *   tokens: Token 数组
+     * 
+     * 返回:
+     *   文本
+     */
+    // 简化实现：将 Token 转换为字符
+    return tokens.map(t => String.fromCharCode(t)).join('');
+  }
+
+  getStats() {
+    /**
+     * 获取统计信息
+     * 
+     * 返回:
+     *   统计对象
+     */
+    return {
+      modelPath: this.config.modelPath,
+      tensorParallelSize: this.config.tensorParallelSize,
+      pipelineParallelSize: this.config.pipelineParallelSize,
+      maxModelLen: this.config.maxModelLen,
+      gpuMemoryUtilization: this.config.gpuMemoryUtilization
+    };
+  }
+}
+
+// 使用示例
+async function vllmExample() {
+  const inference = new VLLMInference({
+    modelPath: '/path/to/model',
+    tensorParallelSize: 1,
+    pipelineParallelSize: 1,
+    maxModelLen: 2048,
+    gpuMemoryUtilization: 0.9
+  });
+
+  // 初始化
+  await inference.initialize();
+
+  // 生成文本
+  const prompt = '什么是人工智能？';
+  const result = await inference.generate(prompt, {
+    maxTokens: 100,
+    temperature: 0.7
+  });
+
+  console.log('生成结果:', result);
+
+  // 批量生成
+  const prompts = [
+    '什么是机器学习？',
+    '什么是深度学习？',
+    '什么是神经网络？'
+  ];
+
+  const batchResults = await inference.generateBatch(prompts);
+  console.log('批量生成结果:', batchResults);
+
+  // 获取统计信息
+  const stats = inference.getStats();
+  console.log('统计信息:', stats);
+}
+```
+
+### TGI（Text Generation Inference）
+
+TGI 是 Hugging Face 的文本生成推理服务，专为生产环境优化。
+
+```javascript
+// optimization/inference/tgi-inference.js
+class TGIInference {
+  constructor(config) {
+    /**
+     * TGI 推理引擎
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      baseUrl: config.baseUrl || 'http://localhost:8080',
+      modelId: config.modelId || '',
+      ...config
+    };
+
+    this.session = null;
+  }
+
+  async connect() {
+    /**
+     * 连接到 TGI 服务
+     */
+    console.log('连接到 TGI 服务...');
+
+    try {
+      const response = await fetch(`${this.config.baseUrl}/health`);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to connect to TGI: ${response.statusText}`);
+      }
+
+      this.session = {
+        baseUrl: this.config.baseUrl,
+        modelId: this.config.modelId
+      };
+
+      console.log('TGI 服务连接成功');
+
+    } catch (error) {
+      console.error('连接 TGI 服务失败:', error);
+      throw error;
+    }
+  }
+
+  async generate(prompt, options = {}) {
+    /**
+     * 生成文本
+     * 
+     * 参数:
+     *   prompt: 提示文本
+     *   options: 生成选项
+     * 
+     * 返回:
+     *   生成的文本
+     */
+    if (!this.session) {
+      throw new Error('Not connected to TGI service');
+    }
+
+    console.log('生成文本...');
+
+    const payload = {
+      inputs: prompt,
+      parameters: {
+        max_new_tokens: options.maxTokens || 100,
+        temperature: options.temperature || 0.7,
+        top_p: options.topP || 0.95,
+        top_k: options.topK || 40,
+        do_sample: true,
+        return_full_text: false
+      }
+    };
+
+    try {
+      const response = await fetch(`${this.config.baseUrl}/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Generation failed: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      return result.generated_text;
+
+    } catch (error) {
+      console.error('生成文本失败:', error);
+      throw error;
+    }
+  }
+
+  async generateStream(prompt, options = {}) {
+    /**
+     * 流式生成文本
+     * 
+     * 参数:
+     *   prompt: 提示文本
+     *   options: 生成选项
+     * 
+     * 返回:
+     *   异步生成器
+     */
+    if (!this.session) {
+      throw new Error('Not connected to TGI service');
+    }
+
+    console.log('流式生成文本...');
+
+    const payload = {
+      inputs: prompt,
+      parameters: {
+        max_new_tokens: options.maxTokens || 100,
+        temperature: options.temperature || 0.7,
+        top_p: options.topP || 0.95,
+        top_k: options.topK || 40,
+        do_sample: true,
+        return_full_text: false
+      }
+    };
+
+    try {
+      const response = await fetch(`${this.config.baseUrl}/generate_stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Stream generation failed: ${response.statusText}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          break;
+        }
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data:')) {
+            const data = line.slice(5).trim();
+            
+            if (data === '[DONE]') {
+              return;
+            }
+
+            try {
+              const parsed = JSON.parse(data);
+              yield parsed.token.text;
+            } catch (error) {
+              // 忽略解析错误
+            }
+          }
+        }
+      }
+
+    } catch (error) {
+      console.error('流式生成文本失败:', error);
+      throw error;
+    }
+  }
+
+  async getModelInfo() {
+    /**
+     * 获取模型信息
+     * 
+     * 返回:
+     *   模型信息对象
+     */
+    if (!this.session) {
+      throw new Error('Not connected to TGI service');
+    }
+
+    try {
+      const response = await fetch(`${this.config.baseUrl}/info`);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to get model info: ${response.statusText}`);
+      }
+
+      return await response.json();
+
+    } catch (error) {
+      console.error('获取模型信息失败:', error);
+      throw error;
+    }
+  }
+
+  async getMetrics() {
+    /**
+     * 获取性能指标
+     * 
+     * 返回:
+     *   性能指标对象
+     */
+    if (!this.session) {
+      throw new Error('Not connected to TGI service');
+    }
+
+    try {
+      const response = await fetch(`${this.config.baseUrl}/metrics`);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to get metrics: ${response.statusText}`);
+      }
+
+      return await response.json();
+
+    } catch (error) {
+      console.error('获取性能指标失败:', error);
+      throw error;
+    }
+  }
+}
+
+// 使用示例
+async function tgiExample() {
+  const inference = new TGIInference({
+    baseUrl: 'http://localhost:8080',
+    modelId: 'gpt-2'
+  });
+
+  // 连接
+  await inference.connect();
+
+  // 生成文本
+  const prompt = '什么是人工智能？';
+  const result = await inference.generate(prompt, {
+    maxTokens: 100,
+    temperature: 0.7
+  });
+
+  console.log('生成结果:', result);
+
+  // 流式生成
+  console.log('流式生成:');
+  for await (const chunk of inference.generateStream(prompt, {
+    maxTokens: 50,
+    temperature: 0.7
+  })) {
+    process.stdout.write(chunk);
+  }
+  console.log('\n');
+
+  // 获取模型信息
+  const modelInfo = await inference.getModelInfo();
+  console.log('模型信息:', modelInfo);
+
+  // 获取性能指标
+  const metrics = await inference.getMetrics();
+  console.log('性能指标:', metrics);
+}
+```
+
+## 💰 成本优化
+
+成本优化旨在降低模型运行和部署的成本。
+
+### Token 优化
+
+Token 优化通过减少 Token 使用量来降低 API 调用成本。
+
+```javascript
+// optimization/cost/token-optimizer.js
+class TokenOptimizer {
+  constructor(config) {
+    /**
+     * Token 优化器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      maxTokens: config.maxTokens || 2048,
+      compressionRatio: config.compressionRatio || 0.5,
+      ...config
+    };
+
+    this.tokenizer = null;
+  }
+
+  async initialize(tokenizer) {
+    /**
+     * 初始化 Token 优化器
+     * 
+     * 参数:
+     *   tokenizer: 分词器
+     */
+    this.tokenizer = tokenizer;
+    console.log('Token 优化器初始化完成');
+  }
+
+  compressPrompt(prompt) {
+    /**
+     * 压缩提示词
+     * 
+     * 参数:
+     *   prompt: 原始提示词
+     * 
+     * 返回:
+     *   压缩后的提示词
+     */
+    console.log('压缩提示词...');
+
+    // 移除冗余信息
+    let compressed = this._removeRedundancy(prompt);
+
+    // 简化表达
+    compressed = this._simplifyExpression(compressed);
+
+    // 使用缩写
+    compressed = this._useAbbreviations(compressed);
+
+    // 检查 Token 数量
+    const originalTokens = this._countTokens(prompt);
+    const compressedTokens = this._countTokens(compressed);
+
+    console.log(`Token 数量: ${originalTokens} -> ${compressedTokens}`);
+
+    return {
+      original: prompt,
+      compressed,
+      originalTokens,
+      compressedTokens,
+      compressionRatio: compressedTokens / originalTokens
+    };
+  }
+
+  _removeRedundancy(text) {
+    /**
+     * 移除冗余信息
+     * 
+     * 参数:
+     *   text: 输入文本
+     * 
+     * 返回:
+     *   处理后的文本
+     */
+    // 移除重复的句子
+    const sentences = text.split(/[.!?。！？]/);
+    const uniqueSentences = [];
+    const seen = new Set();
+
+    for (const sentence of sentences) {
+      const trimmed = sentence.trim();
+      if (trimmed && !seen.has(trimmed)) {
+        seen.add(trimmed);
+        uniqueSentences.push(trimmed);
+      }
+    }
+
+    return uniqueSentences.join('。');
+  }
+
+  _simplifyExpression(text) {
+    /**
+     * 简化表达
+     * 
+     * 参数:
+     *   text: 输入文本
+     * 
+     * 返回:
+     *   简化后的文本
+     */
+    // 移除修饰词
+    let simplified = text
+      .replace(/非常|很|特别|极其|相当/g, '')
+      .replace(/一些|某些|部分/g, '')
+      .replace(/基本上|主要地/g, '');
+
+    // 简化句式
+    simplified = simplified
+      .replace(/.../g, '')
+      .replace(/——/g, '-');
+
+    return simplified;
+  }
+
+  _useAbbreviations(text) {
+    /**
+     * 使用缩写
+     * 
+     * 参数:
+     *   text: 输入文本
+     * 
+     * 返回:
+     *   使用缩写后的文本
+     */
+    const abbreviations = {
+      '人工智能': 'AI',
+      '机器学习': 'ML',
+      '深度学习': 'DL',
+      '自然语言处理': 'NLP',
+      '计算机视觉': 'CV',
+      '强化学习': 'RL'
+    };
+
+    let abbreviated = text;
+
+    for (const [full, abbr] of Object.entries(abbreviations)) {
+      abbreviated = abbreviated.replace(new RegExp(full, 'g'), abbr);
+    }
+
+    return abbreviated;
+  }
+
+  _countTokens(text) {
+    /**
+     * 计算 Token 数量
+     * 
+     * 参数:
+     *   text: 输入文本
+     * 
+     * 返回:
+     *   Token 数量
+     */
+    if (!this.tokenizer) {
+      // 简化实现：按字符计数
+      return text.length;
+    }
+
+    // 使用分词器计算
+    return this.tokenizer.encode(text).length;
+  }
+
+  optimizeResponse(response) {
+    /**
+     * 优化响应
+     * 
+     * 参数:
+     *   response: 原始响应
+     * 
+     * 返回:
+     *   优化后的响应
+     */
+    console.log('优化响应...');
+
+    // 移除冗余内容
+    let optimized = this._removeRedundancy(response);
+
+    // 精简表达
+    optimized = this._simplifyExpression(optimized);
+
+    return {
+      original: response,
+      optimized,
+      originalTokens: this._countTokens(response),
+      optimizedTokens: this._countTokens(optimized)
+    };
+  }
+
+  estimateCost(promptTokens, completionTokens, model = 'gpt-4') {
+    /**
+     * 估算成本
+     * 
+     * 参数:
+     *   promptTokens: 提示 Token 数
+     *   completionTokens: 完成 Token 数
+     *   model: 模型名称
+     * 
+     * 返回:
+     *   成本估算
+     */
+    const pricing = {
+      'gpt-4': {
+        prompt: 0.03,  // $ per 1K tokens
+        completion: 0.06
+      },
+      'gpt-3.5-turbo': {
+        prompt: 0.0015,
+        completion: 0.002
+      }
+    };
+
+    const modelPricing = pricing[model] || pricing['gpt-4'];
+
+    const promptCost = (promptTokens / 1000) * modelPricing.prompt;
+    const completionCost = (completionTokens / 1000) * modelPricing.completion;
+    const totalCost = promptCost + completionCost;
+
+    return {
+      promptCost,
+      completionCost,
+      totalCost,
+      currency: 'USD'
+    };
+  }
+}
+
+// 使用示例
+async function tokenOptimizerExample() {
+  const optimizer = new TokenOptimizer({
+    maxTokens: 2048,
+    compressionRatio: 0.5
+  });
+
+  // 初始化
+  await optimizer.initialize();
+
+  // 压缩提示词
+  const prompt = '人工智能是计算机科学的一个分支，它致力于创建能够模拟人类智能的计算机系统。机器学习是人工智能的一个重要分支，它通过算法让计算机从数据中学习。';
+  const compressed = optimizer.compressPrompt(prompt);
+
+  console.log('压缩结果:', compressed);
+
+  // 优化响应
+  const response = '人工智能（AI）是计算机科学的一个重要分支，它致力于研究和开发能够模拟、延伸和扩展人类智能的理论、方法、技术及应用系统。';
+  const optimized = optimizer.optimizeResponse(response);
+
+  console.log('优化结果:', optimized);
+
+  // 估算成本
+  const cost = optimizer.estimateCost(100, 50, 'gpt-4');
+  console.log('成本估算:', cost);
+}
+```
+
+### 模型选择
+
+根据任务需求选择合适的模型以优化成本。
+
+```javascript
+// optimization/cost/model-selector.js
+class ModelSelector {
+  constructor(config) {
+    /**
+     * 模型选择器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      budget: config.budget || 100, // 预算（美元）
+      qualityRequirement: config.qualityRequirement || 'high', // 'low', 'medium', 'high'
+      latencyRequirement: config.latencyRequirement || 'medium', // 'low', 'medium', 'high'
+      ...config
+    };
+
+    this.models = this._initializeModels();
+  }
+
+  _initializeModels() {
+    /**
+     * 初始化模型列表
+     * 
+     * 返回:
+     *   模型列表
+     */
+    return [
+      {
+        name: 'gpt-4',
+        provider: 'openai',
+        quality: 'high',
+        latency: 'high',
+        cost: {
+          prompt: 0.03,
+          completion: 0.06
+        },
+        capabilities: ['reasoning', 'coding', 'analysis']
+      },
+      {
+        name: 'gpt-3.5-turbo',
+        provider: 'openai',
+        quality: 'medium',
+        latency: 'medium',
+        cost: {
+          prompt: 0.0015,
+          completion: 0.002
+        },
+        capabilities: ['chat', 'completion', 'summarization']
+      },
+      {
+        name: 'claude-3-opus',
+        provider: 'anthropic',
+        quality: 'high',
+        latency: 'high',
+        cost: {
+          prompt: 0.015,
+          completion: 0.075
+        },
+        capabilities: ['reasoning', 'analysis', 'writing']
+      },
+      {
+        name: 'claude-3-sonnet',
+        provider: 'anthropic',
+        quality: 'medium',
+        latency: 'medium',
+        cost: {
+          prompt: 0.003,
+          completion: 0.015
+        },
+        capabilities: ['chat', 'coding', 'analysis']
+      },
+      {
+        name: 'qwen-turbo',
+        provider: 'alibaba',
+        quality: 'medium',
+        latency: 'low',
+        cost: {
+          prompt: 0.0008,
+          completion: 0.0008
+        },
+        capabilities: ['chat', 'completion']
+      }
+    ];
+  }
+
+  selectModel(task, requirements = {}) {
+    /**
+     * 选择模型
+     * 
+     * 参数:
+     *   task: 任务类型
+     *   requirements: 需求对象
+     * 
+     * 返回:
+     *   推荐的模型
+     */
+    console.log(`为任务选择模型: ${task}`);
+
+    // 过滤满足质量要求的模型
+    let candidates = this.models.filter(model => {
+      const qualityScore = this._getQualityScore(model.quality);
+      const requiredScore = this._getQualityScore(
+        requirements.quality || this.config.qualityRequirement
+      );
+      return qualityScore >= requiredScore;
+    });
+
+    // 过滤满足延迟要求的模型
+    candidates = candidates.filter(model => {
+      const latencyScore = this._getLatencyScore(model.latency);
+      const requiredScore = this._getLatencyScore(
+        requirements.latency || this.config.latencyRequirement
+      );
+      return latencyScore >= requiredScore;
+    });
+
+    // 过滤满足能力要求的模型
+    if (requirements.capabilities) {
+      candidates = candidates.filter(model =>
+        requirements.capabilities.every(cap => model.capabilities.includes(cap))
+      );
+    }
+
+    // 如果没有候选模型，放宽条件
+    if (candidates.length === 0) {
+      console.log('没有找到满足所有要求的模型，放宽条件...');
+      candidates = this.models;
+    }
+
+    // 按成本排序
+    candidates.sort((a, b) => {
+      const costA = a.cost.prompt + a.cost.completion;
+      const costB = b.cost.prompt + b.cost.completion;
+      return costA - costB;
+    });
+
+    // 检查预算
+    const budget = requirements.budget || this.config.budget;
+    const affordable = candidates.filter(model => {
+      const estimatedCost = this._estimateCost(model, task);
+      return estimatedCost <= budget;
+    });
+
+    const selected = affordable.length > 0 ? affordable[0] : candidates[0];
+
+    console.log(`选择的模型: ${selected.name}`);
+    return selected;
+  }
+
+  _getQualityScore(quality) {
+    /**
+     * 获取质量分数
+     * 
+     * 参数:
+     *   quality: 质量等级
+     * 
+     * 返回:
+     *   质量分数
+     */
+    const scores = {
+      'low': 1,
+      'medium': 2,
+      'high': 3
+    };
+    return scores[quality] || 2;
+  }
+
+  _getLatencyScore(latency) {
+    /**
+     * 获取延迟分数
+     * 
+     * 参数:
+     *   latency: 延迟等级
+     * 
+     * 返回:
+     *   延迟分数
+     */
+    const scores = {
+      'low': 3,
+      'medium': 2,
+      'high': 1
+    };
+    return scores[latency] || 2;
+  }
+
+  _estimateCost(model, task) {
+    /**
+     * 估算成本
+     * 
+     * 参数:
+     *   model: 模型对象
+     *   task: 任务信息
+     * 
+     * 返回:
+     *   估算成本
+     */
+    const estimatedTokens = task.estimatedTokens || 1000;
+    const promptTokens = Math.floor(estimatedTokens * 0.4);
+    const completionTokens = Math.floor(estimatedTokens * 0.6);
+
+    const promptCost = (promptTokens / 1000) * model.cost.prompt;
+    const completionCost = (completionTokens / 1000) * model.cost.completion;
+    const totalCost = promptCost + completionCost;
+
+    return totalCost;
+  }
+
+  compareModels(task, models = null) {
+    /**
+     * 比较模型
+     * 
+     * 参数:
+     *   task: 任务信息
+     *   models: 模型列表（可选）
+     * 
+     * 返回:
+     *   比较结果
+     */
+    const modelsToCompare = models || this.models;
+
+    const comparisons = modelsToCompare.map(model => {
+      const cost = this._estimateCost(model, task);
+      const qualityScore = this._getQualityScore(model.quality);
+      const latencyScore = this._getLatencyScore(model.latency);
+
+      return {
+        name: model.name,
+        provider: model.provider,
+        cost,
+        qualityScore,
+        latencyScore,
+        overallScore: qualityScore + latencyScore - (cost * 10) // 综合评分
+      };
+    });
+
+    // 按综合评分排序
+    comparisons.sort((a, b) => b.overallScore - a.overallScore);
+
+    return comparisons;
+  }
+
+  getRecommendations(task) {
+    /**
+     * 获取推荐
+     * 
+     * 参数:
+     *   task: 任务信息
+     * 
+     * 返回:
+     *   推荐列表
+     */
+    const comparisons = this.compareModels(task);
+
+    return {
+      best: comparisons[0],
+      alternatives: comparisons.slice(1, 4),
+      all: comparisons
+    };
+  }
+}
+
+// 使用示例
+async function modelSelectorExample() {
+  const selector = new ModelSelector({
+    budget: 10,
+    qualityRequirement: 'medium',
+    latencyRequirement: 'medium'
+  });
+
+  // 选择模型
+  const task = {
+    type: 'chat',
+    estimatedTokens: 1000,
+    capabilities: ['chat']
+  };
+
+  const selected = selector.selectModel(task);
+  console.log('选择的模型:', selected);
+
+  // 比较模型
+  const comparisons = selector.compareModels(task);
+  console.log('模型比较:', comparisons);
+
+  // 获取推荐
+  const recommendations = selector.getRecommendations(task);
+  console.log('推荐:', recommendations);
+}
+```
+
+### 缓存策略
+
+缓存策略通过缓存重复请求的结果来减少 API 调用。
+
+```javascript
+// optimization/cost/cache-strategy.js
+class CacheStrategy {
+  constructor(config) {
+    /**
+     * 缓存策略
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      ttl: config.ttl || 3600000, // 缓存时间（毫秒）
+      maxSize: config.maxSize || 10000, // 最大缓存数量
+      similarityThreshold: config.similarityThreshold || 0.95, // 相似度阈值
+      ...config
+    };
+
+    this.cache = new Map();
+    this.accessOrder = [];
+  }
+
+  async get(key) {
+    /**
+     * 获取缓存
+     * 
+     * 参数:
+     *   key: 缓存键
+     * 
+     * 返回:
+     *   缓存值
+     */
+    const item = this.cache.get(key);
+
+    if (!item) {
+      return null;
+    }
+
+    // 检查是否过期
+    if (Date.now() > item.expiresAt) {
+      this.delete(key);
+      return null;
+    }
+
+    // 更新访问顺序
+    this._updateAccess(key);
+
+    return item.value;
+  }
+
+  async set(key, value, ttl = null) {
+    /**
+     * 设置缓存
+     * 
+     * 参数:
+     *   key: 缓存键
+     *   value: 缓存值
+     *   ttl: 过期时间
+     */
+    const expiresAt = Date.now() + (ttl || this.config.ttl);
+
+    const item = {
+      key,
+      value,
+      createdAt: Date.now(),
+      expiresAt
+    };
+
+    // 检查缓存大小
+    if (this.cache.size >= this.config.maxSize && !this.cache.has(key)) {
+      this._evict();
+    }
+
+    this.cache.set(key, item);
+    this._updateAccess(key);
+  }
+
+  async getOrSet(key, factory, ttl = null) {
+    /**
+     * 获取或设置缓存
+     * 
+     * 参数:
+     *   key: 缓存键
+     *   factory: 值工厂函数
+     *   ttl: 过期时间
+     * 
+     * 返回:
+     *   缓存值
+     */
+    let value = await this.get(key);
+
+    if (value === null) {
+      value = await factory();
+      await this.set(key, value, ttl);
+    }
+
+    return value;
+  }
+
+  async getSimilar(query) {
+    /**
+     * 获取相似的缓存
+     * 
+     * 参数:
+     *   query: 查询文本
+     * 
+     * 返回:
+     *   相似的缓存值
+     */
+    for (const [key, item] of this.cache.entries()) {
+      const similarity = this._calculateSimilarity(query, key);
+
+      if (similarity >= this.config.similarityThreshold) {
+        this._updateAccess(key);
+        return {
+          key,
+          value: item.value,
+          similarity
+        };
+      }
+    }
+
+    return null;
+  }
+
+  _calculateSimilarity(text1, text2) {
+    /**
+     * 计算相似度
+     * 
+     * 参数:
+     *   text1: 文本1
+     *   text2: 文本2
+     * 
+     * 返回:
+     *   相似度 (0-1)
+     */
+    // 简化实现：基于 Jaccard 相似度
+    const words1 = new Set(text1.toLowerCase().split(/\s+/));
+    const words2 = new Set(text2.toLowerCase().split(/\s+/));
+
+    const intersection = new Set([...words1].filter(x => words2.has(x)));
+    const union = new Set([...words1, ...words2]);
+
+    if (union.size === 0) {
+      return 0;
+    }
+
+    return intersection.size / union.size;
+  }
+
+  _updateAccess(key) {
+    /**
+     * 更新访问顺序
+     * 
+     * 参数:
+     *   key: 缓存键
+     */
+    const index = this.accessOrder.indexOf(key);
+    if (index !== -1) {
+      this.accessOrder.splice(index, 1);
+    }
+    this.accessOrder.push(key);
+  }
+
+  _evict() {
+    /**
+     * 淘汰缓存
+     */
+    const key = this.accessOrder.shift();
+    this.cache.delete(key);
+  }
+
+  delete(key) {
+    /**
+     * 删除缓存
+     * 
+     * 参数:
+     *   key: 缓存键
+     */
+    this.cache.delete(key);
+    const index = this.accessOrder.indexOf(key);
+    if (index !== -1) {
+      this.accessOrder.splice(index, 1);
+    }
+  }
+
+  clear() {
+    /**
+     * 清空缓存
+     */
+    this.cache.clear();
+    this.accessOrder = [];
+  }
+
+  getStatistics() {
+    /**
+     * 获取统计信息
+     * 
+     * 返回:
+     *   统计对象
+     */
+    const now = Date.now();
+    let expiredCount = 0;
+
+    for (const item of this.cache.values()) {
+      if (now > item.expiresAt) {
+        expiredCount++;
+      }
+    }
+
+    return {
+      size: this.cache.size,
+      maxSize: this.config.maxSize,
+      usageRatio: this.cache.size / this.config.maxSize,
+      expiredCount,
+      ttl: this.config.ttl
+    };
+  }
+
+  async cleanup() {
+    /**
+     * 清理过期缓存
+     */
+    const now = Date.now();
+    const expiredKeys = [];
+
+    for (const [key, item] of this.cache.entries()) {
+      if (now > item.expiresAt) {
+        expiredKeys.push(key);
+      }
+    }
+
+    for (const key of expiredKeys) {
+      this.delete(key);
+    }
+
+    console.log(`清理了 ${expiredKeys.length} 个过期缓存`);
+  }
+}
+
+// 使用示例
+async function cacheStrategyExample() {
+  const cache = new CacheStrategy({
+    ttl: 3600000,
+    maxSize: 1000,
+    similarityThreshold: 0.95
+  });
+
+  // 设置缓存
+  await cache.set('key1', 'value1');
+  await cache.set('key2', 'value2', 1800000); // 30分钟
+
+  // 获取缓存
+  const value1 = await cache.get('key1');
+  console.log('缓存值:', value1);
+
+  // 获取或设置
+  const value3 = await cache.getOrSet('key3', async () => {
+    console.log('计算新值...');
+    return 'computed_value';
+  });
+
+  console.log('缓存值:', value3);
+
+  // 获取相似的缓存
+  const similar = await cache.getSimilar('什么是人工智能？');
+  console.log('相似缓存:', similar);
+
+  // 获取统计信息
+  const stats = cache.getStatistics();
+  console.log('统计信息:', stats);
+
+  // 清理过期缓存
+  await cache.cleanup();
+}
+```
+
+## 📊 技术对比
+
+### 模型压缩技术对比
+
+| 技术 | 压缩比例 | 精度损失 | 实现难度 | 适用场景 |
+|------|---------|---------|---------|---------|
+| **INT8 量化** | 4x | 小 | 低 | 边缘设备、实时推理 |
+| **INT4 量化** | 8x | 中 | 中 | 极端受限环境 |
+| **FP16/BF16** | 2x | 很小 | 低 | GPU 加速 |
+| **结构化剪枝** | 2-4x | 小 | 中 | 模型部署优化 |
+| **非结构化剪枝** | 2-10x | 中 | 高 | 稀疏计算优化 |
+| **知识蒸馏** | 2-4x | 小 | 高 | 模型压缩、迁移学习 |
+
+### 推理优化框架对比
+
+| 框架 | 优点 | 缺点 | 适用模型 |
+|------|------|------|---------|
+| **TensorRT** | 性能最优、NVIDIA 优化 | 仅限 NVIDIA GPU | 各种深度学习模型 |
+| **ONNX Runtime** | 跨平台、易用 | 性能略低于 TensorRT | ONNX 模型 |
+| **vLLM** | 专为 LLM 优化、高效内存 | 主要用于 LLM | 大语言模型 |
+| **TGI** | 生产就绪、易部署 | 依赖 Hugging Face | Hugging Face 模型 |
+
+### 成本优化策略对比
+
+| 策略 | 成本降低 | 实现难度 | 适用场景 |
+|------|---------|---------|---------|
+| **Token 优化** | 20-50% | 低 | API 调用优化 |
+| **模型选择** | 50-90% | 低 | 任务适配 |
+| **缓存策略** | 30-70% | 中 | 重复请求优化 |
+| **批处理** | 40-60% | 中 | 批量处理 |
+| **模型压缩** | 50-75% | 高 | 长期部署 |
+
+## 🎓 学习路径
+
+### 初级阶段
+1. 理解模型压缩的基本概念
+2. 掌握基本的量化技术
+3. 实现简单的成本优化
+
+### 中级阶段
+1. 学习结构化剪枝和知识蒸馏
+2. 掌握 TensorRT 和 ONNX Runtime
+3. 实现智能缓存策略
+
+### 高级阶段
+1. 深入理解 PagedAttention 和连续批处理
+2. 掌握 vLLM 和 TGI 的优化原理
+3. 实现完整的模型优化流程
+
+## 🔗 相关资源
+
+### 模型压缩
+- [Quantization Aware Training](https://pytorch.org/docs/stable/quantization.html)
+- [Model Pruning](https://pytorch.org/tutorials/advanced/pruning_tutorial.html)
+- [Knowledge Distillation](https://arxiv.org/abs/1503.02531)
+
+### 推理优化
+- [TensorRT Documentation](https://docs.nvidia.com/deeplearning/tensorrt/)
+- [ONNX Runtime](https://onnxruntime.ai/)
+- [vLLM](https://github.com/vllm-project/vllm)
+- [TGI](https://github.com/huggingface/text-generation-inference)
+
+### 成本优化
+- [OpenAI Pricing](https://openai.com/pricing)
+- [Anthropic Pricing](https://www.anthropic.com/pricing)
+- [Model Selection Guide](https://platform.openai.com/docs/models)
+
+## 📝 学习检查点
+
+完成本节学习后，你应该能够回答：
+- [ ] 量化的基本原理是什么？
+- [ ] INT8、INT4、FP16 有什么区别？
+- [ ] 结构化剪枝和非结构化剪枝的区别是什么？
+- [ ] 知识蒸馏是如何工作的？
+- [ ] TensorRT 的主要优化技术有哪些？
+- [ ] vLLM 的 PagedAttention 是什么？
+- [ ] 如何选择合适的模型以优化成本？
+- [ ] 缓存策略如何降低 API 调用成本？
+- [ ] 如何估算模型运行成本？
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **数据工程** - 学习数据收集、标注和管理
+- **评估与测试** - 了解模型评估和测试方法
+- **安全与合规** - 学习 AI 安全和合规要求
