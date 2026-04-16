@@ -1,0 +1,3243 @@
+# Agent 部署与运维
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-15
+
+## 📖 概述
+
+Agent 部署与运维是指将开发完成的 Agent 系统部署到生产环境，并进行持续的监控、维护和优化的过程。与传统的软件系统相比，Agent 系统具有更高的动态性和不确定性，因此需要专门的部署策略和运维方案来确保其稳定运行。
+
+## 🎯 部署架构
+
+### 单机部署
+
+单机部署是最简单的部署方式，适用于开发、测试和小规模生产环境。
+
+#### 基本架构
+
+```
+┌─────────────────────────────────────┐
+│           应用服务器                  │
+│  ┌───────────────────────────────┐  │
+│  │   Agent 应用                  │  │
+│  │   ┌─────────────────────┐    │  │
+│  │   │  Agent 核心逻辑     │    │  │
+│  │   └─────────────────────┘    │  │
+│  │   ┌─────────────────────┐    │  │
+│  │   │  LLM 客户端         │    │  │
+│  │   └─────────────────────┘    │  │
+│  │   ┌─────────────────────┐    │  │
+│  │   │  记忆系统           │    │  │
+│  │   └─────────────────────┘    │  │
+│  └───────────────────────────────┘  │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         外部服务                     │
+│  • LLM API (OpenAI, Anthropic)      │
+│  • 向量数据库 (Pinecone, Weaviate)   │
+│  • 消息队列 (Redis, RabbitMQ)        │
+└─────────────────────────────────────┘
+```
+
+#### Docker 部署
+
+```dockerfile
+# Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# 安装依赖
+COPY package*.json ./
+RUN npm ci --only=production
+
+# 复制应用代码
+COPY . .
+
+# 暴露端口
+EXPOSE 3000
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+  CMD node healthcheck.js
+
+# 启动应用
+CMD ["node", "index.js"]
+```
+
+```dockerfile
+# docker-compose.yml
+version: '3.8'
+
+services:
+  agent:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - LLM_API_KEY=${LLM_API_KEY}
+      - VECTOR_DB_URL=${VECTOR_DB_URL}
+      - REDIS_URL=${REDIS_URL}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - vector-db
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  vector-db:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - agent
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  qdrant-data:
+```
+
+#### Node.js 部署脚本
+
+```javascript
+// deployment/single-machine/deploy.js
+const { spawn } = require('child_process');
+const fs = require('fs').promises;
+const path = require('path');
+
+class SingleMachineDeployment {
+  constructor(config) {
+    /**
+     * 单机部署管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      appName: config.appName || 'agent-app',
+      port: config.port || 3000,
+      env: config.env || 'production',
+      ...config
+    };
+  }
+
+  async deploy() {
+    /**
+     * 执行部署
+     * 
+     * 返回:
+     *   部署结果
+     */
+    console.log('开始单机部署...');
+
+    try {
+      // 1. 检查环境
+      await this._checkEnvironment();
+
+      // 2. 安装依赖
+      await this._installDependencies();
+
+      // 3. 构建应用
+      await this._build();
+
+      // 4. 配置环境变量
+      await this._setupEnvironment();
+
+      // 5. 启动应用
+      await this._start();
+
+      // 6. 健康检查
+      await this._healthCheck();
+
+      console.log('部署完成!');
+      return {
+        success: true,
+        message: '单机部署成功'
+      };
+    } catch (error) {
+      console.error('部署失败:', error);
+      throw error;
+    }
+  }
+
+  async _checkEnvironment() {
+    /**
+     * 检查环境
+     */
+    console.log('检查环境...');
+
+    // 检查 Node.js 版本
+    const nodeVersion = await this._runCommand('node --version');
+    console.log(`Node.js 版本: ${nodeVersion.trim()}`);
+
+    // 检查 npm 版本
+    const npmVersion = await this._runCommand('npm --version');
+    console.log(`npm 版本: ${npmVersion.trim()}`);
+
+    // 检查 Docker（如果使用）
+    try {
+      const dockerVersion = await this._runCommand('docker --version');
+      console.log(`Docker 版本: ${dockerVersion.trim()}`);
+    } catch (error) {
+      console.log('Docker 未安装，将跳过 Docker 相关操作');
+    }
+  }
+
+  async _installDependencies() {
+    /**
+     * 安装依赖
+     */
+    console.log('安装依赖...');
+
+    await this._runCommand('npm ci --only=production');
+  }
+
+  async _build() {
+    /**
+     * 构建应用
+     */
+    console.log('构建应用...');
+
+    if (this.config.buildCommand) {
+      await this._runCommand(this.config.buildCommand);
+    }
+  }
+
+  async _setupEnvironment() {
+    /**
+     * 配置环境变量
+     */
+    console.log('配置环境变量...');
+
+    const envFile = path.join(process.cwd(), '.env.production');
+    
+    // 创建环境变量文件
+    const envContent = Object.entries(this.config.env || {})
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+
+    await fs.writeFile(envFile, envContent, 'utf-8');
+  }
+
+  async _start() {
+    /**
+     * 启动应用
+     */
+    console.log('启动应用...');
+
+    if (this.config.useDocker) {
+      // 使用 Docker 启动
+      await this._runCommand('docker-compose up -d');
+    } else {
+      // 使用 PM2 启动
+      await this._runCommand(`pm2 start index.js --name ${this.config.appName}`);
+    }
+  }
+
+  async _healthCheck() {
+    /**
+     * 健康检查
+     */
+    console.log('执行健康检查...');
+
+    const maxRetries = 10;
+    const retryDelay = 3000;
+
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const response = await fetch(`http://localhost:${this.config.port}/health`);
+        
+        if (response.ok) {
+          console.log('健康检查通过');
+          return;
+        }
+      } catch (error) {
+        console.log(`健康检查失败，重试 ${i + 1}/${maxRetries}...`);
+        await this._sleep(retryDelay);
+      }
+    }
+
+    throw new Error('健康检查失败');
+  }
+
+  async _runCommand(command) {
+    /**
+     * 执行命令
+     * 
+     * 参数:
+     *   command: 命令字符串
+     * 
+     * 返回:
+     *   命令输出
+     */
+    return new Promise((resolve, reject) => {
+      const [cmd, ...args] = command.split(' ');
+      const child = spawn(cmd, args, { stdio: 'pipe' });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve(stdout);
+        } else {
+          reject(new Error(`Command failed: ${stderr}`));
+        }
+      });
+    });
+  }
+
+  async _sleep(ms) {
+    /**
+     * 休眠
+     * 
+     * 参数:
+     *   ms: 毫秒数
+     */
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// 使用示例
+async function singleMachineDeploymentExample() {
+  const deployment = new SingleMachineDeployment({
+    appName: 'agent-app',
+    port: 3000,
+    env: {
+      NODE_ENV: 'production',
+      LLM_API_KEY: 'your-api-key',
+      VECTOR_DB_URL: 'http://localhost:6333',
+      REDIS_URL: 'redis://localhost:6379'
+    },
+    useDocker: true
+  });
+
+  await deployment.deploy();
+}
+```
+
+### 分布式部署
+
+分布式部署适用于高并发、高可用的生产环境。
+
+#### 基本架构
+
+```
+                    ┌─────────────┐
+                    │   负载均衡   │
+                    │   (Nginx)   │
+                    └──────┬──────┘
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+   ┌────▼────┐       ┌────▼────┐       ┌────▼────┐
+   │ Agent 1 │       │ Agent 2 │       │ Agent N │
+   └────┬────┘       └────┬────┘       └────┬────┘
+        │                  │                  │
+        └──────────────────┼──────────────────┘
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+   ┌────▼────┐       ┌────▼────┐       ┌────▼────┐
+   │Redis 1  │       │Redis 2  │       │Redis 3  │
+   │(Master) │       │(Slave)  │       │(Slave)  │
+   └─────────┘       └─────────┘       └─────────┘
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+   ┌────▼────┐       ┌────▼────┐       ┌────▼────┐
+   │Vector 1 │       │Vector 2 │       │Vector 3 │
+   │  DB     │       │  DB     │       │  DB     │
+   └─────────┘       └─────────┘       └─────────┘
+```
+
+#### Kubernetes 部署配置
+
+```yaml
+# deployment/kubernetes/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-deployment
+  labels:
+    app: agent
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels:
+        app: agent
+    spec:
+      containers:
+      - name: agent
+        image: agent-app:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: LLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: llm-api-key
+        - name: VECTOR_DB_URL
+          value: "http://vector-db-service:6333"
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: agent-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-service
+spec:
+  selector:
+    app: agent
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3000
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agent-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agent-deployment
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+```
+
+#### 分布式部署管理器
+
+```javascript
+// deployment/distributed/deploy.js
+class DistributedDeployment {
+  constructor(config) {
+    /**
+     * 分布式部署管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      clusterName: config.clusterName || 'agent-cluster',
+      namespace: config.namespace || 'default',
+      replicas: config.replicas || 3,
+      ...config
+    };
+  }
+
+  async deploy() {
+    /**
+     * 执行分布式部署
+     * 
+     * 返回:
+     *   部署结果
+     */
+    console.log('开始分布式部署...');
+
+    try {
+      // 1. 创建命名空间
+      await this._createNamespace();
+
+      // 2. 创建配置映射
+      await this._createConfigMap();
+
+      // 3. 创建密钥
+      await this._createSecrets();
+
+      // 4. 部署应用
+      await this._deployApplication();
+
+      // 5. 创建服务
+      await this._createService();
+
+      // 6. 配置自动扩缩容
+      await this._configureAutoscaling();
+
+      // 7. 健康检查
+      await this._healthCheck();
+
+      console.log('分布式部署完成!');
+      return {
+        success: true,
+        message: '分布式部署成功'
+      };
+    } catch (error) {
+      console.error('分布式部署失败:', error);
+      throw error;
+    }
+  }
+
+  async _createNamespace() {
+    /**
+     * 创建命名空间
+     */
+    console.log('创建命名空间...');
+
+    const command = `kubectl create namespace ${this.config.namespace} --dry-run=client -o yaml | kubectl apply -f -`;
+    await this._runCommand(command);
+  }
+
+  async _createConfigMap() {
+    /**
+     * 创建配置映射
+     */
+    console.log('创建配置映射...');
+
+    const configMap = {
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: {
+        name: 'agent-config',
+        namespace: this.config.namespace
+      },
+      data: this.config.configData || {}
+    };
+
+    const command = `echo '${JSON.stringify(configMap)}' | kubectl apply -f -`;
+    await this._runCommand(command);
+  }
+
+  async _createSecrets() {
+    /**
+     * 创建密钥
+     */
+    console.log('创建密钥...');
+
+    const secrets = {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: {
+        name: 'agent-secrets',
+        namespace: this.config.namespace
+      },
+      type: 'Opaque',
+      data: {}
+    };
+
+    // 转换为 base64
+    for (const [key, value] of Object.entries(this.config.secrets || {})) {
+      secrets.data[key] = Buffer.from(value).toString('base64');
+    }
+
+    const command = `echo '${JSON.stringify(secrets)}' | kubectl apply -f -`;
+    await this._runCommand(command);
+  }
+
+  async _deployApplication() {
+    /**
+     * 部署应用
+     */
+    console.log('部署应用...');
+
+    const deployment = {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata: {
+        name: 'agent-deployment',
+        namespace: this.config.namespace
+      },
+      spec: {
+        replicas: this.config.replicas,
+        selector: {
+          matchLabels: {
+            app: 'agent'
+          }
+        },
+        template: {
+          metadata: {
+            labels: {
+              app: 'agent'
+            }
+          },
+          spec: {
+            containers: [
+              {
+                name: 'agent',
+                image: this.config.image || 'agent-app:latest',
+                ports: [
+                  { containerPort: 3000 }
+                ],
+                env: [
+                  {
+                    name: 'NODE_ENV',
+                    value: 'production'
+                  },
+                  {
+                    name: 'LLM_API_KEY',
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: 'agent-secrets',
+                        key: 'llm-api-key'
+                      }
+                    }
+                  }
+                ],
+                resources: {
+                  requests: {
+                    memory: '512Mi',
+                    cpu: '500m'
+                  },
+                  limits: {
+                    memory: '1Gi',
+                    cpu: '1000m'
+                  }
+                },
+                livenessProbe: {
+                  httpGet: {
+                    path: '/health',
+                    port: 3000
+                  },
+                  initialDelaySeconds: 30,
+                  periodSeconds: 10
+                },
+                readinessProbe: {
+                  httpGet: {
+                    path: '/ready',
+                    port: 3000
+                  },
+                  initialDelaySeconds: 5,
+                  periodSeconds: 5
+                }
+              }
+            ]
+          }
+        }
+      }
+    };
+
+    const command = `echo '${JSON.stringify(deployment)}' | kubectl apply -f -`;
+    await this._runCommand(command);
+  }
+
+  async _createService() {
+    /**
+     * 创建服务
+     */
+    console.log('创建服务...');
+
+    const service = {
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: {
+        name: 'agent-service',
+        namespace: this.config.namespace
+      },
+      spec: {
+        selector: {
+          app: 'agent'
+        },
+        ports: [
+          {
+            protocol: 'TCP',
+            port: 80,
+            targetPort: 3000
+          }
+        ],
+        type: 'ClusterIP'
+      }
+    };
+
+    const command = `echo '${JSON.stringify(service)}' | kubectl apply -f -`;
+    await this._runCommand(command);
+  }
+
+  async _configureAutoscaling() {
+    /**
+     * 配置自动扩缩容
+     */
+    console.log('配置自动扩缩容...');
+
+    const hpa = {
+      apiVersion: 'autoscaling/v2',
+      kind: 'HorizontalPodAutoscaler',
+      metadata: {
+        name: 'agent-hpa',
+        namespace: this.config.namespace
+      },
+      spec: {
+        scaleTargetRef: {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          name: 'agent-deployment'
+        },
+        minReplicas: this.config.minReplicas || 3,
+        maxReplicas: this.config.maxReplicas || 10,
+        metrics: [
+          {
+            type: 'Resource',
+            resource: {
+              name: 'cpu',
+              target: {
+                type: 'Utilization',
+                averageUtilization: 70
+              }
+            }
+          },
+          {
+            type: 'Resource',
+            resource: {
+              name: 'memory',
+              target: {
+                type: 'Utilization',
+                averageUtilization: 80
+              }
+            }
+          }
+        ]
+      }
+    };
+
+    const command = `echo '${JSON.stringify(hpa)}' | kubectl apply -f -`;
+    await this._runCommand(command);
+  }
+
+  async _healthCheck() {
+    /**
+     * 健康检查
+     */
+    console.log('执行健康检查...');
+
+    const maxRetries = 30;
+    const retryDelay = 5000;
+
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const command = `kubectl get pods -n ${this.config.namespace} -l app=agent`;
+        const output = await this._runCommand(command);
+
+        // 检查所有 Pod 是否就绪
+        const readyPods = output.match(/Ready\s+(\d+)\/(\d+)/);
+        if (readyPods && readyPods[1] === readyPods[2]) {
+          console.log('所有 Pod 已就绪');
+          return;
+        }
+
+        console.log(`等待 Pod 就绪... (${i + 1}/${maxRetries})`);
+        await this._sleep(retryDelay);
+      } catch (error) {
+        console.error('健康检查失败:', error);
+        await this._sleep(retryDelay);
+      }
+    }
+
+    throw new Error('健康检查超时');
+  }
+
+  async _runCommand(command) {
+    /**
+     * 执行命令
+     * 
+     * 参数:
+     *   command: 命令字符串
+     * 
+     * 返回:
+     *   命令输出
+     */
+    return new Promise((resolve, reject) => {
+      const { spawn } = require('child_process');
+      const [cmd, ...args] = command.split(' ');
+      const child = spawn(cmd, args, { stdio: 'pipe' });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve(stdout);
+        } else {
+          reject(new Error(`Command failed: ${stderr}`));
+        }
+      });
+    });
+  }
+
+  async _sleep(ms) {
+    /**
+     * 休眠
+     * 
+     * 参数:
+     *   ms: 毫秒数
+     */
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// 使用示例
+async function distributedDeploymentExample() {
+  const deployment = new DistributedDeployment({
+    clusterName: 'agent-cluster',
+    namespace: 'production',
+    replicas: 3,
+    image: 'agent-app:latest',
+    secrets: {
+      'llm-api-key': 'your-api-key',
+      'vector-db-url': 'http://vector-db-service:6333'
+    },
+    configData: {
+      'LOG_LEVEL': 'info',
+      'CACHE_TTL': '3600'
+    }
+  });
+
+  await deployment.deploy();
+}
+```
+
+### Serverless 部署
+
+Serverless 部署适用于按需扩展、成本敏感的场景。
+
+#### AWS Lambda 部署
+
+```javascript
+// deployment/serverless/aws-lambda.js
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { LambdaClient, CreateFunctionCommand, UpdateFunctionCodeCommand } = require('@aws-sdk/client-lambda');
+const fs = require('fs').promises;
+const { execSync } = require('child_process');
+const path = require('path');
+const archiver = require('archiver');
+
+class ServerlessDeployment {
+  constructor(config) {
+    /**
+     * Serverless 部署管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      region: config.region || 'us-east-1',
+      functionName: config.functionName || 'agent-function',
+      runtime: config.runtime || 'nodejs18.x',
+      handler: config.handler || 'index.handler',
+      timeout: config.timeout || 300,
+      memorySize: config.memorySize || 1024,
+      ...config
+    };
+
+    this.s3Client = new S3Client({ region: this.config.region });
+    this.lambdaClient = new LambdaClient({ region: this.config.region });
+  }
+
+  async deploy() {
+    /**
+     * 执行 Serverless 部署
+     * 
+     * 返回:
+     *   部署结果
+     */
+    console.log('开始 Serverless 部署...');
+
+    try {
+      // 1. 准备部署包
+      const packagePath = await this._preparePackage();
+
+      // 2. 上传到 S3
+      const s3Key = await this._uploadToS3(packagePath);
+
+      // 3. 创建或更新 Lambda 函数
+      await this._deployLambda(s3Key);
+
+      // 4. 配置环境变量
+      await this._configureEnvironment();
+
+      // 5. 测试函数
+      await this._testFunction();
+
+      console.log('Serverless 部署完成!');
+      return {
+        success: true,
+        message: 'Serverless 部署成功',
+        functionName: this.config.functionName
+      };
+    } catch (error) {
+      console.error('Serverless 部署失败:', error);
+      throw error;
+    }
+  }
+
+  async _preparePackage() {
+    /**
+     * 准备部署包
+     * 
+     * 返回:
+     *   部署包路径
+     */
+    console.log('准备部署包...');
+
+    // 创建临时目录
+    const tempDir = path.join(process.cwd(), '.serverless');
+    await fs.mkdir(tempDir, { recursive: true });
+
+    // 安装依赖
+    console.log('安装依赖...');
+    execSync('npm ci --production', { cwd: process.cwd() });
+
+    // 创建 zip 文件
+    const zipPath = path.join(tempDir, 'deployment.zip');
+    const output = await fs.createWriteStream(zipPath);
+    const archive = archiver('zip', { zlib: { level: 9 } });
+
+    archive.pipe(output);
+
+    // 添加文件
+    const files = await this._getFilesToInclude();
+    for (const file of files) {
+      const filePath = path.join(process.cwd(), file);
+      const stat = await fs.stat(filePath);
+
+      if (stat.isDirectory()) {
+        archive.directory(filePath, file);
+      } else {
+        archive.file(filePath, { name: file });
+      }
+    }
+
+    await archive.finalize();
+    await new Promise(resolve => output.on('close', resolve));
+
+    console.log(`部署包已创建: ${zipPath}`);
+    return zipPath;
+  }
+
+  async _getFilesToInclude() {
+    /**
+     * 获取需要包含的文件列表
+     * 
+     * 返回:
+     *   文件列表
+     */
+    const files = [];
+
+    // 添加主要文件
+    files.push('index.js', 'package.json');
+
+    // 添加 node_modules
+    files.push('node_modules');
+
+    // 添加其他必要文件
+    const additionalFiles = [
+      'lib',
+      'utils',
+      'config'
+    ];
+
+    for (const file of additionalFiles) {
+      try {
+        const filePath = path.join(process.cwd(), file);
+        await fs.access(filePath);
+        files.push(file);
+      } catch (error) {
+        // 文件不存在，跳过
+      }
+    }
+
+    return files;
+  }
+
+  async _uploadToS3(packagePath) {
+    /**
+     * 上传部署包到 S3
+     * 
+     * 参数:
+     *   packagePath: 部署包路径
+     * 
+     * 返回:
+     *   S3 对象键
+     */
+    console.log('上传到 S3...');
+
+    const bucketName = this.config.s3Bucket || `agent-deployment-${Date.now()}`;
+    const key = `${this.config.functionName}/${Date.now()}.zip`;
+
+    const fileContent = await fs.readFile(packagePath);
+
+    const command = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+      Body: fileContent,
+      ContentType: 'application/zip'
+    });
+
+    await this.s3Client.send(command);
+
+    console.log(`已上传到 S3: s3://${bucketName}/${key}`);
+    return key;
+  }
+
+  async _deployLambda(s3Key) {
+    /**
+     * 部署 Lambda 函数
+     * 
+     * 参数:
+     *   s3Key: S3 对象键
+     */
+    console.log('部署 Lambda 函数...');
+
+    try {
+      // 尝试更新现有函数
+      const updateCommand = new UpdateFunctionCodeCommand({
+        FunctionName: this.config.functionName,
+        S3Bucket: this.config.s3Bucket,
+        S3Key: s3Key
+      });
+
+      await this.lambdaClient.send(updateCommand);
+      console.log('Lambda 函数已更新');
+    } catch (error) {
+      if (error.name === 'ResourceNotFoundException') {
+        // 函数不存在，创建新函数
+        console.log('创建新的 Lambda 函数...');
+
+        const createCommand = new CreateFunctionCommand({
+          FunctionName: this.config.functionName,
+          Runtime: this.config.runtime,
+          Role: this.config.iamRole,
+          Handler: this.config.handler,
+          Code: {
+            S3Bucket: this.config.s3Bucket,
+            S3Key: s3Key
+          },
+          Timeout: this.config.timeout,
+          MemorySize: this.config.memorySize,
+          Environment: {
+            Variables: this.config.environment || {}
+          }
+        });
+
+        await this.lambdaClient.send(createCommand);
+        console.log('Lambda 函数已创建');
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  async _configureEnvironment() {
+    /**
+     * 配置环境变量
+     */
+    console.log('配置环境变量...');
+
+    const { UpdateFunctionConfigurationCommand } = require('@aws-sdk/client-lambda');
+
+    const command = new UpdateFunctionConfigurationCommand({
+      FunctionName: this.config.functionName,
+      Environment: {
+        Variables: this.config.environment || {}
+      }
+    });
+
+    await this.lambdaClient.send(command);
+  }
+
+  async _testFunction() {
+    /**
+     * 测试函数
+     */
+    console.log('测试函数...');
+
+    const { InvokeCommand } = require('@aws-sdk/client-lambda');
+
+    const command = new InvokeCommand({
+      FunctionName: this.config.functionName,
+      Payload: JSON.stringify({
+        action: 'test',
+        timestamp: Date.now()
+      })
+    });
+
+    const response = await this.lambdaClient.send(command);
+
+    if (response.FunctionError) {
+      throw new Error(`函数测试失败: ${response.Payload}`);
+    }
+
+    console.log('函数测试通过');
+  }
+}
+
+// Lambda 处理器
+exports.handler = async (event) => {
+  /**
+   * Lambda 处理器
+   * 
+   * 参数:
+   *   event: 事件对象
+   * 
+   * 返回:
+   *   响应对象
+   */
+  try {
+    const { action, data } = JSON.parse(event.body || event);
+
+    // 初始化 Agent
+    const agent = new AutonomousAgent({
+      llm: {
+        apiKey: process.env.LLM_API_KEY,
+        model: process.env.LLM_MODEL || 'gpt-4'
+      },
+      // 其他配置...
+    });
+
+    // 根据操作类型执行不同的操作
+    switch (action) {
+      case 'run':
+        const result = await agent.run(data.mission);
+        return {
+          statusCode: 200,
+          body: JSON.stringify(result)
+        };
+
+      case 'status':
+        const status = agent.getStatus();
+        return {
+          statusCode: 200,
+          body: JSON.stringify(status)
+        };
+
+      case 'stop':
+        await agent.stop(data.reason);
+        return {
+          statusCode: 200,
+          body: JSON.stringify({ success: true })
+        };
+
+      default:
+        return {
+          statusCode: 400,
+          body: JSON.stringify({ error: 'Unknown action' })
+        };
+    }
+  } catch (error) {
+    console.error('Lambda 处理错误:', error);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: error.message })
+    };
+  }
+};
+
+// 使用示例
+async function serverlessDeploymentExample() {
+  const deployment = new ServerlessDeployment({
+    region: 'us-east-1',
+    functionName: 'agent-function',
+    runtime: 'nodejs18.x',
+    handler: 'index.handler',
+    timeout: 300,
+    memorySize: 1024,
+    s3Bucket: 'agent-deployment-bucket',
+    iamRole: 'arn:aws:iam::123456789012:role/lambda-role',
+    environment: {
+      NODE_ENV: 'production',
+      LLM_API_KEY: 'your-api-key',
+      VECTOR_DB_URL: 'http://vector-db:6333'
+    }
+  });
+
+  await deployment.deploy();
+}
+```
+
+## 📊 监控与日志
+
+### 性能监控
+
+性能监控是确保 Agent 系统稳定运行的关键。
+
+#### 监控指标
+
+```javascript
+// monitoring/performance-monitor.js
+class PerformanceMonitor {
+  constructor(config) {
+    /**
+     * 性能监控器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      sampleInterval: config.sampleInterval || 1000,
+      alertThresholds: config.alertThresholds || {},
+      ...config
+    };
+
+    this.metrics = {
+      cpu: [],
+      memory: [],
+      responseTime: [],
+      errorRate: [],
+      throughput: []
+    };
+
+    this.alerts = [];
+    this.isMonitoring = false;
+  }
+
+  async start() {
+    /**
+     * 开始监控
+     */
+    if (this.isMonitoring) {
+      console.log('监控已在运行');
+      return;
+    }
+
+    console.log('启动性能监控...');
+    this.isMonitoring = true;
+
+    // 定期收集指标
+    this.monitorInterval = setInterval(async () => {
+      await this._collectMetrics();
+      await this._checkThresholds();
+    }, this.config.sampleInterval);
+  }
+
+  async stop() {
+    /**
+     * 停止监控
+     */
+    if (!this.isMonitoring) {
+      return;
+    }
+
+    console.log('停止性能监控...');
+    this.isMonitoring = false;
+
+    if (this.monitorInterval) {
+      clearInterval(this.monitorInterval);
+    }
+  }
+
+  async _collectMetrics() {
+    /**
+     * 收集性能指标
+     */
+    try {
+      // CPU 使用率
+      const cpuUsage = await this._getCpuUsage();
+      this.metrics.cpu.push({
+        value: cpuUsage,
+        timestamp: Date.now()
+      });
+
+      // 内存使用率
+      const memoryUsage = await this._getMemoryUsage();
+      this.metrics.memory.push({
+        value: memoryUsage,
+        timestamp: Date.now()
+      });
+
+      // 响应时间
+      const responseTime = await this._getResponseTime();
+      this.metrics.responseTime.push({
+        value: responseTime,
+        timestamp: Date.now()
+      });
+
+      // 错误率
+      const errorRate = await this._getErrorRate();
+      this.metrics.errorRate.push({
+        value: errorRate,
+        timestamp: Date.now()
+      });
+
+      // 吞吐量
+      const throughput = await this._getThroughput();
+      this.metrics.throughput.push({
+        value: throughput,
+        timestamp: Date.now()
+      });
+
+      // 保持最近的数据
+      this._trimMetrics();
+
+    } catch (error) {
+      console.error('收集指标失败:', error);
+    }
+  }
+
+  async _getCpuUsage() {
+    /**
+     * 获取 CPU 使用率
+     * 
+     * 返回:
+     *   CPU 使用率 (0-100)
+     */
+    const os = require('os');
+    const cpus = os.cpus();
+
+    let totalIdle = 0;
+    let totalTick = 0;
+
+    for (const cpu of cpus) {
+      for (const type in cpu.times) {
+        totalTick += cpu.times[type];
+      }
+      totalIdle += cpu.times.idle;
+    }
+
+    const idle = totalIdle / cpus.length;
+    const total = totalTick / cpus.length;
+    const usage = 100 - (100 * idle / total);
+
+    return usage;
+  }
+
+  async _getMemoryUsage() {
+    /**
+     * 获取内存使用率
+     * 
+     * 返回:
+     *   内存使用率 (0-100)
+     */
+    const os = require('os');
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
+    const usedMemory = totalMemory - freeMemory;
+
+    return (usedMemory / totalMemory) * 100;
+  }
+
+  async _getResponseTime() {
+    /**
+     * 获取响应时间
+     * 
+     * 返回:
+     *   平均响应时间 (ms)
+     */
+    if (this.metrics.responseTime.length === 0) {
+      return 0;
+    }
+
+    const recentTimes = this.metrics.responseTime.slice(-100);
+    const avgTime = recentTimes.reduce((sum, m) => sum + m.value, 0) / recentTimes.length;
+
+    return avgTime;
+  }
+
+  async _getErrorRate() {
+    /**
+     * 获取错误率
+     * 
+     * 返回:
+     *   错误率 (0-1)
+     */
+    if (this.metrics.errorRate.length === 0) {
+      return 0;
+    }
+
+    const recentErrors = this.metrics.errorRate.slice(-100);
+    const avgErrorRate = recentErrors.reduce((sum, m) => sum + m.value, 0) / recentErrors.length;
+
+    return avgErrorRate;
+  }
+
+  async _getThroughput() {
+    /**
+     * 获取吞吐量
+     * 
+     * 返回:
+     *   每秒请求数
+     */
+    if (this.metrics.throughput.length === 0) {
+      return 0;
+    }
+
+    const recentThroughput = this.metrics.throughput.slice(-100);
+    const avgThroughput = recentThroughput.reduce((sum, m) => sum + m.value, 0) / recentThroughput.length;
+
+    return avgThroughput;
+  }
+
+  async _checkThresholds() {
+    /**
+     * 检查阈值并触发告警
+     */
+    const thresholds = this.config.alertThresholds;
+
+    // 检查 CPU
+    if (thresholds.cpu && this.metrics.cpu.length > 0) {
+      const latestCpu = this.metrics.cpu[this.metrics.cpu.length - 1];
+      if (latestCpu.value > thresholds.cpu) {
+        await this._triggerAlert('cpu', latestCpu.value, thresholds.cpu);
+      }
+    }
+
+    // 检查内存
+    if (thresholds.memory && this.metrics.memory.length > 0) {
+      const latestMemory = this.metrics.memory[this.metrics.memory.length - 1];
+      if (latestMemory.value > thresholds.memory) {
+        await this._triggerAlert('memory', latestMemory.value, thresholds.memory);
+      }
+    }
+
+    // 检查响应时间
+    if (thresholds.responseTime && this.metrics.responseTime.length > 0) {
+      const latestResponseTime = this.metrics.responseTime[this.metrics.responseTime.length - 1];
+      if (latestResponseTime.value > thresholds.responseTime) {
+        await this._triggerAlert('responseTime', latestResponseTime.value, thresholds.responseTime);
+      }
+    }
+
+    // 检查错误率
+    if (thresholds.errorRate && this.metrics.errorRate.length > 0) {
+      const latestErrorRate = this.metrics.errorRate[this.metrics.errorRate.length - 1];
+      if (latestErrorRate.value > thresholds.errorRate) {
+        await this._triggerAlert('errorRate', latestErrorRate.value, thresholds.errorRate);
+      }
+    }
+  }
+
+  async _triggerAlert(metric, value, threshold) {
+    /**
+     * 触发告警
+     * 
+     * 参数:
+     *   metric: 指标名称
+     *   value: 当前值
+     *   threshold: 阈值
+     */
+    const alert = {
+      id: `alert_${Date.now()}`,
+      metric,
+      value,
+      threshold,
+      timestamp: Date.now(),
+      message: `${metric} 超过阈值: ${value} > ${threshold}`
+    };
+
+    this.alerts.push(alert);
+
+    // 发送通知
+    await this._sendNotification(alert);
+
+    console.warn(`告警: ${alert.message}`);
+  }
+
+  async _sendNotification(alert) {
+    /**
+     * 发送通知
+     * 
+     * 参数:
+     *   alert: 告警对象
+     */
+    // 这里可以实现各种通知方式：邮件、短信、Slack 等
+    console.log('发送告警通知:', alert.message);
+  }
+
+  _trimMetrics() {
+    /**
+     * 修剪指标数据，保持最近的数据
+     */
+    const maxSamples = 1000;
+
+    for (const key in this.metrics) {
+      if (this.metrics[key].length > maxSamples) {
+        this.metrics[key] = this.metrics[key].slice(-maxSamples);
+      }
+    }
+  }
+
+  getMetrics() {
+    /**
+     * 获取所有指标
+     * 
+     * 返回:
+     *   指标对象
+     */
+    return {
+      cpu: this.metrics.cpu,
+      memory: this.metrics.memory,
+      responseTime: this.metrics.responseTime,
+      errorRate: this.metrics.errorRate,
+      throughput: this.metrics.throughput
+    };
+  }
+
+  getAlerts() {
+    /**
+     * 获取所有告警
+     * 
+     * 返回:
+     *   告警数组
+     */
+    return this.alerts;
+  }
+
+  getSummary() {
+    /**
+     * 获取监控摘要
+     * 
+     * 返回:
+     *   摘要对象
+     */
+    const summary = {};
+
+    for (const key in this.metrics) {
+      const values = this.metrics[key];
+      
+      if (values.length > 0) {
+        const latest = values[values.length - 1];
+        const avg = values.reduce((sum, m) => sum + m.value, 0) / values.length;
+        const max = Math.max(...values.map(m => m.value));
+        const min = Math.min(...values.map(m => m.value));
+
+        summary[key] = {
+          current: latest.value,
+          average: avg,
+          max: max,
+          min: min,
+          samples: values.length
+        };
+      }
+    }
+
+    return summary;
+  }
+}
+
+// 使用示例
+async function performanceMonitorExample() {
+  const monitor = new PerformanceMonitor({
+    sampleInterval: 1000,
+    alertThresholds: {
+      cpu: 80,
+      memory: 85,
+      responseTime: 5000,
+      errorRate: 0.05
+    }
+  });
+
+  // 启动监控
+  await monitor.start();
+
+  // 获取指标
+  const metrics = monitor.getMetrics();
+  console.log('性能指标:', metrics);
+
+  // 获取摘要
+  const summary = monitor.getSummary();
+  console.log('监控摘要:', summary);
+
+  // 获取告警
+  const alerts = monitor.getAlerts();
+  console.log('告警列表:', alerts);
+
+  // 停止监控
+  await monitor.stop();
+}
+```
+
+### 行为追踪
+
+行为追踪用于记录和分析 Agent 的执行过程。
+
+```javascript
+// monitoring/behavior-tracker.js
+class BehaviorTracker {
+  constructor(config) {
+    /**
+     * 行为追踪器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      trackLevel: config.trackLevel || 'detailed', // 'minimal', 'normal', 'detailed'
+      storage: config.storage || 'memory', // 'memory', 'file', 'database'
+      ...config
+    };
+
+    this.traces = [];
+    this.currentTrace = null;
+  }
+
+  async startTrace(operation, metadata = {}) {
+    /**
+     * 开始追踪
+     * 
+     * 参数:
+     *   operation: 操作名称
+     *   metadata: 元数据
+     * 
+     * 返回:
+     *   追踪 ID
+     */
+    const traceId = `trace_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    this.currentTrace = {
+      id: traceId,
+      operation,
+      startTime: Date.now(),
+      endTime: null,
+      duration: null,
+      status: 'running',
+      metadata,
+      steps: [],
+      inputs: null,
+      outputs: null,
+      errors: []
+    };
+
+    this.traces.push(this.currentTrace);
+
+    if (this.config.trackLevel === 'detailed') {
+      console.log(`[TRACE] 开始: ${operation} (${traceId})`);
+    }
+
+    return traceId;
+  }
+
+  async endTrace(traceId, outputs = null) {
+    /**
+     * 结束追踪
+     * 
+     * 参数:
+     *   traceId: 追踪 ID
+     *   outputs: 输出结果
+     * 
+     * 返回:
+     *   追踪对象
+     */
+    const trace = this._getTrace(traceId);
+    
+    if (!trace) {
+      throw new Error(`Trace not found: ${traceId}`);
+    }
+
+    trace.endTime = Date.now();
+    trace.duration = trace.endTime - trace.startTime;
+    trace.status = trace.errors.length > 0 ? 'failed' : 'completed';
+    trace.outputs = outputs;
+
+    if (this.config.trackLevel === 'detailed') {
+      console.log(`[TRACE] 结束: ${trace.operation} (${traceId}) - 耗时: ${trace.duration}ms`);
+    }
+
+    // 持久化追踪记录
+    await this._persistTrace(trace);
+
+    return trace;
+  }
+
+  async addStep(traceId, stepName, data = {}) {
+    /**
+     * 添加追踪步骤
+     * 
+     * 参数:
+     *   traceId: 追踪 ID
+     *   stepName: 步骤名称
+     *   data: 步骤数据
+     */
+    const trace = this._getTrace(traceId);
+    
+    if (!trace) {
+      throw new Error(`Trace not found: ${traceId}`);
+    }
+
+    const step = {
+      name: stepName,
+      timestamp: Date.now(),
+      data
+    };
+
+    trace.steps.push(step);
+
+    if (this.config.trackLevel === 'detailed') {
+      console.log(`[TRACE] 步骤: ${stepName} (${traceId})`);
+    }
+  }
+
+  async recordInput(traceId, input) {
+    /**
+     * 记录输入
+     * 
+     * 参数:
+     *   traceId: 追踪 ID
+     *   input: 输入数据
+     */
+    const trace = this._getTrace(traceId);
+    
+    if (!trace) {
+      throw new Error(`Trace not found: ${traceId}`);
+    }
+
+    trace.inputs = input;
+  }
+
+  async recordError(traceId, error) {
+    /**
+     * 记录错误
+     * 
+     * 参数:
+     *   traceId: 追踪 ID
+     *   error: 错误对象
+     */
+    const trace = this._getTrace(traceId);
+    
+    if (!trace) {
+      throw new Error(`Trace not found: ${traceId}`);
+    }
+
+    const errorRecord = {
+      message: error.message,
+      stack: error.stack,
+      timestamp: Date.now()
+    };
+
+    trace.errors.push(errorRecord);
+
+    if (this.config.trackLevel !== 'minimal') {
+      console.error(`[TRACE] 错误: ${error.message} (${traceId})`);
+    }
+  }
+
+  _getTrace(traceId) {
+    /**
+     * 获取追踪记录
+     * 
+     * 参数:
+     *   traceId: 追踪 ID
+     * 
+     * 返回:
+     *   追踪对象
+     */
+    return this.traces.find(t => t.id === traceId);
+  }
+
+  async _persistTrace(trace) {
+    /**
+     * 持久化追踪记录
+     * 
+     * 参数:
+     *   trace: 追踪对象
+     */
+    switch (this.config.storage) {
+      case 'file':
+        await this._persistToFile(trace);
+        break;
+      case 'database':
+        await this._persistToDatabase(trace);
+        break;
+      case 'memory':
+      default:
+        // 已经存储在内存中
+        break;
+    }
+  }
+
+  async _persistToFile(trace) {
+    /**
+     * 持久化到文件
+     * 
+     * 参数:
+     *   trace: 追踪对象
+     */
+    const fs = require('fs').promises;
+    const path = require('path');
+
+    const logDir = path.join(process.cwd(), 'logs', 'traces');
+    await fs.mkdir(logDir, { recursive: true });
+
+    const logFile = path.join(logDir, `trace_${Date.now()}.json`);
+    await fs.writeFile(logFile, JSON.stringify(trace, null, 2), 'utf-8');
+  }
+
+  async _persistToDatabase(trace) {
+    /**
+     * 持久化到数据库
+     * 
+     * 参数:
+     *   trace: 追踪对象
+     */
+    // 这里可以实现数据库持久化逻辑
+    console.log('持久化追踪记录到数据库:', trace.id);
+  }
+
+  getTrace(traceId) {
+    /**
+     * 获取追踪记录
+     * 
+     * 参数:
+     *   traceId: 追踪 ID
+     * 
+     * 返回:
+     *   追踪对象
+     */
+    return this._getTrace(traceId);
+  }
+
+  getTraces(filter = {}) {
+    /**
+     * 获取追踪记录列表
+     * 
+     * 参数:
+     *   filter: 过滤条件
+     * 
+     * 返回:
+     *   追踪记录数组
+     */
+    let traces = [...this.traces];
+
+    // 按操作过滤
+    if (filter.operation) {
+      traces = traces.filter(t => t.operation === filter.operation);
+    }
+
+    // 按状态过滤
+    if (filter.status) {
+      traces = traces.filter(t => t.status === filter.status);
+    }
+
+    // 按时间范围过滤
+    if (filter.startTime && filter.endTime) {
+      traces = traces.filter(t => 
+        t.startTime >= filter.startTime && t.startTime <= filter.endTime
+      );
+    }
+
+    // 排序
+    if (filter.sortBy) {
+      traces.sort((a, b) => {
+        if (filter.sortOrder === 'desc') {
+          return b[filter.sortBy] - a[filter.sortBy];
+        } else {
+          return a[filter.sortBy] - b[filter.sortBy];
+        }
+      });
+    }
+
+    // 限制数量
+    if (filter.limit) {
+      traces = traces.slice(0, filter.limit);
+    }
+
+    return traces;
+  }
+
+  getStatistics() {
+    /**
+     * 获取统计信息
+     * 
+     * 返回:
+     *   统计对象
+     */
+    const stats = {
+      total: this.traces.length,
+      completed: 0,
+      failed: 0,
+      running: 0,
+      averageDuration: 0,
+      operations: {}
+    };
+
+    let totalDuration = 0;
+
+    for (const trace of this.traces) {
+      // 统计状态
+      stats[trace.status]++;
+
+      // 统计操作
+      if (!stats.operations[trace.operation]) {
+        stats.operations[trace.operation] = {
+          count: 0,
+          completed: 0,
+          failed: 0,
+          totalDuration: 0
+        };
+      }
+
+      stats.operations[trace.operation].count++;
+      stats.operations[trace.operation][trace.status]++;
+
+      if (trace.duration) {
+        totalDuration += trace.duration;
+        stats.operations[trace.operation].totalDuration += trace.duration;
+      }
+    }
+
+    // 计算平均耗时
+    const completedTraces = this.traces.filter(t => t.status === 'completed');
+    if (completedTraces.length > 0) {
+      stats.averageDuration = totalDuration / completedTraces.length;
+
+      // 计算各操作的平均耗时
+      for (const op in stats.operations) {
+        const opStats = stats.operations[op];
+        if (opStats.completed > 0) {
+          opStats.averageDuration = opStats.totalDuration / opStats.completed;
+        }
+      }
+    }
+
+    return stats;
+  }
+
+  clearTraces(olderThan = null) {
+    /**
+     * 清除追踪记录
+     * 
+     * 参数:
+     *   olderThan: 清除早于此时间的记录
+     */
+    if (olderThan) {
+      this.traces = this.traces.filter(t => t.startTime >= olderThan);
+    } else {
+      this.traces = [];
+    }
+  }
+}
+
+// 使用示例
+async function behaviorTrackerExample() {
+  const tracker = new BehaviorTracker({
+    trackLevel: 'detailed',
+    storage: 'file'
+  });
+
+  // 开始追踪
+  const traceId = await tracker.startTrace('process_user_query', {
+    userId: 'user123',
+    query: '什么是人工智能？'
+  });
+
+  // 记录输入
+  await tracker.recordInput(traceId, {
+    query: '什么是人工智能？',
+    context: {}
+  });
+
+  // 添加步骤
+  await tracker.addStep(traceId, 'analyze_query', {
+    intent: 'information',
+    entities: ['人工智能']
+  });
+
+  await tracker.addStep(traceId, 'search_knowledge', {
+    results: 5
+  });
+
+  await tracker.addStep(traceId, 'generate_response', {
+    model: 'gpt-4',
+    tokens: 150
+  });
+
+  // 结束追踪
+  await tracker.endTrace(traceId, {
+    response: '人工智能是计算机科学的一个分支...',
+    confidence: 0.95
+  });
+
+  // 获取追踪记录
+  const trace = tracker.getTrace(traceId);
+  console.log('追踪记录:', trace);
+
+  // 获取统计信息
+  const stats = tracker.getStatistics();
+  console.log('统计信息:', stats);
+}
+```
+
+### 异常检测
+
+异常检测用于识别和响应系统中的异常行为。
+
+```javascript
+// monitoring/anomaly-detector.js
+class AnomalyDetector {
+  constructor(config) {
+    /**
+     * 异常检测器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      detectionInterval: config.detectionInterval || 60000,
+      sensitivity: config.sensitivity || 0.95,
+      windowSize: config.windowSize || 100,
+      ...config
+    };
+
+    this.metrics = {};
+    this.baseline = {};
+    this.anomalies = [];
+    this.isRunning = false;
+  }
+
+  async start() {
+    /**
+     * 开始异常检测
+     */
+    if (this.isRunning) {
+      console.log('异常检测已在运行');
+      return;
+    }
+
+    console.log('启动异常检测...');
+    this.isRunning = true;
+
+    // 定期检测
+    this.detectionInterval = setInterval(async () => {
+      await this._detectAnomalies();
+    }, this.config.detectionInterval);
+  }
+
+  async stop() {
+    /**
+     * 停止异常检测
+     */
+    if (!this.isRunning) {
+      return;
+    }
+
+    console.log('停止异常检测...');
+    this.isRunning = false;
+
+    if (this.detectionInterval) {
+      clearInterval(this.detectionInterval);
+    }
+  }
+
+  async recordMetric(metricName, value, timestamp = Date.now()) {
+    /**
+     * 记录指标
+     * 
+     * 参数:
+     *   metricName: 指标名称
+     *   value: 指标值
+     *   timestamp: 时间戳
+     */
+    if (!this.metrics[metricName]) {
+      this.metrics[metricName] = [];
+    }
+
+    this.metrics[metricName].push({
+      value,
+      timestamp
+    });
+
+    // 保持窗口大小
+    if (this.metrics[metricName].length > this.config.windowSize) {
+      this.metrics[metricName] = this.metrics[metricName].slice(-this.config.windowSize);
+    }
+
+    // 更新基线
+    await this._updateBaseline(metricName);
+  }
+
+  async _updateBaseline(metricName) {
+    /**
+     * 更新基线
+     * 
+     * 参数:
+     *   metricName: 指标名称
+     */
+    const values = this.metrics[metricName];
+    
+    if (values.length < 10) {
+      return; // 数据不足，不更新基线
+    }
+
+    const mean = values.reduce((sum, m) => sum + m.value, 0) / values.length;
+    const variance = values.reduce((sum, m) => sum + Math.pow(m.value - mean, 2), 0) / values.length;
+    const stdDev = Math.sqrt(variance);
+
+    this.baseline[metricName] = {
+      mean,
+      stdDev,
+      samples: values.length,
+      updatedAt: Date.now()
+    };
+  }
+
+  async _detectAnomalies() {
+    /**
+     * 检测异常
+     */
+    for (const metricName in this.metrics) {
+      const baseline = this.baseline[metricName];
+      
+      if (!baseline) {
+        continue; // 没有基线，跳过
+      }
+
+      const values = this.metrics[metricName];
+      const latestValue = values[values.length - 1];
+
+      // 使用 Z-score 检测异常
+      const zScore = Math.abs((latestValue.value - baseline.mean) / baseline.stdDev);
+      
+      if (zScore > this.config.sensitivity) {
+        await this._handleAnomaly(metricName, latestValue, baseline, zScore);
+      }
+    }
+  }
+
+  async _handleAnomaly(metricName, value, baseline, zScore) {
+    /**
+     * 处理异常
+     * 
+     * 参数:
+     *   metricName: 指标名称
+     *   value: 指标值
+     *   baseline: 基线
+     *   zScore: Z-score
+     */
+    const anomaly = {
+      id: `anomaly_${Date.now()}`,
+      metricName,
+      value: value.value,
+      expectedMean: baseline.mean,
+      expectedStdDev: baseline.stdDev,
+      zScore,
+      severity: this._calculateSeverity(zScore),
+      timestamp: Date.now(),
+      message: `检测到异常: ${metricName} = ${value.value} (期望: ${baseline.mean} ± ${baseline.stdDev})`
+    };
+
+    this.anomalies.push(anomaly);
+
+    // 发送告警
+    await this._sendAlert(anomaly);
+
+    console.warn(`异常检测: ${anomaly.message}`);
+  }
+
+  _calculateSeverity(zScore) {
+    /**
+     * 计算严重程度
+     * 
+     * 参数:
+     *   zScore: Z-score
+     * 
+     * 返回:
+     *   严重程度
+     */
+    if (zScore > 5) {
+      return 'critical';
+    } else if (zScore > 4) {
+      return 'high';
+    } else if (zScore > 3) {
+      return 'medium';
+    } else {
+      return 'low';
+    }
+  }
+
+  async _sendAlert(anomaly) {
+    /**
+     * 发送告警
+     * 
+     * 参数:
+     *   anomaly: 异常对象
+     */
+    // 这里可以实现各种告警方式
+    console.log('发送异常告警:', anomaly.message);
+  }
+
+  getAnomalies(filter = {}) {
+    /**
+     * 获取异常列表
+     * 
+     * 参数:
+     *   filter: 过滤条件
+     * 
+     * 返回:
+     *   异常数组
+     */
+    let anomalies = [...this.anomalies];
+
+    // 按指标过滤
+    if (filter.metricName) {
+      anomalies = anomalies.filter(a => a.metricName === filter.metricName);
+    }
+
+    // 按严重程度过滤
+    if (filter.severity) {
+      anomalies = anomalies.filter(a => a.severity === filter.severity);
+    }
+
+    // 按时间范围过滤
+    if (filter.startTime && filter.endTime) {
+      anomalies = anomalies.filter(a => 
+        a.timestamp >= filter.startTime && a.timestamp <= filter.endTime
+      );
+    }
+
+    return anomalies;
+  }
+
+  getBaseline(metricName) {
+    /**
+     * 获取基线
+     * 
+     * 参数:
+     *   metricName: 指标名称
+     * 
+     * 返回:
+     *   基线对象
+     */
+    return this.baseline[metricName];
+  }
+
+  getAllBaselines() {
+    /**
+     * 获取所有基线
+     * 
+     * 返回:
+     *   基线对象
+     */
+    return this.baseline;
+  }
+
+  resetBaseline(metricName = null) {
+    /**
+     * 重置基线
+     * 
+     * 参数:
+     *   metricName: 指标名称，如果为 null 则重置所有基线
+     */
+    if (metricName) {
+      delete this.baseline[metricName];
+    } else {
+      this.baseline = {};
+    }
+  }
+
+  clearAnomalies(olderThan = null) {
+    /**
+     * 清除异常记录
+     * 
+     * 参数:
+     *   olderThan: 清除早于此时间的记录
+     */
+    if (olderThan) {
+      this.anomalies = this.anomalies.filter(a => a.timestamp >= olderThan);
+    } else {
+      this.anomalies = [];
+    }
+  }
+}
+
+// 使用示例
+async function anomalyDetectorExample() {
+  const detector = new AnomalyDetector({
+    detectionInterval: 60000,
+    sensitivity: 3,
+    windowSize: 100
+  });
+
+  // 启动检测
+  await detector.start();
+
+  // 记录正常指标
+  for (let i = 0; i < 50; i++) {
+    await detector.recordMetric('response_time', 100 + Math.random() * 20);
+  }
+
+  // 记录异常指标
+  await detector.recordMetric('response_time', 500); // 异常值
+
+  // 获取异常
+  const anomalies = detector.getAnomalies();
+  console.log('异常列表:', anomalies);
+
+  // 获取基线
+  const baseline = detector.getBaseline('response_time');
+  console.log('基线:', baseline);
+
+  // 停止检测
+  await detector.stop();
+}
+```
+
+## 🚀 扩展性
+
+### 水平扩展
+
+水平扩展通过增加实例数量来提高系统的处理能力。
+
+#### 扩展策略
+
+```javascript
+// scaling/horizontal-scaler.js
+class HorizontalScaler {
+  constructor(config) {
+    /**
+     * 水平扩展器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      minInstances: config.minInstances || 1,
+      maxInstances: config.maxInstances || 10,
+      scaleUpThreshold: config.scaleUpThreshold || 0.7,
+      scaleDownThreshold: config.scaleDownThreshold || 0.3,
+      cooldownPeriod: config.cooldownPeriod || 300000, // 5分钟
+      ...config
+    };
+
+    this.instances = [];
+    this.lastScaleTime = 0;
+  }
+
+  async scale(currentLoad) {
+    /**
+     * 根据负载调整实例数量
+     * 
+     * 参数:
+     *   currentLoad: 当前负载 (0-1)
+     * 
+     * 返回:
+     *   扩展结果
+     */
+    const currentTime = Date.now();
+
+    // 检查冷却期
+    if (currentTime - this.lastScaleTime < this.config.cooldownPeriod) {
+      console.log('处于冷却期，跳过扩展');
+      return {
+        action: 'none',
+        reason: 'cooldown'
+      };
+    }
+
+    const currentInstances = this.instances.length;
+
+    // 判断是否需要扩展
+    if (currentLoad > this.config.scaleUpThreshold) {
+      // 需要扩展
+      const targetInstances = Math.min(
+        Math.ceil(currentLoad / this.config.scaleUpThreshold),
+        this.config.maxInstances
+      );
+
+      if (targetInstances > currentInstances) {
+        return await this._scaleUp(targetInstances - currentInstances);
+      }
+    } else if (currentLoad < this.config.scaleDownThreshold) {
+      // 需要收缩
+      const targetInstances = Math.max(
+        Math.floor(currentLoad / this.config.scaleDownThreshold),
+        this.config.minInstances
+      );
+
+      if (targetInstances < currentInstances) {
+        return await this._scaleDown(currentInstances - targetInstances);
+      }
+    }
+
+    return {
+      action: 'none',
+      reason: 'stable',
+      currentInstances
+    };
+  }
+
+  async _scaleUp(count) {
+    /**
+     * 扩展实例
+     * 
+     * 参数:
+     *   count: 扩展数量
+     * 
+     * 返回:
+     *   扩展结果
+     */
+    console.log(`扩展 ${count} 个实例...`);
+
+    const newInstances = [];
+
+    for (let i = 0; i < count; i++) {
+      const instance = await this._createInstance();
+      newInstances.push(instance);
+      this.instances.push(instance);
+    }
+
+    this.lastScaleTime = Date.now();
+
+    return {
+      action: 'scale_up',
+      count,
+      totalInstances: this.instances.length,
+      newInstances
+    };
+  }
+
+  async _scaleDown(count) {
+    /**
+     * 收缩实例
+     * 
+     * 参数:
+     *   count: 收缩数量
+     * 
+     * 返回:
+     *   收缩结果
+     */
+    console.log(`收缩 ${count} 个实例...`);
+
+    const removedInstances = [];
+
+    // 优先移除最旧的实例
+    for (let i = 0; i < count; i++) {
+      const instance = this.instances.shift();
+      await this._terminateInstance(instance);
+      removedInstances.push(instance);
+    }
+
+    this.lastScaleTime = Date.now();
+
+    return {
+      action: 'scale_down',
+      count,
+      totalInstances: this.instances.length,
+      removedInstances
+    };
+  }
+
+  async _createInstance() {
+    /**
+     * 创建新实例
+     * 
+     * 返回:
+     *   实例对象
+     */
+    const instanceId = `instance_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    const instance = {
+      id: instanceId,
+      status: 'starting',
+      createdAt: Date.now()
+    };
+
+    // 这里实现实例创建逻辑
+    // 例如：启动 Docker 容器、创建 Kubernetes Pod 等
+    console.log(`创建实例: ${instanceId}`);
+
+    instance.status = 'running';
+    instance.startedAt = Date.now();
+
+    return instance;
+  }
+
+  async _terminateInstance(instance) {
+    /**
+     * 终止实例
+     * 
+     * 参数:
+     *   instance: 实例对象
+     */
+    console.log(`终止实例: ${instance.id}`);
+
+    // 这里实现实例终止逻辑
+    instance.status = 'terminated';
+    instance.terminatedAt = Date.now();
+  }
+
+  getInstances() {
+    /**
+     * 获取所有实例
+     * 
+     * 返回:
+     *   实例数组
+     */
+    return this.instances;
+  }
+
+  getInstanceCount() {
+    /**
+     * 获取实例数量
+     * 
+     * 返回:
+     *   实例数量
+     */
+    return this.instances.length;
+  }
+}
+
+// 使用示例
+async function horizontalScalerExample() {
+  const scaler = new HorizontalScaler({
+    minInstances: 1,
+    maxInstances: 10,
+    scaleUpThreshold: 0.7,
+    scaleDownThreshold: 0.3,
+    cooldownPeriod: 300000
+  });
+
+  // 模拟负载变化
+  const loads = [0.2, 0.5, 0.8, 0.9, 0.6, 0.4, 0.2];
+
+  for (const load of loads) {
+    console.log(`当前负载: ${load}`);
+    const result = await scaler.scale(load);
+    console.log('扩展结果:', result);
+    console.log('实例数量:', scaler.getInstanceCount());
+    console.log('---');
+  }
+}
+```
+
+### 负载均衡
+
+负载均衡用于在多个实例之间分配请求。
+
+```javascript
+// scaling/load-balancer.js
+class LoadBalancer {
+  constructor(config) {
+    /**
+     * 负载均衡器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      strategy: config.strategy || 'round_robin', // 'round_robin', 'least_connections', 'weighted'
+      healthCheckInterval: config.healthCheckInterval || 30000,
+      ...config
+    };
+
+    this.instances = [];
+    this.currentIndex = 0;
+    this.isRunning = false;
+  }
+
+  async start() {
+    /**
+     * 启动负载均衡器
+     */
+    if (this.isRunning) {
+      console.log('负载均衡器已在运行');
+      return;
+    }
+
+    console.log('启动负载均衡器...');
+    this.isRunning = true;
+
+    // 启动健康检查
+    this.healthCheckInterval = setInterval(async () => {
+      await this._healthCheck();
+    }, this.config.healthCheckInterval);
+  }
+
+  async stop() {
+    /**
+     * 停止负载均衡器
+     */
+    if (!this.isRunning) {
+      return;
+    }
+
+    console.log('停止负载均衡器...');
+    this.isRunning = false;
+
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+  }
+
+  addInstance(instance) {
+    /**
+     * 添加实例
+     * 
+     * 参数:
+     *   instance: 实例对象
+     */
+    instance.healthy = true;
+    instance.connections = 0;
+    instance.weight = instance.weight || 1;
+
+    this.instances.push(instance);
+    console.log(`添加实例: ${instance.id}`);
+  }
+
+  removeInstance(instanceId) {
+    /**
+     * 移除实例
+     * 
+     * 参数:
+     *   instanceId: 实例 ID
+     */
+    const index = this.instances.findIndex(i => i.id === instanceId);
+    
+    if (index !== -1) {
+      this.instances.splice(index, 1);
+      console.log(`移除实例: ${instanceId}`);
+    }
+  }
+
+  async getNextInstance() {
+    /**
+     * 获取下一个实例
+     * 
+     * 返回:
+     *   实例对象
+     */
+    const healthyInstances = this.instances.filter(i => i.healthy);
+
+    if (healthyInstances.length === 0) {
+      throw new Error('没有可用的健康实例');
+    }
+
+    switch (this.config.strategy) {
+      case 'round_robin':
+        return this._roundRobin(healthyInstances);
+      case 'least_connections':
+        return this._leastConnections(healthyInstances);
+      case 'weighted':
+        return this._weighted(healthyInstances);
+      default:
+        return this._roundRobin(healthyInstances);
+    }
+  }
+
+  _roundRobin(instances) {
+    /**
+     * 轮询策略
+     * 
+     * 参数:
+     *   instances: 实例数组
+     * 
+     * 返回:
+     *   实例对象
+     */
+    const instance = instances[this.currentIndex % instances.length];
+    this.currentIndex++;
+    return instance;
+  }
+
+  _leastConnections(instances) {
+    /**
+     * 最少连接策略
+     * 
+     * 参数:
+     *   instances: 实例数组
+     * 
+     * 返回:
+     *   实例对象
+     */
+    return instances.reduce((min, instance) => {
+      return instance.connections < min.connections ? instance : min;
+    });
+  }
+
+  _weighted(instances) {
+    /**
+     * 加权策略
+     * 
+     * 参数:
+     *   instances: 实例数组
+     * 
+     * 返回:
+     *   实例对象
+     */
+    const totalWeight = instances.reduce((sum, i) => sum + i.weight, 0);
+    let random = Math.random() * totalWeight;
+
+    for (const instance of instances) {
+      random -= instance.weight;
+      if (random <= 0) {
+        return instance;
+      }
+    }
+
+    return instances[instances.length - 1];
+  }
+
+  async _healthCheck() {
+    /**
+     * 健康检查
+     */
+    for (const instance of this.instances) {
+      try {
+        // 这里实现健康检查逻辑
+        const isHealthy = await this._checkInstanceHealth(instance);
+        instance.healthy = isHealthy;
+        instance.lastHealthCheck = Date.now();
+      } catch (error) {
+        console.error(`健康检查失败: ${instance.id}`, error);
+        instance.healthy = false;
+      }
+    }
+  }
+
+  async _checkInstanceHealth(instance) {
+    /**
+     * 检查实例健康状态
+     * 
+     * 参数:
+     *   instance: 实例对象
+     * 
+     * 返回:
+     *   是否健康
+     */
+    // 这里实现具体的健康检查逻辑
+    // 例如：发送 HTTP 请求、检查端口等
+    return true;
+  }
+
+  getInstances() {
+    /**
+     * 获取所有实例
+     * 
+     * 返回:
+     *   实例数组
+     */
+    return this.instances;
+  }
+
+  getHealthyInstances() {
+    /**
+     * 获取健康实例
+     * 
+     * 返回:
+     *   健康实例数组
+     */
+    return this.instances.filter(i => i.healthy);
+  }
+
+  getStatistics() {
+    /**
+     * 获取统计信息
+     * 
+     * 返回:
+     *   统计对象
+     */
+    const total = this.instances.length;
+    const healthy = this.instances.filter(i => i.healthy).length;
+    const unhealthy = total - healthy;
+
+    return {
+      total,
+      healthy,
+      unhealthy,
+      healthyRatio: total > 0 ? healthy / total : 0,
+      strategy: this.config.strategy
+    };
+  }
+}
+
+// 使用示例
+async function loadBalancerExample() {
+  const loadBalancer = new LoadBalancer({
+    strategy: 'least_connections',
+    healthCheckInterval: 30000
+  });
+
+  // 启动负载均衡器
+  await loadBalancer.start();
+
+  // 添加实例
+  loadBalancer.addInstance({
+    id: 'instance1',
+    url: 'http://localhost:3001',
+    weight: 1
+  });
+
+  loadBalancer.addInstance({
+    id: 'instance2',
+    url: 'http://localhost:3002',
+    weight: 2
+  });
+
+  loadBalancer.addInstance({
+    id: 'instance3',
+    url: 'http://localhost:3003',
+    weight: 1
+  });
+
+  // 获取下一个实例
+  const instance = await loadBalancer.getNextInstance();
+  console.log('选中的实例:', instance.id);
+
+  // 获取统计信息
+  const stats = loadBalancer.getStatistics();
+  console.log('统计信息:', stats);
+
+  // 停止负载均衡器
+  await loadBalancer.stop();
+}
+```
+
+### 缓存策略
+
+缓存策略用于提高系统性能和减少外部依赖。
+
+```javascript
+// scaling/cache-manager.js
+class CacheManager {
+  constructor(config) {
+    /**
+     * 缓存管理器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      defaultTTL: config.defaultTTL || 3600000, // 1小时
+      maxSize: config.maxSize || 10000,
+      strategy: config.strategy || 'lru', // 'lru', 'lfu', 'fifo'
+      ...config
+    };
+
+    this.cache = new Map();
+    this.accessOrder = []; // 用于 LRU
+    this.accessCount = new Map(); // 用于 LFU
+  }
+
+  async get(key) {
+    /**
+     * 获取缓存值
+     * 
+     * 参数:
+     *   key: 缓存键
+     * 
+     * 返回:
+     *   缓存值
+     */
+    const item = this.cache.get(key);
+
+    if (!item) {
+      return null;
+    }
+
+    // 检查是否过期
+    if (Date.now() > item.expiresAt) {
+      this.delete(key);
+      return null;
+    }
+
+    // 更新访问信息
+    this._updateAccess(key);
+
+    return item.value;
+  }
+
+  async set(key, value, ttl = null) {
+    /**
+     * 设置缓存值
+     * 
+     * 参数:
+     *   key: 缓存键
+     *   value: 缓存值
+     *   ttl: 过期时间（毫秒）
+     */
+    const expiresAt = Date.now() + (ttl || this.config.defaultTTL);
+
+    const item = {
+      key,
+      value,
+      createdAt: Date.now(),
+      expiresAt
+    };
+
+    // 检查缓存大小
+    if (this.cache.size >= this.config.maxSize && !this.cache.has(key)) {
+      this._evict();
+    }
+
+    this.cache.set(key, item);
+    this._updateAccess(key);
+  }
+
+  async delete(key) {
+    /**
+     * 删除缓存值
+     * 
+     * 参数:
+     *   key: 缓存键
+     */
+    this.cache.delete(key);
+    this._removeAccess(key);
+  }
+
+  async clear() {
+    /**
+     * 清空缓存
+     */
+    this.cache.clear();
+    this.accessOrder = [];
+    this.accessCount.clear();
+  }
+
+  _updateAccess(key) {
+    /**
+     * 更新访问信息
+     * 
+     * 参数:
+     *   key: 缓存键
+     */
+    switch (this.config.strategy) {
+      case 'lru':
+        // LRU: 更新访问顺序
+        const index = this.accessOrder.indexOf(key);
+        if (index !== -1) {
+          this.accessOrder.splice(index, 1);
+        }
+        this.accessOrder.push(key);
+        break;
+
+      case 'lfu':
+        // LFU: 更新访问计数
+        const count = this.accessCount.get(key) || 0;
+        this.accessCount.set(key, count + 1);
+        break;
+
+      case 'fifo':
+        // FIFO: 不需要特殊处理
+        break;
+    }
+  }
+
+  _removeAccess(key) {
+    /**
+     * 移除访问信息
+     * 
+     * 参数:
+     *   key: 缓存键
+     */
+    switch (this.config.strategy) {
+      case 'lru':
+        const index = this.accessOrder.indexOf(key);
+        if (index !== -1) {
+          this.accessOrder.splice(index, 1);
+        }
+        break;
+
+      case 'lfu':
+        this.accessCount.delete(key);
+        break;
+
+      case 'fifo':
+        // FIFO: 不需要特殊处理
+        break;
+    }
+  }
+
+  _evict() {
+    /**
+     * 淘汰缓存项
+     */
+    let keyToEvict = null;
+
+    switch (this.config.strategy) {
+      case 'lru':
+        // LRU: 淘汰最久未使用的
+        keyToEvict = this.accessOrder[0];
+        break;
+
+      case 'lfu':
+        // LFU: 淘汰访问次数最少的
+        let minCount = Infinity;
+        for (const [key, count] of this.accessCount.entries()) {
+          if (count < minCount) {
+            minCount = count;
+            keyToEvict = key;
+          }
+        }
+        break;
+
+      case 'fifo':
+        // FIFO: 淘汰最旧的
+        let oldestTime = Infinity;
+        for (const [key, item] of this.cache.entries()) {
+          if (item.createdAt < oldestTime) {
+            oldestTime = item.createdAt;
+            keyToEvict = key;
+          }
+        }
+        break;
+    }
+
+    if (keyToEvict) {
+      this.delete(keyToEvict);
+      console.log(`淘汰缓存: ${keyToEvict}`);
+    }
+  }
+
+  async getOrSet(key, factory, ttl = null) {
+    /**
+     * 获取或设置缓存值
+     * 
+     * 参数:
+     *   key: 缓存键
+     *   factory: 值工厂函数
+     *   ttl: 过期时间
+     * 
+     * 返回:
+     *   缓存值
+     */
+    let value = await this.get(key);
+
+    if (value === null) {
+      value = await factory();
+      await this.set(key, value, ttl);
+    }
+
+    return value;
+  }
+
+  getStatistics() {
+    /**
+     * 获取统计信息
+     * 
+     * 返回:
+     *   统计对象
+     */
+    const now = Date.now();
+    let expiredCount = 0;
+
+    for (const item of this.cache.values()) {
+      if (now > item.expiresAt) {
+        expiredCount++;
+      }
+    }
+
+    return {
+      size: this.cache.size,
+      maxSize: this.config.maxSize,
+      usageRatio: this.cache.size / this.config.maxSize,
+      expiredCount,
+      strategy: this.config.strategy
+    };
+  }
+
+  async cleanup() {
+    /**
+     * 清理过期缓存
+     */
+    const now = Date.now();
+    const expiredKeys = [];
+
+    for (const [key, item] of this.cache.entries()) {
+      if (now > item.expiresAt) {
+        expiredKeys.push(key);
+      }
+    }
+
+    for (const key of expiredKeys) {
+      this.delete(key);
+    }
+
+    console.log(`清理了 ${expiredKeys.length} 个过期缓存`);
+  }
+}
+
+// 使用示例
+async function cacheManagerExample() {
+  const cacheManager = new CacheManager({
+    defaultTTL: 3600000,
+    maxSize: 1000,
+    strategy: 'lru'
+  });
+
+  // 设置缓存
+  await cacheManager.set('key1', 'value1');
+  await cacheManager.set('key2', 'value2', 1800000); // 30分钟
+
+  // 获取缓存
+  const value1 = await cacheManager.get('key1');
+  console.log('缓存值:', value1);
+
+  // 获取或设置
+  const value3 = await cacheManager.getOrSet('key3', async () => {
+    console.log('计算新值...');
+    return 'computed_value';
+  });
+
+  console.log('缓存值:', value3);
+
+  // 获取统计信息
+  const stats = cacheManager.getStatistics();
+  console.log('统计信息:', stats);
+
+  // 清理过期缓存
+  await cacheManager.cleanup();
+}
+```
+
+## 📊 技术对比
+
+| 部署方式 | 优点 | 缺点 | 适用场景 |
+|---------|------|------|---------|
+| **单机部署** | 简单快速、成本低 | 扩展性差、单点故障 | 开发、测试、小规模应用 |
+| **分布式部署** | 高可用、可扩展 | 复杂度高、成本高 | 生产环境、高并发应用 |
+| **Serverless** | 按需付费、自动扩展 | 冷启动、限制较多 | 间歇性负载、成本敏感 |
+
+| 监控类型 | 指标 | 工具 |
+|---------|------|------|
+| **性能监控** | CPU、内存、响应时间、吞吐量 | Prometheus, Grafana, Datadog |
+| **行为追踪** | 操作步骤、输入输出、错误 | Jaeger, Zipkin, OpenTelemetry |
+| **异常检测** | 异常值、趋势分析、告警 | ELK Stack, Splunk, New Relic |
+
+| 扩展策略 | 优点 | 缺点 |
+|---------|------|------|
+| **水平扩展** | 线性扩展、无单点 | 需要负载均衡、状态管理复杂 |
+| **垂直扩展** | 简单直接 | 有上限、成本高 |
+| **混合扩展** | 平衡性能和成本 | 复杂度高 |
+
+## 🎓 学习路径
+
+### 初级阶段
+1. 理解不同的部署架构
+2. 掌握基本的 Docker 部署
+3. 实现基础的性能监控
+
+### 中级阶段
+1. 学习 Kubernetes 部署
+2. 掌握分布式系统设计
+3. 实现行为追踪和日志
+
+### 高级阶段
+1. 深入理解 Serverless 架构
+2. 掌握自动扩缩容
+3. 实现智能缓存策略
+
+## 🔗 相关资源
+
+### 容器化
+- [Docker Documentation](https://docs.docker.com/)
+- [Kubernetes Documentation](https://kubernetes.io/docs/)
+- [Docker Compose](https://docs.docker.com/compose/)
+
+### 云服务
+- [AWS Lambda](https://aws.amazon.com/lambda/)
+- [Google Cloud Functions](https://cloud.google.com/functions)
+- [Azure Functions](https://azure.microsoft.com/en-us/services/functions/)
+
+### 监控工具
+- [Prometheus](https://prometheus.io/)
+- [Grafana](https://grafana.com/)
+- [Datadog](https://www.datadoghq.com/)
+
+### 负载均衡
+- [Nginx Load Balancing](https://docs.nginx.com/nginx/admin-guide/load-balancer/)
+- [HAProxy](http://www.haproxy.org/)
+- [AWS Load Balancer](https://aws.amazon.com/elastic-load-balancing/)
+
+## 📝 学习检查点
+
+完成本节学习后，你应该能够回答：
+- [ ] 单机部署、分布式部署和 Serverless 部署的区别是什么？
+- [ ] 如何使用 Docker 部署 Agent 系统？
+- [ ] Kubernetes 部署的基本配置是什么？
+- [ ] 性能监控包括哪些关键指标？
+- [ ] 如何实现行为追踪？
+- [ ] 异常检测的常见方法有哪些？
+- [ ] 水平扩展和垂直扩展的区别是什么？
+- [ ] 负载均衡的常见策略有哪些？
+- [ ] 缓存策略如何选择？
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **AI 工程化** - 了解 AI 工程化的最佳实践
+- **实践项目** - 动手部署和运维 Agent 系统
+- **性能优化** - 学习 Agent 系统的性能优化技巧
