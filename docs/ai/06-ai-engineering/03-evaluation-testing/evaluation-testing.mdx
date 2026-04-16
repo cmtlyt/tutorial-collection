@@ -1,0 +1,2888 @@
+# 评估与测试
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-16
+
+## 📖 概述
+
+评估与测试是确保 AI 系统质量的关键环节。通过科学的评估指标和全面的测试策略，可以全面了解模型的性能、发现潜在问题、持续改进系统。本章节将详细介绍各种评估指标、测试方法和最佳实践，帮助读者构建完整的评估测试体系。
+
+## 📊 评估指标
+
+评估指标用于量化模型性能，是改进模型的重要依据。
+
+### 准确率、召回率
+
+准确率和召回率是分类任务中最基础的评估指标。
+
+```javascript
+// evaluation/metrics/classification-metrics.js
+class ClassificationMetrics {
+  constructor() {
+    /**
+     * 分类评估指标
+     */
+  }
+
+  calculateMetrics(yTrue, yPred, labels = null) {
+    /**
+     * 计算分类指标
+     * 
+     * 参数:
+     *   yTrue: 真实标签
+     *   yPred: 预测标签
+     *   labels: 标签列表
+     * 
+     * 返回:
+     *   指标对象
+     */
+    if (yTrue.length !== yPred.length) {
+      throw new Error('yTrue and yPred must have the same length');
+    }
+
+    // 获取所有标签
+    const allLabels = labels || [...new Set([...yTrue, ...yPred])];
+
+    // 计算混淆矩阵
+    const confusionMatrix = this._calculateConfusionMatrix(yTrue, yPred, allLabels);
+
+    // 计算各类指标
+    const perClassMetrics = {};
+    for (const label of allLabels) {
+      perClassMetrics[label] = this._calculatePerClassMetrics(
+        confusionMatrix,
+        label,
+        allLabels
+      );
+    }
+
+    // 计算宏平均
+    const macroMetrics = this._calculateMacroAverage(perClassMetrics);
+
+    // 计算微平均
+    const microMetrics = this._calculateMicroAverage(confusionMatrix);
+
+    // 计算加权平均
+    const weightedMetrics = this._calculateWeightedAverage(
+      perClassMetrics,
+      yTrue
+    );
+
+    return {
+      accuracy: microMetrics.accuracy,
+      macro: macroMetrics,
+      micro: microMetrics,
+      weighted: weightedMetrics,
+      perClass: perClassMetrics,
+      confusionMatrix
+    };
+  }
+
+  _calculateConfusionMatrix(yTrue, yPred, labels) {
+    /**
+     * 计算混淆矩阵
+     * 
+     * 参数:
+     *   yTrue: 真实标签
+     *   yPred: 预测标签
+     *   labels: 标签列表
+     * 
+     * 返回:
+     *   混淆矩阵
+     */
+    const matrix = {};
+    
+    for (const trueLabel of labels) {
+      matrix[trueLabel] = {};
+      for (const predLabel of labels) {
+        matrix[trueLabel][predLabel] = 0;
+      }
+    }
+
+    for (let i = 0; i < yTrue.length; i++) {
+      const trueLabel = yTrue[i];
+      const predLabel = yPred[i];
+      matrix[trueLabel][predLabel]++;
+    }
+
+    return matrix;
+  }
+
+  _calculatePerClassMetrics(confusionMatrix, label, labels) {
+    /**
+     * 计算单个类别的指标
+     * 
+     * 参数:
+     *   confusionMatrix: 混淆矩阵
+     *   label: 类别标签
+     *   labels: 所有标签
+     * 
+     * 返回:
+     *   指标对象
+     */
+    // True Positive (TP): 预测为正，实际为正
+    const tp = confusionMatrix[label][label];
+
+    // False Positive (FP): 预测为正，实际为负
+    let fp = 0;
+    for (const otherLabel of labels) {
+      if (otherLabel !== label) {
+        fp += confusionMatrix[otherLabel][label];
+      }
+    }
+
+    // False Negative (FN): 预测为负，实际为正
+    let fn = 0;
+    for (const otherLabel of labels) {
+      if (otherLabel !== label) {
+        fn += confusionMatrix[label][otherLabel];
+      }
+    }
+
+    // True Negative (TN): 预测为负，实际为负
+    let tn = 0;
+    for (const trueLabel of labels) {
+      if (trueLabel !== label) {
+        for (const predLabel of labels) {
+          if (predLabel !== label) {
+            tn += confusionMatrix[trueLabel][predLabel];
+          }
+        }
+      }
+    }
+
+    // 计算指标
+    const precision = tp + fp > 0 ? tp / (tp + fp) : 0;
+    const recall = tp + fn > 0 ? tp / (tp + fn) : 0;
+    const specificity = tn + fp > 0 ? tn / (tn + fp) : 0;
+    const f1 = precision + recall > 0 ? 2 * (precision * recall) / (precision + recall) : 0;
+    const accuracy = (tp + tn) / (tp + tn + fp + fn);
+
+    return {
+      tp,
+      fp,
+      fn,
+      tn,
+      precision,
+      recall,
+      specificity,
+      f1,
+      accuracy,
+      support: tp + fn
+    };
+  }
+
+  _calculateMacroAverage(perClassMetrics) {
+    /**
+     * 计算宏平均
+     * 
+     * 参数:
+     *   perClassMetrics: 各类别指标
+     * 
+     * 返回:
+     *   宏平均指标
+     */
+    const labels = Object.keys(perClassMetrics);
+    const metrics = ['precision', 'recall', 'f1'];
+
+    const result = {};
+    for (const metric of metrics) {
+      const sum = labels.reduce((acc, label) => acc + perClassMetrics[label][metric], 0);
+      result[metric] = sum / labels.length;
+    }
+
+    return result;
+  }
+
+  _calculateMicroAverage(confusionMatrix) {
+    /**
+     * 计算微平均
+     * 
+     * 参数:
+     *   confusionMatrix: 混淆矩阵
+     * 
+     * 返回:
+     *   微平均指标
+     */
+    let totalTp = 0;
+    let totalFp = 0;
+    let totalFn = 0;
+
+    const labels = Object.keys(confusionMatrix);
+    for (const label of labels) {
+      const metrics = this._calculatePerClassMetrics(confusionMatrix, label, labels);
+      totalTp += metrics.tp;
+      totalFp += metrics.fp;
+      totalFn += metrics.fn;
+    }
+
+    const precision = totalTp + totalFp > 0 ? totalTp / (totalTp + totalFp) : 0;
+    const recall = totalTp + totalFn > 0 ? totalTp / (totalTp + totalFn) : 0;
+    const f1 = precision + recall > 0 ? 2 * (precision * recall) / (precision + recall) : 0;
+    const accuracy = totalTp / (totalTp + totalFp + totalFn);
+
+    return {
+      precision,
+      recall,
+      f1,
+      accuracy
+    };
+  }
+
+  _calculateWeightedAverage(perClassMetrics, yTrue) {
+    /**
+     * 计算加权平均
+     * 
+     * 参数:
+     *   perClassMetrics: 各类别指标
+     *   yTrue: 真实标签
+     * 
+     * 返回:
+     *   加权平均指标
+     */
+    // 计算每个类别的权重
+    const labelCounts = {};
+    for (const label of yTrue) {
+      labelCounts[label] = (labelCounts[label] || 0) + 1;
+    }
+
+    const total = yTrue.length;
+    const metrics = ['precision', 'recall', 'f1'];
+
+    const result = {};
+    for (const metric of metrics) {
+      let weightedSum = 0;
+      for (const [label, count] of Object.entries(labelCounts)) {
+        const weight = count / total;
+        weightedSum += weight * perClassMetrics[label][metric];
+      }
+      result[metric] = weightedSum;
+    }
+
+    return result;
+  }
+
+  printConfusionMatrix(confusionMatrix, labels) {
+    /**
+     * 打印混淆矩阵
+     * 
+     * 参数:
+     *   confusionMatrix: 混淆矩阵
+     *   labels: 标签列表
+     * 
+     * 返回:
+     *   格式化的混淆矩阵字符串
+     */
+    const maxLabelLength = Math.max(...labels.map(l => l.length));
+    const cellWidth = Math.max(maxLabelLength, 8);
+
+    // 表头
+    let output = ' '.repeat(cellWidth + 2);
+    output += labels.map(l => l.padEnd(cellWidth)).join(' ');
+    output += '\n';
+
+    // 分隔线
+    output += '-'.repeat(cellWidth + 2);
+    output += labels.map(() => '-'.repeat(cellWidth)).join('-');
+    output += '\n';
+
+    // 数据行
+    for (const trueLabel of labels) {
+      output += trueLabel.padEnd(cellWidth) + ' | ';
+      for (const predLabel of labels) {
+        const count = confusionMatrix[trueLabel][predLabel];
+        output += String(count).padEnd(cellWidth) + ' ';
+      }
+      output += '\n';
+    }
+
+    return output;
+  }
+}
+
+// 使用示例
+function classificationMetricsExample() {
+  const metrics = new ClassificationMetrics();
+
+  const yTrue = ['cat', 'dog', 'cat', 'dog', 'bird', 'cat', 'dog', 'bird'];
+  const yPred = ['cat', 'dog', 'dog', 'dog', 'bird', 'cat', 'cat', 'bird'];
+
+  const results = metrics.calculateMetrics(yTrue, yPred);
+
+  console.log('准确率:', results.accuracy);
+  console.log('宏平均:', results.macro);
+  console.log('微平均:', results.micro);
+  console.log('加权平均:', results.weighted);
+  console.log('各类指标:', results.perClass);
+
+  console.log('\n混淆矩阵:');
+  console.log(metrics.printConfusionMatrix(results.confusionMatrix, ['cat', 'dog', 'bird']));
+}
+```
+
+### BLEU、ROUGE
+
+BLEU 和 ROUGE 是评估文本生成质量的重要指标。
+
+```javascript
+// evaluation/metrics/text-generation-metrics.js
+class TextGenerationMetrics {
+  constructor() {
+    /**
+     * 文本生成评估指标
+     */
+  }
+
+  calculateBLEU(reference, candidate, n = 4) {
+    /**
+     * 计算 BLEU 分数
+     * 
+     * 参数:
+     *   reference: 参考文本（字符串或数组）
+     *   candidate: 候选文本（字符串或数组）
+     *   n: n-gram 的最大长度
+     * 
+     * 返回:
+     *   BLEU 分数
+     */
+    // 分词
+    const refTokens = Array.isArray(reference) ? reference : this._tokenize(reference);
+    const candTokens = Array.isArray(candidate) ? candidate : this._tokenize(candidate);
+
+    if (candTokens.length === 0) {
+      return 0;
+    }
+
+    // 计算各 n-gram 的精确率
+    const precisions = [];
+    for (let i = 1; i <= n; i++) {
+      const precision = this._calculateModifiedPrecision(
+        refTokens,
+        candTokens,
+        i
+      );
+      precisions.push(precision);
+    }
+
+    // 计算几何平均
+    let logSum = 0;
+    for (const p of precisions) {
+      if (p > 0) {
+        logSum += Math.log(p);
+      }
+    }
+    const geoMean = Math.exp(logSum / n);
+
+    // 计算简洁性惩罚
+    const bp = this._calculateBrevityPenalty(refTokens, candTokens);
+
+    return bp * geoMean;
+  }
+
+  _tokenize(text) {
+    /**
+     * 分词
+     * 
+     * 参数:
+     *   text: 文本
+     * 
+     * 返回:
+     *   Token 数组
+     */
+    // 简化实现：按空格分词
+    return text.toLowerCase().split(/\s+/);
+  }
+
+  _calculateModifiedPrecision(reference, candidate, n) {
+    /**
+     * 计算修正的精确率
+     * 
+     * 参数:
+     *   reference: 参考 Token 数组
+     *   candidate: 候选 Token 数组
+     *   n: n-gram 长度
+     * 
+     * 返回:
+     *   修正的精确率
+     */
+    const refNgrams = this._extractNgrams(reference, n);
+    const candNgrams = this._extractNgrams(candidate, n);
+
+    if (candNgrams.length === 0) {
+      return 0;
+    }
+
+    // 计算候选 n-gram 的计数
+    const candCounts = {};
+    for (const ngram of candNgrams) {
+      candCounts[ngram] = (candCounts[ngram] || 0) + 1;
+    }
+
+    // 计算修正后的匹配数
+    let clippedCount = 0;
+    for (const [ngram, count] of Object.entries(candCounts)) {
+      const refCount = refNgrams[ngram] || 0;
+      clippedCount += Math.min(count, refCount);
+    }
+
+    return clippedCount / candNgrams.length;
+  }
+
+  _extractNgrams(tokens, n) {
+    /**
+     * 提取 n-gram
+     * 
+     * 参数:
+     *   tokens: Token 数组
+     *   n: n-gram 长度
+     * 
+     * 返回:
+     *   n-gram 计数对象
+     */
+    const ngrams = {};
+
+    for (let i = 0; i <= tokens.length - n; i++) {
+      const ngram = tokens.slice(i, i + n).join(' ');
+      ngrams[ngram] = (ngrams[ngram] || 0) + 1;
+    }
+
+    return ngrams;
+  }
+
+  _calculateBrevityPenalty(reference, candidate) {
+    /**
+     * 计算简洁性惩罚
+     * 
+     * 参数:
+     *   reference: 参考 Token 数组
+     *   candidate: 候选 Token 数组
+     * 
+     * 返回:
+     *   惩罚系数
+     */
+    const refLen = reference.length;
+    const candLen = candidate.length;
+
+    if (candLen > refLen) {
+      return 1;
+    } else if (candLen === 0) {
+      return 0;
+    } else {
+      return Math.exp(1 - refLen / candLen);
+    }
+  }
+
+  calculateROUGE(reference, candidate, rougeType = 'L') {
+    /**
+     * 计算 ROUGE 分数
+     * 
+     * 参数:
+     *   reference: 参考文本
+     *   candidate: 候选文本
+     *   rougeType: ROUGE 类型 ('L', '1', '2', 'SU4')
+     * 
+     * 返回:
+     *   ROUGE 分数
+     */
+    const refTokens = Array.isArray(reference) ? reference : this._tokenize(reference);
+    const candTokens = Array.isArray(candidate) ? candidate : this._tokenize(candidate);
+
+    switch (rougeType) {
+      case 'L':
+        return this._calculateROUGEL(refTokens, candTokens);
+      case '1':
+        return this._calculateROUGEN(refTokens, candTokens, 1);
+      case '2':
+        return this._calculateROUGEN(refTokens, candTokens, 2);
+      case 'SU4':
+        return this._calculateROUGESU4(refTokens, candTokens);
+      default:
+        throw new Error(`Unknown ROUGE type: ${rougeType}`);
+    }
+  }
+
+  _calculateROUGEL(reference, candidate) {
+    /**
+     * 计算 ROUGE-L
+     * 
+     * 参数:
+     *   reference: 参考 Token 数组
+     *   candidate: 候选 Token 数组
+     * 
+     * 返回:
+     *   ROUGE-L 分数
+     */
+    const lcs = this._longestCommonSubsequence(reference, candidate);
+    const precision = candidate.length > 0 ? lcs.length / candidate.length : 0;
+    const recall = reference.length > 0 ? lcs.length / reference.length : 0;
+    const f1 = precision + recall > 0 ? 2 * (precision * recall) / (precision + recall) : 0;
+
+    return {
+      precision,
+      recall,
+      f1
+    };
+  }
+
+  _longestCommonSubsequence(seq1, seq2) {
+    /**
+     * 最长公共子序列
+     * 
+     * 参数:
+     *   seq1: 序列1
+     *   seq2: 序列2
+     * 
+     * 返回:
+     *   LCS 数组
+     */
+    const m = seq1.length;
+    const n = seq2.length;
+    const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        if (seq1[i - 1] === seq2[j - 1]) {
+          dp[i][j] = dp[i - 1][j - 1] + 1;
+        } else {
+          dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+        }
+      }
+    }
+
+    // 回溯重建 LCS
+    const lcs = [];
+    let i = m, j = n;
+    while (i > 0 && j > 0) {
+      if (seq1[i - 1] === seq2[j - 1]) {
+        lcs.unshift(seq1[i - 1]);
+        i--;
+        j--;
+      } else if (dp[i - 1][j] > dp[i][j - 1]) {
+        i--;
+      } else {
+        j--;
+      }
+    }
+
+    return lcs;
+  }
+
+  _calculateROUGEN(reference, candidate, n) {
+    /**
+     * 计算 ROUGE-N
+     * 
+     * 参数:
+     *   reference: 参考 Token 数组
+     *   candidate: 候选 Token 数组
+     *   n: n-gram 长度
+     * 
+     * 返回:
+     *   ROUGE-N 分数
+     */
+    const refNgrams = this._extractNgrams(reference, n);
+    const candNgrams = this._extractNgrams(candidate, n);
+
+    // 计算召回率
+    let recallCount = 0;
+    let recallTotal = 0;
+    for (const [ngram, count] of Object.entries(refNgrams)) {
+      recallTotal += count;
+      recallCount += Math.min(count, candNgrams[ngram] || 0);
+    }
+    const recall = recallTotal > 0 ? recallCount / recallTotal : 0;
+
+    // 计算精确率
+    let precisionCount = 0;
+    let precisionTotal = 0;
+    for (const [ngram, count] of Object.entries(candNgrams)) {
+      precisionTotal += count;
+      precisionCount += Math.min(count, refNgrams[ngram] || 0);
+    }
+    const precision = precisionTotal > 0 ? precisionCount / precisionTotal : 0;
+
+    const f1 = precision + recall > 0 ? 2 * (precision * recall) / (precision + recall) : 0;
+
+    return {
+      precision,
+      recall,
+      f1
+    };
+  }
+
+  _calculateROUGESU4(reference, candidate) {
+    /**
+     * 计算 ROUGE-SU4
+     * 
+     * 参数:
+     *   reference: 参考 Token 数组
+     *   candidate: 候选 Token 数组
+     * 
+     * 返回:
+     *   ROUGE-SU4 分数
+     */
+    const refSkipBigrams = this._extractSkipBigrams(reference, 4);
+    const candSkipBigrams = this._extractSkipBigrams(candidate, 4);
+
+    // 计算召回率
+    let recallCount = 0;
+    let recallTotal = 0;
+    for (const [bigram, count] of Object.entries(refSkipBigrams)) {
+      recallTotal += count;
+      recallCount += Math.min(count, candSkipBigrams[bigram] || 0);
+    }
+    const recall = recallTotal > 0 ? recallCount / recallTotal : 0;
+
+    // 计算精确率
+    let precisionCount = 0;
+    let precisionTotal = 0;
+    for (const [bigram, count] of Object.entries(candSkipBigrams)) {
+      precisionTotal += count;
+      precisionCount += Math.min(count, refSkipBigrams[bigram] || 0);
+    }
+    const precision = precisionTotal > 0 ? precisionCount / precisionTotal : 0;
+
+    const f1 = precision + recall > 0 ? 2 * (precision * recall) / (precision + recall) : 0;
+
+    return {
+      precision,
+      recall,
+      f1
+    };
+  }
+
+  _extractSkipBigrams(tokens, maxSkip) {
+    /**
+     * 提取跳跃二元组
+     * 
+     * 参数:
+     *   tokens: Token 数组
+     *   maxSkip: 最大跳跃距离
+     * 
+     * 返回:
+     *   跳跃二元组计数对象
+     */
+    const skipBigrams = {};
+
+    for (let i = 0; i < tokens.length; i++) {
+      for (let j = i + 1; j < Math.min(i + maxSkip + 1, tokens.length); j++) {
+        const bigram = `${tokens[i]} ${tokens[j]}`;
+        skipBigrams[bigram] = (skipBigrams[bigram] || 0) + 1;
+      }
+    }
+
+    return skipBigrams;
+  }
+}
+
+// 使用示例
+function textGenerationMetricsExample() {
+  const metrics = new TextGenerationMetrics();
+
+  const reference = 'The cat sat on the mat.';
+  const candidate = 'The cat is on the mat.';
+
+  // BLEU
+  const bleu4 = metrics.calculateBLEU(reference, candidate, 4);
+  console.log('BLEU-4:', bleu4);
+
+  // ROUGE
+  const rougeL = metrics.calculateROUGE(reference, candidate, 'L');
+  console.log('ROUGE-L:', rougeL);
+
+  const rouge1 = metrics.calculateROUGE(reference, candidate, '1');
+  console.log('ROUGE-1:', rouge1);
+
+  const rouge2 = metrics.calculateROUGE(reference, candidate, '2');
+  console.log('ROUGE-2:', rouge2);
+}
+```
+
+### 人类评估
+
+人类评估是评估 AI 系统质量的最可靠方法。
+
+```javascript
+// evaluation/metrics/human-evaluation.js
+class HumanEvaluation {
+  constructor(config) {
+    /**
+     * 人类评估系统
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      criteria: config.criteria || ['quality', 'relevance', 'coherence'],
+      scale: config.scale || 5, // 评分量表
+      minEvaluators: config.minEvaluators || 3,
+      consensusThreshold: config.consensusThreshold || 0.7,
+      ...config
+    };
+
+    this.evaluations = [];
+    this.evaluators = [];
+  }
+
+  createEvaluationTask(item, options = {}) {
+    /**
+     * 创建评估任务
+     * 
+     * 参数:
+     *   item: 待评估项目
+     *   options: 选项
+     * 
+     * 返回:
+     *   任务对象
+     */
+    const task = {
+      id: this._generateId(),
+      item,
+      criteria: options.criteria || this.config.criteria,
+      scale: options.scale || this.config.scale,
+      instructions: options.instructions || '',
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+      evaluations: []
+    };
+
+    return task;
+  }
+
+  addEvaluator(evaluator) {
+    /**
+     * 添加评估员
+     * 
+     * 参数:
+     *   evaluator: 评估员信息
+     * 
+     * 返回:
+     *   评估员 ID
+     */
+    const evaluatorId = this._generateId();
+    const evaluatorRecord = {
+      id: evaluatorId,
+      name: evaluator.name,
+      expertise: evaluator.expertise || [],
+      createdAt: new Date().toISOString()
+    };
+
+    this.evaluators.push(evaluatorRecord);
+    return evaluatorId;
+  }
+
+  submitEvaluation(taskId, evaluatorId, scores, comments = {}) {
+    /**
+     * 提交评估
+     * 
+     * 参数:
+     *   taskId: 任务 ID
+     *   evaluatorId: 评估员 ID
+     *   scores: 评分对象
+     *   comments: 评论对象
+     * 
+     * 返回:
+     *   评估记录
+     */
+    const evaluation = {
+      id: this._generateId(),
+      taskId,
+      evaluatorId,
+      scores,
+      comments,
+      submittedAt: new Date().toISOString()
+    };
+
+    this.evaluations.push(evaluation);
+    return evaluation;
+  }
+
+  calculateConsensus(taskId) {
+    /**
+     * 计算共识度
+     * 
+     * 参数:
+     *   taskId: 任务 ID
+     * 
+     * 返回:
+     *   共识度对象
+     */
+    const taskEvaluations = this.evaluations.filter(e => e.taskId === taskId);
+
+    if (taskEvaluations.length < 2) {
+      return {
+        consensus: 0,
+        details: null
+      };
+    }
+
+    // 计算每个标准的共识度
+    const consensusDetails = {};
+    const criteria = taskEvaluations[0].scores;
+
+    for (const criterion of Object.keys(criteria)) {
+      const scores = taskEvaluations.map(e => e.scores[criterion]);
+      const mean = scores.reduce((sum, s) => sum + s, 0) / scores.length;
+      const variance = scores.reduce((sum, s) => sum + Math.pow(s - mean, 2), 0) / scores.length;
+      const std = Math.sqrt(variance);
+
+      // 共识度 = 1 - (标准差 / 最大可能差异)
+      const maxDiff = this.config.scale - 1;
+      const consensus = std > 0 ? 1 - (std / maxDiff) : 1;
+
+      consensusDetails[criterion] = {
+        mean,
+        std,
+        consensus,
+        scores
+      };
+    }
+
+    // 计算总体共识度
+    const overallConsensus = Object.values(consensusDetails).reduce(
+      (sum, d) => sum + d.consensus,
+      0
+    ) / Object.keys(consensusDetails).length;
+
+    return {
+      consensus: overallConsensus,
+      details: consensusDetails,
+      meetsThreshold: overallConsensus >= this.config.consensusThreshold
+    };
+  }
+
+  aggregateScores(taskId) {
+    /**
+     * 聚合评分
+     * 
+     * 参数:
+     *   taskId: 任务 ID
+     * 
+     * 返回:
+     *   聚合结果
+     */
+    const taskEvaluations = this.evaluations.filter(e => e.taskId === taskId);
+
+    if (taskEvaluations.length === 0) {
+      return null;
+    }
+
+    const criteria = taskEvaluations[0].scores;
+    const aggregated = {};
+
+    for (const criterion of Object.keys(criteria)) {
+      const scores = taskEvaluations.map(e => e.scores[criterion]);
+      
+      aggregated[criterion] = {
+        mean: scores.reduce((sum, s) => sum + s, 0) / scores.length,
+        median: this._calculateMedian(scores),
+        std: this._calculateStd(scores),
+        min: Math.min(...scores),
+        max: Math.max(...scores),
+        count: scores.length
+      };
+    }
+
+    return aggregated;
+  }
+
+  _calculateMedian(scores) {
+    /**
+     * 计算中位数
+     * 
+     * 参数:
+     *   scores: 分数数组
+     * 
+     * 返回:
+     *   中位数
+     */
+    const sorted = [...scores].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+
+    if (sorted.length % 2 === 0) {
+      return (sorted[mid - 1] + sorted[mid]) / 2;
+    } else {
+      return sorted[mid];
+    }
+  }
+
+  _calculateStd(scores) {
+    /**
+     * 计算标准差
+     * 
+     * 参数:
+     *   scores: 分数数组
+     * 
+     * 返回:
+     *   标准差
+     */
+    const mean = scores.reduce((sum, s) => sum + s, 0) / scores.length;
+    const variance = scores.reduce((sum, s) => sum + Math.pow(s - mean, 2), 0) / scores.length;
+    return Math.sqrt(variance);
+  }
+
+  compareModels(modelResults) {
+    /**
+     * 比较模型
+     * 
+     * 参数:
+     *   modelResults: 模型结果对象
+     * 
+     * 返回:
+     *   比较结果
+     */
+    const comparison = {};
+
+    for (const [model, results] of Object.entries(modelResults)) {
+      const aggregated = this.aggregateScores(results.taskId);
+      comparison[model] = aggregated;
+    }
+
+    // 计算统计显著性
+    const significance = this._calculateSignificance(modelResults);
+
+    return {
+      comparison,
+      significance,
+      ranking: this._rankModels(comparison)
+    };
+  }
+
+  _calculateSignificance(modelResults) {
+    /**
+     * 计算统计显著性
+     * 
+     * 参数:
+     *   modelResults: 模型结果对象
+     * 
+     * 返回:
+     *   显著性结果
+     */
+    const models = Object.keys(modelResults);
+    const significance = {};
+
+    for (let i = 0; i < models.length; i++) {
+      for (let j = i + 1; j < models.length; j++) {
+        const model1 = models[i];
+        const model2 = models[j];
+
+        const results1 = this.evaluations.filter(e => e.taskId === modelResults[model1].taskId);
+        const results2 = this.evaluations.filter(e => e.taskId === modelResults[model2].taskId);
+
+        // 简化实现：使用 t 检验
+        const tTest = this._performTTest(results1, results2);
+
+        significance[`${model1}_vs_${model2}`] = tTest;
+      }
+    }
+
+    return significance;
+  }
+
+  _performTTest(results1, results2) {
+    /**
+     * 执行 t 检验
+     * 
+     * 参数:
+     *   results1: 结果1
+     *   results2: 结果2
+     * 
+     * 返回:
+     *   t 检验结果
+     */
+    // 简化实现：计算平均分数的 t 检验
+    const scores1 = results1.map(r => Object.values(r.scores).reduce((sum, s) => sum + s, 0) / Object.keys(r.scores).length);
+    const scores2 = results2.map(r => Object.values(r.scores).reduce((sum, s) => sum + s, 0) / Object.keys(r.scores).length);
+
+    const mean1 = scores1.reduce((sum, s) => sum + s, 0) / scores1.length;
+    const mean2 = scores2.reduce((sum, s) => sum + s, 0) / scores2.length;
+
+    const var1 = scores1.reduce((sum, s) => sum + Math.pow(s - mean1, 2), 0) / (scores1.length - 1);
+    const var2 = scores2.reduce((sum, s) => sum + Math.pow(s - mean2, 2), 0) / (scores2.length - 1);
+
+    const pooledVar = ((scores1.length - 1) * var1 + (scores2.length - 1) * var2) / (scores1.length + scores2.length - 2);
+    const stdError = Math.sqrt(pooledVar * (1 / scores1.length + 1 / scores2.length));
+
+    const t = (mean1 - mean2) / stdError;
+    const df = scores1.length + scores2.length - 2;
+
+    return {
+      t,
+      df,
+      pValue: this._calculatePValue(t, df),
+      significant: Math.abs(t) > 1.96 // 简化判断
+    };
+  }
+
+  _calculatePValue(t, df) {
+    /**
+     * 计算 p 值
+     * 
+     * 参数:
+     *   t: t 统计量
+     *   df: 自由度
+     * 
+     * 返回:
+     *   p 值
+     */
+    // 简化实现：使用近似公式
+    const absT = Math.abs(t);
+    if (absT > 3) {
+      return 0.001;
+    } else if (absT > 2.5) {
+      return 0.01;
+    } else if (absT > 2) {
+      return 0.05;
+    } else if (absT > 1.5) {
+      return 0.1;
+    } else {
+      return 0.5;
+    }
+  }
+
+  _rankModels(comparison) {
+    /**
+     * 对模型排序
+     * 
+     * 参数:
+     *   comparison: 比较结果
+     * 
+     * 返回:
+     *   排序结果
+     */
+    const models = Object.keys(comparison);
+    const scores = models.map(model => {
+      const aggregated = comparison[model];
+      const avgScore = Object.values(aggregated).reduce(
+        (sum, criterion) => sum + criterion.mean,
+        0
+      ) / Object.keys(aggregated).length;
+      return { model, avgScore };
+    });
+
+    scores.sort((a, b) => b.avgScore - a.avgScore);
+
+    return scores.map((s, index) => ({
+      rank: index + 1,
+      model: s.model,
+      score: s.avgScore
+    }));
+  }
+
+  _generateId() {
+    /**
+     * 生成 ID
+     * 
+     * 返回:
+     *   ID 字符串
+     */
+    return `eval_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  getStatistics() {
+    /**
+     * 获取统计信息
+     * 
+     * 返回:
+     *   统计对象
+     */
+    return {
+      totalEvaluations: this.evaluations.length,
+      totalEvaluators: this.evaluators.length,
+      averageEvaluationsPerTask: this.evaluations.length / (this.evaluators.length || 1)
+    };
+  }
+}
+
+// 使用示例
+function humanEvaluationExample() {
+  const evaluation = new HumanEvaluation({
+    criteria: ['quality', 'relevance', 'coherence'],
+    scale: 5,
+    minEvaluators: 3,
+    consensusThreshold: 0.7
+  });
+
+  // 添加评估员
+  const evaluator1 = evaluation.addEvaluator({
+    name: 'Evaluator 1',
+    expertise: ['nlp', 'quality']
+  });
+
+  const evaluator2 = evaluation.addEvaluator({
+    name: 'Evaluator 2',
+    expertise: ['nlp', 'quality']
+  });
+
+  const evaluator3 = evaluation.addEvaluator({
+    name: 'Evaluator 3',
+    expertise: ['nlp', 'quality']
+  });
+
+  // 创建任务
+  const task = evaluation.createEvaluationTask({
+    text: 'The cat sat on the mat.'
+  });
+
+  // 提交评估
+  evaluation.submitEvaluation(task.id, evaluator1, {
+    quality: 4,
+    relevance: 5,
+    coherence: 4
+  }, { comments: 'Good quality' });
+
+  evaluation.submitEvaluation(task.id, evaluator2, {
+    quality: 5,
+    relevance: 4,
+    coherence: 5
+  }, { comments: 'Excellent' });
+
+  evaluation.submitEvaluation(task.id, evaluator3, {
+    quality: 4,
+    relevance: 5,
+    coherence: 4
+  }, { comments: 'Very good' });
+
+  // 计算共识度
+  const consensus = evaluation.calculateConsensus(task.id);
+  console.log('共识度:', consensus);
+
+  // 聚合评分
+  const aggregated = evaluation.aggregateScores(task.id);
+  console.log('聚合评分:', aggregated);
+
+  // 获取统计信息
+  const stats = evaluation.getStatistics();
+  console.log('统计信息:', stats);
+}
+```
+
+### 业务指标
+
+业务指标衡量 AI 系统对实际业务的影响。
+
+```javascript
+// evaluation/metrics/business-metrics.js
+class BusinessMetrics {
+  constructor(config) {
+    /**
+     * 业务指标计算器
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      baselineMetrics: config.baselineMetrics || {},
+      targetMetrics: config.targetMetrics || {},
+      ...config
+    };
+
+    this.metricsHistory = [];
+  }
+
+  calculateConversionRate(impressions, conversions) {
+    /**
+     * 计算转化率
+     * 
+     * 参数:
+     *   impressions: 展示次数
+     *   conversions: 转化次数
+     * 
+     * 返回:
+     *   转化率
+     */
+    return impressions > 0 ? conversions / impressions : 0;
+  }
+
+  calculateClickThroughRate(impressions, clicks) {
+    /**
+     * 计算点击率
+     * 
+     * 参数:
+     *   impressions: 展示次数
+     *   clicks: 点击次数
+     * 
+     * 返回:
+     *   点击率
+     */
+    return impressions > 0 ? clicks / impressions : 0;
+  }
+
+  calculateRetentionRate(initialUsers, retainedUsers) {
+    /**
+     * 计算留存率
+     * 
+     * 参数:
+     *   initialUsers: 初始用户数
+     *   retainedUsers: 留存用户数
+     * 
+     * 返回:
+     *   留存率
+     */
+    return initialUsers > 0 ? retainedUsers / initialUsers : 0;
+  }
+
+  calculateAverageSessionTime(totalTime, sessions) {
+    /**
+     * 计算平均会话时长
+     * 
+     * 参数:
+     *   totalTime: 总时长（秒）
+     *   sessions: 会话数
+     * 
+     * 返回:
+     *   平均会话时长（秒）
+     */
+    return sessions > 0 ? totalTime / sessions : 0;
+  }
+
+  calculateNPS(responses) {
+    /**
+     * 计算 NPS（净推荐值）
+     * 
+     * 参数:
+     *   responses: 评分数组 (0-10)
+     * 
+     * 返回:
+     *   NPS 分数
+     */
+    if (responses.length === 0) {
+      return 0;
+    }
+
+    const promoters = responses.filter(r => r >= 9).length;
+    const detractors = responses.filter(r => r <= 6).length;
+
+    const promoterPercentage = (promoters / responses.length) * 100;
+    const detractorPercentage = (detractors / responses.length) * 100;
+
+    return promoterPercentage - detractorPercentage;
+  }
+
+  calculateCSAT(responses, maxScore = 5) {
+    /**
+     * 计算 CSAT（客户满意度）
+     * 
+     * 参数:
+     *   responses: 评分数组
+     *   maxScore: 最大分数
+     * 
+     * 返回:
+     *   CSAT 分数
+     */
+    if (responses.length === 0) {
+      return 0;
+    }
+
+    const avgScore = responses.reduce((sum, r) => sum + r, 0) / responses.length;
+    return (avgScore / maxScore) * 100;
+  }
+
+  calculateROI(cost, revenue) {
+    /**
+     * 计算投资回报率
+     * 
+     * 参数:
+     *   cost: 成本
+     *   revenue: 收入
+     * 
+     * 返回:
+     *   ROI (百分比)
+     */
+    return cost > 0 ? ((revenue - cost) / cost) * 100 : 0;
+  }
+
+  calculateLTV(averageRevenue, retentionRate, timePeriod) {
+    /**
+     * 计算客户生命周期价值
+     * 
+     * 参数:
+     *   averageRevenue: 平均收入
+     *   retentionRate: 留存率
+     *   timePeriod: 时间周期（月）
+     * 
+     * 返回:
+     *   LTV
+     */
+    let ltv = 0;
+    let currentRevenue = averageRevenue;
+
+    for (let i = 0; i < timePeriod; i++) {
+      ltv += currentRevenue;
+      currentRevenue *= retentionRate;
+    }
+
+    return ltv;
+  }
+
+  calculateChurnRate(initialUsers, churnedUsers) {
+    /**
+     * 计算流失率
+     * 
+     * 参数:
+     *   initialUsers: 初始用户数
+     *   churnedUsers: 流失用户数
+     * 
+     * 返回:
+     *   流失率
+     */
+    return initialUsers > 0 ? churnedUsers / initialUsers : 0;
+  }
+
+  recordMetrics(metrics, timestamp = null) {
+    /**
+     * 记录指标
+     * 
+     * 参数:
+     *   metrics: 指标对象
+     *   timestamp: 时间戳
+     * 
+     * 返回:
+     *   记录对象
+     */
+    const record = {
+      timestamp: timestamp || new Date().toISOString(),
+      metrics
+    };
+
+    this.metricsHistory.push(record);
+    return record;
+  }
+
+  calculateImprovement(metricName, baseline = null) {
+    /**
+     * 计算改进幅度
+     * 
+     * 参数:
+     *   metricName: 指标名称
+     *   baseline: 基线值
+     * 
+     * 返回:
+     *   改进幅度
+     */
+    const currentMetrics = this.metricsHistory[this.metricsHistory.length - 1];
+    const currentValue = currentMetrics.metrics[metricName];
+
+    const baselineValue = baseline || this.config.baselineMetrics[metricName];
+
+    if (baselineValue === 0) {
+      return currentValue > 0 ? Infinity : 0;
+    }
+
+    return ((currentValue - baselineValue) / baselineValue) * 100;
+  }
+
+  calculateTrend(metricName, windowSize = 7) {
+    /**
+     * 计算趋势
+     * 
+     * 参数:
+     *   metricName: 指标名称
+     *   windowSize: 窗口大小
+     * 
+     * 返回:
+     *   趋势对象
+     */
+    if (this.metricsHistory.length < 2) {
+      return null;
+    }
+
+    const window = this.metricsHistory.slice(-windowSize);
+    const values = window.map(record => record.metrics[metricName]);
+
+    // 计算线性回归
+    const n = values.length;
+    const x = Array.from({ length: n }, (_, i) => i);
+    const y = values;
+
+    const sumX = x.reduce((sum, val) => sum + val, 0);
+    const sumY = y.reduce((sum, val) => sum + val, 0);
+    const sumXY = x.reduce((sum, val, i) => sum + val * y[i], 0);
+    const sumX2 = x.reduce((sum, val) => sum + val * val, 0);
+
+    const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    const intercept = (sumY - slope * sumX) / n;
+
+    return {
+      slope,
+      intercept,
+      trend: slope > 0 ? 'increasing' : (slope < 0 ? 'decreasing' : 'stable'),
+      r2: this._calculateR2(x, y, slope, intercept)
+    };
+  }
+
+  _calculateR2(x, y, slope, intercept) {
+    /**
+     * 计算 R²
+     * 
+     * 参数:
+     *   x: x 值数组
+     *   y: y 值数组
+     *   slope: 斜率
+     *   intercept: 截距
+     * 
+     * 返回:
+     *   R² 值
+     */
+    const yMean = y.reduce((sum, val) => sum + val, 0) / y.length;
+    const ssTotal = y.reduce((sum, val) => sum + Math.pow(val - yMean, 2), 0);
+    const ssResidual = y.reduce((sum, val, i) => sum + Math.pow(val - (slope * x[i] + intercept), 2), 0);
+
+    return 1 - (ssResidual / ssTotal);
+  }
+
+  generateReport() {
+    /**
+     * 生成报告
+     * 
+     * 返回:
+     *   报告对象
+     */
+    if (this.metricsHistory.length === 0) {
+      return null;
+    }
+
+    const currentMetrics = this.metricsHistory[this.metricsHistory.length - 1].metrics;
+    const report = {
+      timestamp: this.metricsHistory[this.metricsHistory.length - 1].timestamp,
+      currentMetrics,
+      improvements: {},
+      trends: {},
+      summary: {}
+    };
+
+    // 计算改进幅度
+    for (const metricName of Object.keys(currentMetrics)) {
+      report.improvements[metricName] = this.calculateImprovement(metricName);
+    }
+
+    // 计算趋势
+    for (const metricName of Object.keys(currentMetrics)) {
+      report.trends[metricName] = this.calculateTrend(metricName);
+    }
+
+    // 汇总
+    const improvements = Object.values(report.improvements);
+    report.summary = {
+      averageImprovement: improvements.reduce((sum, val) => sum + val, 0) / improvements.length,
+      positiveImprovements: improvements.filter(val => val > 0).length,
+      negativeImprovements: improvements.filter(val => val < 0).length
+    };
+
+    return report;
+  }
+}
+
+// 使用示例
+function businessMetricsExample() {
+  const metrics = new BusinessMetrics({
+    baselineMetrics: {
+      conversionRate: 0.02,
+      clickThroughRate: 0.01,
+      retentionRate: 0.7
+    },
+    targetMetrics: {
+      conversionRate: 0.03,
+      clickThroughRate: 0.015,
+      retentionRate: 0.8
+    }
+  });
+
+  // 计算各种指标
+  const conversionRate = metrics.calculateConversionRate(10000, 250);
+  console.log('转化率:', conversionRate);
+
+  const clickThroughRate = metrics.calculateClickThroughRate(10000, 150);
+  console.log('点击率:', clickThroughRate);
+
+  const retentionRate = metrics.calculateRetentionRate(1000, 750);
+  console.log('留存率:', retentionRate);
+
+  const nps = metrics.calculateNPS([9, 10, 8, 7, 9, 10, 6, 8, 9, 10]);
+  console.log('NPS:', nps);
+
+  const csat = metrics.calculateCSAT([4, 5, 4, 5, 3, 4, 5, 4, 5, 4], 5);
+  console.log('CSAT:', csat);
+
+  const roi = metrics.calculateROI(10000, 15000);
+  console.log('ROI:', roi);
+
+  // 记录指标
+  metrics.recordMetrics({
+    conversionRate,
+    clickThroughRate,
+    retentionRate,
+    nps,
+    csat,
+    roi
+  });
+
+  // 生成报告
+  const report = metrics.generateReport();
+  console.log('报告:', report);
+}
+```
+
+## 🧪 测试策略
+
+全面的测试策略确保系统的可靠性和稳定性。
+
+### 单元测试
+
+单元测试验证单个组件的正确性。
+
+```javascript
+// testing/strategies/unit-test.js
+class UnitTestFramework {
+  constructor() {
+    /**
+     * 单元测试框架
+     */
+    this.tests = [];
+    this.results = [];
+  }
+
+  describe(name, fn) {
+    /**
+     * 描述测试套件
+     * 
+     * 参数:
+     *   name: 名称
+     *   fn: 测试函数
+     */
+    console.log(`\n📦 ${name}`);
+    fn();
+  }
+
+  test(name, fn) {
+    /**
+     * 定义测试用例
+     * 
+     * 参数:
+     *   name: 测试名称
+     *   fn: 测试函数
+     */
+    const test = {
+      name,
+      fn,
+      status: 'pending'
+    };
+
+    this.tests.push(test);
+  }
+
+  async run() {
+    /**
+     * 运行所有测试
+     * 
+     * 返回:
+     *   测试结果
+     */
+    console.log('\n🚀 开始运行测试...\n');
+
+    this.results = [];
+
+    for (const test of this.tests) {
+      try {
+        await test.fn();
+        test.status = 'passed';
+        console.log(`✅ ${test.name}`);
+        this.results.push({
+          name: test.name,
+          status: 'passed'
+        });
+      } catch (error) {
+        test.status = 'failed';
+        console.error(`❌ ${test.name}`);
+        console.error(`   ${error.message}`);
+        this.results.push({
+          name: test.name,
+          status: 'failed',
+          error: error.message
+        });
+      }
+    }
+
+    this._printSummary();
+    return this.results;
+  }
+
+  _printSummary() {
+    /**
+     * 打印测试摘要
+     */
+    const passed = this.results.filter(r => r.status === 'passed').length;
+    const failed = this.results.filter(r => r.status === 'failed').length;
+    const total = this.results.length;
+
+    console.log(`\n📊 测试结果: ${passed}/${total} 通过`);
+    if (failed > 0) {
+      console.log(`❌ ${failed} 个测试失败`);
+    }
+  }
+
+  expect(actual) {
+    /**
+     * 断言
+     * 
+     * 参数:
+     *   actual: 实际值
+     * 
+     * 返回:
+     *   断言对象
+     */
+    return {
+      toBe: (expected) => {
+        if (actual !== expected) {
+          throw new Error(`Expected ${expected}, but got ${actual}`);
+        }
+      },
+      toEqual: (expected) => {
+        if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+          throw new Error(`Expected ${JSON.stringify(expected)}, but got ${JSON.stringify(actual)}`);
+        }
+      },
+      toBeGreaterThan: (expected) => {
+        if (actual <= expected) {
+          throw new Error(`Expected ${actual} to be greater than ${expected}`);
+        }
+      },
+      toBeLessThan: (expected) => {
+        if (actual >= expected) {
+          throw new Error(`Expected ${actual} to be less than ${expected}`);
+        }
+      },
+      toBeTruthy: () => {
+        if (!actual) {
+          throw new Error(`Expected ${actual} to be truthy`);
+        }
+      },
+      toBeFalsy: () => {
+        if (actual) {
+          throw new Error(`Expected ${actual} to be falsy`);
+        }
+      },
+      toContain: (expected) => {
+        if (!actual.includes(expected)) {
+          throw new Error(`Expected ${actual} to contain ${expected}`);
+        }
+      },
+      toThrow: () => {
+        let threw = false;
+        try {
+          actual();
+        } catch {
+          threw = true;
+        }
+        if (!threw) {
+          throw new Error(`Expected function to throw`);
+        }
+      }
+    };
+  }
+
+  mockFunction(implementation = null) {
+    /**
+     * 创建模拟函数
+     * 
+     * 参数:
+     *   implementation: 实现函数
+     * 
+     * 返回:
+     *   模拟函数
+     */
+    const calls = [];
+
+    const mock = (...args) => {
+      calls.push(args);
+      if (implementation) {
+        return implementation(...args);
+      }
+    };
+
+    mock.calls = calls;
+    mock.mockReturnValue = (value) => {
+      implementation = () => value;
+      return mock;
+    };
+    mock.mockResolvedValue = (value) => {
+      implementation = () => Promise.resolve(value);
+      return mock;
+    };
+    mock.mockRejectedValue = (value) => {
+      implementation = () => Promise.reject(value);
+      return mock;
+    };
+
+    return mock;
+  }
+}
+
+// 使用示例
+async function unitTestExample() {
+  const framework = new UnitTestFramework();
+
+  // 测试套件
+  framework.describe('数学函数', () => {
+    framework.test('加法', () => {
+      const result = 2 + 2;
+      framework.expect(result).toBe(4);
+    });
+
+    framework.test('减法', () => {
+      const result = 5 - 3;
+      framework.expect(result).toBe(2);
+    });
+  });
+
+  framework.describe('字符串函数', () => {
+    framework.test('拼接', () => {
+      const result = 'Hello' + ' ' + 'World';
+      framework.expect(result).toBe('Hello World');
+    });
+
+    framework.test('包含', () => {
+      const text = 'Hello World';
+      framework.expect(text).toContain('World');
+    });
+  });
+
+  framework.describe('模拟函数', () => {
+    framework.test('模拟函数调用', () => {
+      const mockFn = framework.mockFunction();
+      mockFn('arg1', 'arg2');
+      
+      framework.expect(mockFn.calls.length).toBe(1);
+      framework.expect(mockFn.calls[0]).toEqual(['arg1', 'arg2']);
+    });
+
+    framework.test('模拟返回值', () => {
+      const mockFn = framework.mockFunction().mockReturnValue(42);
+      const result = mockFn();
+      
+      framework.expect(result).toBe(42);
+    });
+  });
+
+  // 运行测试
+  const results = await framework.run();
+  console.log('\n测试结果:', results);
+}
+```
+
+### 集成测试
+
+集成测试验证多个组件协作的正确性。
+
+```javascript
+// testing/strategies/integration-test.js
+class IntegrationTestFramework {
+  constructor() {
+    /**
+     * 集成测试框架
+     */
+    this.tests = [];
+    this.services = {};
+    this.results = [];
+  }
+
+  registerService(name, service) {
+    /**
+     * 注册服务
+     * 
+     * 参数:
+     *   name: 服务名称
+     *   service: 服务对象
+     */
+    this.services[name] = service;
+  }
+
+  describe(name, fn) {
+    /**
+     * 描述测试套件
+     * 
+     * 参数:
+     *   name: 名称
+     *   fn: 测试函数
+     */
+    console.log(`\n📦 ${name}`);
+    fn();
+  }
+
+  test(name, fn) {
+    /**
+     * 定义测试用例
+     * 
+     * 参数:
+     *   name: 测试名称
+     *   fn: 测试函数
+     */
+    const test = {
+      name,
+      fn,
+      status: 'pending'
+    };
+
+    this.tests.push(test);
+  }
+
+  async run() {
+    /**
+     * 运行所有测试
+     * 
+     * 返回:
+     *   测试结果
+     */
+    console.log('\n🚀 开始运行集成测试...\n');
+
+    this.results = [];
+
+    for (const test of this.tests) {
+      try {
+        await test.fn(this.services);
+        test.status = 'passed';
+        console.log(`✅ ${test.name}`);
+        this.results.push({
+          name: test.name,
+          status: 'passed'
+        });
+      } catch (error) {
+        test.status = 'failed';
+        console.error(`❌ ${test.name}`);
+        console.error(`   ${error.message}`);
+        this.results.push({
+          name: test.name,
+          status: 'failed',
+          error: error.message
+        });
+      }
+    }
+
+    this._printSummary();
+    return this.results;
+  }
+
+  _printSummary() {
+    /**
+     * 打印测试摘要
+     */
+    const passed = this.results.filter(r => r.status === 'passed').length;
+    const failed = this.results.filter(r => r.status === 'failed').length;
+    const total = this.results.length;
+
+    console.log(`\n📊 测试结果: ${passed}/${total} 通过`);
+    if (failed > 0) {
+      console.log(`❌ ${failed} 个测试失败`);
+    }
+  }
+
+  expect(actual) {
+    /**
+     * 断言
+     * 
+     * 参数:
+     *   actual: 实际值
+     * 
+     * 返回:
+     *   断言对象
+     */
+    return {
+      toBe: (expected) => {
+        if (actual !== expected) {
+          throw new Error(`Expected ${expected}, but got ${actual}`);
+        }
+      },
+      toEqual: (expected) => {
+        if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+          throw new Error(`Expected ${JSON.stringify(expected)}, but got ${JSON.stringify(actual)}`);
+        }
+      },
+      toBeDefined: () => {
+        if (actual === undefined) {
+          throw new Error(`Expected value to be defined`);
+        }
+      },
+      toBeNull: () => {
+        if (actual !== null) {
+          throw new Error(`Expected ${actual} to be null`);
+        }
+      },
+      toHaveLength: (expected) => {
+        if (actual.length !== expected) {
+          throw new Error(`Expected length ${expected}, but got ${actual.length}`);
+        }
+      }
+    };
+  }
+}
+
+// 使用示例
+async function integrationTestExample() {
+  const framework = new IntegrationTestFramework();
+
+  // 注册模拟服务
+  framework.registerService('userService', {
+    async getUser(id) {
+      return { id, name: `User ${id}`, email: `user${id}@example.com` };
+    },
+    async createUser(userData) {
+      return { id: Date.now(), ...userData };
+    }
+  });
+
+  framework.registerService('orderService', {
+    async createOrder(userId, items) {
+      return { id: Date.now(), userId, items, status: 'created' };
+    },
+    async getOrder(orderId) {
+      return { id: orderId, userId: 1, items: [], status: 'completed' };
+    }
+  });
+
+  framework.registerService('paymentService', {
+    async processPayment(orderId, amount) {
+      return { orderId, amount, status: 'success' };
+    }
+  });
+
+  // 测试套件
+  framework.describe('用户服务集成', () => {
+    framework.test('获取用户信息', async (services) => {
+      const user = await services.userService.getUser(1);
+      
+      framework.expect(user.id).toBe(1);
+      framework.expect(user.name).toBe('User 1');
+    });
+
+    framework.test('创建用户', async (services) => {
+      const userData = { name: 'John Doe', email: 'john@example.com' };
+      const user = await services.userService.createUser(userData);
+      
+      framework.expect(user.name).toBe(userData.name);
+      framework.expect(user.email).toBe(userData.email);
+    });
+  });
+
+  framework.describe('订单流程集成', () => {
+    framework.test('完整订单流程', async (services) => {
+      // 1. 获取用户
+      const user = await services.userService.getUser(1);
+      framework.expect(user).toBeDefined();
+
+      // 2. 创建订单
+      const order = await services.orderService.createOrder(user.id, [
+        { productId: 1, quantity: 2 }
+      ]);
+      framework.expect(order.status).toBe('created');
+
+      // 3. 处理支付
+      const payment = await services.paymentService.processPayment(order.id, 100);
+      framework.expect(payment.status).toBe('success');
+    });
+  });
+
+  // 运行测试
+  const results = await framework.run();
+  console.log('\n测试结果:', results);
+}
+```
+
+### 端到端测试
+
+端到端测试验证整个系统的功能。
+
+```javascript
+// testing/strategies/e2e-test.js
+class E2ETestFramework {
+  constructor(config) {
+    /**
+     * 端到端测试框架
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      baseUrl: config.baseUrl || 'http://localhost:3000',
+      timeout: config.timeout || 30000,
+      ...config
+    };
+
+    this.tests = [];
+    this.results = [];
+  }
+
+  describe(name, fn) {
+    /**
+     * 描述测试套件
+     * 
+     * 参数:
+     *   name: 名称
+     *   fn: 测试函数
+     */
+    console.log(`\n📦 ${name}`);
+    fn();
+  }
+
+  test(name, fn) {
+    /**
+     * 定义测试用例
+     * 
+     * 参数:
+     *   name: 测试名称
+     *   fn: 测试函数
+     */
+    const test = {
+      name,
+      fn,
+      status: 'pending'
+    };
+
+    this.tests.push(test);
+  }
+
+  async run() {
+    /**
+     * 运行所有测试
+     * 
+     * 返回:
+     *   测试结果
+     */
+    console.log('\n🚀 开始运行端到端测试...\n');
+
+    this.results = [];
+
+    for (const test of this.tests) {
+      try {
+        await test.fn(this);
+        test.status = 'passed';
+        console.log(`✅ ${test.name}`);
+        this.results.push({
+          name: test.name,
+          status: 'passed'
+        });
+      } catch (error) {
+        test.status = 'failed';
+        console.error(`❌ ${test.name}`);
+        console.error(`   ${error.message}`);
+        this.results.push({
+          name: test.name,
+          status: 'failed',
+          error: error.message
+        });
+      }
+    }
+
+    this._printSummary();
+    return this.results;
+  }
+
+  _printSummary() {
+    /**
+     * 打印测试摘要
+     */
+    const passed = this.results.filter(r => r.status === 'passed').length;
+    const failed = this.results.filter(r => r.status === 'failed').length;
+    const total = this.results.length;
+
+    console.log(`\n📊 测试结果: ${passed}/${total} 通过`);
+    if (failed > 0) {
+      console.log(`❌ ${failed} 个测试失败`);
+    }
+  }
+
+  async get(url, options = {}) {
+    /**
+     * GET 请求
+     * 
+     * 参数:
+     *   url: URL
+     *   options: 选项
+     * 
+     * 返回:
+     *   响应对象
+     */
+    const fullUrl = this.config.baseUrl + url;
+    const response = await fetch(fullUrl, {
+      method: 'GET',
+      ...options
+    });
+
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      data: await response.json(),
+      headers: response.headers
+    };
+  }
+
+  async post(url, data, options = {}) {
+    /**
+     * POST 请求
+     * 
+     * 参数:
+     *   url: URL
+     *   data: 数据
+     *   options: 选项
+     * 
+     * 返回:
+     *   响应对象
+     */
+    const fullUrl = this.config.baseUrl + url;
+    const response = await fetch(fullUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+      },
+      body: JSON.stringify(data),
+      ...options
+    });
+
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      data: await response.json(),
+      headers: response.headers
+    };
+  }
+
+  async put(url, data, options = {}) {
+    /**
+     * PUT 请求
+     * 
+     * 参数:
+     *   url: URL
+     *   data: 数据
+     *   options: 选项
+     * 
+     * 返回:
+     *   响应对象
+     */
+    const fullUrl = this.config.baseUrl + url;
+    const response = await fetch(fullUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+      },
+      body: JSON.stringify(data),
+      ...options
+    });
+
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      data: await response.json(),
+      headers: response.headers
+    };
+  }
+
+  async delete(url, options = {}) {
+    /**
+     * DELETE 请求
+     * 
+     * 参数:
+     *   url: URL
+     *   options: 选项
+     * 
+     * 返回:
+     *   响应对象
+     */
+    const fullUrl = this.config.baseUrl + url;
+    const response = await fetch(fullUrl, {
+      method: 'DELETE',
+      ...options
+    });
+
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      data: await response.json(),
+      headers: response.headers
+    };
+  }
+
+  expect(actual) {
+    /**
+     * 断言
+     * 
+     * 参数:
+     *   actual: 实际值
+     * 
+     * 返回:
+     *   断言对象
+     */
+    return {
+      toBe: (expected) => {
+        if (actual !== expected) {
+          throw new Error(`Expected ${expected}, but got ${actual}`);
+        }
+      },
+      toEqual: (expected) => {
+        if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+          throw new Error(`Expected ${JSON.stringify(expected)}, but got ${JSON.stringify(actual)}`);
+        }
+      },
+      toHaveStatus: (expected) => {
+        if (actual.status !== expected) {
+          throw new Error(`Expected status ${expected}, but got ${actual.status}`);
+        }
+      },
+      toHaveProperty: (property) => {
+        if (!(property in actual)) {
+          throw new Error(`Expected object to have property ${property}`);
+        }
+      },
+      toContain: (expected) => {
+        if (!actual.includes(expected)) {
+          throw new Error(`Expected ${actual} to contain ${expected}`);
+        }
+      }
+    };
+  }
+
+  async waitFor(condition, timeout = this.config.timeout) {
+    /**
+     * 等待条件满足
+     * 
+     * 参数:
+     *   condition: 条件函数
+     *   timeout: 超时时间
+     * 
+     * 返回:
+     *   Promise
+     */
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeout) {
+      const result = await condition();
+      if (result) {
+        return result;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    throw new Error(`Timeout waiting for condition after ${timeout}ms`);
+  }
+}
+
+// 使用示例
+async function e2eTestExample() {
+  const framework = new E2ETestFramework({
+    baseUrl: 'http://localhost:3000',
+    timeout: 30000
+  });
+
+  // 测试套件
+  framework.describe('用户 API', () => {
+    framework.test('获取用户列表', async (test) => {
+      const response = await test.get('/api/users');
+      
+      test.expect(response).toHaveStatus(200);
+      test.expect(response.data).toHaveProperty('users');
+      test.expect(Array.isArray(response.data.users)).toBeTruthy();
+    });
+
+    framework.test('创建用户', async (test) => {
+      const userData = {
+        name: 'John Doe',
+        email: 'john@example.com'
+      };
+
+      const response = await test.post('/api/users', userData);
+      
+      test.expect(response).toHaveStatus(201);
+      test.expect(response.data).toHaveProperty('id');
+      test.expect(response.data.name).toBe(userData.name);
+    });
+  });
+
+  framework.describe('订单流程', () => {
+    framework.test('完整购买流程', async (test) => {
+      // 1. 创建用户
+      const userResponse = await test.post('/api/users', {
+        name: 'Jane Doe',
+        email: 'jane@example.com'
+      });
+      test.expect(userResponse).toHaveStatus(201);
+      const userId = userResponse.data.id;
+
+      // 2. 创建订单
+      const orderResponse = await test.post('/api/orders', {
+        userId,
+        items: [
+          { productId: 1, quantity: 2 }
+        ]
+      });
+      test.expect(orderResponse).toHaveStatus(201);
+      const orderId = orderResponse.data.id;
+
+      // 3. 支付订单
+      const paymentResponse = await test.post(`/api/orders/${orderId}/pay`, {
+        amount: 100
+      });
+      test.expect(paymentResponse).toHaveStatus(200);
+      test.expect(paymentResponse.data.status).toBe('paid');
+
+      // 4. 验证订单状态
+      const finalOrderResponse = await test.get(`/api/orders/${orderId}`);
+      test.expect(finalOrderResponse).toHaveStatus(200);
+      test.expect(finalOrderResponse.data.status).toBe('paid');
+    });
+  });
+
+  // 运行测试
+  const results = await framework.run();
+  console.log('\n测试结果:', results);
+}
+```
+
+### A/B 测试
+
+A/B 测试比较不同方案的效果。
+
+```javascript
+// testing/strategies/ab-test.js
+class ABTestFramework {
+  constructor(config) {
+    /**
+     * A/B 测试框架
+     * 
+     * 参数:
+     *   config: 配置对象
+     */
+    this.config = {
+      sampleSize: config.sampleSize || 1000,
+      significanceLevel: config.significanceLevel || 0.05,
+      minDuration: config.minDuration || 7 * 24 * 60 * 60 * 1000, // 7天
+      ...config
+    };
+
+    this.experiments = [];
+    this.variants = {};
+  }
+
+  createExperiment(name, variants, metrics) {
+    /**
+     * 创建实验
+     * 
+     * 参数:
+     *   name: 实验名称
+     *   variants: 变体数组
+     *   metrics: 指标数组
+     * 
+     * 返回:
+     *   实验对象
+     */
+    const experiment = {
+      id: this._generateId(),
+      name,
+      variants: variants.map((v, index) => ({
+        id: `variant_${index}`,
+        name: v.name,
+        description: v.description,
+        allocation: v.allocation || 1 / variants.length
+      })),
+      metrics,
+      status: 'created',
+      createdAt: new Date().toISOString(),
+      startedAt: null,
+      endedAt: null,
+      results: {}
+    };
+
+    this.experiments.push(experiment);
+    return experiment;
+  }
+
+  startExperiment(experimentId) {
+    /**
+     * 启动实验
+     * 
+     * 参数:
+     *   experimentId: 实验 ID
+     * 
+     * 返回:
+     *   实验对象
+     */
+    const experiment = this.experiments.find(e => e.id === experimentId);
+    if (!experiment) {
+      throw new Error(`Experiment not found: ${experimentId}`);
+    }
+
+    experiment.status = 'running';
+    experiment.startedAt = new Date().toISOString();
+
+    return experiment;
+  }
+
+  endExperiment(experimentId) {
+    /**
+     * 结束实验
+     * 
+     * 参数:
+     *   experimentId: 实验 ID
+     * 
+     * 返回:
+     *   实验对象
+     */
+    const experiment = this.experiments.find(e => e.id === experimentId);
+    if (!experiment) {
+      throw new Error(`Experiment not found: ${experimentId}`);
+    }
+
+    experiment.status = 'completed';
+    experiment.endedAt = new Date().toISOString();
+
+    return experiment;
+  }
+
+  assignVariant(experimentId, userId) {
+    /**
+     * 分配变体
+     * 
+     * 参数:
+     *   experimentId: 实验 ID
+     *   userId: 用户 ID
+     * 
+     * 返回:
+     *   变体 ID
+     */
+    const experiment = this.experiments.find(e => e.id === experimentId);
+    if (!experiment || experiment.status !== 'running') {
+      throw new Error(`Experiment not found or not running: ${experimentId}`);
+    }
+
+    // 使用一致性哈希确保同一用户总是分配到同一变体
+    const hash = this._hash(userId + experimentId);
+    const variantIndex = hash % experiment.variants.length;
+
+    return experiment.variants[variantIndex].id;
+  }
+
+  recordMetric(experimentId, variantId, metricName, value) {
+    /**
+     * 记录指标
+     * 
+     * 参数:
+     *   experimentId: 实验 ID
+     *   variantId: 变体 ID
+     *   metricName: 指标名称
+     *   value: 指标值
+     */
+    const experiment = this.experiments.find(e => e.id === experimentId);
+    if (!experiment) {
+      throw new Error(`Experiment not found: ${experimentId}`);
+    }
+
+    if (!experiment.results[variantId]) {
+      experiment.results[variantId] = {};
+    }
+
+    if (!experiment.results[variantId][metricName]) {
+      experiment.results[variantId][metricName] = [];
+    }
+
+    experiment.results[variantId][metricName].push({
+      value,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  analyzeResults(experimentId) {
+    /**
+     * 分析结果
+     * 
+     * 参数:
+     *   experimentId: 实验 ID
+     * 
+     * 返回:
+     *   分析结果
+     */
+    const experiment = this.experiments.find(e => e.id === experimentId);
+    if (!experiment) {
+      throw new Error(`Experiment not found: ${experimentId}`);
+    }
+
+    const analysis = {
+      experimentId,
+      experimentName: experiment.name,
+      variants: {},
+      comparisons: {},
+      recommendation: null
+    };
+
+    // 分析每个变体
+    for (const variant of experiment.variants) {
+      analysis.variants[variant.id] = {
+        name: variant.name,
+        metrics: {}
+      };
+
+      for (const metric of experiment.metrics) {
+        const values = experiment.results[variant.id]?.[metric.name] || [];
+        analysis.variants[variant.id].metrics[metric.name] = this._calculateStatistics(values, metric.type);
+      }
+    }
+
+    // 比较变体
+    for (let i = 0; i < experiment.variants.length; i++) {
+      for (let j = i + 1; j < experiment.variants.length; j++) {
+        const variant1 = experiment.variants[i];
+        const variant2 = experiment.variants[j];
+
+        const comparison = this._compareVariants(
+          experiment,
+          variant1,
+          variant2
+        );
+
+        analysis.comparisons[`${variant1.id}_vs_${variant2.id}`] = comparison;
+      }
+    }
+
+    // 生成推荐
+    analysis.recommendation = this._generateRecommendation(analysis);
+
+    return analysis;
+  }
+
+  _calculateStatistics(values, type = 'numeric') {
+    /**
+     * 计算统计量
+     * 
+     * 参数:
+     *   values: 值数组
+     *   type: 类型
+     * 
+     * 返回:
+     *   统计量对象
+     */
+    if (values.length === 0) {
+      return {
+        count: 0,
+        mean: 0,
+        std: 0
+      };
+    }
+
+    const numericValues = values.map(v => v.value);
+    const mean = numericValues.reduce((sum, v) => sum + v, 0) / numericValues.length;
+    const variance = numericValues.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / numericValues.length;
+    const std = Math.sqrt(variance);
+
+    return {
+      count: values.length,
+      mean,
+      std,
+      min: Math.min(...numericValues),
+      max: Math.max(...numericValues),
+      median: this._calculateMedian(numericValues)
+    };
+  }
+
+  _calculateMedian(values) {
+    /**
+     * 计算中位数
+     * 
+     * 参数:
+     *   values: 值数组
+     * 
+     * 返回:
+     *   中位数
+     */
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+
+    if (sorted.length % 2 === 0) {
+      return (sorted[mid - 1] + sorted[mid]) / 2;
+    } else {
+      return sorted[mid];
+    }
+  }
+
+  _compareVariants(experiment, variant1, variant2) {
+    /**
+     * 比较变体
+     * 
+     * 参数:
+     *   experiment: 实验对象
+     *   variant1: 变体1
+     *   variant2: 变体2
+     * 
+     * 返回:
+     *   比较结果
+     */
+    const comparison = {
+      variant1: variant1.id,
+      variant2: variant2.id,
+      metrics: {}
+    };
+
+    for (const metric of experiment.metrics) {
+      const values1 = experiment.results[variant1.id]?.[metric.name] || [];
+      const values2 = experiment.results[variant2.id]?.[metric.name] || [];
+
+      const stats1 = this._calculateStatistics(values1, metric.type);
+      const stats2 = this._calculateStatistics(values2, metric.type);
+
+      // 执行统计检验
+      const test = this._performStatisticalTest(
+        values1.map(v => v.value),
+        values2.map(v => v.value),
+        metric.type
+      );
+
+      comparison.metrics[metric.name] = {
+        variant1: stats1,
+        variant2: stats2,
+        difference: stats2.mean - stats1.mean,
+        relativeDifference: stats1.mean > 0 ? ((stats2.mean - stats1.mean) / stats1.mean) * 100 : 0,
+        test,
+        significant: test.pValue < this.config.significanceLevel
+      };
+    }
+
+    return comparison;
+  }
+
+  _performStatisticalTest(values1, values2, type) {
+    /**
+     * 执行统计检验
+     * 
+     * 参数:
+     *   values1: 值数组1
+     *   values2: 值数组2
+     *   type: 类型
+     * 
+     * 返回:
+     *   检验结果
+     */
+    // 简化实现：使用 t 检验
+    const mean1 = values1.reduce((sum, v) => sum + v, 0) / values1.length;
+    const mean2 = values2.reduce((sum, v) => sum + v, 0) / values2.length;
+
+    const var1 = values1.reduce((sum, v) => sum + Math.pow(v - mean1, 2), 0) / (values1.length - 1);
+    const var2 = values2.reduce((sum, v) => sum + Math.pow(v - mean2, 2), 0) / (values2.length - 1);
+
+    const pooledVar = ((values1.length - 1) * var1 + (values2.length - 1) * var2) / (values1.length + values2.length - 2);
+    const stdError = Math.sqrt(pooledVar * (1 / values1.length + 1 / values2.length));
+
+    const t = (mean2 - mean1) / stdError;
+    const df = values1.length + values2.length - 2;
+
+    return {
+      testType: 't-test',
+      t,
+      df,
+      pValue: this._calculatePValue(t, df)
+    };
+  }
+
+  _calculatePValue(t, df) {
+    /**
+     * 计算 p 值
+     * 
+     * 参数:
+     *   t: t 统计量
+     *   df: 自由度
+     * 
+     * 返回:
+     *   p 值
+     */
+    // 简化实现：使用近似公式
+    const absT = Math.abs(t);
+    if (absT > 3) {
+      return 0.001;
+    } else if (absT > 2.5) {
+      return 0.01;
+    } else if (absT > 2) {
+      return 0.05;
+    } else if (absT > 1.5) {
+      return 0.1;
+    } else {
+      return 0.5;
+    }
+  }
+
+  _generateRecommendation(analysis) {
+    /**
+     * 生成推荐
+     * 
+     * 参数:
+     *   analysis: 分析结果
+     * 
+     * 返回:
+     *   推荐对象
+     */
+    // 简化实现：基于主要指标推荐
+    const comparisons = Object.values(analysis.comparisons);
+    const primaryMetric = Object.keys(comparisons[0].metrics)[0];
+
+    let bestVariant = null;
+    let bestScore = -Infinity;
+
+    for (const [variantId, variantData] of Object.entries(analysis.variants)) {
+      const score = variantData.metrics[primaryMetric].mean;
+      if (score > bestScore) {
+        bestScore = score;
+        bestVariant = variantId;
+      }
+    }
+
+    return {
+      variant: bestVariant,
+      confidence: 0.8, // 简化
+      reasoning: `Based on ${primaryMetric} performance`
+    };
+  }
+
+  _hash(str) {
+    /**
+     * 哈希函数
+     * 
+     * 参数:
+     *   str: 字符串
+     * 
+     * 返回:
+     *   哈希值
+     */
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return Math.abs(hash);
+  }
+
+  _generateId() {
+    /**
+     * 生成 ID
+     * 
+     * 返回:
+     *   ID 字符串
+     */
+    return `exp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+}
+
+// 使用示例
+async function abTestExample() {
+  const framework = new ABTestFramework({
+    sampleSize: 1000,
+    significanceLevel: 0.05
+  });
+
+  // 创建实验
+  const experiment = framework.createExperiment(
+    '按钮颜色测试',
+    [
+      { name: '蓝色按钮', description: '使用蓝色作为按钮颜色' },
+      { name: '红色按钮', description: '使用红色作为按钮颜色' }
+    ],
+    [
+      { name: 'click_rate', type: 'numeric' },
+      { name: 'conversion_rate', type: 'numeric' }
+    ]
+  );
+
+  console.log('创建的实验:', experiment);
+
+  // 启动实验
+  framework.startExperiment(experiment.id);
+
+  // 模拟用户分配和指标记录
+  for (let i = 0; i < 100; i++) {
+    const userId = `user_${i}`;
+    const variantId = framework.assignVariant(experiment.id, userId);
+    
+    // 记录指标
+    framework.recordMetric(experiment.id, variantId, 'click_rate', Math.random());
+    framework.recordMetric(experiment.id, variantId, 'conversion_rate', Math.random() * 0.1);
+  }
+
+  // 结束实验
+  framework.endExperiment(experiment.id);
+
+  // 分析结果
+  const analysis = framework.analyzeResults(experiment.id);
+  console.log('分析结果:', analysis);
+}
+```
+
+## 📊 技术对比
+
+### 评估指标对比
+
+| 指标 | 适用场景 | 优点 | 缺点 |
+|------|---------|------|------|
+| **准确率** | 分类任务 | 简单直观 | 不平衡数据失效 |
+| **召回率** | 检索任务 | 关注漏检 | 可能误报 |
+| **BLEU** | 机器翻译 | 标准指标 | 不考虑语义 |
+| **ROUGE** | 文本摘要 | 关注召回 | 不考虑流畅性 |
+| **人类评估** | 所有任务 | 最准确 | 成本高、慢 |
+
+### 测试策略对比
+
+| 策略 | 覆盖范围 | 执行速度 | 成本 | 适用场景 |
+|------|---------|---------|------|---------|
+| **单元测试** | 单个组件 | 快 | 低 | 开发阶段 |
+| **集成测试** | 多个组件 | 中 | 中 | 集成阶段 |
+| **端到端测试** | 完整流程 | 慢 | 高 | 发布前 |
+| **A/B 测试** | 生产环境 | 慢 | 高 | 上线后 |
+
+## 🎓 学习路径
+
+### 初级阶段
+1. 理解基本评估指标
+2. 掌握单元测试方法
+3. 学习测试框架使用
+
+### 中级阶段
+1. 掌握文本生成评估
+2. 实现集成测试
+3. 进行人类评估
+
+### 高级阶段
+1. 深入理解统计检验
+2. 设计端到端测试
+3. 实施大规模 A/B 测试
+
+## 🔗 相关资源
+
+### 评估指标
+- [scikit-learn Metrics](https://scikit-learn.org/stable/modules/model_evaluation.html)
+- [NLTK Evaluation](https://www.nltk.org/api/nltk.metrics.html)
+- [BLEU Score](https://en.wikipedia.org/wiki/BLEU)
+- [ROUGE Score](https://en.wikipedia.org/wiki/ROUGE_(metric))
+
+### 测试框架
+- [Jest](https://jestjs.io/)
+- [Mocha](https://mochajs.org/)
+- [Cypress](https://www.cypress.io/)
+- [Puppeteer](https://pptr.dev/)
+
+### A/B 测试
+- [Google Optimize](https://optimize.google.com/)
+- [Optimizely](https://www.optimizely.com/)
+- [VWO](https://vwo.com/)
+
+## 📝 学习检查点
+
+完成本节学习后，你应该能够回答：
+- [ ] 准确率、召回率、F1 分数的区别是什么？
+- [ ] BLEU 和 ROUGE 的计算原理是什么？
+- [ ] 如何设计有效的人类评估？
+- [ ] 业务指标如何反映 AI 系统的价值？
+- [ ] 单元测试、集成测试、端到端测试的区别是什么？
+- [ ] 如何设计有效的 A/B 测试？
+- [ ] 统计显著性在 A/B 测试中的作用是什么？
+- [ ] 如何选择合适的评估指标？
+- [ ] 如何构建完整的测试体系？
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **安全与合规** - 学习 AI 安全和合规要求
+- **MLOps** - 掌握机器学习运维实践
+- **持续集成** - 了解 CI/CD 在 AI 项目中的应用
