@@ -1,0 +1,631 @@
+# 日志系统
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的日志系统，支持结构化日志、日志过滤和路由等功能。
+
+## 🎯 Effect.log - 基础日志功能
+
+### 基本日志
+
+```js
+import { Effect } from 'effect'
+
+// 基本日志
+const program = Effect.gen(function* () {
+  yield* Effect.log('This is a log message')
+  yield* Effect.logInfo('This is an info message')
+  yield* Effect.logWarning('This is a warning message')
+  yield* Effect.logError('This is an error message')
+  yield* Effect.logDebug('This is a debug message')
+})
+
+Effect.runSync(program)
+```
+
+### 带数据的日志
+
+```js
+import { Effect } from 'effect'
+
+// 带数据的日志
+const program = Effect.gen(function* () {
+  const user = { id: 1, name: 'Alice', email: 'alice@example.com' }
+  
+  yield* Effect.log('User logged in', { user })
+  yield* Effect.logInfo('Processing request', { userId: user.id, action: 'login' })
+  yield* Effect.logWarning('Rate limit approaching', { userId: user.id, requests: 95, limit: 100 })
+})
+
+Effect.runSync(program)
+```
+
+### 日志级别
+
+```js
+import { Effect } from 'effect'
+
+// 日志级别
+const program = Effect.gen(function* () {
+  yield* Effect.logDebug('Debug information', { debug: true })
+  yield* Effect.log('Default log level')
+  yield* Effect.logInfo('Informational message')
+  yield* Effect.logWarning('Warning message')
+  yield* Effect.logError('Error message')
+  
+  // 严重错误
+  yield* Effect.logFatal('Fatal error', { error: 'Critical failure' })
+})
+
+Effect.runSync(program)
+```
+
+## 💡 Logger 接口与实现
+
+### Logger 接口
+
+```js
+import { Effect, Logger } from 'effect'
+
+// Logger 接口
+interface MyLogger {
+  log: (message: string, level: string, data?: any) => void
+}
+
+// 自定义 Logger 实现
+const consoleLogger: MyLogger = {
+  log: (message, level, data) => {
+    const timestamp = new Date().toISOString()
+    const logEntry = {
+      timestamp,
+      level,
+      message,
+      ...data
+    }
+    
+    console.log(JSON.stringify(logEntry))
+  }
+}
+
+// 使用自定义 Logger
+const program = Effect.gen(function* () {
+  consoleLogger.log('Application started', 'INFO')
+  consoleLogger.log('Processing data', 'DEBUG', { count: 100 })
+  consoleLogger.log('Warning occurred', 'WARNING', { issue: 'performance' })
+})
+
+Effect.runSync(program)
+```
+
+### Logger 实现
+
+```js
+import { Effect, Logger } from 'effect'
+
+// 结构化 Logger
+const structuredLogger = Effect.gen(function* () {
+  const logs: any[] = []
+  
+  const log = (level: string, message: string, data?: any) => {
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      level,
+      message,
+      ...data
+    }
+    
+    logs.push(logEntry)
+    console.log(JSON.stringify(logEntry))
+  }
+  
+  return {
+    log,
+    getLogs: Effect.sync(() => logs),
+    clearLogs: Effect.sync(() => {
+      logs.length = 0
+    })
+  }
+})
+
+const program = Effect.gen(function* () {
+  const logger = yield* structuredLogger
+  
+  yield* logger.log('INFO', 'Application started')
+  yield* logger.log('DEBUG', 'Processing data', { count: 100 })
+  
+  const allLogs = yield* logger.getLogs()
+  console.log('Total logs:', allLogs.length)
+})
+
+Effect.runSync(program)
+```
+
+### Logger 层级
+
+```js
+import { Effect } from 'effect'
+
+// Logger 层级
+const createChildLogger = (parentLogger: any, context: Record<string, any>) => {
+  return {
+    log: (message: string, level: string, data?: any) => {
+      parentLogger.log(message, level, {
+        ...context,
+        ...data
+      })
+    }
+  }
+}
+
+const rootLogger = {
+  log: (message: string, level: string, data?: any) => {
+    console.log(`[${level}] ${message}`, data)
+  }
+}
+
+const program = Effect.gen(function* () {
+  // 创建子 Logger
+  const apiLogger = createChildLogger(rootLogger, { module: 'API' })
+  const dbLogger = createChildLogger(rootLogger, { module: 'Database' })
+  
+  apiLogger.log('Request received', 'INFO', { endpoint: '/users' })
+  dbLogger.log('Query executed', 'DEBUG', { query: 'SELECT * FROM users' })
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 结构化日志
+
+### JSON 格式日志
+
+```js
+import { Effect } from 'effect'
+
+// JSON 格式日志
+const jsonLogger = {
+  log: (level: string, message: string, data?: any) => {
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      level,
+      message,
+      ...data
+    }
+    
+    console.log(JSON.stringify(logEntry))
+  }
+}
+
+const program = Effect.gen(function* () {
+  jsonLogger.log('INFO', 'User login', {
+    userId: 1,
+    email: 'alice@example.com',
+    ip: '192.168.1.1'
+  })
+  
+  jsonLogger.log('ERROR', 'Database error', {
+    error: 'Connection failed',
+    code: 'DB_001',
+    retryable: true
+  })
+})
+
+Effect.runSync(program)
+```
+
+### 结构化字段
+
+```js
+import { Effect } from 'effect'
+
+// 结构化字段
+interface LogContext {
+  timestamp: string
+  level: string
+  message: string
+  userId?: string
+  requestId?: string
+  module?: string
+  error?: string
+  [key: string]: any
+}
+
+const structuredLogger = {
+  createContext: (baseContext: Partial<LogContext> = {}): LogContext => ({
+    timestamp: new Date().toISOString(),
+    ...baseContext
+  }),
+  
+  log: (context: LogContext) => {
+    console.log(JSON.stringify(context))
+  }
+}
+
+const program = Effect.gen(function* () {
+  const baseContext = structuredLogger.createContext({
+    module: 'UserService',
+    requestId: 'req-123'
+  })
+  
+  const logContext: LogContext = {
+    ...baseContext,
+    level: 'INFO',
+    message: 'User created',
+    userId: '1',
+    email: 'alice@example.com'
+  }
+  
+  structuredLogger.log(logContext)
+})
+
+Effect.runSync(program)
+```
+
+### 日志聚合
+
+```js
+import { Effect } from 'effect'
+
+// 日志聚合
+const logAggregator = Effect.gen(function* () {
+  const logs: any[] = []
+  
+  const addLog = (log: any) => {
+    logs.push(log)
+  }
+  
+  const getLogs = (filter?: (log: any) => boolean) => {
+    if (filter) {
+      return logs.filter(filter)
+    }
+    return [...logs]
+  }
+  
+  const getLogsByLevel = (level: string) => {
+    return logs.filter(log => log.level === level)
+  }
+  
+  const clearLogs = () => {
+    logs.length = 0
+  }
+  
+  return {
+    addLog,
+    getLogs,
+    getLogsByLevel,
+    clearLogs
+  }
+})
+
+const program = Effect.gen(function* () {
+  const aggregator = yield* logAggregator
+  
+  aggregator.addLog({ level: 'INFO', message: 'Log 1' })
+  aggregator.addLog({ level: 'ERROR', message: 'Log 2' })
+  aggregator.addLog({ level: 'INFO', message: 'Log 3' })
+  
+  const allLogs = aggregator.getLogs()
+  console.log('All logs:', allLogs.length)
+  
+  const errorLogs = aggregator.getLogsByLevel('ERROR')
+  console.log('Error logs:', errorLogs.length)
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 日志过滤与路由
+
+### 日志过滤
+
+```js
+import { Effect } from 'effect'
+
+// 日志过滤
+const filteredLogger = {
+  minLevel: 'INFO',
+  levels: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL'],
+  
+  shouldLog: (level: string) => {
+    const levelIndex = this.levels.indexOf(level)
+    const minLevelIndex = this.levels.indexOf(this.minLevel)
+    return levelIndex >= minLevelIndex
+  },
+  
+  log: (level: string, message: string, data?: any) => {
+    if (this.shouldLog(level)) {
+      console.log(`[${level}] ${message}`, data)
+    }
+  }
+}
+
+const program = Effect.gen(function* () {
+  filteredLogger.log('DEBUG', 'This will not be logged')
+  filteredLogger.log('INFO', 'This will be logged')
+  filteredLogger.log('ERROR', 'This will be logged')
+})
+
+Effect.runSync(program)
+```
+
+### 日志路由
+
+```js
+import { Effect } from 'effect'
+
+// 日志路由
+const logRouter = Effect.gen(function* () {
+  const routes: Record<string, any[]> = {
+    console: [],
+    file: [],
+    remote: []
+  }
+  
+  const routeLog = (destination: string, log: any) => {
+    if (routes[destination]) {
+      routes[destination].push(log)
+    }
+  }
+  
+  const getLogs = (destination: string) => {
+    return routes[destination] || []
+  }
+  
+  return {
+    routeLog,
+    getLogs
+  }
+})
+
+const program = Effect.gen(function* () {
+  const router = yield* logRouter
+  
+  router.routeLog('console', { level: 'INFO', message: 'Log to console' })
+  router.routeLog('file', { level: 'ERROR', message: 'Log to file' })
+  router.routeLog('remote', { level: 'WARNING', message: 'Log to remote' })
+  
+  console.log('Console logs:', router.getLogs('console'))
+  console.log('File logs:', router.getLogs('file'))
+  console.log('Remote logs:', router.getLogs('remote'))
+})
+
+Effect.runSync(program)
+```
+
+### 条件日志
+
+```js
+import { Effect } from 'effect'
+
+// 条件日志
+const conditionalLogger = {
+  enabled: true,
+  
+  log: (message: string, condition: boolean = true) => {
+    if (this.enabled && condition) {
+      console.log(message)
+    }
+  },
+  
+  setEnabled: (enabled: boolean) => {
+    this.enabled = enabled
+  }
+}
+
+const program = Effect.gen(function* () {
+  conditionalLogger.log('This will be logged')
+  conditionalLogger.log('This will not be logged', false)
+  
+  conditionalLogger.setEnabled(false)
+  conditionalLogger.log('This will not be logged either')
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### API 日志
+
+```js
+import { Effect } from 'effect'
+
+// API 日志
+const apiLogger = Effect.gen(function* () {
+  const logs: any[] = []
+  
+  const logRequest = (request: any) => {
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      type: 'request',
+      method: request.method,
+      path: request.path,
+      headers: request.headers,
+      body: request.body
+    }
+    
+    logs.push(logEntry)
+    console.log(JSON.stringify(logEntry))
+  }
+  
+  const logResponse = (response: any) => {
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      type: 'response',
+      status: response.status,
+      headers: response.headers,
+      body: response.body
+    }
+    
+    logs.push(logEntry)
+    console.log(JSON.stringify(logEntry))
+  }
+  
+  const logError = (error: any) => {
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      type: 'error',
+      error: error.message,
+      stack: error.stack
+    }
+    
+    logs.push(logEntry)
+    console.error(JSON.stringify(logEntry))
+  }
+  
+  return {
+    logRequest,
+    logResponse,
+    logError,
+    getLogs: Effect.sync(() => logs)
+  }
+})
+
+const program = Effect.gen(function* () {
+  const logger = yield* apiLogger
+  
+  logger.logRequest({
+    method: 'GET',
+    path: '/api/users/1',
+    headers: { 'Content-Type': 'application/json' },
+    body: null
+  })
+  
+  logger.logResponse({
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+    body: { id: 1, name: 'Alice' }
+  })
+})
+
+Effect.runSync(program)
+```
+
+### 性能日志
+
+```js
+import { Effect } from 'effect'
+
+// 性能日志
+const performanceLogger = Effect.gen(function* () {
+  const measurements: any[] = []
+  
+  const startMeasure = (name: string) => {
+    return {
+      name,
+      startTime: performance.now()
+    }
+  }
+  
+  const endMeasure = (measurement: any) => {
+    const duration = performance.now() - measurement.startTime
+    
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      name: measurement.name,
+      duration: duration.toFixed(2) + 'ms'
+    }
+    
+    measurements.push(logEntry)
+    console.log(JSON.stringify(logEntry))
+    
+    return duration
+  }
+  
+  return {
+    startMeasure,
+    endMeasure,
+    getMeasurements: Effect.sync(() => measurements)
+  }
+})
+
+const program = Effect.gen(function* () {
+  const logger = yield* performanceLogger
+  
+  const measure1 = logger.startMeasure('operation1')
+  // 模拟操作
+  for (let i = 0; i < 1000000; i++) {
+    Math.sqrt(i)
+  }
+  logger.endMeasure(measure1)
+  
+  const measure2 = logger.startMeasure('operation2')
+  // 模拟操作
+  for (let i = 0; i < 2000000; i++) {
+    Math.sqrt(i)
+  }
+  logger.endMeasure(measure2)
+})
+
+Effect.runSync(program)
+```
+
+### 审计日志
+
+```js
+import { Effect } from 'effect'
+
+// 审计日志
+const auditLogger = Effect.gen(function* () {
+  const audits: any[] = []
+  
+  const logAction = (action: string, actor: string, details: any) => {
+    const auditEntry = {
+      timestamp: new Date().toISOString(),
+      action,
+      actor,
+      details,
+      sessionId: 'session-' + Math.random().toString(36).substr(2, 9)
+    }
+    
+    audits.push(auditEntry)
+    console.log(JSON.stringify(auditEntry))
+  }
+  
+  return {
+    logAction,
+    getAudits: Effect.sync(() => audits)
+  }
+})
+
+const program = Effect.gen(function* () {
+  const logger = yield* auditLogger
+  
+  logger.logAction('LOGIN', 'alice@example.com', {
+    ip: '192.168.1.1',
+    userAgent: 'Mozilla/5.0'
+  })
+  
+  logger.logAction('CREATE_USER', 'alice@example.com', {
+    userId: '2',
+    email: 'bob@example.com'
+  })
+  
+  logger.logAction('DELETE_USER', 'alice@example.com', {
+    userId: '3'
+  })
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **字符串处理**：字符串操作和格式化
+- **可观察性**：追踪和指标
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.log 的使用
+- [ ] 理解 Logger 接口与实现
+- [ ] 掌握结构化日志
+- [ ] 了解日志过滤与路由
+- [ ] 能够实现完整的日志系统
+
+## 🚀 下一步
+
+→ [可观察性](./03-observability.mdx)

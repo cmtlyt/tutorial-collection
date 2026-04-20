@@ -1,0 +1,821 @@
+# 可观察性
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的可观察性功能，包括追踪（Tracing）、指标（Metrics）、上下文传播和分布式追踪等。
+
+## 🎯 追踪（Tracing）
+
+### 基本追踪
+
+```js
+import { Effect } from 'effect'
+
+// 基本追踪
+const program = Effect.gen(function* () {
+  yield* Effect.log('Starting operation')
+  
+  const result = yield* Effect.sync(() => {
+    console.log('Performing operation...')
+    return 42
+  })
+  
+  yield* Effect.log('Operation completed', { result })
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 操作追踪
+
+```js
+import { Effect } from 'effect'
+
+// 操作追踪
+const tracedOperation = Effect.gen(function* () {
+  const startTime = Date.now()
+  
+  yield* Effect.log('Operation started')
+  
+  const result = yield* Effect.sync(() => {
+    // 模拟耗时操作
+    let sum = 0
+    for (let i = 0; i < 1000000; i++) {
+      sum += i
+    }
+    return sum
+  })
+  
+  const endTime = Date.now()
+  const duration = endTime - startTime
+  
+  yield* Effect.log('Operation completed', {
+    result,
+    duration: `${duration}ms`
+  })
+  
+  return result
+})
+
+Effect.runSync(tracedOperation)
+```
+
+### 错误追踪
+
+```js
+import { Effect } from 'effect'
+
+// 错误追踪
+const errorTracedOperation = Effect.gen(function* () {
+  yield* Effect.log('Starting operation')
+  
+  try {
+    yield* Effect.sync(() => {
+      throw new Error('Operation failed')
+    })
+  } catch (error) {
+    yield* Effect.logError('Operation failed', {
+      error: error.message,
+      stack: error.stack
+    })
+    throw error
+  }
+})
+
+Effect.runSync(errorTracedOperation)
+```
+
+## 💡 指标（Metrics）
+
+### 计数器
+
+```js
+import { Effect } from 'effect'
+
+// 计数器
+const createCounter = () => {
+  let count = 0
+  
+  return {
+    increment: Effect.sync(() => {
+      count += 1
+      console.log(`Counter incremented: ${count}`)
+    }),
+    
+    decrement: Effect.sync(() => {
+      count -= 1
+      console.log(`Counter decremented: ${count}`)
+    }),
+    
+    getCount: Effect.sync(() => count),
+    
+    reset: Effect.sync(() => {
+      count = 0
+      console.log('Counter reset')
+    })
+  }
+}
+
+const program = Effect.gen(function* () {
+  const counter = createCounter()
+  
+  yield* counter.increment
+  yield* counter.increment
+  yield* counter.increment
+  
+  const currentCount = yield* counter.getCount
+  console.log('Current count:', currentCount)
+  
+  yield* counter.decrement
+  yield* counter.reset
+})
+
+Effect.runSync(program)
+```
+
+### 仪表板
+
+```js
+import { Effect } from 'effect'
+
+// 仪表板
+const createGauge = (name: string) => {
+  let value = 0
+  
+  return {
+    set: (newValue: number) => Effect.sync(() => {
+      value = newValue
+      console.log(`Gauge [${name}] set to: ${value}`)
+    }),
+    
+    increment: (delta: number = 1) => Effect.sync(() => {
+      value += delta
+      console.log(`Gauge [${name}] incremented by ${delta}: ${value}`)
+    }),
+    
+    decrement: (delta: number = 1) => Effect.sync(() => {
+      value -= delta
+      console.log(`Gauge [${name}] decremented by ${delta}: ${value}`)
+    }),
+    
+    getValue: Effect.sync(() => value)
+  }
+}
+
+const program = Effect.gen(function* () {
+  const memoryGauge = createGauge('memory')
+  
+  yield* memoryGauge.set(1024)
+  yield* memoryGauge.increment(512)
+  yield* memoryGauge.decrement(256)
+  
+  const currentValue = yield* memoryGauge.getValue
+  console.log('Current gauge value:', currentValue)
+})
+
+Effect.runSync(program)
+```
+
+### 直方图
+
+```js
+import { Effect } from 'effect'
+
+// 直方图
+const createHistogram = (name: string) => {
+  const values: number[] = []
+  
+  return {
+    observe: (value: number) => Effect.sync(() => {
+      values.push(value)
+      console.log(`Histogram [${name}] observed: ${value}`)
+    }),
+    
+    getStats: Effect.sync(() => {
+      if (values.length === 0) {
+        return { count: 0, min: 0, max: 0, avg: 0 }
+      }
+      
+      const sum = values.reduce((a, b) => a + b, 0)
+      const avg = sum / values.length
+      const min = Math.min(...values)
+      const max = Math.max(...values)
+      
+      return { count: values.length, min, max, avg }
+    }),
+    
+    reset: Effect.sync(() => {
+      values.length = 0
+      console.log(`Histogram [${name}] reset`)
+    })
+  }
+}
+
+const program = Effect.gen(function* () {
+  const latencyHistogram = createHistogram('latency')
+  
+  yield* latencyHistogram.observe(100)
+  yield* latencyHistogram.observe(150)
+  yield* latencyHistogram.observe(200)
+  yield* latencyHistogram.observe(120)
+  yield* latencyHistogram.observe(180)
+  
+  const stats = yield* latencyHistogram.getStats
+  console.log('Histogram stats:', stats)
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 上下文传播
+
+### 请求上下文
+
+```js
+import { Effect } from 'effect'
+
+// 请求上下文
+interface RequestContext {
+  requestId: string
+  userId?: string
+  sessionId: string
+  timestamp: number
+}
+
+const createRequestContext = (partial: Partial<RequestContext> = {}): RequestContext => ({
+  requestId: 'req-' + Math.random().toString(36).substr(2, 9),
+  sessionId: 'session-' + Math.random().toString(36).substr(2, 9),
+  timestamp: Date.now(),
+  ...partial
+})
+
+const withContext = <A>(
+  effect: Effect.Effect<RequestContext, never, A>,
+  context: RequestContext
+) => Effect.provideService(effect, RequestContext, context)
+
+const program = Effect.gen(function* () {
+  const context = createRequestContext({
+    userId: 'user-123'
+  })
+  
+  yield* Effect.log('Request started', { context })
+  
+  const result = yield* Effect.sync(() => {
+    console.log('Processing with context:', context)
+    return 'success'
+  })
+  
+  yield* Effect.log('Request completed', { context, result })
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 上下文传递
+
+```js
+import { Effect } from 'effect'
+
+// 上下文传递
+const contextService = Effect.gen(function* () {
+  const context: Record<string, any> = {}
+  
+  const set = (key: string, value: any) => Effect.sync(() => {
+    context[key] = value
+    console.log(`Context set: ${key} = ${value}`)
+  })
+  
+  const get = (key: string) => Effect.sync(() => context[key])
+  
+  const getAll = Effect.sync(() => ({ ...context }))
+  
+  return { set, get, getAll }
+})
+
+const program = Effect.gen(function* () {
+  const context = yield* contextService
+  
+  yield* context.set('userId', 'user-123')
+  yield* context.set('requestId', 'req-456')
+  
+  const userId = yield* context.get('userId')
+  console.log('User ID:', userId)
+  
+  const allContext = yield* context.getAll
+  console.log('All context:', allContext)
+})
+
+Effect.runSync(program)
+```
+
+### 嵌套上下文
+
+```js
+import { Effect } from 'effect'
+
+// 嵌套上下文
+const nestedContext = Effect.gen(function* () {
+  const contexts: Record<string, any>[] = []
+  
+  const pushContext = (context: any) => Effect.sync(() => {
+    contexts.push(context)
+    console.log('Context pushed:', context)
+  })
+  
+  const popContext = Effect.sync(() => {
+    const popped = contexts.pop()
+    console.log('Context popped:', popped)
+    return popped
+  })
+  
+  const getCurrentContext = Effect.sync(() => {
+    return contexts[contexts.length - 1]
+  })
+  
+  const getAllContexts = Effect.sync(() => [...contexts])
+  
+  return {
+    pushContext,
+    popContext,
+    getCurrentContext,
+    getAllContexts
+  }
+})
+
+const program = Effect.gen(function* () {
+  const contextManager = yield* nestedContext
+  
+  yield* contextManager.pushContext({ level: 'root', data: 'root data' })
+  
+  yield* contextManager.pushContext({ level: 'child1', data: 'child1 data' })
+  const current1 = yield* contextManager.getCurrentContext
+  console.log('Current context:', current1)
+  
+  yield* contextManager.pushContext({ level: 'child2', data: 'child2 data' })
+  const current2 = yield* contextManager.getCurrentContext
+  console.log('Current context:', current2)
+  
+  yield* contextManager.popContext
+  const current3 = yield* contextManager.getCurrentContext
+  console.log('Current context:', current3)
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 分布式追踪
+
+### 追踪 ID 生成
+
+```js
+import { Effect } from 'effect'
+
+// 追踪 ID 生成
+const generateTraceId = Effect.sync(() => {
+  return 'trace-' + Math.random().toString(36).substr(2, 9) + '-' +
+         Date.now().toString(36)
+})
+
+const generateSpanId = Effect.sync(() => {
+  return 'span-' + Math.random().toString(36).substr(2, 9)
+})
+
+const program = Effect.gen(function* () {
+  const traceId = yield* generateTraceId
+  const spanId = yield* generateSpanId
+  
+  console.log('Trace ID:', traceId)
+  console.log('Span ID:', spanId)
+  
+  return { traceId, spanId }
+})
+
+Effect.runSync(program)
+```
+
+### 跨服务追踪
+
+```js
+import { Effect } from 'effect'
+
+// 跨服务追踪
+interface TraceContext {
+  traceId: string
+  spanId: string
+  parentSpanId?: string
+}
+
+const createTraceContext = (parentContext?: TraceContext): TraceContext => {
+  return {
+    traceId: parentContext?.traceId || 'trace-' + Math.random().toString(36).substr(2, 9),
+    spanId: 'span-' + Math.random().toString(36).substr(2, 9),
+    parentSpanId: parentContext?.spanId
+  }
+}
+
+const traceOperation = <A>(
+  name: string,
+  operation: Effect.Effect<TraceContext, never, A>
+) => Effect.gen(function* () {
+  const parentContext = yield* Effect.sync(() => ({
+    traceId: 'trace-' + Math.random().toString(36).substr(2, 9),
+    spanId: 'span-' + Math.random().toString(36).substr(2, 9)
+  }))
+  
+  const currentContext = createTraceContext(parentContext)
+  
+  console.log(`[TRACE] ${name} started`, currentContext)
+  
+  const startTime = Date.now()
+  const result = yield* operation
+  const duration = Date.now() - startTime
+  
+  console.log(`[TRACE] ${name} completed`, {
+    ...currentContext,
+    duration: `${duration}ms`,
+    result
+  })
+  
+  return result
+})
+
+const program = Effect.gen(function* () {
+  const result = yield* traceOperation('mainOperation', Effect.sync(() => {
+    console.log('Executing main operation...')
+    return 'success'
+  }))
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 追踪聚合
+
+```js
+import { Effect } from 'effect'
+
+// 追踪聚合
+const traceAggregator = Effect.gen(function* () {
+  const traces: any[] = []
+  
+  const addTrace = (trace: any) => Effect.sync(() => {
+    traces.push(trace)
+    console.log('Trace added:', trace)
+  })
+  
+  const getTraces = (traceId?: string) => Effect.sync(() => {
+    if (traceId) {
+      return traces.filter(t => t.traceId === traceId)
+    }
+    return [...traces]
+  })
+  
+  const getTraceStats = (traceId: string) => Effect.sync(() => {
+    const traceSpans = traces.filter(t => t.traceId === traceId)
+    const totalDuration = traceSpans.reduce((sum, span) => sum + span.duration, 0)
+    const spanCount = traceSpans.length
+    
+    return {
+      traceId,
+      spanCount,
+      totalDuration,
+      avgDuration: totalDuration / spanCount
+    }
+  })
+  
+  return {
+    addTrace,
+    getTraces,
+    getTraceStats
+  }
+})
+
+const program = Effect.gen(function* () {
+  const aggregator = yield* traceAggregator
+  
+  const traceId = 'trace-abc123'
+  
+  yield* aggregator.addTrace({
+    traceId,
+    spanId: 'span-1',
+    name: 'operation1',
+    duration: 100
+  })
+  
+  yield* aggregator.addTrace({
+    traceId,
+    spanId: 'span-2',
+    name: 'operation2',
+    duration: 150
+  })
+  
+  yield* aggregator.addTrace({
+    traceId,
+    spanId: 'span-3',
+    name: 'operation3',
+    duration: 200
+  })
+  
+  const stats = yield* aggregator.getTraceStats(traceId)
+  console.log('Trace stats:', stats)
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### API 性能监控
+
+```js
+import { Effect } from 'effect'
+
+// API 性能监控
+const apiMonitor = Effect.gen(function* () {
+  const requests: any[] = []
+  
+  const monitorRequest = (endpoint: string, operation: Effect.Effect<never, never, any>) =>
+    Effect.gen(function* () {
+      const startTime = Date.now()
+      const requestId = 'req-' + Math.random().toString(36).substr(2, 9)
+      
+      console.log(`[API] ${endpoint} request started`, { requestId })
+      
+      try {
+        const result = yield* operation
+        const duration = Date.now() - startTime
+        
+        const request = {
+          requestId,
+          endpoint,
+          status: 'success',
+          duration,
+          timestamp: new Date().toISOString()
+        }
+        
+        requests.push(request)
+        console.log(`[API] ${endpoint} request completed`, request)
+        
+        return result
+      } catch (error) {
+        const duration = Date.now() - startTime
+        
+        const request = {
+          requestId,
+          endpoint,
+          status: 'error',
+          duration,
+          error: error.message,
+          timestamp: new Date().toISOString()
+        }
+        
+        requests.push(request)
+        console.log(`[API] ${endpoint} request failed`, request)
+        
+        throw error
+      }
+    })
+  
+  const getStats = (endpoint?: string) => Effect.sync(() => {
+    const filtered = endpoint
+      ? requests.filter(r => r.endpoint === endpoint)
+      : requests
+    
+    if (filtered.length === 0) {
+      return { count: 0, avgDuration: 0, successRate: 0 }
+    }
+    
+    const totalDuration = filtered.reduce((sum, r) => sum + r.duration, 0)
+    const successCount = filtered.filter(r => r.status === 'success').length
+    
+    return {
+      count: filtered.length,
+      avgDuration: totalDuration / filtered.length,
+      successRate: (successCount / filtered.length) * 100
+    }
+  })
+  
+  return {
+    monitorRequest,
+    getStats
+  }
+})
+
+const program = Effect.gen(function* () {
+  const monitor = yield* apiMonitor
+  
+  const result1 = yield* monitor.monitorRequest('/api/users', Effect.sync(() => {
+    // 模拟 API 调用
+    return { users: [{ id: 1, name: 'Alice' }] }
+  }))
+  
+  const result2 = yield* monitor.monitorRequest('/api/users/1', Effect.sync(() => {
+    // 模拟 API 调用
+    return { id: 1, name: 'Alice' }
+  }))
+  
+  const stats = yield* monitor.getStats('/api/users')
+  console.log('API stats:', stats)
+})
+
+Effect.runSync(program)
+```
+
+### 业务指标收集
+
+```js
+import { Effect } from 'effect'
+
+// 业务指标收集
+const businessMetrics = Effect.gen(function* () {
+  const metrics: Record<string, any> = {}
+  
+  const incrementCounter = (name: string, value: number = 1) => Effect.sync(() => {
+    if (!metrics[name]) {
+      metrics[name] = { type: 'counter', value: 0 }
+    }
+    metrics[name].value += value
+    console.log(`Metric [${name}] incremented by ${value}: ${metrics[name].value}`)
+  })
+  
+  const setGauge = (name: string, value: number) => Effect.sync(() => {
+    metrics[name] = { type: 'gauge', value }
+    console.log(`Metric [${name}] set to: ${value}`)
+  })
+  
+  const recordHistogram = (name: string, value: number) => Effect.sync(() => {
+    if (!metrics[name]) {
+      metrics[name] = { type: 'histogram', values: [] }
+    }
+    metrics[name].values.push(value)
+    console.log(`Metric [${name}] recorded: ${value}`)
+  })
+  
+  const getMetric = (name: string) => Effect.sync(() => metrics[name])
+  
+  const getAllMetrics = Effect.sync(() => ({ ...metrics }))
+  
+  return {
+    incrementCounter,
+    setGauge,
+    recordHistogram,
+    getMetric,
+    getAllMetrics
+  }
+})
+
+const program = Effect.gen(function* () {
+  const metrics = yield* businessMetrics
+  
+  yield* metrics.incrementCounter('user.registrations')
+  yield* metrics.incrementCounter('user.registrations')
+  yield* metrics.incrementCounter('user.logins')
+  
+  yield* metrics.setGauge('active.users', 42)
+  yield* metrics.setGauge('active.users', 45)
+  
+  yield* metrics.recordHistogram('request.duration', 100)
+  yield* metrics.recordHistogram('request.duration', 150)
+  yield* metrics.recordHistogram('request.duration', 200)
+  
+  const allMetrics = yield* metrics.getAllMetrics
+  console.log('All metrics:', allMetrics)
+})
+
+Effect.runSync(program)
+```
+
+### 分布式追踪集成
+
+```js
+import { Effect } from 'effect'
+
+// 分布式追踪集成
+const distributedTracer = Effect.gen(function* () {
+  const activeTraces: Map<string, any> = new Map()
+  
+  const startTrace = (operationName: string) => Effect.sync(() => {
+    const traceId = 'trace-' + Math.random().toString(36).substr(2, 9)
+    const rootSpanId = 'span-' + Math.random().toString(36).substr(2, 9)
+    
+    const trace = {
+      traceId,
+      rootSpanId,
+      operationName,
+      startTime: Date.now(),
+      spans: []
+    }
+    
+    activeTraces.set(traceId, trace)
+    console.log(`[DTRACE] Trace started: ${operationName}`, { traceId, rootSpanId })
+    
+    return { traceId, rootSpanId }
+  })
+  
+  const addSpan = (traceId: string, spanName: string, parentSpanId?: string) => Effect.sync(() => {
+    const trace = activeTraces.get(traceId)
+    if (!trace) {
+      console.log(`[DTRACE] Trace not found: ${traceId}`)
+      return null
+    }
+    
+    const spanId = 'span-' + Math.random().toString(36).substr(2, 9)
+    const span = {
+      spanId,
+      spanName,
+      parentSpanId,
+      startTime: Date.now()
+    }
+    
+    trace.spans.push(span)
+    console.log(`[DTRACE] Span added: ${spanName}`, { traceId, spanId, parentSpanId })
+    
+    return spanId
+  })
+  
+  const endSpan = (traceId: string, spanId: string) => Effect.sync(() => {
+    const trace = activeTraces.get(traceId)
+    if (!trace) return
+    
+    const span = trace.spans.find(s => s.spanId === spanId)
+    if (span) {
+      span.endTime = Date.now()
+      span.duration = span.endTime - span.startTime
+      console.log(`[DTRACE] Span ended: ${span.spanName}`, { traceId, spanId, duration: span.duration })
+    }
+  })
+  
+  const endTrace = (traceId: string) => Effect.sync(() => {
+    const trace = activeTraces.get(traceId)
+    if (!trace) return null
+    
+    trace.endTime = Date.now()
+    trace.duration = trace.endTime - trace.startTime
+    
+    console.log(`[DTRACE] Trace ended: ${trace.operationName}`, {
+      traceId,
+      duration: trace.duration,
+      spanCount: trace.spans.length
+    })
+    
+    activeTraces.delete(traceId)
+    return trace
+  })
+  
+  return {
+    startTrace,
+    addSpan,
+    endSpan,
+    endTrace
+  }
+})
+
+const program = Effect.gen(function* () {
+  const tracer = yield* distributedTracer
+  
+  const { traceId, rootSpanId } = yield* tracer.startTrace('userOperation')
+  
+  const span1Id = yield* tracer.addSpan(traceId, 'validateUser', rootSpanId)
+  yield* Effect.sleep(50)
+  yield* tracer.endSpan(traceId, span1Id)
+  
+  const span2Id = yield* tracer.addSpan(traceId, 'fetchUserData', rootSpanId)
+  yield* Effect.sleep(100)
+  yield* tracer.endSpan(traceId, span2Id)
+  
+  const span3Id = yield* tracer.addSpan(traceId, 'updateUser', rootSpanId)
+  yield* Effect.sleep(75)
+  yield* tracer.endSpan(traceId, span3Id)
+  
+  const trace = yield* tracer.endTrace(traceId)
+  console.log('Completed trace:', trace)
+})
+
+Effect.runPromise(program)
+```
+
+## 🔗 相关概念
+
+- **日志系统**：Effect 的日志功能
+- **字符串处理**：字符串操作和格式化
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握追踪的基本概念
+- [ ] 理解指标的使用
+- [ ] 掌握上下文传播
+- [ ] 了解分布式追踪
+- [ ] 能够实现完整的可观察性系统
+
+## 🚀 下一步
+
+→ [配置管理](../03-config-environment/01-config-management.mdx)
