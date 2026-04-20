@@ -1,0 +1,397 @@
+# RPC 通信
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的 RPC 通信能力，通过 `@effect/rpc` 和 `@effect/rpc-http` 包提供远程调用、HTTP 传输等功能。
+
+## 🎯 @effect/rpc - 远程调用包
+
+### 安装与设置
+
+```js
+// 安装依赖
+// npm install @effect/rpc
+// npm install @effect/rpc-http
+
+// 基本导入
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+import { RpcHttp } from '@effect/rpc-http'
+```
+
+### 基本 RPC 服务
+
+```js
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+
+// 定义 RPC 服务
+interface UserService {
+  getUser: (id: number) => Effect.Effect<never, never, { id: number; name: string }>
+  createUser: (data: any) => Effect.Effect<never, never, { id: number; name: string }>
+  deleteUser: (id: number) => Effect.Effect<never, never, void>
+}
+
+// 实现 RPC 服务
+const userService: Rpc.Service<UserService> = {
+  getUser: (id) => Effect.succeed({ id, name: 'Alice' }),
+  createUser: (data) => Effect.succeed({ id: 1, name: data.name }),
+  deleteUser: (id) => Effect.succeed(void 0)
+}
+
+// 创建 RPC 服务器
+const program = Effect.gen(function* () {
+  const server = yield* Rpc.makeServer(userService)
+  console.log('RPC server created')
+  return server
+})
+
+Effect.runSync(program)
+```
+
+## 💡 @effect/rpc-http - HTTP 传输
+
+### HTTP RPC 服务器
+
+```js
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+import { RpcHttp } from '@effect/rpc-http'
+
+// 创建 HTTP RPC 服务器
+const program = Effect.gen(function* () {
+  const userService: Rpc.Service<UserService> = {
+    getUser: (id) => Effect.succeed({ id, name: 'Alice' }),
+    createUser: (data) => Effect.succeed({ id: 1, name: data.name }),
+    deleteUser: (id) => Effect.succeed(void 0)
+  }
+  
+  const server = yield* RpcHttp.makeServer(userService, {
+    port: 3000,
+    host: 'localhost'
+  })
+  
+  console.log('HTTP RPC server listening on port 3000')
+  return server
+})
+
+Effect.runSync(program)
+```
+
+### HTTP RPC 客户端
+
+```js
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+import { RpcHttp } from '@effect/rpc-http'
+
+// 创建 HTTP RPC 客户端
+const program = Effect.gen(function* () {
+  const client = yield* RpcHttp.makeClient<UserService>({
+    url: 'http://localhost:3000'
+  })
+  
+  // 调用 RPC 方法
+  const user = yield* client.getUser(1)
+  console.log('User:', user)
+  
+  // 创建用户
+  const newUser = yield* client.createUser({ name: 'Bob' })
+  console.log('New user:', newUser)
+  
+  // 删除用户
+  yield* client.deleteUser(1)
+  console.log('User deleted')
+  
+  return { user, newUser }
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 RPC 服务定义
+
+### 服务接口定义
+
+```js
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+
+// 定义多个服务
+interface ProductService {
+  getProduct: (id: number) => Effect.Effect<never, never, any>
+  listProducts: () => Effect.Effect<never, never, any[]>
+}
+
+interface OrderService {
+  createOrder: (data: any) => Effect.Effect<never, never, any>
+  getOrder: (id: number) => Effect.Effect<never, never, any>
+}
+
+// 实现服务
+const productService: Rpc.Service<ProductService> = {
+  getProduct: (id) => Effect.succeed({ id, name: 'Product 1', price: 100 }),
+  listProducts: () => Effect.succeed([
+    { id: 1, name: 'Product 1', price: 100 },
+    { id: 2, name: 'Product 2', price: 200 }
+  ])
+}
+
+const orderService: Rpc.Service<OrderService> = {
+  createOrder: (data) => Effect.succeed({ id: 1, ...data }),
+  getOrder: (id) => Effect.succeed({ id, status: 'pending' })
+}
+
+// 组合服务
+const program = Effect.gen(function* () {
+  const server = yield* Rpc.makeServer({
+    productService,
+    orderService
+  })
+  
+  console.log('Multi-service RPC server created')
+  return server
+})
+
+Effect.runSync(program)
+```
+
+### 服务路由
+
+```js
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+import { RpcHttp } from '@effect/rpc-http'
+
+// 服务路由
+const program = Effect.gen(function* () {
+  const server = yield* RpcHttp.makeServer({
+    productService,
+    orderService
+  }, {
+    port: 3000,
+    routes: {
+      '/api/products': 'productService',
+      '/api/orders': 'orderService'
+    }
+  })
+  
+  console.log('Routed RPC server listening on port 3000')
+  return server
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 序列化与反序列化
+
+### 基本序列化
+
+```js
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+import { RpcHttp } from '@effect/rpc-http'
+
+// 自定义序列化
+const program = Effect.gen(function* () {
+  const client = yield* RpcHttp.makeClient<UserService>({
+    url: 'http://localhost:3000',
+    serializer: {
+      serialize: (data) => JSON.stringify(data),
+      deserialize: (data) => JSON.parse(data)
+    }
+  })
+  
+  const user = yield* client.getUser(1)
+  console.log('User:', user)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+### 类型安全序列化
+
+```js
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+import { Schema } from '@effect/schema'
+
+// 定义 Schema
+const UserSchema = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.String
+})
+
+// 使用 Schema 进行序列化
+const program = Effect.gen(function* () {
+  const userService: Rpc.Service<UserService> = {
+    getUser: (id) => Effect.succeed({
+      id,
+      name: 'Alice',
+      email: 'alice@example.com'
+    })
+  }
+  
+  const server = yield* Rpc.makeServer(userService, {
+    schema: UserSchema
+  })
+  
+  console.log('Schema-based RPC server created')
+  return server
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 完整的 RPC 服务
+
+```js
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+import { RpcHttp } from '@effect/rpc-http'
+
+// 完整的 RPC 服务
+interface TodoService {
+  getTodos: () => Effect.Effect<never, never, any[]>
+  getTodo: (id: number) => Effect.Effect<never, never, any>
+  createTodo: (data: any) => Effect.Effect<never, never, any>
+  updateTodo: (id: number, data: any) => Effect.Effect<never, never, any>
+  deleteTodo: (id: number) => Effect.Effect<never, never, void>
+}
+
+const todoService: Rpc.Service<TodoService> = {
+  getTodos: () => Effect.succeed([
+    { id: 1, title: 'Learn Effect', completed: false },
+    { id: 2, title: 'Build RPC service', completed: true }
+  ]),
+  getTodo: (id) => Effect.succeed({ id, title: 'Learn Effect', completed: false }),
+  createTodo: (data) => Effect.succeed({ id: 3, ...data, completed: false }),
+  updateTodo: (id, data) => Effect.succeed({ id, ...data }),
+  deleteTodo: (id) => Effect.succeed(void 0)
+}
+
+// 服务器
+const serverProgram = Effect.gen(function* () {
+  const server = yield* RpcHttp.makeServer(todoService, {
+    port: 3000
+  })
+  
+  console.log('Todo service listening on port 3000')
+  return server
+})
+
+// 客户端
+const clientProgram = Effect.gen(function* () {
+  const client = yield* RpcHttp.makeClient<TodoService>({
+    url: 'http://localhost:3000'
+  })
+  
+  // 获取所有 Todos
+  const todos = yield* client.getTodos()
+  console.log('Todos:', todos)
+  
+  // 创建 Todo
+  const newTodo = yield* client.createTodo({
+    title: 'Write documentation'
+  })
+  console.log('New todo:', newTodo)
+  
+  // 更新 Todo
+  const updatedTodo = yield* client.updateTodo(1, { completed: true })
+  console.log('Updated todo:', updatedTodo)
+  
+  // 删除 Todo
+  yield* client.deleteTodo(2)
+  console.log('Todo deleted')
+  
+  return { todos, newTodo, updatedTodo }
+})
+
+Effect.runSync(clientProgram)
+```
+
+### 错误处理
+
+```js
+import { Effect } from 'effect'
+import { Rpc } from '@effect/rpc'
+import { RpcHttp } from '@effect/rpc-http'
+
+// 带错误处理的 RPC 服务
+interface AuthService {
+  login: (credentials: any) => Effect.Effect<never, Error, any>
+  register: (data: any) => Effect.Effect<never, Error, any>
+}
+
+const authService: Rpc.Service<AuthService> = {
+  login: (credentials) => Effect.gen(function* () {
+    if (!credentials.username || !credentials.password) {
+      return Effect.fail(new Error('Invalid credentials'))
+    }
+    
+    return Effect.succeed({
+      token: 'jwt-token',
+      user: { id: 1, username: credentials.username }
+    })
+  }),
+  register: (data) => Effect.gen(function* () {
+    if (!data.username || !data.password) {
+      return Effect.fail(new Error('Username and password required'))
+    }
+    
+    return Effect.succeed({
+      id: 1,
+      username: data.username
+    })
+  })
+}
+
+// 客户端错误处理
+const clientProgram = Effect.gen(function* () {
+  const client = yield* RpcHttp.makeClient<AuthService>({
+    url: 'http://localhost:3000'
+  })
+  
+  // 尝试登录
+  const loginResult = yield* client.login({
+    username: 'user',
+    password: 'pass'
+  }).pipe(
+    Effect.catchAll((error) => {
+      console.error('Login failed:', error.message)
+      return Effect.succeed(null)
+    })
+  )
+  
+  console.log('Login result:', loginResult)
+  return loginResult
+})
+
+Effect.runSync(clientProgram)
+```
+
+## 🔗 相关概念
+
+- **集群基础**：@effect/cluster、节点发现、节点间通信
+- **分布式模式**：服务发现、负载均衡、分布式锁、分布式事务
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握 @effect/rpc 的使用
+- [ ] 理解 @effect/rpc-http 的功能
+- [ ] 掌握 RPC 服务定义
+- [ ] 了解序列化与反序列化
+- [ ] 能够实现完整的 RPC 通信
+
+## 🚀 下一步
+
+→ [分布式模式](./03-distributed-patterns.mdx)
