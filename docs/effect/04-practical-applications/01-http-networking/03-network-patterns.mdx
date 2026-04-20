@@ -1,0 +1,929 @@
+# 网络模式
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的网络模式功能，包括请求重试、熔断机制、限流控制和缓存策略等。
+
+## 🎯 请求重试
+
+### 基本重试
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 基本重试
+const requestWithRetry = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  
+  const response = yield* httpClient.get('https://api.example.com/unstable')
+    .pipe(
+      Effect.retry({
+        times: 3,
+        schedule: Effect.scheduleSpaced('1s')
+      })
+    )
+  
+  return yield* HttpClient.response.json(response)
+})
+
+Effect.runPromise(
+  requestWithRetry.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+### 条件重试
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 条件重试
+const requestWithConditionalRetry = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  
+  const response = yield* httpClient.get('https://api.example.com/data')
+    .pipe(
+      Effect.retry({
+        while: (error) => {
+          // 只在网络错误时重试
+          return error._tag === 'RequestError' || 
+                 error._tag === 'TimeoutError'
+        },
+        times: 5,
+        schedule: Effect.scheduleExponential('100ms')
+      })
+    )
+  
+  return yield* HttpClient.response.json(response)
+})
+
+Effect.runPromise(
+  requestWithConditionalRetry.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+### 指数退避重试
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 指数退避重试
+const requestWithBackoff = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  
+  const response = yield* httpClient.get('https://api.example.com/data')
+    .pipe(
+      Effect.retry({
+        times: 5,
+        schedule: Effect.scheduleExponential('100ms', 2)  // 100ms, 200ms, 400ms, 800ms, 1600ms
+      })
+    )
+  
+  return yield* HttpClient.response.json(response)
+})
+
+Effect.runPromise(
+  requestWithBackoff.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+## 💡 熔断机制
+
+### 基本熔断
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 熔断器状态
+type CircuitState = 'closed' | 'open' | 'half-open'
+
+// 创建熔断器
+const createCircuitBreaker = (options: {
+  failureThreshold: number
+  successThreshold: number
+  timeout: number
+}) => {
+  let state: CircuitState = 'closed'
+  let failureCount = 0
+  let successCount = 0
+  let lastFailureTime = 0
+  
+  return {
+    execute: <A>(effect: Effect.Effect<never, never, A>) => Effect.gen(function* () {
+      const now = Date.now()
+      
+      // 检查是否应该从 open 状态转换到 half-open
+      if (state === 'open' && now - lastFailureTime > options.timeout) {
+        state = 'half-open'
+        successCount = 0
+      }
+      
+      // 如果熔断器打开，直接失败
+      if (state === 'open') {
+        return Effect.fail('Circuit breaker is open')
+      }
+      
+      // 执行请求
+      const result = yield* effect
+      
+      // 处理成功
+      if (state === 'half-open') {
+        successCount++
+        if (successCount >= options.successThreshold) {
+          state = 'closed'
+          failureCount = 0
+        }
+      }
+      
+      return result
+    }).pipe(
+      Effect.catchAll((error) => {
+        // 处理失败
+        failureCount++
+        lastFailureTime = now
+        
+        if (failureCount >= options.failureThreshold) {
+          state = 'open'
+        }
+        
+        return Effect.fail(error)
+      })
+    ),
+    
+    getState: Effect.sync(() => state)
+  }
+}
+
+// 使用熔断器
+const program = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  const circuitBreaker = createCircuitBreaker({
+    failureThreshold: 5,
+    successThreshold: 3,
+    timeout: 10000
+  })
+  
+  const response = yield* circuitBreaker.execute(
+    httpClient.get('https://api.example.com/data')
+  )
+  
+  const state = yield* circuitBreaker.getState
+  console.log('Circuit breaker state:', state)
+  
+  return yield* HttpClient.response.json(response)
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+### 熔断器监控
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 带监控的熔断器
+const createMonitoredCircuitBreaker = (options: {
+  failureThreshold: number
+  successThreshold: number
+  timeout: number
+}) => {
+  let state: CircuitState = 'closed'
+  let failureCount = 0
+  let successCount = 0
+  let lastFailureTime = 0
+  let totalRequests = 0
+  let totalFailures = 0
+  
+  return {
+    execute: <A>(effect: Effect.Effect<never, never, A>) => Effect.gen(function* () {
+      const now = Date.now()
+      totalRequests++
+      
+      if (state === 'open' && now - lastFailureTime > options.timeout) {
+        state = 'half-open'
+        successCount = 0
+      }
+      
+      if (state === 'open') {
+        return Effect.fail('Circuit breaker is open')
+      }
+      
+      const result = yield* effect
+      
+      if (state === 'half-open') {
+        successCount++
+        if (successCount >= options.successThreshold) {
+          state = 'closed'
+          failureCount = 0
+        }
+      }
+      
+      return result
+    }).pipe(
+      Effect.catchAll((error) => {
+        failureCount++
+        totalFailures++
+        lastFailureTime = now
+        
+        if (failureCount >= options.failureThreshold) {
+          state = 'open'
+        }
+        
+        return Effect.fail(error)
+      })
+    ),
+    
+    getState: Effect.sync(() => state),
+    getStats: Effect.sync(() => ({
+      state,
+      failureCount,
+      successCount,
+      totalRequests,
+      totalFailures,
+      failureRate: totalRequests > 0 ? totalFailures / totalRequests : 0
+    }))
+  }
+}
+
+// 使用带监控的熔断器
+const program = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  const circuitBreaker = createMonitoredCircuitBreaker({
+    failureThreshold: 5,
+    successThreshold: 3,
+    timeout: 10000
+  })
+  
+  const response = yield* circuitBreaker.execute(
+    httpClient.get('https://api.example.com/data')
+  )
+  
+  const stats = yield* circuitBreaker.getStats
+  console.log('Circuit breaker stats:', stats)
+  
+  return yield* HttpClient.response.json(response)
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+## 🚀 限流控制
+
+### 基本限流
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 创建限流器
+const createRateLimiter = (options: {
+  maxRequests: number
+  windowMs: number
+}) => {
+  const requests: number[] = []
+  
+  return {
+    acquire: Effect.sync(() => {
+      const now = Date.now()
+      const windowStart = now - options.windowMs
+      
+      // 清理过期请求
+      while (requests.length > 0 && requests[0] < windowStart) {
+        requests.shift()
+      }
+      
+      // 检查是否超出限制
+      if (requests.length >= options.maxRequests) {
+        const oldestRequest = requests[0]
+        const waitTime = oldestRequest + options.windowMs - now
+        return Effect.fail(`Rate limit exceeded. Wait ${waitTime}ms`)
+      }
+      
+      // 记录请求
+      requests.push(now)
+      return Effect.succeed(void 0)
+    })
+  }
+}
+
+// 使用限流器
+const program = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  const rateLimiter = createRateLimiter({
+    maxRequests: 10,
+    windowMs: 1000
+  })
+  
+  // 获取限流许可
+  yield* rateLimiter.acquire
+  
+  // 执行请求
+  const response = yield* httpClient.get('https://api.example.com/data')
+  return yield* HttpClient.response.json(response)
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+### 令牌桶算法
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 令牌桶限流器
+const createTokenBucket = (options: {
+  capacity: number
+  refillRate: number  // tokens per second
+}) => {
+  let tokens = options.capacity
+  let lastRefill = Date.now()
+  
+  return {
+    acquire: Effect.sync(() => {
+      const now = Date.now()
+      const elapsed = (now - lastRefill) / 1000
+      
+      // 补充令牌
+      tokens = Math.min(options.capacity, tokens + elapsed * options.refillRate)
+      lastRefill = now
+      
+      // 检查是否有足够的令牌
+      if (tokens < 1) {
+        const waitTime = (1 - tokens) / options.refillRate * 1000
+        return Effect.fail(`Not enough tokens. Wait ${waitTime}ms`)
+      }
+      
+      // 消耗令牌
+      tokens -= 1
+      return Effect.succeed(void 0)
+    }),
+    
+    getTokens: Effect.sync(() => tokens)
+  }
+}
+
+// 使用令牌桶
+const program = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  const tokenBucket = createTokenBucket({
+    capacity: 10,
+    refillRate: 5  // 5 tokens per second
+  })
+  
+  // 获取令牌
+  yield* tokenBucket.acquire
+  
+  // 执行请求
+  const response = yield* httpClient.get('https://api.example.com/data')
+  return yield* HttpClient.response.json(response)
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+### 滑动窗口限流
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 滑动窗口限流器
+const createSlidingWindowLimiter = (options: {
+  maxRequests: number
+  windowMs: number
+}) => {
+  const requests: number[] = []
+  
+  return {
+    acquire: Effect.sync(() => {
+      const now = Date.now()
+      const windowStart = now - options.windowMs
+      
+      // 清理过期请求
+      while (requests.length > 0 && requests[0] < windowStart) {
+        requests.shift()
+      }
+      
+      // 检查是否超出限制
+      if (requests.length >= options.maxRequests) {
+        const oldestRequest = requests[0]
+        const waitTime = oldestRequest + options.windowMs - now
+        return Effect.fail(`Rate limit exceeded. Wait ${waitTime}ms`)
+      }
+      
+      // 记录请求
+      requests.push(now)
+      return Effect.succeed(void 0)
+    }),
+    
+    getRequestCount: Effect.sync(() => {
+      const now = Date.now()
+      const windowStart = now - options.windowMs
+      return requests.filter(t => t >= windowStart).length
+    })
+  }
+}
+
+// 使用滑动窗口限流器
+const program = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  const rateLimiter = createSlidingWindowLimiter({
+    maxRequests: 10,
+    windowMs: 1000
+  })
+  
+  // 获取许可
+  yield* rateLimiter.acquire
+  
+  // 检查当前请求数
+  const count = yield* rateLimiter.getRequestCount
+  console.log('Current request count:', count)
+  
+  // 执行请求
+  const response = yield* httpClient.get('https://api.example.com/data')
+  return yield* HttpClient.response.json(response)
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+## 🎯 缓存策略
+
+### 内存缓存
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 创建缓存
+const createCache = <K, V>(options: {
+  ttl: number  // time to live in milliseconds
+}) => {
+  const cache = new Map<K, { value: V; expiry: number }>()
+  
+  return {
+    get: (key: K) => Effect.sync(() => {
+      const entry = cache.get(key)
+      if (!entry) return null
+      
+      if (Date.now() > entry.expiry) {
+        cache.delete(key)
+        return null
+      }
+      
+      return entry.value
+    }),
+    
+    set: (key: K, value: V) => Effect.sync(() => {
+      cache.set(key, {
+        value,
+        expiry: Date.now() + options.ttl
+      })
+    }),
+    
+    clear: Effect.sync(() => {
+      cache.clear()
+    })
+  }
+}
+
+// 使用缓存
+const program = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  const cache = createCache<string, any>({ ttl: 60000 })  // 1 minute TTL
+  
+  const cacheKey = 'https://api.example.com/data'
+  
+  // 尝试从缓存获取
+  const cached = yield* cache.get(cacheKey)
+  if (cached) {
+    console.log('Cache hit:', cached)
+    return cached
+  }
+  
+  // 缓存未命中，执行请求
+  console.log('Cache miss, fetching data...')
+  const response = yield* httpClient.get('https://api.example.com/data')
+  const data = yield* HttpClient.response.json(response)
+  
+  // 存入缓存
+  yield* cache.set(cacheKey, data)
+  
+  return data
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+### 缓存装饰器
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 缓存装饰器
+const withCache = <A>(
+  effect: Effect.Effect<never, never, A>,
+  cacheKey: string,
+  cache: ReturnType<typeof createCache<string, A>>
+) => Effect.gen(function* () {
+  // 尝试从缓存获取
+  const cached = yield* cache.get(cacheKey)
+  if (cached) {
+    console.log('Cache hit:', cached)
+    return cached
+  }
+  
+  // 缓存未命中，执行 Effect
+  console.log('Cache miss, executing effect...')
+  const result = yield* effect
+  
+  // 存入缓存
+  yield* cache.set(cacheKey, result)
+  
+  return result
+})
+
+// 使用缓存装饰器
+const program = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  const cache = createCache<string, any>({ ttl: 60000 })
+  
+  const fetchData = withCache(
+    httpClient.get('https://api.example.com/data').pipe(
+      Effect.andThen(HttpClient.response.json)
+    ),
+    'https://api.example.com/data',
+    cache
+  )
+  
+  // 第一次调用 - 缓存未命中
+  const data1 = yield* fetchData
+  
+  // 第二次调用 - 缓存命中
+  const data2 = yield* fetchData
+  
+  return { data1, data2 }
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+### 缓存失效策略
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 带失效策略的缓存
+const createCacheWithInvalidation = <K, V>(options: {
+  ttl: number
+  maxSize: number
+}) => {
+  const cache = new Map<K, { value: V; expiry: number; lastAccess: number }>()
+  
+  return {
+    get: (key: K) => Effect.sync(() => {
+      const entry = cache.get(key)
+      if (!entry) return null
+      
+      if (Date.now() > entry.expiry) {
+        cache.delete(key)
+        return null
+      }
+      
+      // 更新最后访问时间
+      entry.lastAccess = Date.now()
+      return entry.value
+    }),
+    
+    set: (key: K, value: V) => Effect.sync(() => {
+      // 如果缓存已满，移除最久未使用的项
+      if (cache.size >= options.maxSize) {
+        let oldestKey: K | null = null
+        let oldestTime = Infinity
+        
+        for (const [k, entry] of cache.entries()) {
+          if (entry.lastAccess < oldestTime) {
+            oldestTime = entry.lastAccess
+            oldestKey = k
+          }
+        }
+        
+        if (oldestKey) {
+          cache.delete(oldestKey)
+        }
+      }
+      
+      cache.set(key, {
+        value,
+        expiry: Date.now() + options.ttl,
+        lastAccess: Date.now()
+      })
+    }),
+    
+    invalidate: (key: K) => Effect.sync(() => {
+      cache.delete(key)
+    }),
+    
+    clear: Effect.sync(() => {
+      cache.clear()
+    })
+  }
+}
+
+// 使用带失效策略的缓存
+const program = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  const cache = createCacheWithInvalidation<string, any>({
+    ttl: 60000,
+    maxSize: 100
+  })
+  
+  const cacheKey = 'https://api.example.com/data'
+  
+  // 获取数据
+  const cached = yield* cache.get(cacheKey)
+  if (!cached) {
+    const response = yield* httpClient.get('https://api.example.com/data')
+    const data = yield* HttpClient.response.json(response)
+    yield* cache.set(cacheKey, data)
+  }
+  
+  // 失效缓存
+  yield* cache.invalidate(cacheKey)
+  
+  return cached
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+## 📝 实际应用示例
+
+### 综合网络模式
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// 综合网络模式客户端
+const createResilientHttpClient = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  
+  // 创建重试策略
+  const retryPolicy = Effect.retry({
+    times: 3,
+    schedule: Effect.scheduleExponential('100ms')
+  })
+  
+  // 创建熔断器
+  const circuitBreaker = createCircuitBreaker({
+    failureThreshold: 5,
+    successThreshold: 3,
+    timeout: 10000
+  })
+  
+  // 创建限流器
+  const rateLimiter = createRateLimiter({
+    maxRequests: 10,
+    windowMs: 1000
+  })
+  
+  // 创建缓存
+  const cache = createCache<string, any>({ ttl: 60000 })
+  
+  return {
+    get: (url: string) => Effect.gen(function* () {
+      // 检查缓存
+      const cached = yield* cache.get(url)
+      if (cached) {
+        console.log('Cache hit:', url)
+        return cached
+      }
+      
+      // 获取限流许可
+      yield* rateLimiter.acquire
+      
+      // 通过熔断器执行请求
+      const response = yield* circuitBreaker.execute(
+        httpClient.get(url).pipe(retryPolicy)
+      )
+      
+      const data = yield* HttpClient.response.json(response)
+      
+      // 存入缓存
+      yield* cache.set(url, data)
+      
+      return data
+    }),
+    
+    post: (url: string, data: any) => Effect.gen(function* () {
+      // 获取限流许可
+      yield* rateLimiter.acquire
+      
+      // 通过熔断器执行请求
+      const response = yield* circuitBreaker.execute(
+        httpClient.post(url, {
+          body: HttpClient.body.json(data)
+        }).pipe(retryPolicy)
+      )
+      
+      return yield* HttpClient.response.json(response)
+    })
+  }
+})
+
+// 使用综合网络模式客户端
+const program = Effect.gen(function* () {
+  const resilientClient = yield* createResilientHttpClient
+  
+  // 获取数据（带缓存、重试、熔断、限流）
+  const data = yield* resilientClient.get('https://api.example.com/data')
+  console.log('Data:', data)
+  
+  // 发送数据（带重试、熔断、限流）
+  const result = yield* resilientClient.post('https://api.example.com/create', {
+    name: 'Alice'
+  })
+  console.log('Result:', result)
+  
+  return { data, result }
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+### API 网关
+
+```js
+import { Effect, HttpClient } from 'effect'
+import { NodeHttpClient } from '@effect/platform-node'
+
+// API 网关
+const createApiGateway = Effect.gen(function* () {
+  const httpClient = yield* HttpClient.HttpClient
+  
+  const services = {
+    users: 'https://users-api.example.com',
+    products: 'https://products-api.example.com',
+    orders: 'https://orders-api.example.com'
+  }
+  
+  // 为每个服务创建熔断器
+  const circuitBreakers = Object.fromEntries(
+    Object.entries(services).map(([name]) => [
+      name,
+      createCircuitBreaker({
+        failureThreshold: 5,
+        successThreshold: 3,
+        timeout: 10000
+      })
+    ])
+  )
+  
+  return {
+    // 用户服务
+    users: {
+      getAll: () => Effect.gen(function* () {
+        const response = yield* circuitBreakers.users.execute(
+          httpClient.get(`${services.users}/users`)
+        )
+        return yield* HttpClient.response.json(response)
+      }),
+      
+      getById: (id: number) => Effect.gen(function* () {
+        const response = yield* circuitBreakers.users.execute(
+          httpClient.get(`${services.users}/users/${id}`)
+        )
+        return yield* HttpClient.response.json(response)
+      })
+    },
+    
+    // 产品服务
+    products: {
+      getAll: () => Effect.gen(function* () {
+        const response = yield* circuitBreakers.products.execute(
+          httpClient.get(`${services.products}/products`)
+        )
+        return yield* HttpClient.response.json(response)
+      }),
+      
+      getById: (id: number) => Effect.gen(function* () {
+        const response = yield* circuitBreakers.products.execute(
+          httpClient.get(`${services.products}/products/${id}`)
+        )
+        return yield* HttpClient.response.json(response)
+      })
+    },
+    
+    // 订单服务
+    orders: {
+      getAll: () => Effect.gen(function* () {
+        const response = yield* circuitBreakers.orders.execute(
+          httpClient.get(`${services.orders}/orders`)
+        )
+        return yield* HttpClient.response.json(response)
+      }),
+      
+      getById: (id: number) => Effect.gen(function* () {
+        const response = yield* circuitBreakers.orders.execute(
+          httpClient.get(`${services.orders}/orders/${id}`)
+        )
+        return yield* HttpClient.response.json(response)
+      })
+    }
+  }
+})
+
+// 使用 API 网关
+const program = Effect.gen(function* () {
+  const apiGateway = yield* createApiGateway
+  
+  // 通过网关访问各个服务
+  const users = yield* apiGateway.users.getAll()
+  console.log('Users:', users)
+  
+  const products = yield* apiGateway.products.getAll()
+  console.log('Products:', products)
+  
+  const orders = yield* apiGateway.orders.getAll()
+  console.log('Orders:', orders)
+  
+  return { users, products, orders }
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeHttpClient.layer)
+  )
+)
+```
+
+## 🔗 相关概念
+
+- **HTTP 客户端**：Effect 的 HTTP 客户端功能
+- **API 集成**：REST API、GraphQL、WebSocket
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握请求重试机制
+- [ ] 理解熔断机制
+- [ ] 掌握限流控制
+- [ ] 了解缓存策略
+- [ ] 能够实现完整的网络模式
+
+## 🚀 下一步
+
+→ [数据库集成](../02-database-integration/01-sql-databases.mdx)
