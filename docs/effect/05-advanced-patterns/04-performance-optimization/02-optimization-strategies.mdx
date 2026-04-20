@@ -1,0 +1,607 @@
+# 优化策略
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了多种优化策略，包括批处理优化、缓存策略、延迟优化、吞吐优化等，帮助开发者提升应用性能。
+
+## 🎯 批处理优化
+
+### 基本批处理
+
+```js
+import { Effect } from 'effect'
+
+// 基本批处理
+const program = Effect.gen(function* () {
+  // 单个处理
+  const singleProcess = Effect.gen(function* () {
+    const items = Array.from({ length: 100 }, (_, i) => i)
+    const results = []
+    
+    for (const item of items) {
+      const result = yield* Effect.gen(function* () {
+        yield* Effect.sleep(10)
+        return item * 2
+      })
+      results.push(result)
+    }
+    
+    return results
+  })
+  
+  // 批处理
+  const batchProcess = Effect.gen(function* () {
+    const items = Array.from({ length: 100 }, (_, i) => i)
+    const results = yield* Effect.all(
+      items.map(item => Effect.gen(function* () {
+        yield* Effect.sleep(10)
+        return item * 2
+      })),
+      { concurrency: 'unbounded' }
+    )
+    
+    return results
+  })
+  
+  console.log('Single processing completed')
+  console.log('Batch processing completed')
+  
+  return { singleProcess, batchProcess }
+})
+
+Effect.runSync(program)
+```
+
+### 批处理窗口
+
+```js
+import { Effect } from 'effect'
+
+// 批处理窗口
+const program = Effect.gen(function* () {
+  const items = Array.from({ length: 100 }, (_, i) => i)
+  const batchSize = 10
+  
+  const processBatch = (batch) => Effect.gen(function* () {
+    console.log(`Processing batch of ${batch.length} items`)
+    const results = yield* Effect.all(
+      batch.map(item => Effect.gen(function* () {
+        yield* Effect.sleep(10)
+        return item * 2
+      })),
+      { concurrency: 'unbounded' }
+    )
+    return results
+  })
+  
+  // 分批处理
+  const batches = []
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize)
+    const result = yield* processBatch(batch)
+    batches.push(result)
+  }
+  
+  const allResults = batches.flat()
+  console.log(`Processed ${allResults.length} items`)
+  
+  return allResults
+})
+
+Effect.runSync(program)
+```
+
+## 💡 缓存策略
+
+### 基本缓存
+
+```js
+import { Effect } from 'effect'
+
+// 基本缓存
+const program = Effect.gen(function* () {
+  const cache = new Map()
+  
+  const expensiveOperation = (key) => Effect.gen(function* () {
+    if (cache.has(key)) {
+      console.log(`Cache hit for ${key}`)
+      return cache.get(key)
+    }
+    
+    console.log(`Cache miss for ${key}`)
+    yield* Effect.sleep(1000)
+    const result = `Result for ${key}`
+    cache.set(key, result)
+    return result
+  })
+  
+  // 第一次调用
+  const result1 = yield* expensiveOperation('key-1')
+  console.log('Result 1:', result1)
+  
+  // 第二次调用 - 从缓存获取
+  const result2 = yield* expensiveOperation('key-1')
+  console.log('Result 2:', result2)
+  
+  return { result1, result2 }
+})
+
+Effect.runSync(program)
+```
+
+### 带过期时间的缓存
+
+```js
+import { Effect } from 'effect'
+
+// 带过期时间的缓存
+const program = Effect.gen(function* () {
+  const cache = new Map()
+  const ttl = 5000 // 5秒过期
+  
+  const cachedOperation = (key) => Effect.gen(function* () {
+    const now = Date.now()
+    const cached = cache.get(key)
+    
+    if (cached && cached.expiry > now) {
+      console.log(`Cache hit for ${key}`)
+      return cached.value
+    }
+    
+    console.log(`Cache miss for ${key}`)
+    yield* Effect.sleep(1000)
+    const result = `Result for ${key}`
+    cache.set(key, {
+      value: result,
+      expiry: now + ttl
+    })
+    return result
+  })
+  
+  // 第一次调用
+  const result1 = yield* cachedOperation('key-1')
+  console.log('Result 1:', result1)
+  
+  // 立即再次调用 - 从缓存获取
+  const result2 = yield* cachedOperation('key-1')
+  console.log('Result 2:', result2)
+  
+  // 等待缓存过期
+  yield* Effect.sleep(6000)
+  
+  // 缓存已过期
+  const result3 = yield* cachedOperation('key-1')
+  console.log('Result 3:', result3)
+  
+  return { result1, result2, result3 }
+})
+
+Effect.runSync(program)
+```
+
+### LRU 缓存
+
+```js
+import { Effect } from 'effect'
+
+// LRU 缓存
+const program = Effect.gen(function* () {
+  const maxSize = 3
+  const cache = new Map()
+  
+  const lruOperation = (key) => Effect.gen(function* () {
+    // 更新访问顺序
+    if (cache.has(key)) {
+      const value = cache.get(key)
+      cache.delete(key)
+      cache.set(key, value)
+      return value
+    }
+    
+    // 检查容量
+    if (cache.size >= maxSize) {
+      const oldestKey = cache.keys().next().value
+      cache.delete(oldestKey)
+      console.log(`Evicted ${oldestKey} from cache`)
+    }
+    
+    console.log(`Cache miss for ${key}`)
+    yield* Effect.sleep(100)
+    const result = `Result for ${key}`
+    cache.set(key, result)
+    return result
+  })
+  
+  // 填充缓存
+  yield* lruOperation('key-1')
+  yield* lruOperation('key-2')
+  yield* lruOperation('key-3')
+  
+  // 访问 key-1（使其成为最近使用）
+  yield* lruOperation('key-1')
+  
+  // 添加新项目 - 应该淘汰 key-2
+  yield* lruOperation('key-4')
+  
+  console.log('Cache size:', cache.size)
+  console.log('Cache keys:', Array.from(cache.keys()))
+  
+  return cache
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 延迟优化
+
+### 并行执行
+
+```js
+import { Effect } from 'effect'
+
+// 并行执行
+const program = Effect.gen(function* () {
+  // 串行执行
+  const serial = Effect.gen(function* () {
+    const start = Date.now()
+    
+    const result1 = yield* Effect.gen(function* () {
+      yield* Effect.sleep(500)
+      return 'Operation 1'
+    })
+    
+    const result2 = yield* Effect.gen(function* () {
+      yield* Effect.sleep(500)
+      return 'Operation 2'
+    })
+    
+    const result3 = yield* Effect.gen(function* () {
+      yield* Effect.sleep(500)
+      return 'Operation 3'
+    })
+    
+    const end = Date.now()
+    console.log(`Serial execution: ${end - start}ms`)
+    
+    return [result1, result2, result3]
+  })
+  
+  // 并行执行
+  const parallel = Effect.gen(function* () {
+    const start = Date.now()
+    
+    const results = yield* Effect.all([
+      Effect.gen(function* () {
+        yield* Effect.sleep(500)
+        return 'Operation 1'
+      }),
+      Effect.gen(function* () {
+        yield* Effect.sleep(500)
+        return 'Operation 2'
+      }),
+      Effect.gen(function* () {
+        yield* Effect.sleep(500)
+        return 'Operation 3'
+      })
+    ], { concurrency: 'unbounded' })
+    
+    const end = Date.now()
+    console.log(`Parallel execution: ${end - start}ms`)
+    
+    return results
+  })
+  
+  const serialResult = yield* serial
+  const parallelResult = yield* parallel
+  
+  return { serialResult, parallelResult }
+})
+
+Effect.runSync(program)
+```
+
+### 延迟加载
+
+```js
+import { Effect } from 'effect'
+
+// 延迟加载
+const program = Effect.gen(function* () {
+  const loadData = (id) => Effect.gen(function* () {
+    console.log(`Loading data for ${id}`)
+    yield* Effect.sleep(500)
+    return { id, value: `Data ${id}` }
+  })
+  
+  // 创建延迟加载函数
+  const createLazyLoader = (id) => {
+    let loaded = false
+    let cachedValue = null
+    
+    return Effect.gen(function* () {
+      if (loaded) {
+        console.log(`Using cached value for ${id}`)
+        return cachedValue
+      }
+      
+      const value = yield* loadData(id)
+      loaded = true
+      cachedValue = value
+      return value
+    })
+  }
+  
+  // 创建延迟加载器
+  const loader1 = createLazyLoader(1)
+  const loader2 = createLazyLoader(2)
+  
+  // 使用加载器
+  const data1 = yield* loader1
+  console.log('Data 1:', data1)
+  
+  const data2 = yield* loader2
+  console.log('Data 2:', data2)
+  
+  // 再次使用 - 从缓存获取
+  const data1Again = yield* loader1
+  console.log('Data 1 again:', data1Again)
+  
+  return { data1, data2, data1Again }
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 吞吐优化
+
+### 批量处理
+
+```js
+import { Effect } from 'effect'
+
+// 批量处理
+const program = Effect.gen(function* () {
+  const items = Array.from({ length: 1000 }, (_, i) => i)
+  
+  // 单个处理
+  const singleProcessing = Effect.gen(function* () {
+    const start = Date.now()
+    const results = []
+    
+    for (const item of items) {
+      const result = yield* Effect.gen(function* () {
+        yield* Effect.sleep(1)
+        return item * 2
+      })
+      results.push(result)
+    }
+    
+    const end = Date.now()
+    console.log(`Single processing: ${end - start}ms`)
+    console.log(`Throughput: ${(results.length / ((end - start) / 1000)).toFixed(0)} items/s`)
+    
+    return results
+  })
+  
+  // 批量处理
+  const batchProcessing = Effect.gen(function* () {
+    const start = Date.now()
+    const batchSize = 100
+    const results = []
+    
+    for (let i = 0; i < items.length; i += batchSize) {
+      const batch = items.slice(i, i + batchSize)
+      const batchResults = yield* Effect.all(
+        batch.map(item => Effect.gen(function* () {
+          yield* Effect.sleep(1)
+          return item * 2
+        })),
+        { concurrency: 'unbounded' }
+      )
+      results.push(...batchResults)
+    }
+    
+    const end = Date.now()
+    console.log(`Batch processing: ${end - start}ms`)
+    console.log(`Throughput: ${(results.length / ((end - start) / 1000)).toFixed(0)} items/s`)
+    
+    return results
+  })
+  
+  const singleResult = yield* singleProcessing
+  const batchResult = yield* batchProcessing
+  
+  return { singleResult, batchResult }
+})
+
+Effect.runSync(program)
+```
+
+### 流水线处理
+
+```js
+import { Effect } from 'effect'
+
+// 流水线处理
+const program = Effect.gen(function* () {
+  const items = Array.from({ length: 100 }, (_, i) => i)
+  
+  // 流水线阶段
+  const stage1 = (item) => Effect.gen(function* () {
+    yield* Effect.sleep(10)
+    return { stage1: item * 2 }
+  })
+  
+  const stage2 = (item) => Effect.gen(function* () {
+    yield* Effect.sleep(10)
+    return { ...item, stage2: item.stage1 + 10 }
+  })
+  
+  const stage3 = (item) => Effect.gen(function* () {
+    yield* Effect.sleep(10)
+    return { ...item, stage3: item.stage2 * 3 }
+  })
+  
+  // 流水线处理
+  const pipeline = Effect.gen(function* () {
+    const start = Date.now()
+    
+    const results = yield* Effect.all(
+      items.map(item => Effect.gen(function* () {
+        const result1 = yield* stage1(item)
+        const result2 = yield* stage2(result1)
+        const result3 = yield* stage3(result2)
+        return result3
+      })),
+      { concurrency: 'unbounded' }
+    )
+    
+    const end = Date.now()
+    console.log(`Pipeline processing: ${end - start}ms`)
+    console.log(`Throughput: ${(results.length / ((end - start) / 1000)).toFixed(0)} items/s`)
+    
+    return results
+  })
+  
+  const results = yield* pipeline
+  console.log('Sample results:', results.slice(0, 3))
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 综合优化策略
+
+```js
+import { Effect } from 'effect'
+
+// 综合优化策略
+const program = Effect.gen(function* () {
+  // 创建缓存
+  const cache = new Map()
+  
+  const cachedOperation = (key) => Effect.gen(function* () {
+    if (cache.has(key)) {
+      console.log(`Cache hit: ${key}`)
+      return cache.get(key)
+    }
+    
+    console.log(`Cache miss: ${key}`)
+    yield* Effect.sleep(100)
+    const result = `Result for ${key}`
+    cache.set(key, result)
+    return result
+  })
+  
+  // 批处理函数
+  const batchProcess = (items, batchSize) => Effect.gen(function* () {
+    const results = []
+    
+    for (let i = 0; i < items.length; i += batchSize) {
+      const batch = items.slice(i, i + batchSize)
+      const batchResults = yield* Effect.all(
+        batch.map(item => cachedOperation(item)),
+        { concurrency: 'unbounded' }
+      )
+      results.push(...batchResults)
+    }
+    
+    return results
+  })
+  
+  // 执行优化处理
+  const items = Array.from({ length: 50 }, (_, i) => `key-${i}`)
+  
+  const start = Date.now()
+  const results = yield* batchProcess(items, 10)
+  const end = Date.now()
+  
+  console.log(`\nOptimized processing: ${end - start}ms`)
+  console.log(`Throughput: ${(results.length / ((end - start) / 1000)).toFixed(0)} items/s`)
+  console.log(`Cache size: ${cache.size}`)
+  
+  return { results, duration: end - start }
+})
+
+Effect.runSync(program)
+```
+
+### 性能对比
+
+```js
+import { Effect } from 'effect'
+
+// 性能对比
+const program = Effect.gen(function* () {
+  const items = Array.from({ length: 100 }, (_, i) => i)
+  
+  // 未优化版本
+  const unoptimized = Effect.gen(function* () {
+    const start = Date.now()
+    const results = []
+    
+    for (const item of items) {
+      const result = yield* Effect.gen(function* () {
+        yield* Effect.sleep(10)
+        return item * 2
+      })
+      results.push(result)
+    }
+    
+    const end = Date.now()
+    return { results, duration: end - start }
+  })
+  
+  // 优化版本
+  const optimized = Effect.gen(function* () {
+    const start = Date.now()
+    const results = yield* Effect.all(
+      items.map(item => Effect.gen(function* () {
+        yield* Effect.sleep(10)
+        return item * 2
+      })),
+      { concurrency: 'unbounded' }
+    )
+    const end = Date.now()
+    return { results, duration: end - start }
+  })
+  
+  // 运行对比
+  const unoptimizedResult = yield* unoptimized
+  const optimizedResult = yield* optimized
+  
+  console.log('\n=== Performance Comparison ===')
+  console.log(`Unoptimized: ${unoptimizedResult.duration}ms`)
+  console.log(`Optimized: ${optimizedResult.duration}ms`)
+  console.log(`Improvement: ${((unoptimizedResult.duration - optimizedResult.duration) / unoptimizedResult.duration * 100).toFixed(1)}%`)
+  
+  return { unoptimized: unoptimizedResult, optimized: optimizedResult }
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **性能分析**：性能测量、瓶颈识别、内存分析、CPU 分析
+- **资源优化**：内存管理、连接池、线程池、资源复用
+- **并发模式**：Fiber、并发原语、并发模式
+
+## 📚 学习检查点
+
+- [ ] 掌握批处理优化
+- [ ] 理解缓存策略
+- [ ] 了解延迟优化
+- [ ] 掌握吞吐优化
+- [ ] 能够应用综合优化策略
+
+## 🚀 下一步
+
+→ [资源优化](./03-resource-optimization.mdx)

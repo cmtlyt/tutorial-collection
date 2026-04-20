@@ -1,0 +1,730 @@
+# 资源优化
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的资源管理能力，包括内存管理、连接池、线程池、资源复用等，帮助开发者优化资源使用。
+
+## 🎯 内存管理
+
+### 内存池
+
+```js
+import { Effect } from 'effect'
+
+// 内存池
+const program = Effect.gen(function* () {
+  const poolSize = 1000
+  const pool = []
+  
+  // 创建内存池
+  for (let i = 0; i < poolSize; i++) {
+    pool.push({ id: i, inUse: false, data: null })
+  }
+  
+  // 从池中获取资源
+  const acquireFromPool = () => Effect.gen(function* () {
+    const resource = pool.find(r => !r.inUse)
+    
+    if (!resource) {
+      throw new Error('Pool exhausted')
+    }
+    
+    resource.inUse = true
+    console.log(`Acquired resource ${resource.id}`)
+    return resource
+  })
+  
+  // 释放资源到池
+  const releaseToPool = (resource) => Effect.gen(function* () {
+    resource.inUse = false
+    resource.data = null
+    console.log(`Released resource ${resource.id}`)
+  })
+  
+  // 使用资源
+  const useResource = Effect.gen(function* () {
+    const resource = yield* acquireFromPool()
+    resource.data = 'Processing data'
+    yield* Effect.sleep(100)
+    yield* releaseToPool(resource)
+    return resource.id
+  })
+  
+  // 并行使用资源
+  const results = yield* Effect.all(
+    Array.from({ length: 10 }, (_, i) => useResource),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('Used resources:', results)
+  console.log('Pool usage:', pool.filter(r => r.inUse).length, '/', poolSize)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 内存复用
+
+```js
+import { Effect } from 'effect'
+
+// 内存复用
+const program = Effect.gen(function* () {
+  const buffers = new Map()
+  
+  // 获取缓冲区
+  const getBuffer = (size) => Effect.gen(function* () {
+    const key = size.toString()
+    
+    if (buffers.has(key)) {
+      console.log(`Reusing buffer of size ${size}`)
+      return buffers.get(key)
+    }
+    
+    console.log(`Creating new buffer of size ${size}`)
+    const buffer = new Array(size).fill(0)
+    buffers.set(key, buffer)
+    return buffer
+  })
+  
+  // 使用缓冲区
+  const useBuffer = (size) => Effect.gen(function* () {
+    const buffer = yield* getBuffer(size)
+    
+    // 使用缓冲区
+    for (let i = 0; i < buffer.length; i++) {
+      buffer[i] = Math.random()
+    }
+    
+    const sum = buffer.reduce((a, b) => a + b, 0)
+    const avg = sum / buffer.length
+    
+    return { size, avg }
+  })
+  
+  // 使用不同大小的缓冲区
+  const result1 = yield* useBuffer(100)
+  console.log('Result 1:', result1)
+  
+  const result2 = yield* useBuffer(100) // 复用缓冲区
+  console.log('Result 2:', result2)
+  
+  const result3 = yield* useBuffer(200) // 创建新缓冲区
+  console.log('Result 3:', result3)
+  
+  const result4 = yield* useBuffer(100) // 复用缓冲区
+  console.log('Result 4:', result4)
+  
+  console.log('Total buffers:', buffers.size)
+  
+  return { result1, result2, result3, result4 }
+})
+
+Effect.runSync(program)
+```
+
+## 💡 连接池
+
+### 基本连接池
+
+```js
+import { Effect } from 'effect'
+
+// 基本连接池
+const program = Effect.gen(function* () {
+  const maxConnections = 5
+  const connections = []
+  
+  // 创建连接池
+  for (let i = 0; i < maxConnections; i++) {
+    connections.push({
+      id: i,
+      inUse: false,
+      active: true
+    })
+  }
+  
+  // 获取连接
+  const acquireConnection = () => Effect.gen(function* () {
+    const connection = connections.find(c => !c.inUse && c.active)
+    
+    if (!connection) {
+      throw new Error('No available connections')
+    }
+    
+    connection.inUse = true
+    console.log(`Acquired connection ${connection.id}`)
+    return connection
+  })
+  
+  // 释放连接
+  const releaseConnection = (connection) => Effect.gen(function* () {
+    connection.inUse = false
+    console.log(`Released connection ${connection.id}`)
+  })
+  
+  // 使用连接
+  const useConnection = Effect.gen(function* () {
+    const connection = yield* acquireConnection()
+    yield* Effect.sleep(100)
+    yield* releaseConnection(connection)
+    return connection.id
+  })
+  
+  // 并行使用连接
+  const results = yield* Effect.all(
+    Array.from({ length: 10 }, (_, i) => useConnection),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('Used connections:', results)
+  console.log('Active connections:', connections.filter(c => c.active).length)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 连接池配置
+
+```js
+import { Effect } from 'effect'
+
+// 连接池配置
+const program = Effect.gen(function* () {
+  const poolConfig = {
+    minConnections: 2,
+    maxConnections: 10,
+    acquireTimeout: 5000,
+    idleTimeout: 30000
+  }
+  
+  const connections = []
+  let nextId = 0
+  
+  // 创建连接
+  const createConnection = () => Effect.gen(function* () {
+    const id = nextId++
+    console.log(`Creating connection ${id}`)
+    yield* Effect.sleep(100)
+    return {
+      id,
+      inUse: false,
+      lastUsed: Date.now()
+    }
+  })
+  
+  // 获取连接
+  const acquireConnection = () => Effect.gen(function* () {
+    // 查找可用连接
+    const available = connections.find(c => !c.inUse)
+    
+    if (available) {
+      available.inUse = true
+      available.lastUsed = Date.now()
+      console.log(`Acquired existing connection ${available.id}`)
+      return available
+    }
+    
+    // 创建新连接
+    if (connections.length < poolConfig.maxConnections) {
+      const connection = yield* createConnection()
+      connection.inUse = true
+      connections.push(connection)
+      return connection
+    }
+    
+    throw new Error('Connection pool exhausted')
+  })
+  
+  // 释放连接
+  const releaseConnection = (connection) => Effect.gen(function* () {
+    connection.inUse = false
+    connection.lastUsed = Date.now()
+    console.log(`Released connection ${connection.id}`)
+  })
+  
+  // 使用连接
+  const useConnection = Effect.gen(function* () {
+    const connection = yield* acquireConnection()
+    yield* Effect.sleep(50)
+    yield* releaseConnection(connection)
+    return connection.id
+  })
+  
+  // 初始化最小连接数
+  for (let i = 0; i < poolConfig.minConnections; i++) {
+    const connection = yield* createConnection()
+    connections.push(connection)
+  }
+  
+  console.log(`Initialized ${connections.length} connections`)
+  
+  // 使用连接
+  const results = yield* Effect.all(
+    Array.from({ length: 15 }, (_, i) => useConnection),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('Used connections:', results)
+  console.log('Pool size:', connections.length)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 线程池
+
+### 基本线程池
+
+```js
+import { Effect } from 'effect'
+
+// 基本线程池
+const program = Effect.gen(function* () {
+  const poolSize = 4
+  const workers = []
+  
+  // 创建工作线程
+  for (let i = 0; i < poolSize; i++) {
+    const worker = Effect.gen(function* () {
+      let busy = false
+      let task = null
+      
+      return {
+        id: i,
+        isBusy: () => busy,
+        execute: (fn) => Effect.gen(function* () {
+          if (busy) {
+            throw new Error('Worker is busy')
+          }
+          
+          busy = true
+          const result = yield* fn
+          busy = false
+          return result
+        })
+      }
+    })
+    
+    workers.push(yield* worker)
+  }
+  
+  // 提交任务
+  const submitTask = (fn) => Effect.gen(function* () {
+    const availableWorker = workers.find(w => !w.isBusy())
+    
+    if (!availableWorker) {
+      throw new Error('No available workers')
+    }
+    
+    console.log(`Submitting task to worker ${availableWorker.id}`)
+    return yield* availableWorker.execute(fn)
+  })
+  
+  // 执行任务
+  const tasks = Array.from({ length: 10 }, (_, i) => 
+    Effect.gen(function* () {
+      yield* Effect.sleep(100)
+      return `Task ${i} completed`
+    })
+  )
+  
+  const results = yield* Effect.all(
+    tasks.map(task => submitTask(task)),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('All tasks completed:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 工作队列
+
+```js
+import { Effect } from 'effect'
+
+// 工作队列
+const program = Effect.gen(function* () {
+  const queue = []
+  const workers = []
+  const workerCount = 3
+  
+  // 创建工作线程
+  for (let i = 0; i < workerCount; i++) {
+    const worker = Effect.gen(function* () {
+      while (true) {
+        if (queue.length > 0) {
+          const task = queue.shift()
+          console.log(`Worker ${i} processing task`)
+          const result = yield* task
+          console.log(`Worker ${i} completed task`)
+          return result
+        }
+        yield* Effect.sleep(100)
+      }
+    })
+    
+    workers.push(worker)
+  }
+  
+  // 添加任务到队列
+  const enqueueTask = (task) => Effect.gen(function* () {
+    queue.push(task)
+    console.log(`Task enqueued, queue size: ${queue.length}`)
+  })
+  
+  // 启动工作线程
+  const workerResults = yield* Effect.all(
+    workers.map(worker => Effect.fork(worker)),
+    { concurrency: 'unbounded' }
+  )
+  
+  // 添加任务
+  for (let i = 0; i < 10; i++) {
+    yield* enqueueTask(Effect.gen(function* () {
+      yield* Effect.sleep(200)
+      return `Task ${i} result`
+    }))
+  }
+  
+  // 等待任务完成
+  yield* Effect.sleep(3000)
+  
+  console.log('All tasks completed')
+  
+  return workerResults
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 资源复用
+
+### 对象池
+
+```js
+import { Effect } from 'effect'
+
+// 对象池
+const program = Effect.gen(function* () {
+  const poolSize = 5
+  const pool = []
+  
+  // 创建对象池
+  for (let i = 0; i < poolSize; i++) {
+    pool.push({
+      id: i,
+      inUse: false,
+      data: null
+    })
+  }
+  
+  // 获取对象
+  const acquire = () => Effect.gen(function* () {
+    const obj = pool.find(o => !o.inUse)
+    
+    if (!obj) {
+      throw new Error('Pool exhausted')
+    }
+    
+    obj.inUse = true
+    console.log(`Acquired object ${obj.id}`)
+    return obj
+  })
+  
+  // 释放对象
+  const release = (obj) => Effect.gen(function* () {
+    obj.inUse = false
+    obj.data = null
+    console.log(`Released object ${obj.id}`)
+  })
+  
+  // 使用对象
+  const useObject = Effect.gen(function* () {
+    const obj = yield* acquire()
+    obj.data = { value: Math.random() }
+    yield* Effect.sleep(100)
+    const result = obj.data.value
+    yield* release(obj)
+    return result
+  })
+  
+  // 并行使用对象
+  const results = yield* Effect.all(
+    Array.from({ length: 10 }, (_, i) => useObject),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('Results:', results)
+  console.log('Pool usage:', pool.filter(o => o.inUse).length, '/', poolSize)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 资源生命周期管理
+
+```js
+import { Effect } from 'effect'
+
+// 资源生命周期管理
+const program = Effect.gen(function* () {
+  const resources = new Map()
+  
+  // 创建资源
+  const createResource = (id) => Effect.gen(function* () {
+    console.log(`Creating resource ${id}`)
+    yield* Effect.sleep(100)
+    return {
+      id,
+      created: Date.now(),
+      data: null
+    }
+  })
+  
+  // 获取或创建资源
+  const getOrCreateResource = (id) => Effect.gen(function* () {
+    if (resources.has(id)) {
+      console.log(`Using existing resource ${id}`)
+      return resources.get(id)
+    }
+    
+    const resource = yield* createResource(id)
+    resources.set(id, resource)
+    return resource
+  })
+  
+  // 销毁资源
+  const destroyResource = (id) => Effect.gen(function* () {
+    if (resources.has(id)) {
+      console.log(`Destroying resource ${id}`)
+      resources.delete(id)
+    }
+  })
+  
+  // 使用资源
+  const useResource = (id) => Effect.gen(function* () {
+    const resource = yield* getOrCreateResource(id)
+    resource.data = `Data for ${id}`
+    yield* Effect.sleep(50)
+    return resource.data
+  })
+  
+  // 使用资源
+  const result1 = yield* useResource('res-1')
+  console.log('Result 1:', result1)
+  
+  const result2 = yield* useResource('res-1') // 复用资源
+  console.log('Result 2:', result2)
+  
+  const result3 = yield* useResource('res-2') // 创建新资源
+  console.log('Result 3:', result3)
+  
+  // 清理资源
+  yield* destroyResource('res-1')
+  console.log('Active resources:', resources.size)
+  
+  return { result1, result2, result3 }
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 综合资源管理
+
+```js
+import { Effect } from 'effect'
+
+// 综合资源管理
+const program = Effect.gen(function* () {
+  // 内存池
+  const memoryPool = {
+    buffers: new Map(),
+    getBuffer: (size) => Effect.gen(function* () {
+      const key = size.toString()
+      if (memoryPool.buffers.has(key)) {
+        return memoryPool.buffers.get(key)
+      }
+      const buffer = new Array(size).fill(0)
+      memoryPool.buffers.set(key, buffer)
+      return buffer
+    })
+  }
+  
+  // 连接池
+  const connectionPool = {
+    connections: [],
+    maxConnections: 5,
+    acquire: () => Effect.gen(function* () {
+      const connection = connectionPool.connections.find(c => !c.inUse)
+      if (connection) {
+        connection.inUse = true
+        return connection
+      }
+      if (connectionPool.connections.length < connectionPool.maxConnections) {
+        const newConnection = { id: connectionPool.connections.length, inUse: true }
+        connectionPool.connections.push(newConnection)
+        return newConnection
+      }
+      throw new Error('Connection pool exhausted')
+    }),
+    release: (connection) => Effect.gen(function* () {
+      connection.inUse = false
+    })
+  }
+  
+  // 使用资源
+  const processWithResources = Effect.gen(function* () {
+    // 获取缓冲区
+    const buffer = yield* memoryPool.getBuffer(100)
+    
+    // 获取连接
+    const connection = yield* connectionPool.acquire()
+    
+    // 使用资源
+    for (let i = 0; i < buffer.length; i++) {
+      buffer[i] = Math.random()
+    }
+    
+    yield* Effect.sleep(50)
+    
+    // 释放连接
+    yield* connectionPool.release(connection)
+    
+    return { bufferId: connection.id, sum: buffer.reduce((a, b) => a + b, 0) }
+  })
+  
+  // 并行处理
+  const results = yield* Effect.all(
+    Array.from({ length: 10 }, (_, i) => processWithResources),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('Processing completed')
+  console.log('Memory pool size:', memoryPool.buffers.size)
+  console.log('Connection pool size:', connectionPool.connections.length)
+  console.log('Sample results:', results.slice(0, 3))
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 资源监控
+
+```js
+import { Effect } from 'effect'
+
+// 资源监控
+const program = Effect.gen(function* () {
+  const metrics = {
+    memoryUsage: [],
+    connectionUsage: [],
+    bufferUsage: []
+  }
+  
+  // 资源
+  const resources = {
+    memory: new Map(),
+    connections: [],
+    buffers: new Map()
+  }
+  
+  // 记录指标
+  const recordMetrics = Effect.gen(function* () {
+    const memoryUsage = process.memoryUsage().heapUsed / 1024 / 1024
+    const connectionUsage = resources.connections.filter(c => c.inUse).length
+    const bufferUsage = resources.buffers.size
+    
+    metrics.memoryUsage.push(memoryUsage)
+    metrics.connectionUsage.push(connectionUsage)
+    metrics.bufferUsage.push(bufferUsage)
+    
+    console.log(`Memory: ${memoryUsage.toFixed(2)}MB, Connections: ${connectionUsage}, Buffers: ${bufferUsage}`)
+  })
+  
+  // 模拟资源使用
+  const useResources = Effect.gen(function* () {
+    // 使用内存
+    const key = `mem-${Date.now()}`
+    const data = Array.from({ length: 10000 }, () => Math.random())
+    resources.memory.set(key, data)
+    
+    // 使用连接
+    const connection = { id: resources.connections.length, inUse: true }
+    resources.connections.push(connection)
+    
+    // 使用缓冲区
+    const buffer = new Array(100).fill(0)
+    resources.buffers.set(`buf-${Date.now()}`, buffer)
+    
+    yield* Effect.sleep(100)
+    
+    // 清理
+    resources.memory.delete(key)
+    connection.inUse = false
+    
+    return 'Resource usage completed'
+  })
+  
+  // 监控资源使用
+  const monitor = Effect.gen(function* () {
+    for (let i = 0; i < 10; i++) {
+      yield* recordMetrics
+      yield* useResources
+      yield* Effect.sleep(200)
+    }
+  })
+  
+  yield* monitor
+  
+  // 输出统计
+  console.log('\n=== Resource Statistics ===')
+  console.log(`Avg Memory: ${(metrics.memoryUsage.reduce((a, b) => a + b, 0) / metrics.memoryUsage.length).toFixed(2)}MB`)
+  console.log(`Max Memory: ${Math.max(...metrics.memoryUsage).toFixed(2)}MB`)
+  console.log(`Avg Connections: ${(metrics.connectionUsage.reduce((a, b) => a + b, 0) / metrics.connectionUsage.length).toFixed(1)}`)
+  console.log(`Max Connections: ${Math.max(...metrics.connectionUsage)}`)
+  console.log(`Avg Buffers: ${(metrics.bufferUsage.reduce((a, b) => a + b, 0) / metrics.bufferUsage.length).toFixed(1)}`)
+  console.log(`Max Buffers: ${Math.max(...metrics.bufferUsage)}`)
+  
+  return metrics
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **性能分析**：性能测量、瓶颈识别、内存分析、CPU 分析
+- **优化策略**：批处理优化、缓存策略、延迟优化、吞吐优化
+- **并发模式**：Fiber、并发原语、并发模式
+
+## 📚 学习检查点
+
+- [ ] 掌握内存管理
+- [ ] 理解连接池
+- [ ] 了解线程池
+- [ ] 掌握资源复用
+- [ ] 能够实现完整的资源优化
+
+## 🚀 下一步
+
+→ [AI 基础](../05-ai-integration/01-ai-fundamentals/01-ai-abstraction.mdx)
