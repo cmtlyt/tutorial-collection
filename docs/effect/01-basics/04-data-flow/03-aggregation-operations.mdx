@@ -1,0 +1,431 @@
+# 聚合操作
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了多种聚合操作，用于组合和汇总数据。这些操作让你能够以声明式的方式构建数据聚合逻辑。
+
+## 🎯 Effect.all - 并行聚合
+
+并行执行多个 Effect，返回所有结果的数组。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 并行执行多个 Effect
+const task1 = Effect.succeed(1)
+const task2 = Effect.succeed(2)
+const task3 = Effect.succeed(3)
+
+const allResults = Effect.all([task1, task2, task3])
+
+Effect.runSync(allResults)  // [1, 2, 3]
+
+// 不同类型的 Effect
+const numberEffect = Effect.succeed(42)
+const stringEffect = Effect.succeed('Hello')
+const objectEffect = Effect.succeed({ id: '1' })
+
+const mixedResults = Effect.all([numberEffect, stringEffect, objectEffect])
+
+Effect.runSync(mixedResults)  // [42, 'Hello', { id: '1' }]
+```
+
+### 并发控制
+
+```js
+import { Effect } from 'effect'
+
+// 控制并发数量
+const tasks = Array.from({ length: 10 }, (_, i) =>
+  Effect.sync(() => {
+    console.log(`Task ${i}`)
+    return i
+  })
+)
+
+// 限制并发为 3
+const limited = Effect.all(tasks, {
+  concurrency: 3
+})
+
+Effect.runSync(limited)
+```
+
+### 错误处理
+
+```js
+import { Effect } from 'effect'
+
+// 第一个错误会中断
+const task1 = Effect.succeed(1)
+const task2 = Effect.fail(new Error('Task 2 failed'))
+const task3 = Effect.succeed(3)
+
+const program = Effect.all([task1, task2, task3])
+
+Effect.runPromise(program).catch(error => {
+  console.log(error.message)  // 'Task 2 failed'
+})
+```
+
+## 💡 Effect.allSuccesses - 只收集成功结果
+
+只收集成功的 Effect 结果，忽略失败的。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+const task1 = Effect.succeed(1)
+const task2 = Effect.fail(new Error('Task 2 failed'))
+const task3 = Effect.succeed(3)
+const task4 = Effect.fail(new Error('Task 4 failed'))
+
+const successes = Effect.allSuccesses([task1, task2, task3, task4])
+
+Effect.runSync(successes)  // [1, 3]
+```
+
+### 实际应用
+
+```js
+import { Effect } from 'effect'
+
+// 批量处理，只保留成功的
+const fetchUser = (id: string) =>
+  Effect.tryPromise(() =>
+    fetch(`/api/users/${id}`).then(res => res.json())
+  )
+
+const userIds = ['1', '2', '3', '4', '5']
+
+const fetchAllUsers = Effect.allSuccesses(
+  userIds.map(id => fetchUser(id))
+)
+
+Effect.runPromise(fetchAllUsers).then(users => {
+  console.log('Successfully fetched users:', users.length)
+})
+```
+
+## 🚀 Effect.reduce - 归约操作
+
+将 Effect 的值归约为单个值。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 数组求和
+const numbersEffect = Effect.succeed([1, 2, 3, 4, 5])
+
+const sum = numbersEffect.pipe(
+  Effect.reduce(0, (acc, n) => acc + n)
+)
+
+Effect.runSync(sum)  // 15
+
+// 数组求积
+const product = numbersEffect.pipe(
+  Effect.reduce(1, (acc, n) => acc * n)
+)
+
+Effect.runSync(product)  // 120
+```
+
+### 复杂归约
+
+```js
+import { Effect } from 'effect'
+
+// 构建对象
+const usersEffect = Effect.succeed([
+  { id: '1', name: 'Alice' },
+  { id: '2', name: 'Bob' },
+  { id: '3', name: 'Charlie' }
+])
+
+const userMap = usersEffect.pipe(
+  Effect.reduce({} as Record<string, string>, (acc, user) => ({
+    ...acc,
+    [user.id]: user.name
+  }))
+)
+
+Effect.runSync(userMap)
+// {
+//   '1': 'Alice',
+//   '2': 'Bob',
+//   '3': 'Charlie'
+// }
+
+// 分组
+const productsEffect = Effect.succeed([
+  { id: '1', name: 'Laptop', category: 'Electronics' },
+  { id: '2', name: 'Mouse', category: 'Electronics' },
+  { id: '3', name: 'Desk', category: 'Furniture' }
+])
+
+const grouped = productsEffect.pipe(
+  Effect.reduce({} as Record<string, any[]>, (acc, product) => ({
+    ...acc,
+    [product.category]: [...(acc[product.category] || []), product]
+  }))
+)
+
+Effect.runSync(grouped)
+// {
+//   'Electronics': [
+//     { id: '1', name: 'Laptop', category: 'Electronics' },
+//     { id: '2', name: 'Mouse', category: 'Electronics' }
+//   ],
+//   'Furniture': [
+//     { id: '3', name: 'Desk', category: 'Furniture' }
+//   ]
+// }
+```
+
+## 🎯 Effect.forEach - 遍历操作
+
+遍历数组，对每个元素执行 Effect。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 遍历数组
+const numbersEffect = Effect.succeed([1, 2, 3, 4, 5])
+
+const doubled = numbersEffect.pipe(
+  Effect.forEach(n => Effect.succeed(n * 2))
+)
+
+Effect.runSync(doubled)  // [2, 4, 6, 8, 10]
+
+// 异步遍历
+const userIds = ['1', '2', '3']
+
+const fetchUsers = userIds.pipe(
+  Effect.forEach(id =>
+    Effect.tryPromise(() =>
+      fetch(`/api/users/${id}`).then(res => res.json())
+    )
+  )
+)
+
+Effect.runPromise(fetchUsers).then(users => {
+  console.log(users)
+})
+```
+
+### 带索引的遍历
+
+```js
+import { Effect } from 'effect'
+
+const itemsEffect = Effect.succeed(['a', 'b', 'c'])
+
+const withIndex = itemsEffect.pipe(
+  Effect.forEach((item, index) =>
+    Effect.succeed({ index, item })
+  )
+)
+
+Effect.runSync(withIndex)
+// [
+//   { index: 0, item: 'a' },
+//   { index: 1, item: 'b' },
+//   { index: 2, item: 'c' }
+// ]
+```
+
+## 📝 其他聚合操作
+
+### Effect.partition - 分区操作
+
+根据谓词函数将数组分为两组。
+
+```js
+import { Effect } from 'effect'
+
+const numbersEffect = Effect.succeed([1, 2, 3, 4, 5])
+
+const [evens, odds] = Effect.runSync(
+  numbersEffect.pipe(
+    Effect.partition(n => n % 2 === 0)
+  )
+)
+
+console.log(evens)  // [2, 4]
+console.log(odds)   // [1, 3, 5]
+```
+
+### Effect.merge - 合并操作
+
+合并多个 Effect 的结果。
+
+```js
+import { Effect } from 'effect'
+
+const effect1 = Effect.succeed([1, 2])
+const effect2 = Effect.succeed([3, 4])
+const effect3 = Effect.succeed([5, 6])
+
+const merged = Effect.all([effect1, effect2, effect3]).pipe(
+  Effect.map(results => results.flat())
+)
+
+Effect.runSync(merged)  // [1, 2, 3, 4, 5, 6]
+```
+
+## 🚀 实际应用示例
+
+### 数据统计
+
+```js
+import { Effect } from 'effect'
+
+interface Sale {
+  id: string
+  product: string
+  amount: number
+  date: string
+}
+
+const salesEffect = Effect.succeed([
+  { id: '1', product: 'Laptop', amount: 1000, date: '2024-01-01' },
+  { id: '2', product: 'Mouse', amount: 20, date: '2024-01-01' },
+  { id: '3', product: 'Keyboard', amount: 50, date: '2024-01-02' },
+  { id: '4', product: 'Laptop', amount: 1200, date: '2024-01-02' }
+])
+
+// 计算总销售额
+const totalSales = salesEffect.pipe(
+  Effect.reduce(0, (acc, sale) => acc + sale.amount)
+)
+
+Effect.runSync(totalSales)  // 2270
+
+// 按产品分组统计
+const salesByProduct = salesEffect.pipe(
+  Effect.reduce({} as Record<string, { count: number; total: number }>, (acc, sale) => ({
+    ...acc,
+    [sale.product]: {
+      count: (acc[sale.product]?.count || 0) + 1,
+      total: (acc[sale.product]?.total || 0) + sale.amount
+    }
+  }))
+)
+
+Effect.runSync(salesByProduct)
+// {
+//   'Laptop': { count: 2, total: 2200 },
+//   'Mouse': { count: 1, total: 20 },
+//   'Keyboard': { count: 1, total: 50 }
+// }
+```
+
+### 批量处理
+
+```js
+import { Effect } from 'effect'
+
+// 批量处理数据
+const processData = (data: any[]) =>
+  Effect.gen(function* () {
+    // 验证
+    const validated = yield* data.pipe(
+      Effect.forEach(item =>
+        Effect.succeed(validate(item))
+      )
+    )
+
+    // 转换
+    const transformed = yield* validated.pipe(
+      Effect.forEach(item =>
+        Effect.succeed(transform(item))
+      )
+    )
+
+    // 保存
+    const saved = yield* transformed.pipe(
+      Effect.forEach(item =>
+        Effect.tryPromise(() => saveToDatabase(item))
+      )
+    )
+
+    return saved
+  })
+
+const rawData = [/* ... */]
+
+const program = processData(rawData)
+
+Effect.runPromise(program)
+```
+
+### 数据聚合和报告
+
+```js
+import { Effect } from 'effect'
+
+interface LogEntry {
+  level: 'info' | 'warn' | 'error'
+  message: string
+  timestamp: number
+}
+
+const logsEffect = Effect.succeed([
+  { level: 'info', message: 'User logged in', timestamp: 1000 },
+  { level: 'warn', message: 'Slow query', timestamp: 2000 },
+  { level: 'error', message: 'Database connection failed', timestamp: 3000 },
+  { level: 'info', message: 'User logged out', timestamp: 4000 }
+])
+
+// 统计日志级别
+const logStats = logsEffect.pipe(
+  Effect.reduce({ info: 0, warn: 0, error: 0 }, (acc, log) => ({
+    ...acc,
+    [log.level]: acc[log.level] + 1
+  }))
+)
+
+Effect.runSync(logStats)
+// { info: 2, warn: 1, error: 1 }
+
+// 提取错误日志
+const errorLogs = logsEffect.pipe(
+  Effect.filter(log => log.level === 'error')
+)
+
+Effect.runSync(errorLogs)
+// [
+//   { level: 'error', message: 'Database connection failed', timestamp: 3000 }
+// ]
+```
+
+## 🔗 相关概念
+
+- **转换操作**：如何转换和映射数据
+- **过滤操作**：如何过滤和选择数据
+- **数据流操作**：Effect 的数据处理能力
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.all 的使用
+- [ ] 掌握 Effect.allSuccesses 的使用
+- [ ] 掌握 Effect.reduce 的使用
+- [ ] 掌握 Effect.forEach 的使用
+- [ ] 能够构建数据聚合逻辑
+
+## 🚀 下一步
+
+→ [依赖注入](../05-dependency-injection/01-services.mdx)

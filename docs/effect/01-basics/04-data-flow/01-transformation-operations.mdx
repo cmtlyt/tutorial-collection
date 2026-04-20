@@ -1,0 +1,350 @@
+# 转换操作
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了丰富的转换操作，用于处理和转换 Effect 中的数据。这些操作让你能够以声明式的方式构建数据处理管道。
+
+## 🎯 Effect.map - 值转换
+
+将 Effect 的成功值转换为另一个值。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 简单的值转换
+const numberEffect = Effect.succeed(42)
+
+const stringEffect = numberEffect.pipe(
+  Effect.map(n => n.toString())
+)
+
+Effect.runSync(stringEffect)  // '42'
+
+// 对象转换
+const userEffect = Effect.succeed({ id: '1', name: 'Alice', age: 25 })
+
+const summaryEffect = userEffect.pipe(
+  Effect.map(user => `${user.name} is ${user.age} years old`)
+)
+
+Effect.runSync(summaryEffect)  // 'Alice is 25 years old'
+```
+
+### 链式转换
+
+```js
+import { Effect } from 'effect'
+
+// 多次 map 操作
+const pipeline = Effect.succeed(42)
+  .pipe(
+    Effect.map(n => n * 2),      // 84
+    Effect.map(n => n + 10),     // 94
+    Effect.map(n => n.toString()), // '94'
+    Effect.map(s => s.length)    // 2
+  )
+
+Effect.runSync(pipeline)  // 2
+```
+
+### 复杂转换
+
+```js
+import { Effect } from 'effect'
+
+// 转换数组数据
+const usersEffect = Effect.succeed([
+  { id: '1', name: 'Alice', age: 25 },
+  { id: '2', name: 'Bob', age: 30 },
+  { id: '3', name: 'Charlie', age: 35 }
+])
+
+const namesEffect = usersEffect.pipe(
+  Effect.map(users => users.map(user => user.name))
+)
+
+Effect.runSync(namesEffect)  // ['Alice', 'Bob', 'Charlie']
+
+// 条件转换
+const dataEffect = Effect.succeed({ value: 42 })
+
+const processedEffect = dataEffect.pipe(
+  Effect.map(data => {
+    if (data.value > 50) {
+      return { ...data, status: 'high' }
+    } else {
+      return { ...data, status: 'low' }
+    }
+  })
+)
+
+Effect.runSync(processedEffect)  // { value: 42, status: 'low' }
+```
+
+## 💡 Effect.flatMap - 链式转换
+
+链式转换 Effect，可以返回新的 Effect。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 链式 Effect
+const fetchUser = (id: string) =>
+  Effect.succeed({ id, name: `User ${id}` })
+
+const fetchPosts = (userId: string) =>
+  Effect.succeed([{ id: '1', userId, title: 'Post 1' }])
+
+const program = fetchUser('1').pipe(
+  Effect.flatMap(user => fetchPosts(user.id))
+)
+
+Effect.runSync(program)  // [{ id: '1', userId: '1', title: 'Post 1' }]
+```
+
+### 多层链式调用
+
+```js
+import { Effect } from 'effect'
+
+const fetchUser = (id: string) =>
+  Effect.succeed({ id, name: `User ${id}` })
+
+const fetchPosts = (userId: string) =>
+  Effect.succeed([{ id: '1', userId, title: 'Post 1' }])
+
+const fetchComments = (postId: string) =>
+  Effect.succeed([{ id: '1', postId, text: 'Comment 1' }])
+
+const program = fetchUser('1').pipe(
+  Effect.flatMap(user => fetchPosts(user.id)),
+  Effect.flatMap(posts => fetchComments(posts[0].id))
+)
+
+Effect.runSync(program)  // [{ id: '1', postId: '1', text: 'Comment 1' }]
+```
+
+### 条件链式调用
+
+```js
+import { Effect } from 'effect'
+
+const fetchUser = (id: string) =>
+  Effect.succeed({ id, name: `User ${id}`, active: true })
+
+const fetchPosts = (userId: string) =>
+  Effect.succeed([{ id: '1', userId, title: 'Post 1' }])
+
+const program = fetchUser('1').pipe(
+  Effect.flatMap(user => {
+    if (user.active) {
+      return fetchPosts(user.id).pipe(
+        Effect.map(posts => ({ user, posts }))
+      )
+    } else {
+      return Effect.succeed({ user, posts: [] })
+    }
+  })
+)
+
+Effect.runSync(program)
+// {
+//   user: { id: '1', name: 'User 1', active: true },
+//   posts: [{ id: '1', userId: '1', title: 'Post 1' }]
+// }
+```
+
+## 🚀 Effect.andThen - 链式别名
+
+`andThen` 是 `flatMap` 的别名，提供更简洁的语法。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 与 flatMap 相同
+const program = Effect.succeed(42)
+  .pipe(
+    Effect.andThen(n => Effect.succeed(n * 2)),
+    Effect.andThen(n => Effect.succeed(n.toString()))
+  )
+
+Effect.runSync(program)  // '84'
+
+// 可以直接传递值
+const simple = Effect.succeed(42)
+  .pipe(
+    Effect.andThen(84),
+    Effect.andThen('Result')
+  )
+
+Effect.runSync(simple)  // 'Result'
+```
+
+### 混合使用
+
+```js
+import { Effect } from 'effect'
+
+const fetchUser = (id: string) =>
+  Effect.succeed({ id, name: `User ${id}` })
+
+const program = Effect.succeed('1')
+  .pipe(
+    Effect.andThen(fetchUser),           // 调用函数
+    Effect.andThen(user => user.name),   // 转换值
+    Effect.andThen('User name: ')        // 直接值
+  )
+
+Effect.runSync(program)  // 'User name: User 1'
+```
+
+## 🎯 Effect.filter - 值过滤
+
+过滤 Effect 的成功值。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 过滤数组
+const numbersEffect = Effect.succeed([1, 2, 3, 4, 5])
+
+const evenNumbersEffect = numbersEffect.pipe(
+  Effect.filter(n => n % 2 === 0)
+)
+
+Effect.runSync(evenNumbersEffect)  // [2, 4]
+
+// 过滤对象
+const usersEffect = Effect.succeed([
+  { id: '1', name: 'Alice', active: true },
+  { id: '2', name: 'Bob', active: false },
+  { id: '3', name: 'Charlie', active: true }
+])
+
+const activeUsersEffect = usersEffect.pipe(
+  Effect.filter(user => user.active)
+)
+
+Effect.runSync(activeUsersEffect)
+// [
+//   { id: '1', name: 'Alice', active: true },
+//   { id: '3', name: 'Charlie', active: true }
+// ]
+```
+
+### 带错误处理的过滤
+
+```js
+import { Effect } from 'effect'
+
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+const numbersEffect = Effect.succeed([1, 2, 3, 4, 5])
+
+const validatedEffect = numbersEffect.pipe(
+  Effect.filter(n => {
+    if (n > 3) {
+      throw new ValidationError(`${n} is too large`)
+    }
+    return n % 2 === 0
+  })
+)
+
+Effect.runPromise(validatedEffect).catch(error => {
+  console.log(error.message)  // '4 is too large'
+})
+```
+
+## 📝 其他转换操作
+
+### Effect.as - 常量替换
+
+将 Effect 的成功值替换为常量。
+
+```js
+import { Effect } from 'effect'
+
+const effect = Effect.succeed(42)
+
+const replaced = effect.pipe(
+  Effect.as('Replaced value')
+)
+
+Effect.runSync(replaced)  // 'Replaced value'
+
+// 常用于副作用操作
+const logAndReturn = Effect.sync(() => {
+  console.log('Logging...')
+  return 42
+}).pipe(
+  Effect.as('Logged successfully')
+)
+
+Effect.runSync(logAndReturn)
+// 输出：Logging...
+// 返回：'Logged successfully'
+```
+
+### Effect.asSome - 包装为 Some
+
+将值包装为 Option 的 Some。
+
+```js
+import { Effect, Option } from 'effect'
+
+const effect = Effect.succeed(42)
+
+const someEffect = effect.pipe(
+  Effect.asSome
+)
+
+Effect.runSync(someEffect)  // Option.some(42)
+```
+
+### Effect.asVoid - 转换为 void
+
+将 Effect 的成功值转换为 void。
+
+```js
+import { Effect } from 'effect'
+
+const effect = Effect.succeed(42)
+
+const voidEffect = effect.pipe(
+  Effect.asVoid
+)
+
+Effect.runSync(voidEffect)  // undefined
+```
+
+## 🔗 相关概念
+
+- **过滤操作**：如何过滤和选择数据
+- **聚合操作**：如何聚合和组合数据
+- **错误处理**：如何在转换中处理错误
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.map 的使用
+- [ ] 掌握 Effect.flatMap 的使用
+- [ ] 掌握 Effect.andThen 的使用
+- [ ] 了解 Effect.filter 的使用
+- [ ] 能够构建数据处理管道
+
+## 🚀 下一步
+
+→ [过滤操作](./02-filtering-operations.mdx)
