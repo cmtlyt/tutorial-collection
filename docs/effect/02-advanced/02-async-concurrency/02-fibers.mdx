@@ -1,0 +1,386 @@
+# Fiber 概念
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Fiber 是 Effect 的并发原语，类似于线程但更轻量。Fiber 代表一个可中断的计算，提供了强大的并发控制能力。
+
+## 🎯 Fiber 基础
+
+### 什么是 Fiber
+
+```js
+import { Effect } from 'effect'
+
+// Fiber 是一个轻量级的并发单元
+const effect = Effect.sync(() => {
+  console.log('Executing...')
+  return 42
+})
+
+// 创建 Fiber
+const fiber = Effect.runFork(effect)
+
+// Fiber 不会立即执行，而是返回一个 Fiber 对象
+console.log(fiber)  // Fiber { ... }
+```
+
+### Fiber 的特性
+
+```js
+import { Effect } from 'effect'
+
+// 1. 轻量级 - 可以创建数千个 Fiber
+const fibers = Array.from({ length: 10000 }, (_, i) =>
+  Effect.runFork(Effect.sync(() => i))
+)
+
+// 2. 可中断 - 可以随时中断执行
+const longRunning = Effect.gen(function* () {
+  for (let i = 0; i < 1000000; i++) {
+    yield* Effect.sync(() => {})
+    if (i % 100000 === 0) {
+      console.log(`Progress: ${i}`)
+    }
+  }
+})
+
+const fiber = Effect.runFork(longRunning)
+
+// 3. 可组合 - Fiber 可以组合成复杂的并发结构
+const combined = Effect.all([
+  Effect.runFork(Effect.sync(() => 1)),
+  Effect.runFork(Effect.sync(() => 2)),
+  Effect.runFork(Effect.sync(() => 3))
+])
+```
+
+## 💡 创建 Fiber
+
+### Effect.runFork
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const effect = Effect.succeed(42)
+const fiber = Effect.runFork(effect)
+
+// 等待 Fiber 完成
+Effect.runPromise(fiber.join).then(result => {
+  console.log(result)  // 42
+})
+```
+
+### 并发执行多个 Fiber
+
+```js
+import { Effect } from 'effect'
+
+const task1 = Effect.sync(() => {
+  console.log('Task 1')
+  return 1
+})
+
+const task2 = Effect.sync(() => {
+  console.log('Task 2')
+  return 2
+})
+
+const task3 = Effect.sync(() => {
+  console.log('Task 3')
+  return 3
+})
+
+// 并发执行
+const fiber1 = Effect.runFork(task1)
+const fiber2 = Effect.runFork(task2)
+const fiber3 = Effect.runFork(task3)
+
+// 等待所有 Fiber 完成
+Effect.runPromise(Effect.all([
+  Effect.fromFiber(fiber1),
+  Effect.fromFiber(fiber2),
+  Effect.fromFiber(fiber3)
+])).then(results => {
+  console.log(results)  // [1, 2, 3]
+})
+```
+
+## 🚀 Fiber 操作
+
+### Effect.join - 等待 Fiber 完成
+
+```js
+import { Effect } from 'effect'
+
+const effect = Effect.gen(function* () {
+  console.log('Starting...')
+  yield* Effect.sleep(1000)
+  console.log('Done')
+  return 'Result'
+})
+
+const fiber = Effect.runFork(effect)
+
+// 等待 Fiber 完成
+Effect.runPromise(fiber.join).then(result => {
+  console.log(result)  // 'Result'
+})
+```
+
+### Effect.interrupt - 中断 Fiber
+
+```js
+import { Effect } from 'effect'
+
+const longRunning = Effect.gen(function* () {
+  for (let i = 0; i < 10; i++) {
+    console.log(`Step ${i}`)
+    yield* Effect.sleep(500)
+  }
+  return 'Completed'
+})
+
+const fiber = Effect.runFork(longRunning)
+
+// 2 秒后中断
+setTimeout(() => {
+  Effect.runPromise(fiber.interrupt).then(() => {
+    console.log('Fiber interrupted')
+  })
+}, 2000)
+
+Effect.runPromise(fiber.join).catch(error => {
+  console.log('Interrupted:', error._tag)
+})
+```
+
+### Effect.fromFiber - 从 Fiber 创建 Effect
+
+```js
+import { Effect } from 'effect`
+
+const effect = Effect.succeed(42)
+const fiber = Effect.runFork(effect)
+
+// 从 Fiber 创建 Effect
+const fromFiberEffect = Effect.fromFiber(fiber)
+
+Effect.runPromise(fromFiberEffect).then(result => {
+  console.log(result)  // 42
+})
+```
+
+## 🎯 Fiber 状态
+
+### 检查 Fiber 状态
+
+```js
+import { Effect } from 'effect'
+
+const effect = Effect.gen(function* () {
+  yield* Effect.sleep(1000)
+  return 'Done'
+})
+
+const fiber = Effect.runFork(effect)
+
+// 检查 Fiber 是否完成
+Effect.runPromise(fiber.await).then(exit => {
+  console.log('Exit status:', exit)
+  // Exit.success({ _tag: 'Success', value: 'Done' })
+})
+```
+
+### Fiber 生命周期
+
+```js
+import { Effect } from 'effect'
+
+const effect = Effect.gen(function* () {
+  console.log('Fiber started')
+  yield* Effect.sleep(1000)
+  console.log('Fiber running')
+  yield* Effect.sleep(1000)
+  console.log('Fiber completed')
+  return 'Result'
+})
+
+const fiber = Effect.runFork(effect)
+
+// Fiber 生命周期：Running -> Completed/Interrupted/Failed
+```
+
+## 📝 实际应用示例
+
+### 并发 API 请求
+
+```js
+import { Effect } from 'effect'
+
+const fetchUser = (id: string) =>
+  Effect.tryPromise(() =>
+    fetch(`/api/users/${id}`).then(res => res.json())
+  )
+
+const fetchPosts = (userId: string) =>
+  Effect.tryPromise(() =>
+    fetch(`/api/users/${userId}/posts`).then(res => res.json())
+  )
+
+const fetchComments = (postId: string) =>
+  Effect.tryPromise(() =>
+    fetch(`/api/posts/${postId}/comments`).then(res => res.json())
+  )
+
+// 并发执行多个请求
+const program = Effect.gen(function* () {
+  const userFiber = yield* Effect.fork(fetchUser('1'))
+  const postsFiber = yield* Effect.fork(fetchPosts('1'))
+  
+  const user = yield* Effect.fromFiber(userFiber)
+  const posts = yield* Effect.fromFiber(postsFiber)
+  
+  const commentFibers = yield* Effect.forEach(
+    posts.slice(0, 3),
+    post => Effect.fork(fetchComments(post.id)),
+    { concurrency: 'unbounded' }
+  )
+  
+  const comments = yield* Effect.forEach(
+    commentFibers,
+    fiber => Effect.fromFiber(fiber),
+    { concurrency: 'unbounded' }
+  )
+  
+  return { user, posts, comments }
+})
+
+Effect.runPromise(program)
+```
+
+### 工作池模式
+
+```js
+import { Effect } from 'effect'
+
+// 创建工作池
+const createWorkerPool = (size: number, worker: (task: any) => Effect.Effect<never, never, any>) => {
+  const queue: any[] = []
+  const workers: any[] = []
+  
+  for (let i = 0; i < size; i++) {
+    const workerFiber = Effect.runFork(
+      Effect.gen(function* () {
+        while (true) {
+          const task = queue.shift()
+          if (task) {
+            const result = yield* worker(task)
+            task.resolve(result)
+          } else {
+            yield* Effect.sleep(100)
+          }
+        }
+      })
+    )
+    workers.push(workerFiber)
+  }
+  
+  return {
+    submit: (task: any) => {
+      return new Promise(resolve => {
+        queue.push({ ...task, resolve })
+      })
+    },
+    shutdown: () => {
+      workers.forEach(worker => Effect.runPromise(worker.interrupt))
+    }
+  }
+}
+
+// 使用工作池
+const processItem = (item: any) =>
+  Effect.sync(() => {
+    console.log(`Processing item ${item.id}`)
+    return { ...item, processed: true }
+  })
+
+const pool = createWorkerPool(3, processItem)
+
+const items = Array.from({ length: 10 }, (_, i) => ({ id: i }))
+
+const program = Effect.gen(function* () {
+  const results = yield* Effect.forEach(items, item =>
+    Effect.tryPromise(() => pool.submit(item))
+  )
+  
+  pool.shutdown()
+  
+  return results
+})
+
+Effect.runPromise(program)
+```
+
+### 超时和取消
+
+```js
+import { Effect } from 'effect'
+
+const longRunningOperation = Effect.gen(function* () {
+  for (let i = 0; i < 10; i++) {
+    console.log(`Progress: ${i * 10}%`)
+    yield* Effect.sleep(1000)
+  }
+  return 'Completed'
+})
+
+const withTimeout = Effect.gen(function* () {
+  const fiber = yield* Effect.fork(longRunningOperation)
+  
+  // 设置超时
+  const timeoutFiber = yield* Effect.fork(
+    Effect.sleep(5000).pipe(
+      Effect.andThen(() => fiber.interrupt)
+    )
+  )
+  
+  try {
+    const result = yield* Effect.fromFiber(fiber)
+    yield* Effect.fromFiber(timeoutFiber).pipe(
+      Effect.interrupt
+    )
+    return result
+  } catch (error) {
+    if (error._tag === 'InterruptedException') {
+      return { status: 'timeout' }
+    }
+    throw error
+  }
+})
+
+Effect.runPromise(withTimeout).then(result => {
+  console.log(result)
+})
+```
+
+## 🔗 相关概念
+
+- **并发控制**：如何控制并发执行
+- **并发模式**：常见的并发模式
+- **资源管理**：Effect 的资源管理机制
+
+## 📚 学习检查点
+
+- [ ] 理解 Fiber 的概念
+- [ ] 掌握创建 Fiber 的方法
+- [ ] 掌握 Fiber 的操作方法
+- [ ] 了解 Fiber 的状态管理
+- [ ] 能够使用 Fiber 实现并发
+
+## 🚀 下一步
+
+→ [并发控制](./03-concurrency-control.mdx)

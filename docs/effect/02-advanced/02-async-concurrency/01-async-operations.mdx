@@ -1,0 +1,398 @@
+# 异步操作
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了丰富的异步操作工具，让你能够轻松处理延迟、超时、重试和重复执行等常见的异步场景。
+
+## 🎯 Effect.sleep - 延迟执行
+
+延迟执行 Effect，类似于 `setTimeout`。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 延迟 1 秒后执行
+const delayed = Effect.gen(function* () {
+  console.log('Start')
+  yield* Effect.sleep(1000)  // 延迟 1000ms
+  console.log('After 1 second')
+  return 'Done'
+})
+
+Effect.runPromise(delayed).then(result => {
+  console.log(result)
+})
+// 输出：
+// Start
+// (等待 1 秒)
+// After 1 second
+// Done
+```
+
+### 实际应用
+
+```js
+import { Effect } from 'effect'
+
+// 重试之间的延迟
+const fetchWithDelay = (url: string) =>
+  Effect.gen(function* () {
+    for (let i = 0; i < 3; i++) {
+      try {
+        const result = yield* Effect.tryPromise(() => fetch(url))
+        return result
+      } catch (error) {
+        if (i < 2) {
+          yield* Effect.sleep(1000 * (i + 1))  // 递增延迟
+        } else {
+          throw error
+        }
+      }
+    }
+  })
+```
+
+## 💡 Effect.timeout - 超时控制
+
+为 Effect 设置超时时间，超时后返回错误。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 设置 2 秒超时
+const withTimeout = Effect.gen(function* () {
+  console.log('Starting...')
+  yield* Effect.sleep(3000)  // 3 秒延迟
+  return 'Completed'
+}).pipe(
+  Effect.timeout(2000)  // 2 秒超时
+)
+
+Effect.runPromise(withTimeout).catch(error => {
+  console.log('Timeout error:', error.message)
+})
+// 输出：
+// Starting...
+// Timeout error: TimeoutException
+```
+
+### 自定义超时错误
+
+```js
+import { Effect } from 'effect'
+
+class TimeoutError {
+  readonly _tag = 'TimeoutError'
+  constructor(readonly message: string) {}
+}
+
+const withCustomTimeout = Effect.gen(function* () {
+  yield* Effect.sleep(3000)
+  return 'Completed'
+}).pipe(
+  Effect.timeout({
+    duration: 2000,
+    onTimeout: () => new TimeoutError('Operation timed out after 2 seconds')
+  })
+)
+
+Effect.runPromise(withCustomTimeout).catch(error => {
+  console.log(error._tag)  // 'TimeoutError'
+  console.log(error.message)  // 'Operation timed out after 2 seconds'
+})
+```
+
+### 实际应用
+
+```js
+import { Effect } from 'effect'
+
+// API 请求超时控制
+const fetchWithTimeout = (url: string) =>
+  Effect.tryPromise(() => fetch(url)).pipe(
+  Effect.timeout(5000),  // 5 秒超时
+  Effect.catchAll(error =>
+    Effect.succeed({ error: 'Request timeout', data: null })
+  )
+)
+
+Effect.runPromise(fetchWithTimeout('/api/data')).then(result => {
+  console.log(result)
+})
+```
+
+## 🚀 Effect.retry - 重试机制
+
+在失败时自动重试 Effect。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+let attempts = 0
+
+const unreliableOperation = Effect.sync(() => {
+  attempts++
+  console.log(`Attempt ${attempts}`)
+  if (attempts < 3) {
+    throw new NetworkError('Network error')
+  }
+  return 'Success'
+})
+
+const withRetry = unreliableOperation.pipe(
+  Effect.retry({
+    while: (error) => error._tag === 'NetworkError',
+    times: 3
+  })
+)
+
+Effect.runPromise(withRetry).then(result => {
+  console.log(result)  // 'Success'
+})
+// 输出：
+// Attempt 1
+// Attempt 2
+// Attempt 3
+// Success
+```
+
+### 带延迟的重试
+
+```js
+import { Effect } from 'effect'
+
+const withExponentialBackoff = unreliableOperation.pipe(
+  Effect.retry({
+    while: (error) => error._tag === 'NetworkError',
+    times: 3,
+    schedule: Effect.scheduleExponential(1000)  // 指数退避
+  })
+)
+
+Effect.runPromise(withExponentialBackoff)
+```
+
+### 重试策略
+
+```js
+import { Effect } from 'effect'
+
+// 固定间隔重试
+const fixedRetry = unreliableOperation.pipe(
+  Effect.retry({
+    while: (error) => error._tag === 'NetworkError',
+    times: 3,
+    schedule: Effect.scheduleSpaced(1000)  // 固定 1 秒间隔
+  })
+)
+
+// 自定义重试策略
+const customRetry = unreliableOperation.pipe(
+  Effect.retry({
+    while: (error) => error._tag === 'NetworkError',
+    until: () => false,  // 永不停止
+    schedule: Effect.scheduleRecurs(5)  // 最多重试 5 次
+  })
+)
+```
+
+## 🎯 Effect.repeat - 重复执行
+
+重复执行 Effect，直到满足条件。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 重复执行 3 次
+const repeatThreeTimes = Effect.sync(() => {
+  console.log('Executing...')
+  return Math.random()
+}).pipe(
+  Effect.repeat(3)
+)
+
+Effect.runPromise(repeatThreeTimes).then(results => {
+  console.log(results)  // [0.123, 0.456, 0.789]
+})
+
+// 输出：
+// Executing...
+// Executing...
+// Executing...
+// [0.123, 0.456, 0.789]
+```
+
+### 条件重复
+
+```js
+import { Effect } from 'effect'
+
+// 重复直到成功
+let attempts = 0
+
+const untilSuccess = Effect.sync(() => {
+  attempts++
+  console.log(`Attempt ${attempts}`)
+  if (attempts < 3) {
+    throw new Error('Not yet')
+  }
+  return 'Success'
+}).pipe(
+  Effect.repeat({
+    until: (result) => result === 'Success'
+  })
+)
+
+Effect.runPromise(untilSuccess)
+// 输出：
+// Attempt 1
+// Attempt 2
+// Attempt 3
+```
+
+### 带延迟的重复
+
+```js
+import { Effect } from 'effect'
+
+// 每秒重复一次
+const repeatWithDelay = Effect.sync(() => {
+  console.log('Tick')
+  return Date.now()
+}).pipe(
+  Effect.repeat({
+    schedule: Effect.scheduleSpaced(1000),
+    times: 3
+  })
+)
+
+Effect.runPromise(repeatWithDelay)
+// 输出：
+// Tick
+// (等待 1 秒)
+// Tick
+// (等待 1 秒)
+// Tick
+```
+
+## 📝 实际应用示例
+
+### API 重试策略
+
+```js
+import { Effect } from 'effect'
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+class TimeoutError {
+  readonly _tag = 'TimeoutError'
+  constructor(readonly message: string) {}
+}
+
+const robustFetch = (url: string) =>
+  Effect.tryPromise(() => fetch(url)).pipe(
+  // 设置超时
+  Effect.timeout(5000),
+  // 捕获超时错误
+  Effect.catchTag('TimeoutException', () =>
+    Effect.fail(new TimeoutError('Request timeout'))
+  ),
+  // 重试网络错误
+  Effect.retry({
+    while: (error) => error._tag === 'NetworkError',
+    times: 3,
+    schedule: Effect.scheduleExponential(1000)
+  })
+)
+
+Effect.runPromise(robustFetch('/api/data'))
+```
+
+### 定时任务
+
+```js
+import { Effect } from 'effect'
+
+// 每 5 秒执行一次健康检查
+const healthCheck = Effect.gen(function* () {
+  const status = yield* Effect.tryPromise(() =>
+    fetch('/api/health').then(res => res.json())
+  )
+  console.log('Health check:', status)
+}).pipe(
+  Effect.repeat({
+    schedule: Effect.scheduleSpaced(5000)
+  })
+)
+
+Effect.runFork(healthCheck)
+```
+
+### 批处理
+
+```js
+import { Effect } from 'effect'
+
+// 批量处理数据，每批 10 个，间隔 1 秒
+const items = Array.from({ length: 100 }, (_, i) => i)
+
+const processBatch = (batch: number[]) =>
+  Effect.gen(function* () {
+    console.log(`Processing batch of ${batch.length} items`)
+    // 处理批次
+    yield* Effect.sleep(100)
+    return batch.length
+  })
+
+const batchProcess = Effect.forEach(
+  // 分批
+  Array.from({ length: Math.ceil(items.length / 10) }, (_, i) =>
+    items.slice(i * 10, (i + 1) * 10)
+  ),
+  (batch) => processBatch(batch),
+  { concurrency: 1 }  // 串行处理批次
+).pipe(
+  Effect.map(results => results.reduce((sum, count) => sum + count, 0))
+)
+
+Effect.runPromise(batchProcess).then(total => {
+  console.log(`Processed ${total} items`)
+})
+```
+
+## 🔗 相关概念
+
+- **Fiber 概念**：Effect 的并发原语
+- **并发控制**：如何控制并发执行
+- **并发模式**：常见的并发模式
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.sleep 的使用
+- [ ] 掌握 Effect.timeout 的使用
+- [ ] 掌握 Effect.retry 的使用
+- [ ] 掌握 Effect.repeat 的使用
+- [ ] 能够组合异步操作
+
+## 🚀 下一步
+
+→ [Fiber 概念](./02-fibers.mdx)

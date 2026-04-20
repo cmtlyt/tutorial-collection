@@ -1,0 +1,477 @@
+# 并发模式
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了多种并发模式，让你能够以声明式的方式构建复杂的并发应用。
+
+## 🎯 并行执行策略
+
+### 全并行执行
+
+```js
+import { Effect } from 'effect'
+
+// 所有任务同时执行
+const tasks = [
+  Effect.sync(() => { console.log('Task 1'); return 1 }),
+  Effect.sync(() => { console.log('Task 2'); return 2 }),
+  Effect.sync(() => { console.log('Task 3'); return 3 })
+]
+
+const allParallel = Effect.all(tasks, {
+  concurrency: 'unbounded'
+})
+
+Effect.runSync(allParallel)  // [1, 2, 3]
+```
+
+### 限制并发执行
+
+```js
+import { Effect } from 'effect'
+
+// 限制并发数量
+const limitedParallel = Effect.all(tasks, {
+  concurrency: 2  // 最多同时执行 2 个任务
+})
+
+Effect.runSync(limitedParallel)  // [1, 2, 3]
+```
+
+### 串行执行
+
+```js
+import { Effect } from 'effect'
+
+// 依次执行任务
+const sequential = Effect.all(tasks, {
+  concurrency: 1
+})
+
+Effect.runSync(sequential)  // [1, 2, 3]
+```
+
+## 💡 资源竞争处理
+
+### 互斥锁
+
+```js
+import { Effect } from 'effect'
+
+// 创建互斥锁
+const createMutex = () => {
+  let locked = false
+  const waiters: (() => void)[] = []
+  
+  return {
+    acquire: Effect.sync(() => {
+      if (!locked) {
+        locked = true
+        return Effect.succeed(() => {
+          locked = false
+          const waiter = waiters.shift()
+          if (waiter) waiter()
+        })
+      } else {
+        return Effect.async<() => void>((resume) => {
+          waiters.push(() => {
+            locked = true
+            resume(Effect.succeed(() => {
+              locked = false
+              const waiter = waiters.shift()
+              if (waiter) waiter()
+            }))
+          })
+        })
+      }
+    })
+  }
+}
+
+// 使用互斥锁保护共享资源
+const mutex = createMutex()
+let counter = 0
+
+const increment = Effect.gen(function* () {
+  const release = yield* mutex.acquire
+  counter++
+  console.log(`Counter: ${counter}`)
+  release()
+})
+
+Effect.runPromise(
+  Effect.forEach(Array.from({ length: 10 }), () => increment, {
+    concurrency: 'unbounded'
+  })
+)
+```
+
+### 读写锁
+
+```js
+import { Effect } from 'effect'
+
+// 创建读写锁
+const createReadWriteLock = () => {
+  let readers = 0
+  let writing = false
+  const readerWaiters: (() => void)[] = []
+  const writerWaiters: (() => void)[] = []
+  
+  return {
+    acquireRead: Effect.sync(() => {
+      if (!writing) {
+        readers++
+        return Effect.succeed(() => {
+          readers--
+          if (readers === 0) {
+            const waiter = writerWaiters.shift()
+            if (waiter) waiter()
+          }
+        })
+      } else {
+        return Effect.async<() => void>((resume) => {
+          readerWaiters.push(() => {
+            readers++
+            resume(Effect.succeed(() => {
+              readers--
+              if (readers === 0) {
+                const waiter = writerWaiters.shift()
+                if (waiter) waiter()
+              }
+            }))
+          })
+        })
+      }
+    }),
+    acquireWrite: Effect.sync(() => {
+      if (!writing && readers === 0) {
+        writing = true
+        return Effect.succeed(() => {
+          writing = false
+          const readerWaiter = readerWaiters.shift()
+          if (readerWaiter) {
+            readerWaiter()
+          } else {
+            const writerWaiter = writerWaiters.shift()
+            if (writerWaiter) writerWaiter()
+          }
+        })
+      } else {
+        return Effect.async<() => void>((resume) => {
+          writerWaiters.push(() => {
+            writing = true
+            resume(Effect.succeed(() => {
+              writing = false
+              const readerWaiter = readerWaiters.shift()
+              if (readerWaiter) {
+                readerWaiter()
+              } else {
+                const writerWaiter = writerWaiters.shift()
+                if (writerWaiter) writerWaiter()
+              }
+            }))
+          })
+        })
+      }
+    })
+  }
+}
+
+// 使用读写锁
+const rwLock = createReadWriteLock()
+const data = { value: 0 }
+
+const readData = Effect.gen(function* () {
+  const release = yield* rwLock.acquireRead
+  console.log(`Reading: ${data.value}`)
+  release()
+})
+
+const writeData = (newValue: number) =>
+  Effect.gen(function* () {
+    const release = yield* rwLock.acquireWrite
+    data.value = newValue
+    console.log(`Writing: ${data.value}`)
+    release()
+  })
+
+Effect.runPromise(
+  Effect.all([
+    readData,
+    readData,
+    writeData(42),
+    readData
+  ], { concurrency: 'unbounded' })
+)
+```
+
+## 🚀 并发模式
+
+### 生产者-消费者
+
+```js
+import { Effect } from 'effect'
+
+// 生产者-消费者模式
+const createProducerConsumer = <T>(bufferSize: number) => {
+  const buffer: T[] = []
+  const producers: (() => void)[] = []
+  const consumers: ((value: T) => void)[] = []
+  
+  return {
+    produce: (item: T) => Effect.sync(() => {
+      if (buffer.length < bufferSize) {
+        buffer.push(item)
+        const consumer = consumers.shift()
+        if (consumer) consumer(item)
+      } else {
+        return Effect.async<void>((resume) => {
+          producers.push(() => {
+            buffer.push(item)
+            const consumer = consumers.shift()
+            if (consumer) consumer(item)
+            resume(Effect.succeed(void 0))
+          })
+        })
+      }
+    }),
+    consume: Effect.sync(() => {
+      if (buffer.length > 0) {
+        const item = buffer.shift()!
+        const producer = producers.shift()
+        if (producer) producer()
+        return Effect.succeed(item)
+      } else {
+        return Effect.async<T>((resume) => {
+          consumers.push((item) => {
+            const producer = producers.shift()
+            if (producer) producer()
+            resume(Effect.succeed(item))
+          })
+        })
+      }
+    })
+  }
+}
+
+// 使用生产者-消费者
+const pc = createProducerConsumer<string>(10)
+
+const producer = Effect.gen(function* () {
+  for (let i = 0; i < 20; i++) {
+    console.log(`Producing item ${i}`)
+    yield* pc.produce(`Item ${i}`)
+    yield* Effect.sleep(100)
+  }
+})
+
+const consumer = Effect.gen(function* () {
+  for (let i = 0; i < 20; i++) {
+    const item = yield* pc.consume
+    console.log(`Consuming ${item}`)
+    yield* Effect.sleep(200)
+  }
+})
+
+Effect.runPromise(
+  Effect.all([producer, consumer], { concurrency: 'unbounded' })
+)
+```
+
+### 工作池
+
+```js
+import { Effect } from 'effect'
+
+// 工作池模式
+const createWorkerPool = <T, R>(
+  workers: number,
+  worker: (task: T) => Effect.Effect<never, never, R>
+) => {
+  const queue: {
+    task: T
+    resolve: (result: R) => void
+    reject: (error: any) => void
+  }[] = []
+  
+  const workerFiber = Effect.runFork(
+    Effect.gen(function* () {
+      while (true) {
+        const item = queue.shift()
+        if (item) {
+          try {
+            const result = yield* worker(item.task)
+            item.resolve(result)
+          } catch (error) {
+            item.reject(error)
+          }
+        } else {
+          yield* Effect.sleep(10)
+        }
+      }
+    })
+  )
+  
+  return {
+    submit: (task: T): Promise<R> => {
+      return new Promise((resolve, reject) => {
+        queue.push({ task, resolve, reject })
+      })
+    },
+    shutdown: () => Effect.runPromise(workerFiber.interrupt)
+  }
+}
+
+// 使用工作池
+const pool = createWorkerPool(
+  3,
+  (task: { id: number }) =>
+    Effect.gen(function* () {
+      console.log(`Processing task ${task.id}`)
+      yield* Effect.sleep(1000)
+      return { ...task, processed: true }
+    })
+)
+
+const tasks = Array.from({ length: 10 }, (_, i) => ({ id: i }))
+
+Effect.runPromise(
+  Effect.forEach(tasks, task =>
+    Effect.tryPromise(() => pool.submit(task))
+  )
+).then(results => {
+  console.log('All tasks completed')
+  pool.shutdown()
+})
+```
+
+### 扇出扇入
+
+```js
+import { Effect } from 'effect'
+
+// 扇出扇入模式
+const fanOutFanIn = Effect.gen(function* () {
+  // 扇出：并行执行多个任务
+  const tasks = [
+    Effect.sync(() => { console.log('Task 1'); return 1 }),
+    Effect.sync(() => { console.log('Task 2'); return 2 }),
+    Effect.sync(() => { console.log('Task 3'); return 3 })
+  ]
+  
+  const results = yield* Effect.all(tasks, {
+    concurrency: 'unbounded'
+  })
+  
+  // 扇入：聚合结果
+  const sum = results.reduce((acc, val) => acc + val, 0)
+  
+  return sum
+})
+
+Effect.runSync(fanOutFanIn)  // 6
+```
+
+## 📝 实际应用示例
+
+### 并行数据处理
+
+```js
+import { Effect } from 'effect'
+
+// 并行处理数据
+const processData = (data: number[]) =>
+  Effect.gen(function* () {
+    // 并行执行多个处理步骤
+    const [sum, avg, max] = yield* Effect.all([
+      Effect.sync(() => data.reduce((a, b) => a + b, 0)),
+      Effect.sync(() => data.reduce((a, b) => a + b, 0) / data.length),
+      Effect.sync(() => Math.max(...data))
+    ], { concurrency: 'unbounded' })
+    
+    return { sum, avg, max }
+  })
+
+Effect.runPromise(processData([1, 2, 3, 4, 5])).then(stats => {
+  console.log(stats)
+  // { sum: 15, avg: 3, max: 5 }
+})
+```
+
+### 并发 API 请求
+
+```js
+import { Effect } from 'effect'
+
+// 并发 API 请求
+const fetchWithConcurrency = (urls: string[], concurrency: number) =>
+  Effect.gen(function* () {
+    const results = yield* Effect.forEach(
+      urls,
+      url =>
+        Effect.tryPromise(() =>
+          fetch(url).then(res => res.json())
+        ),
+      { concurrency }
+    )
+    
+    return results
+  })
+
+const urls = Array.from({ length: 20 }, (_, i) => `/api/data/${i}`)
+
+Effect.runPromise(fetchWithConcurrency(urls, 5)).then(results => {
+  console.log(`Fetched ${results.length} items`)
+})
+```
+
+### 并发文件处理
+
+```js
+import { Effect } from 'effect'
+
+// 并发文件处理
+const processFiles = (filePaths: string[]) =>
+  Effect.gen(function* () {
+    const results = yield* Effect.forEach(
+      filePaths,
+      path =>
+        Effect.gen(function* () {
+          console.log(`Processing ${path}`)
+          yield* Effect.sleep(1000)
+          return { path, processed: true }
+        }),
+      { concurrency: 3 }
+    )
+    
+    return results
+  })
+
+const files = Array.from({ length: 10 }, (_, i) => `file${i}.txt`)
+
+Effect.runPromise(processFiles(files)).then(results => {
+  console.log(`Processed ${results.length} files`)
+})
+```
+
+## 🔗 相关概念
+
+- **Fiber 概念**：Effect 的并发原语
+- **并发控制**：如何控制并发执行
+- **资源管理**：Effect 的资源管理机制
+
+## 📚 学习检查点
+
+- [ ] 理解并行执行策略
+- [ ] 掌握资源竞争处理
+- [ ] 了解常见的并发模式
+- [ ] 能够实现生产者-消费者模式
+- [ ] 能够实现工作池模式
+
+## 🚀 下一步
+
+→ [资源管理](../03-resource-management/01-resource-concepts.mdx)
