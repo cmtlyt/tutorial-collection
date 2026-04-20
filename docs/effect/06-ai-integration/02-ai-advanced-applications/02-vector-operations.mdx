@@ -1,0 +1,802 @@
+# 向量操作
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的向量操作能力，支持向量嵌入、相似度计算、向量存储和检索增强生成（RAG），是构建 AI 应用的核心技术。
+
+## 🎯 向量嵌入
+
+### 基本向量嵌入
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本向量嵌入
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 生成向量嵌入
+  const embedding = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: 'Hello, world!'
+  })
+  
+  console.log('Embedding:', embedding.vector)
+  console.log('Dimensions:', embedding.vector.length)
+  
+  return embedding
+})
+
+Effect.runSync(program)
+```
+
+### 批量向量嵌入
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 批量向量嵌入
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 批量生成向量嵌入
+  const texts = [
+    'The cat sat on the mat',
+    'The dog chased the ball',
+    'The bird flew in the sky'
+  ]
+  
+  const embeddings = yield* Effect.all(
+    texts.map(text => ai.embed({
+      model: 'text-embedding-ada-002',
+      input: text
+    })),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('Generated embeddings:', embeddings.length)
+  
+  return embeddings
+})
+
+Effect.runSync(program)
+```
+
+### 文档嵌入
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 文档嵌入
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  const document = `
+    Effect is a TypeScript library for functional programming.
+    It provides tools for managing side effects, concurrency, and error handling.
+    Effect makes it easier to write robust, maintainable code.
+  `
+  
+  // 分块文档
+  const chunks = document.split('\n').filter(line => line.trim())
+  
+  // 生成嵌入
+  const embeddings = yield* Effect.all(
+    chunks.map(chunk => Effect.gen(function* () {
+      const embedding = yield* ai.embed({
+        model: 'text-embedding-ada-002',
+        input: chunk
+      })
+      return {
+        text: chunk,
+        vector: embedding.vector
+      }
+    })),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('Document chunks:', embeddings.length)
+  
+  return embeddings
+})
+
+Effect.runSync(program)
+```
+
+## 💡 相似度计算
+
+### 余弦相似度
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 余弦相似度
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 生成嵌入
+  const embedding1 = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: 'The cat is sleeping'
+  })
+  
+  const embedding2 = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: 'The cat is resting'
+  })
+  
+  const embedding3 = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: 'The car is driving'
+  })
+  
+  // 计算余弦相似度
+  const cosineSimilarity = (a, b) => {
+    const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
+    const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
+    const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
+    return dotProduct / (magnitudeA * magnitudeB)
+  }
+  
+  const similarity1 = cosineSimilarity(embedding1.vector, embedding2.vector)
+  const similarity2 = cosineSimilarity(embedding1.vector, embedding3.vector)
+  
+  console.log('Similarity (cat vs cat):', similarity1)
+  console.log('Similarity (cat vs car):', similarity2)
+  
+  return { similarity1, similarity2 }
+})
+
+Effect.runSync(program)
+```
+
+### 欧几里得距离
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 欧几里得距离
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 生成嵌入
+  const embedding1 = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: 'Hello'
+  })
+  
+  const embedding2 = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: 'Hi'
+  })
+  
+  // 计算欧几里得距离
+  const euclideanDistance = (a, b) => {
+    const sum = a.reduce((acc, val, i) => acc + Math.pow(val - b[i], 2), 0)
+    return Math.sqrt(sum)
+  }
+  
+  const distance = euclideanDistance(embedding1.vector, embedding2.vector)
+  
+  console.log('Euclidean distance:', distance)
+  
+  return distance
+})
+
+Effect.runSync(program)
+```
+
+### 相似度搜索
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 相似度搜索
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 文档集合
+  const documents = [
+    'Effect is a TypeScript library',
+    'Python is a programming language',
+    'JavaScript is used for web development',
+    'TypeScript adds types to JavaScript'
+  ]
+  
+  // 生成文档嵌入
+  const docEmbeddings = yield* Effect.all(
+    documents.map(doc => Effect.gen(function* () {
+      const embedding = yield* ai.embed({
+        model: 'text-embedding-ada-002',
+        input: doc
+      })
+      return { text: doc, vector: embedding.vector }
+    })),
+    { concurrency: 'unbounded' }
+  )
+  
+  // 查询
+  const query = 'What is TypeScript?'
+  const queryEmbedding = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: query
+  })
+  
+  // 计算相似度
+  const cosineSimilarity = (a, b) => {
+    const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
+    const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
+    const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
+    return dotProduct / (magnitudeA * magnitudeB)
+  }
+  
+  // 搜索最相似的文档
+  const results = docEmbeddings.map(doc => ({
+    text: doc.text,
+    similarity: cosineSimilarity(queryEmbedding.vector, doc.vector)
+  })).sort((a, b) => b.similarity - a.similarity)
+  
+  console.log('Search results:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 向量存储
+
+### 基本向量存储
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本向量存储
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 向量存储
+  const vectorStore = {
+    vectors: [],
+    
+    add: (id, text, vector) => Effect.gen(function* () {
+      vectorStore.vectors.push({ id, text, vector })
+      console.log(`Added vector ${id}`)
+    }),
+    
+    search: (queryVector, topK = 5) => Effect.gen(function* () {
+      const cosineSimilarity = (a, b) => {
+        const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
+        const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
+        const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
+        return dotProduct / (magnitudeA * magnitudeB)
+      }
+      
+      const results = vectorStore.vectors
+        .map(item => ({
+          ...item,
+          similarity: cosineSimilarity(queryVector, item.vector)
+        }))
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, topK)
+      
+      return results
+    })
+  }
+  
+  // 添加向量
+  const texts = [
+    'Effect is a TypeScript library',
+    'Python is a programming language',
+    'JavaScript is used for web development'
+  ]
+  
+  yield* Effect.all(
+    texts.map((text, i) => Effect.gen(function* () {
+      const embedding = yield* ai.embed({
+        model: 'text-embedding-ada-002',
+        input: text
+      })
+      yield* vectorStore.add(i.toString(), text, embedding.vector)
+    })),
+    { concurrency: 'unbounded' }
+  )
+  
+  // 搜索
+  const query = 'TypeScript'
+  const queryEmbedding = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: query
+  })
+  
+  const results = yield* vectorStore.search(queryEmbedding.vector)
+  console.log('Search results:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 持久化向量存储
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+import * as fs from 'fs/promises'
+
+// 持久化向量存储
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 向量存储（带持久化）
+  const vectorStore = {
+    filePath: './vectors.json',
+    
+    load: () => Effect.gen(function* () {
+      try {
+        const data = yield* Effect.tryPromise(() => fs.readFile(vectorStore.filePath, 'utf-8'))
+        return JSON.parse(data)
+      } catch (error) {
+        return { vectors: [] }
+      }
+    }),
+    
+    save: (data) => Effect.gen(function* () {
+      yield* Effect.tryPromise(() => fs.writeFile(vectorStore.filePath, JSON.stringify(data, null, 2)))
+    }),
+    
+    add: (id, text, vector) => Effect.gen(function* () {
+      const data = yield* vectorStore.load()
+      data.vectors.push({ id, text, vector })
+      yield* vectorStore.save(data)
+      console.log(`Added vector ${id}`)
+    }),
+    
+    search: (queryVector, topK = 5) => Effect.gen(function* () {
+      const data = yield* vectorStore.load()
+      
+      const cosineSimilarity = (a, b) => {
+        const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
+        const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
+        const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
+        return dotProduct / (magnitudeA * magnitudeB)
+      }
+      
+      const results = data.vectors
+        .map(item => ({
+          ...item,
+          similarity: cosineSimilarity(queryVector, item.vector)
+        }))
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, topK)
+      
+      return results
+    })
+  }
+  
+  // 添加向量
+  const text = 'Effect is a TypeScript library for functional programming'
+  const embedding = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: text
+  })
+  
+  yield* vectorStore.add('1', text, embedding.vector)
+  
+  // 搜索
+  const query = 'functional programming'
+  const queryEmbedding = yield* ai.embed({
+    model: 'text-embedding-ada-002',
+    input: query
+  })
+  
+  const results = yield* vectorStore.search(queryEmbedding.vector)
+  console.log('Search results:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 检索增强
+
+### 基本 RAG
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本 RAG
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 知识库
+  const knowledgeBase = [
+    'Effect is a TypeScript library for functional programming',
+    'Effect provides tools for managing side effects',
+    'Effect makes code more maintainable and robust',
+    'Effect supports async operations and concurrency'
+  ]
+  
+  // 生成知识库嵌入
+  const kbEmbeddings = yield* Effect.all(
+    knowledgeBase.map(text => Effect.gen(function* () {
+      const embedding = yield* ai.embed({
+        model: 'text-embedding-ada-002',
+        input: text
+      })
+      return { text, vector: embedding.vector }
+    })),
+    { concurrency: 'unbounded' }
+  )
+  
+  // RAG 函数
+  const rag = (query) => Effect.gen(function* () {
+    // 生成查询嵌入
+    const queryEmbedding = yield* ai.embed({
+      model: 'text-embedding-ada-002',
+      input: query
+    })
+    
+    // 检索相关文档
+    const cosineSimilarity = (a, b) => {
+      const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
+      const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
+      const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
+      return dotProduct / (magnitudeA * magnitudeB)
+    }
+    
+    const relevantDocs = kbEmbeddings
+      .map(doc => ({
+        ...doc,
+        similarity: cosineSimilarity(queryEmbedding.vector, doc.vector)
+      }))
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 2)
+    
+    // 构建上下文
+    const context = relevantDocs.map(doc => doc.text).join('\n')
+    
+    // 生成回答
+    const response = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: 'Answer the question based on the provided context.'
+        },
+        {
+          role: 'user',
+          content: `Context:\n${context}\n\nQuestion: ${query}`
+        }
+      ]
+    })
+    
+    return {
+      query,
+      context: relevantDocs,
+      answer: response.text
+    }
+  })
+  
+  // 使用 RAG
+  const result = yield* rag('What is Effect?')
+  console.log('Query:', result.query)
+  console.log('Context:', result.context)
+  console.log('Answer:', result.answer)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 高级 RAG
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 高级 RAG
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 文档处理
+  const processDocument = (text) => Effect.gen(function* () {
+    // 分块
+    const chunks = text.split('\n').filter(line => line.trim())
+    
+    // 生成嵌入
+    const embeddings = yield* Effect.all(
+      chunks.map(chunk => Effect.gen(function* () {
+        const embedding = yield* ai.embed({
+          model: 'text-embedding-ada-002',
+          input: chunk
+        })
+        return { text: chunk, vector: embedding.vector }
+      })),
+      { concurrency: 'unbounded' }
+    )
+    
+    return embeddings
+  })
+  
+  // 知识库
+  const documents = [
+    'Effect is a TypeScript library for functional programming.\nIt provides tools for managing side effects.',
+    'Effect makes code more maintainable and robust.\nIt supports async operations and concurrency.'
+  ]
+  
+  // 处理文档
+  const allEmbeddings = yield* Effect.all(
+    documents.map(doc => processDocument(doc)),
+    { concurrency: 'unbounded' }
+  )
+  
+  const kbEmbeddings = allEmbeddings.flat()
+  
+  // RAG 函数
+  const rag = (query) => Effect.gen(function* () {
+    // 生成查询嵌入
+    const queryEmbedding = yield* ai.embed({
+      model: 'text-embedding-ada-002',
+      input: query
+    })
+    
+    // 检索相关文档
+    const cosineSimilarity = (a, b) => {
+      const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
+      const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
+      const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
+      return dotProduct / (magnitudeA * magnitudeB)
+    }
+    
+    const relevantDocs = kbEmbeddings
+      .map(doc => ({
+        ...doc,
+        similarity: cosineSimilarity(queryEmbedding.vector, doc.vector)
+      }))
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 3)
+    
+    // 构建上下文
+    const context = relevantDocs.map(doc => doc.text).join('\n')
+    
+    // 生成回答
+    const response = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a helpful assistant. Answer questions based on the provided context.'
+        },
+        {
+          role: 'user',
+          content: `Context:\n${context}\n\nQuestion: ${query}\n\nProvide a detailed answer with citations.`
+        }
+      ]
+    })
+    
+    return {
+      query,
+      context: relevantDocs,
+      answer: response.text
+    }
+  })
+  
+  // 使用 RAG
+  const result = yield* rag('What are the benefits of Effect?')
+  console.log('Query:', result.query)
+  console.log('Answer:', result.answer)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 智能文档搜索
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 智能文档搜索
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 文档集合
+  const documents = [
+    { id: '1', title: 'Effect Basics', content: 'Effect is a TypeScript library for functional programming' },
+    { id: '2', title: 'Effect Async', content: 'Effect provides powerful async operation handling' },
+    { id: '3', title: 'Effect Error', content: 'Effect makes error handling more robust' }
+  ]
+  
+  // 生成嵌入
+  const docEmbeddings = yield* Effect.all(
+    documents.map(doc => Effect.gen(function* () {
+      const embedding = yield* ai.embed({
+        model: 'text-embedding-ada-002',
+        input: `${doc.title}: ${doc.content}`
+      })
+      return { ...doc, vector: embedding.vector }
+    })),
+    { concurrency: 'unbounded' }
+  )
+  
+  // 搜索函数
+  const search = (query) => Effect.gen(function* () {
+    const queryEmbedding = yield* ai.embed({
+      model: 'text-embedding-ada-002',
+      input: query
+    })
+    
+    const cosineSimilarity = (a, b) => {
+      const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
+      const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
+      const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
+      return dotProduct / (magnitudeA * magnitudeB)
+    }
+    
+    const results = docEmbeddings
+      .map(doc => ({
+        title: doc.title,
+        content: doc.content,
+        similarity: cosineSimilarity(queryEmbedding.vector, doc.vector)
+      }))
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 3)
+    
+    return results
+  })
+  
+  // 搜索
+  const queries = ['async operations', 'error handling', 'TypeScript']
+  
+  const searchResults = yield* Effect.all(
+    queries.map(query => Effect.gen(function* () {
+      const results = yield* search(query)
+      console.log(`\nQuery: ${query}`)
+      console.log('Results:', results)
+      return { query, results }
+    })),
+    { concurrency: 1 }
+  )
+  
+  return searchResults
+})
+
+Effect.runSync(program)
+```
+
+### 知识问答系统
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 知识问答系统
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 知识库
+  const knowledgeBase = [
+    'Effect is a TypeScript library for functional programming.',
+    'Effect provides tools for managing side effects.',
+    'Effect supports async operations and concurrency.',
+    'Effect makes code more maintainable and robust.',
+    'Effect has excellent error handling capabilities.'
+  ]
+  
+  // 生成嵌入
+  const kbEmbeddings = yield* Effect.all(
+    knowledgeBase.map(text => Effect.gen(function* () {
+      const embedding = yield* ai.embed({
+        model: 'text-embedding-ada-002',
+        input: text
+      })
+      return { text, vector: embedding.vector }
+    })),
+    { concurrency: 'unbounded' }
+  )
+  
+  // 问答函数
+  const answerQuestion = (question) => Effect.gen(function* () {
+    // 生成查询嵌入
+    const queryEmbedding = yield* ai.embed({
+      model: 'text-embedding-ada-002',
+      input: question
+    })
+    
+    // 检索相关文档
+    const cosineSimilarity = (a, b) => {
+      const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
+      const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
+      const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
+      return dotProduct / (magnitudeA * magnitudeB)
+    }
+    
+    const relevantDocs = kbEmbeddings
+      .map(doc => ({
+        ...doc,
+        similarity: cosineSimilarity(queryEmbedding.vector, doc.vector)
+      }))
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 2)
+    
+    // 构建上下文
+    const context = relevantDocs.map(doc => doc.text).join('\n')
+    
+    // 生成回答
+    const response = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a knowledgeable assistant. Answer questions based on the provided context.'
+        },
+        {
+          role: 'user',
+          content: `Context:\n${context}\n\nQuestion: ${question}`
+        }
+      ]
+    })
+    
+    return {
+      question,
+      context: relevantDocs,
+      answer: response.text
+    }
+  })
+  
+  // 问答
+  const questions = [
+    'What is Effect?',
+    'Does Effect support async operations?',
+    'How does Effect handle errors?'
+  ]
+  
+  const answers = yield* Effect.all(
+    questions.map(question => answerQuestion(question)),
+    { concurrency: 1 }
+  )
+  
+  console.log('Answers:', answers)
+  
+  return answers
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **AI 工具**：工具定义、工具执行、工具链
+- **AI 抽象**：@effect/ai、AI 模型接口
+- **AI 模式**：Agent 模式、对话模式、推理模式
+
+## 📚 学习检查点
+
+- [ ] 掌握向量嵌入
+- [ ] 理解相似度计算
+- [ ] 了解向量存储
+- [ ] 掌握检索增强
+- [ ] 能够实现完整的向量操作应用
+
+## 🚀 下一步
+
+→ [AI 模式](./03-ai-patterns.mdx)

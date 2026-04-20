@@ -1,0 +1,877 @@
+# AI 模式
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了多种 AI 应用模式，包括 Agent 模式、对话模式、推理模式和创作模式，帮助开发者构建不同类型的 AI 应用。
+
+## 🎯 Agent 模式
+
+### 基本 Agent
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本 Agent
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 定义 Agent
+  const agent = {
+    name: 'Helper Agent',
+    role: 'You are a helpful assistant that answers questions clearly and concisely.',
+    
+    process: (message) => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: agent.role },
+          { role: 'user', content: message }
+        ]
+      })
+      
+      return response.text
+    })
+  }
+  
+  // 使用 Agent
+  const response = yield* agent.process('What is Effect?')
+  console.log('Agent response:', response)
+  
+  return response
+})
+
+Effect.runSync(program)
+```
+
+### 工具使用 Agent
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 工具使用 Agent
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 定义工具
+  const tools = [
+    {
+      name: 'get_weather',
+      description: 'Get the current weather',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string' }
+        },
+        required: ['location']
+      }
+    }
+  ]
+  
+  // 工具执行
+  const executeTool = (toolName, toolInput) => Effect.gen(function* () {
+    if (toolName === 'get_weather') {
+      return { weather: 'Sunny, 72°F' }
+    }
+    return { error: 'Unknown tool' }
+  })
+  
+  // 定义 Agent
+  const agent = {
+    name: 'Weather Agent',
+    role: 'You are a weather assistant. Use tools to get weather information.',
+    
+    process: (message) => Effect.gen(function* () {
+      let messages = [
+        { role: 'system', content: agent.role },
+        { role: 'user', content: message }
+      ]
+      
+      let response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: messages,
+        tools: tools
+      })
+      
+      messages.push(response)
+      
+      // 执行工具
+      while (response.toolCalls) {
+        const toolResults = yield* Effect.all(
+          response.toolCalls.map(toolCall => Effect.gen(function* () {
+            const result = yield* executeTool(toolCall.name, toolCall.input)
+            return {
+              role: 'tool',
+              toolCallId: toolCall.id,
+              content: JSON.stringify(result)
+            }
+          })),
+          { concurrency: 'unbounded' }
+        )
+        
+        messages.push(...toolResults)
+        
+        response = yield* ai.generate({
+          model: 'gpt-4',
+          messages: messages
+        })
+        
+        messages.push(response)
+      }
+      
+      return response.text
+    })
+  }
+  
+  // 使用 Agent
+  const response = yield* agent.process('What is the weather in New York?')
+  console.log('Agent response:', response)
+  
+  return response
+})
+
+Effect.runSync(program)
+```
+
+### 多 Agent 协作
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 多 Agent 协作
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 定义 Researcher Agent
+  const researcher = {
+    name: 'Researcher',
+    role: 'You are a researcher. Gather information on topics.',
+    
+    process: (topic) => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: researcher.role },
+          { role: 'user', content: `Research: ${topic}` }
+        ]
+      })
+      
+      return response.text
+    })
+  }
+  
+  // 定义 Writer Agent
+  const writer = {
+    name: 'Writer',
+    role: 'You are a writer. Create engaging content based on research.',
+    
+    process: (research) => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: writer.role },
+          { role: 'user', content: `Write based on this research:\n${research}` }
+        ]
+      })
+      
+      return response.text
+    })
+  }
+  
+  // 定义 Editor Agent
+  const editor = {
+    name: 'Editor',
+    role: 'You are an editor. Review and improve content.',
+    
+    process: (content) => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: editor.role },
+          { role: 'user', content: `Edit this content:\n${content}` }
+        ]
+      })
+      
+      return response.text
+    })
+  }
+  
+  // Agent 协作流程
+  const topic = 'The benefits of meditation'
+  
+  const research = yield* researcher.process(topic)
+  console.log('Research:', research)
+  
+  const content = yield* writer.process(research)
+  console.log('\nContent:', content)
+  
+  const finalContent = yield* editor.process(content)
+  console.log('\nFinal Content:', finalContent)
+  
+  return finalContent
+})
+
+Effect.runSync(program)
+```
+
+## 💡 对话模式
+
+### 基本对话
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本对话
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 对话管理
+  const conversation = {
+    messages: [],
+    
+    addMessage: (role, content) => {
+      conversation.messages.push({ role, content })
+    },
+    
+    process: (message) => Effect.gen(function* () {
+      conversation.addMessage('user', message)
+      
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: conversation.messages
+      })
+      
+      conversation.addMessage('assistant', response.text)
+      
+      return response.text
+    })
+  }
+  
+  // 对话
+  const response1 = yield* conversation.process('Hello!')
+  console.log('Response 1:', response1)
+  
+  const response2 = yield* conversation.process('What is your name?')
+  console.log('Response 2:', response2)
+  
+  const response3 = yield* conversation.process('What did I just ask?')
+  console.log('Response 3:', response3)
+  
+  return conversation.messages
+})
+
+Effect.runSync(program)
+```
+
+### 上下文对话
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 上下文对话
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 对话管理（带上下文）
+  const conversation = {
+    systemPrompt: 'You are a helpful assistant.',
+    maxHistory: 5,
+    messages: [],
+    
+    addMessage: (role, content) => {
+      conversation.messages.push({ role, content })
+    },
+    
+    getContext: () => {
+      const recent = conversation.messages.slice(-conversation.maxHistory)
+      return [
+        { role: 'system', content: conversation.systemPrompt },
+        ...recent
+      ]
+    },
+    
+    process: (message) => Effect.gen(function* () {
+      conversation.addMessage('user', message)
+      
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: conversation.getContext()
+      })
+      
+      conversation.addMessage('assistant', response.text)
+      
+      return response.text
+    })
+  }
+  
+  // 对话
+  const response1 = yield* conversation.process('What is Effect?')
+  console.log('Response 1:', response1)
+  
+  const response2 = yield* conversation.process('How do I use it?')
+  console.log('Response 2:', response2)
+  
+  return conversation.messages
+})
+
+Effect.runSync(program)
+```
+
+### 多轮对话
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 多轮对话
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 对话会话
+  const session = {
+    id: 'session-1',
+    messages: [],
+    
+    addMessage: (role, content) => {
+      session.messages.push({ role, content })
+    },
+    
+    process: (message) => Effect.gen(function* () {
+      session.addMessage('user', message)
+      
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: session.messages
+      })
+      
+      session.addMessage('assistant', response.text)
+      
+      return {
+        message: response.text,
+        history: session.messages
+      }
+    })
+  }
+  
+  // 多轮对话
+  const turns = [
+    'What is functional programming?',
+    'Can you give me an example?',
+    'What are the benefits?',
+    'How does Effect help?'
+  ]
+  
+  const conversation = yield* Effect.all(
+    turns.map(turn => session.process(turn)),
+    { concurrency: 1 }
+  )
+  
+  console.log('Conversation:', conversation)
+  
+  return conversation
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 推理模式
+
+### 链式推理
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 链式推理
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 推理链
+  const reasoningChain = Effect.gen(function* () {
+    // 步骤 1：理解问题
+    const understanding = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: 'What is the capital of France?' }
+      ]
+    })
+    
+    console.log('Step 1 - Understanding:', understanding.text)
+    
+    // 步骤 2：检索知识
+    const knowledge = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: `What is the capital of France? Provide factual information.` }
+      ]
+    })
+    
+    console.log('Step 2 - Knowledge:', knowledge.text)
+    
+    // 步骤 3：综合答案
+    const answer = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: 'What is the capital of France?' },
+        { role: 'assistant', content: understanding.text },
+        { role: 'assistant', content: knowledge.text },
+        { role: 'user', content: 'Provide a clear, concise answer.' }
+      ]
+    })
+    
+    console.log('Step 3 - Answer:', answer.text)
+    
+    return answer.text
+  })
+  
+  const result = yield* reasoningChain
+  console.log('\nFinal answer:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 树式推理
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 树式推理
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 推理树
+  const reasoningTree = Effect.gen(function* () {
+    const question = 'Should I learn Effect?'
+    
+    // 生成多个视角
+    const perspectives = yield* Effect.all([
+      ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'user', content: `${question} Consider the benefits.` }
+        ]
+      }),
+      ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'user', content: `${question} Consider the challenges.` }
+        ]
+      }),
+      ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'user', content: `${question} Consider the alternatives.` }
+        ]
+      })
+    ], { concurrency: 'unbounded' })
+    
+    console.log('Perspectives:', perspectives.map(p => p.text))
+    
+    // 综合所有视角
+    const conclusion = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a helpful advisor. Provide a balanced recommendation based on multiple perspectives.'
+        },
+        {
+          role: 'user',
+          content: `Question: ${question}\n\nPerspectives:\n${perspectives.map(p => p.text).join('\n\n')}`
+        }
+      ]
+    })
+    
+    console.log('\nConclusion:', conclusion.text)
+    
+    return conclusion.text
+  })
+  
+  const result = yield* reasoningTree
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 自我反思推理
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 自我反思推理
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 自我反思
+  const selfReflection = Effect.gen(function* () {
+    const question = 'What is the best programming language?'
+    
+    // 初始答案
+    const initialAnswer = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: question }
+      ]
+    })
+    
+    console.log('Initial answer:', initialAnswer.text)
+    
+    // 自我反思
+    const reflection = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: question },
+        { role: 'assistant', content: initialAnswer.text },
+        { role: 'user', content: 'Critique your own answer. What are the weaknesses?' }
+      ]
+    })
+    
+    console.log('\nReflection:', reflection.text)
+    
+    // 改进的答案
+    const improvedAnswer = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: question },
+        { role: 'assistant', content: initialAnswer.text },
+        { role: 'assistant', content: reflection.text },
+        { role: 'user', content: 'Provide an improved answer addressing the weaknesses.' }
+      ]
+    })
+    
+    console.log('\nImproved answer:', improvedAnswer.text)
+    
+    return improvedAnswer.text
+  })
+  
+  const result = yield* selfReflection
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 创作模式
+
+### 内容生成
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 内容生成
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 内容生成器
+  const contentGenerator = {
+    generate: (topic, style) => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a creative writer. Write in ${style} style.`
+          },
+          {
+            role: 'user',
+            content: `Write about: ${topic}`
+          }
+        ]
+      })
+      
+      return response.text
+    })
+  }
+  
+  // 生成内容
+  const styles = ['formal', 'casual', 'poetic']
+  
+  const contents = yield* Effect.all(
+    styles.map(style => Effect.gen(function* () {
+      const content = yield* contentGenerator.generate('The beauty of nature', style)
+      console.log(`\n${style} style:\n`, content)
+      return { style, content }
+    })),
+    { concurrency: 1 }
+  )
+  
+  return contents
+})
+
+Effect.runSync(program)
+```
+
+### 迭代创作
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 迭代创作
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 迭代创作
+  const iterativeCreation = Effect.gen(function* () {
+    const topic = 'A short story about a robot'
+    
+    // 第一版
+    const version1 = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: `Write ${topic}` }
+      ]
+    })
+    
+    console.log('Version 1:', version1.text)
+    
+    // 反馈
+    const feedback = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: version1.text },
+        { role: 'user', content: 'Provide feedback for improvement.' }
+      ]
+    })
+    
+    console.log('\nFeedback:', feedback.text)
+    
+    // 第二版
+    const version2 = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: version1.text },
+        { role: 'user', content: feedback.text },
+        { role: 'user', content: 'Create an improved version.' }
+      ]
+    })
+    
+    console.log('\nVersion 2:', version2.text)
+    
+    return version2.text
+  })
+  
+  const result = yield* iterativeCreation
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 协作创作
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 协作创作
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 协作创作
+  const collaborativeCreation = Effect.gen(function* () {
+    const topic = 'The future of AI'
+    
+    // 创意生成
+    const ideas = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a creative thinker. Generate innovative ideas.'
+        },
+        {
+          role: 'user',
+          content: `Brainstorm ideas about: ${topic}`
+        }
+      ]
+    })
+    
+    console.log('Ideas:', ideas.text)
+    
+    // 内容开发
+    const content = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a content developer. Expand on ideas.'
+        },
+        {
+          role: 'user',
+          content: `Develop content based on these ideas:\n${ideas.text}`
+        }
+      ]
+    })
+    
+    console.log('\nContent:', content.text)
+    
+    // 编辑润色
+    const edited = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an editor. Improve and polish content.'
+        },
+        {
+          role: 'user',
+          content: content.text }
+      ]
+    })
+    
+    console.log('\nEdited:', edited.text)
+    
+    return edited.text
+  })
+  
+  const result = yield* collaborativeCreation
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 智能客服系统
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 智能客服系统
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 客服 Agent
+  const customerService = {
+    role: 'You are a helpful customer service assistant.',
+    knowledge: [
+      'Our products are available for 30-day returns.',
+      'Free shipping on orders over $50.',
+      'Customer support is available 24/7.',
+      'We accept all major credit cards and PayPal.'
+    ],
+    
+    process: (query) => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          {
+            role: 'system',
+            content: `${customerService.role}\n\nKnowledge:\n${customerService.knowledge.join('\n')}`
+          },
+          { role: 'user', content: query }
+        ]
+      })
+      
+      return response.text
+    })
+  }
+  
+  // 处理查询
+  const queries = [
+    'What is your return policy?',
+    'Do you offer free shipping?',
+    'How can I contact support?'
+  ]
+  
+  const responses = yield* Effect.all(
+    queries.map(query => customerService.process(query)),
+    { concurrency: 1 }
+  )
+  
+  console.log('Customer service responses:', responses)
+  
+  return responses
+})
+
+Effect.runSync(program)
+```
+
+### 学习助手
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 学习助手
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 学习助手
+  const tutor = {
+    role: 'You are a patient tutor. Explain concepts clearly and provide examples.',
+    
+    explain: (topic) => Effect.gen(function* () {
+      const explanation = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: tutor.role },
+          { role: 'user', content: `Explain: ${topic}` }
+        ]
+      })
+      
+      return explanation.text
+    }),
+    
+    quiz: (topic) => Effect.gen(function* () {
+      const quiz = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: 'Create a quiz question about the topic.' },
+          { role: 'user', content: `Topic: ${topic}` }
+        ]
+      })
+      
+      return quiz.text
+    })
+  }
+  
+  // 学习流程
+  const topic = 'Functional programming'
+  
+  const explanation = yield* tutor.explain(topic)
+  console.log('Explanation:', explanation)
+  
+  const quiz = yield* tutor.quiz(topic)
+  console.log('\nQuiz:', quiz)
+  
+  return { explanation, quiz }
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **AI 工具**：工具定义、工具执行、工具链
+- **向量操作**：向量嵌入、相似度计算、向量存储
+- **AI 抽象**：@effect/ai、AI 模型接口
+
+## 📚 学习检查点
+
+- [ ] 掌握 Agent 模式
+- [ ] 理解对话模式
+- [ ] 了解推理模式
+- [ ] 掌握创作模式
+- [ ] 能够实现完整的 AI 模式应用
+
+## 🚀 下一步
+
+→ [模型管理](../03-ai-engineering/01-model-management.mdx)
