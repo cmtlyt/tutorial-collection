@@ -1,0 +1,411 @@
+# 工作流基础
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的工作流与编排能力，通过 `@effect/cluster-workflow` 包提供工作流引擎、状态管理、持久化等功能。
+
+## 🎯 @effect/cluster-workflow - 工作流包
+
+### 安装与设置
+
+```js
+// 安装依赖
+// npm install @effect/cluster-workflow
+// npm install @effect/cluster
+
+// 基本导入
+import { Effect } from 'effect'
+import { ClusterWorkflow, ClusterWorkflowEngine } from '@effect/cluster-workflow'
+import { Cluster } from '@effect/cluster'
+```
+
+### 基本工作流
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 定义工作流
+const workflow = ClusterWorkflow.make('my-workflow', {
+  execute: Effect.gen(function* () {
+    console.log('Workflow started')
+    yield* Effect.sleep(1000)
+    console.log('Workflow completed')
+    return 'Workflow result'
+  })
+})
+
+// 运行工作流
+const program = Effect.gen(function* () {
+  const result = yield* workflow.execute
+  console.log('Result:', result)
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 💡 ClusterWorkflowEngine - 工作流引擎
+
+### 创建工作流引擎
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflowEngine } from '@effect/cluster-workflow'
+import { Cluster } from '@effect/cluster'
+
+// 创建工作流引擎
+const createEngine = Effect.gen(function* () {
+  const engine = yield* ClusterWorkflowEngine.make({
+    // 引擎配置
+    maxConcurrentWorkflows: 10,
+    workflowTimeout: '5m'
+  })
+  
+  return engine
+})
+
+// 使用工作流引擎
+const program = Effect.gen(function* () {
+  const engine = yield* createEngine
+  
+  // 注册工作流
+  yield* engine.register(workflow)
+  
+  // 执行工作流
+  const result = yield* engine.execute('my-workflow', {})
+  
+  console.log('Workflow result:', result)
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 工作流执行
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflowEngine } from '@effect/cluster-workflow'
+
+// 工作流执行
+const program = Effect.gen(function* () {
+  const engine = yield* ClusterWorkflowEngine.make()
+  
+  // 执行工作流
+  const execution = yield* engine.execute('my-workflow', {
+    input: { userId: 123 }
+  })
+  
+  // 等待完成
+  const result = yield* execution.await
+  console.log('Execution result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 工作流状态管理
+
+### 状态追踪
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 带状态的工作流
+const workflow = ClusterWorkflow.make('stateful-workflow', {
+  initialState: { count: 0, status: 'pending' },
+  
+  execute: Effect.gen(function* () {
+    const state = yield* ClusterWorkflow.getState
+    
+    console.log('Current state:', state)
+    
+    // 更新状态
+    yield* ClusterWorkflow.setState({
+      ...state,
+      status: 'running'
+    })
+    
+    yield* Effect.sleep(1000)
+    
+    yield* ClusterWorkflow.setState({
+      ...state,
+      status: 'completed',
+      count: state.count + 1
+    })
+    
+    return 'Workflow completed'
+  })
+})
+
+// 运行工作流
+const program = Effect.gen(function* () {
+  const result = yield* workflow.execute
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 状态查询
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 状态查询
+const program = Effect.gen(function* () {
+  const workflow = ClusterWorkflow.make('query-workflow', {
+    initialState: { step: 0 },
+    
+    execute: Effect.gen(function* () {
+      for (let i = 0; i < 3; i++) {
+        yield* ClusterWorkflow.setState({ step: i + 1 })
+        yield* Effect.sleep(500)
+        
+        const state = yield* ClusterWorkflow.getState
+        console.log('Current step:', state.step)
+      }
+      
+      return 'Workflow completed'
+    })
+  })
+  
+  // 执行工作流
+  yield* workflow.execute
+  
+  // 查询最终状态
+  const finalState = yield* workflow.getState
+  console.log('Final state:', finalState)
+  
+  return finalState
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 持久化与恢复机制
+
+### 工作流持久化
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 可持久化的工作流
+const workflow = ClusterWorkflow.make('persistent-workflow', {
+  persist: true,
+  
+  execute: Effect.gen(function* () {
+    console.log('Step 1')
+    yield* Effect.sleep(1000)
+    
+    // 检查点
+    yield* ClusterWorkflow.checkpoint('step1')
+    
+    console.log('Step 2')
+    yield* Effect.sleep(1000)
+    
+    yield* ClusterWorkflow.checkpoint('step2')
+    
+    console.log('Step 3')
+    yield* Effect.sleep(1000)
+    
+    return 'Workflow completed'
+  })
+})
+
+// 运行工作流
+const program = Effect.gen(function* () {
+  const result = yield* workflow.execute
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 工作流恢复
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 工作流恢复
+const program = Effect.gen(function* () {
+  // 从持久化状态恢复工作流
+  const recovered = yield* ClusterWorkflow.recover('persistent-workflow', {
+    executionId: 'execution-123'
+  })
+  
+  console.log('Recovered workflow:', recovered)
+  
+  return recovered
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 订单处理工作流
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 订单处理工作流
+const orderWorkflow = ClusterWorkflow.make('order-processing', {
+  initialState: {
+    orderId: null,
+    status: 'pending',
+    steps: []
+  },
+  
+  execute: Effect.gen(function* () {
+    // 验证订单
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      status: 'validating',
+      steps: [...state.steps, 'validating']
+    }))
+    
+    yield* Effect.sleep(500)
+    console.log('Order validated')
+    
+    // 处理支付
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      status: 'processing-payment',
+      steps: [...state.steps, 'processing-payment']
+    }))
+    
+    yield* Effect.sleep(1000)
+    console.log('Payment processed')
+    
+    // 发货
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      status: 'shipping',
+      steps: [...state.steps, 'shipping']
+    }))
+    
+    yield* Effect.sleep(800)
+    console.log('Order shipped')
+    
+    // 完成
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      status: 'completed',
+      steps: [...state.steps, 'completed']
+    }))
+    
+    return 'Order processing completed'
+  })
+})
+
+// 运行订单工作流
+const program = Effect.gen(function* () {
+  const result = yield* orderWorkflow.execute({
+    input: { orderId: 'ORD-123' }
+  })
+  
+  const finalState = yield* orderWorkflow.getState
+  console.log('Final state:', finalState)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 数据处理管道
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 数据处理管道
+const dataPipeline = ClusterWorkflow.make('data-pipeline', {
+  initialState: {
+    stage: 'idle',
+    processed: 0,
+    errors: []
+  },
+  
+  execute: Effect.gen(function* () {
+    // 提取数据
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      stage: 'extracting'
+    }))
+    
+    console.log('Extracting data...')
+    yield* Effect.sleep(500)
+    
+    // 转换数据
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      stage: 'transforming'
+    }))
+    
+    console.log('Transforming data...')
+    yield* Effect.sleep(1000)
+    
+    // 加载数据
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      stage: 'loading'
+    }))
+    
+    console.log('Loading data...')
+    yield* Effect.sleep(700)
+    
+    // 完成
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      stage: 'completed',
+      processed: state.processed + 100
+    }))
+    
+    return 'Data pipeline completed'
+  })
+})
+
+// 运行数据管道
+const program = Effect.gen(function* () {
+  const result = yield* dataPipeline.execute
+  const finalState = yield* dataPipeline.getState
+  
+  console.log('Pipeline result:', result)
+  console.log('Final state:', finalState)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **工作流模式**：顺序工作流、并行工作流、条件分支、循环工作流
+- **工作流监控**：状态追踪、进度监控、错误处理
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握 @effect/cluster-workflow 的使用
+- [ ] 理解 ClusterWorkflowEngine 的功能
+- [ ] 掌握工作流状态管理
+- [ ] 了解持久化与恢复机制
+- [ ] 能够实现完整的工作流应用
+
+## 🚀 下一步
+
+→ [工作流模式](./02-workflow-patterns.mdx)

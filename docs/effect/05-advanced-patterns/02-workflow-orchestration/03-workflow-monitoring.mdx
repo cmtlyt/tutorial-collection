@@ -1,0 +1,597 @@
+# 工作流监控
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的工作流监控能力，包括状态追踪、进度监控、错误处理、重试策略等。
+
+## 🎯 状态追踪
+
+### 基本状态追踪
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 带状态追踪的工作流
+const monitoredWorkflow = ClusterWorkflow.make('monitored-workflow', {
+  initialState: {
+    status: 'pending',
+    currentStep: 0,
+    totalSteps: 5
+  },
+  
+  execute: Effect.gen(function* () {
+    // 更新状态
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      status: 'running',
+      currentStep: 1
+    }))
+    
+    console.log('Step 1: Initializing')
+    yield* Effect.sleep(500)
+    
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      currentStep: 2
+    }))
+    
+    console.log('Step 2: Processing')
+    yield* Effect.sleep(500)
+    
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      currentStep: 3
+    }))
+    
+    console.log('Step 3: Validating')
+    yield* Effect.sleep(500)
+    
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      currentStep: 4
+    }))
+    
+    console.log('Step 4: Saving')
+    yield* Effect.sleep(500)
+    
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      status: 'completed',
+      currentStep: 5
+    }))
+    
+    console.log('Step 5: Finished')
+    
+    return 'Workflow completed'
+  })
+})
+
+// 运行并监控工作流
+const program = Effect.gen(function* () {
+  // 启动工作流
+  const execution = yield* monitoredWorkflow.execute
+  
+  // 监控状态
+  while (true) {
+    const state = yield* monitoredWorkflow.getState
+    console.log('Current state:', state)
+    
+    if (state.status === 'completed') {
+      break
+    }
+    
+    yield* Effect.sleep(600)
+  }
+  
+  return execution
+})
+
+Effect.runSync(program)
+```
+
+### 状态历史
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 状态历史追踪
+const workflowWithHistory = ClusterWorkflow.make('history-workflow', {
+  trackHistory: true,
+  
+  execute: Effect.gen(function* () {
+    for (let i = 0; i < 5; i++) {
+      console.log(`Step ${i + 1}`)
+      yield* Effect.sleep(500)
+    }
+    
+    return 'Workflow completed'
+  })
+})
+
+// 获取状态历史
+const program = Effect.gen(function* () {
+  yield* workflowWithHistory.execute
+  
+  // 获取状态历史
+  const history = yield* workflowWithHistory.getHistory
+  console.log('State history:', history)
+  
+  return history
+})
+
+Effect.runSync(program)
+```
+
+## 💡 进度监控
+
+### 基本进度监控
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 进度监控工作流
+const progressWorkflow = ClusterWorkflow.make('progress-workflow', {
+  initialState: {
+    progress: 0,
+    currentTask: '',
+    totalTasks: 10
+  },
+  
+  execute: Effect.gen(function* () {
+    const tasks = Array.from({ length: 10 }, (_, i) => `Task ${i + 1}`)
+    
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i]
+      
+      yield* ClusterWorkflow.updateState(state => ({
+        ...state,
+        currentTask: task,
+        progress: ((i + 1) / tasks.length) * 100
+      }))
+      
+      console.log(`Executing: ${task}`)
+      yield* Effect.sleep(400)
+    }
+    
+    return 'All tasks completed'
+  })
+})
+
+// 监控进度
+const program = Effect.gen(function* () {
+  // 启动工作流
+  const execution = Effect.fork(progressWorkflow.execute)
+  
+  // 监控进度
+  while (true) {
+    const state = yield* progressWorkflow.getState
+    const progress = Math.floor(state.progress)
+    
+    const bar = '█'.repeat(Math.floor(progress / 2)) + '░'.repeat(50 - Math.floor(progress / 2))
+    process.stdout.write(`\r[${bar}] ${progress}% - ${state.currentTask}`)
+    
+    if (state.progress >= 100) {
+      break
+    }
+    
+    yield* Effect.sleep(500)
+  }
+  
+  console.log('\nWorkflow completed')
+  yield* execution
+})
+
+Effect.runSync(program)
+```
+
+### 多任务进度
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 多任务进度监控
+const multiTaskWorkflow = ClusterWorkflow.make('multi-task-workflow', {
+  initialState: {
+    tasks: [
+      { name: 'Task A', progress: 0 },
+      { name: 'Task B', progress: 0 },
+      { name: 'Task C', progress: 0 }
+    ]
+  },
+  
+  execute: Effect.gen(function* () {
+    const tasks = ['Task A', 'Task B', 'Task C']
+    
+    yield* Effect.all(
+      tasks.map((task, index) =>
+        Effect.gen(function* () {
+          for (let i = 0; i <= 10; i++) {
+            yield* ClusterWorkflow.updateState(state => {
+              const newTasks = [...state.tasks]
+              newTasks[index] = { ...newTasks[index], progress: i * 10 }
+              return { ...state, tasks: newTasks }
+            })
+            
+            yield* Effect.sleep(200)
+          }
+        })
+      ),
+      { concurrency: 3 }
+    )
+    
+    return 'All tasks completed'
+  })
+})
+
+// 监控多任务进度
+const program = Effect.gen(function* () {
+  // 启动工作流
+  const execution = Effect.fork(multiTaskWorkflow.execute)
+  
+  // 监控进度
+  while (true) {
+    const state = yield* multiTaskWorkflow.getState
+    
+    console.clear()
+    console.log('Multi-task Progress:')
+    
+    let allComplete = true
+    state.tasks.forEach(task => {
+      const progress = task.progress
+      const bar = '█'.repeat(Math.floor(progress / 2)) + '░'.repeat(50 - Math.floor(progress / 2))
+      console.log(`${task.name}: [${bar}] ${progress}%`)
+      
+      if (progress < 100) {
+        allComplete = false
+      }
+    })
+    
+    if (allComplete) {
+      break
+    }
+    
+    yield* Effect.sleep(500)
+  }
+  
+  console.log('\nAll tasks completed')
+  yield* execution
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 错误处理
+
+### 基本错误处理
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 带错误处理的工作流
+const errorHandlingWorkflow = ClusterWorkflow.make('error-handling-workflow', {
+  execute: Effect.gen(function* () {
+    try {
+      console.log('Step 1: Initialize')
+      yield* Effect.sleep(500)
+      
+      console.log('Step 2: Process')
+      yield* Effect.sleep(500)
+      
+      // 模拟错误
+      if (Math.random() > 0.5) {
+        throw new Error('Processing failed')
+      }
+      
+      console.log('Step 3: Complete')
+      yield* Effect.sleep(500)
+      
+      return 'Workflow completed'
+    } catch (error) {
+      console.error('Error occurred:', error)
+      yield* ClusterWorkflow.updateState(state => ({
+        ...state,
+        status: 'failed',
+        error: error.message
+      }))
+      return 'Workflow failed'
+    }
+  })
+})
+
+// 运行工作流
+const program = Effect.gen(function* () {
+  const result = yield* errorHandlingWorkflow.execute
+  
+  const state = yield* errorHandlingWorkflow.getState
+  console.log('Final state:', state)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 错误恢复
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 错误恢复工作流
+const recoveryWorkflow = ClusterWorkflow.make('recovery-workflow', {
+  initialState: {
+    attempts: 0,
+    maxAttempts: 3
+  },
+  
+  execute: Effect.gen(function* () {
+    const executeWithRetry = Effect.gen(function* () {
+      const state = yield* ClusterWorkflow.getState
+      
+      if (state.attempts >= state.maxAttempts) {
+        throw new Error('Max retry attempts exceeded')
+      }
+      
+      yield* ClusterWorkflow.updateState(state => ({
+        ...state,
+        attempts: state.attempts + 1
+      }))
+      
+      console.log(`Attempt ${state.attempts + 1}/${state.maxAttempts}`)
+      
+      // 模拟可能失败的操作
+      if (Math.random() > 0.3) {
+        throw new Error('Operation failed')
+      }
+      
+      console.log('Operation succeeded')
+      return 'Success'
+    })
+    
+    const result = yield* executeWithRetry.pipe(
+      Effect.retry({
+        times: 3,
+        schedule: Effect.scheduleSpaced('1s')
+      })
+    )
+    
+    return result
+  })
+})
+
+// 运行工作流
+const program = Effect.gen(function* () {
+  const result = yield* recoveryWorkflow.execute
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 重试策略
+
+### 基本重试
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 重试策略工作流
+const retryWorkflow = ClusterWorkflow.make('retry-workflow', {
+  execute: Effect.gen(function* () {
+    const flakyOperation = Effect.gen(function* () {
+      console.log('Attempting operation...')
+      yield* Effect.sleep(500)
+      
+      if (Math.random() > 0.4) {
+        throw new Error('Operation failed')
+      }
+      
+      console.log('Operation succeeded')
+      return 'Success'
+    })
+    
+    const result = yield* flakyOperation.pipe(
+      Effect.retry({
+        times: 5,
+        schedule: Effect.scheduleExponential('100ms')
+      })
+    )
+    
+    return result
+  })
+})
+
+// 运行工作流
+const program = Effect.gen(function* () {
+  const result = yield* retryWorkflow.execute
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 条件重试
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 条件重试工作流
+const conditionalRetryWorkflow = ClusterWorkflow.make('conditional-retry-workflow', {
+  execute: Effect.gen(function* () {
+    const operation = Effect.gen(function* () {
+      const result = Math.random()
+      console.log(`Operation result: ${result}`)
+      
+      if (result < 0.3) {
+        throw new Error('Result too low')
+      }
+      
+      return result
+    })
+    
+    const result = yield* operation.pipe(
+      Effect.retry({
+        while: (error) => error.message === 'Result too low',
+        times: 10,
+        schedule: Effect.scheduleSpaced('200ms')
+      })
+    )
+    
+    return result
+  })
+})
+
+// 运行工作流
+const program = Effect.gen(function* () {
+  const result = yield* conditionalRetryWorkflow.execute
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 完整的监控系统
+
+```js
+import { Effect } from 'effect'
+import { ClusterWorkflow } from '@effect/cluster-workflow'
+
+// 完整的监控工作流
+const fullyMonitoredWorkflow = ClusterWorkflow.make('fully-monitored', {
+  initialState: {
+    status: 'pending',
+    progress: 0,
+    currentTask: '',
+    errors: [],
+    startTime: null,
+    endTime: null
+  },
+  
+  execute: Effect.gen(function* () {
+    // 开始时间
+    const startTime = Date.now()
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      status: 'running',
+      startTime
+    }))
+    
+    const tasks = [
+      { name: 'Initialize', duration: 500 },
+      { name: 'Process', duration: 1000 },
+      { name: 'Validate', duration: 700 },
+      { name: 'Save', duration: 600 },
+      { name: 'Finalize', duration: 400 }
+    ]
+    
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i]
+      
+      yield* ClusterWorkflow.updateState(state => ({
+        ...state,
+        currentTask: task.name,
+        progress: ((i + 1) / tasks.length) * 100
+      }))
+      
+      try {
+        console.log(`Executing: ${task.name}`)
+        yield* Effect.sleep(task.duration)
+      } catch (error) {
+        yield* ClusterWorkflow.updateState(state => ({
+          ...state,
+          errors: [...state.errors, { task: task.name, error: error.message }]
+        }))
+      }
+    }
+    
+    // 结束时间
+    const endTime = Date.now()
+    yield* ClusterWorkflow.updateState(state => ({
+      ...state,
+      status: 'completed',
+      progress: 100,
+      currentTask: 'Completed',
+      endTime
+    }))
+    
+    return 'Workflow completed'
+  })
+})
+
+// 完整的监控程序
+const program = Effect.gen(function* () {
+  // 启动工作流
+  const execution = Effect.fork(fullyMonitoredWorkflow.execute)
+  
+  // 实时监控
+  while (true) {
+    const state = yield* fullyMonitoredWorkflow.getState
+    
+    console.clear()
+    console.log('=== Workflow Monitor ===')
+    console.log(`Status: ${state.status}`)
+    console.log(`Progress: ${Math.floor(state.progress)}%`)
+    console.log(`Current Task: ${state.currentTask}`)
+    
+    if (state.startTime) {
+      const elapsed = Date.now() - state.startTime
+      console.log(`Elapsed: ${elapsed}ms`)
+    }
+    
+    if (state.errors.length > 0) {
+      console.log(`Errors: ${state.errors.length}`)
+      state.errors.forEach((err, i) => {
+        console.log(`  ${i + 1}. ${err.task}: ${err.error}`)
+      })
+    }
+    
+    if (state.status === 'completed') {
+      break
+    }
+    
+    yield* Effect.sleep(500)
+  }
+  
+  // 最终状态
+  const finalState = yield* fullyMonitoredWorkflow.getState
+  console.log('\n=== Final State ===')
+  console.log('Status:', finalState.status)
+  console.log('Progress:', finalState.progress)
+  console.log('Duration:', finalState.endTime - finalState.startTime, 'ms')
+  console.log('Errors:', finalState.errors.length)
+  
+  yield* execution
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **工作流基础**：@effect/cluster-workflow、工作流引擎、状态管理
+- **工作流模式**：顺序工作流、并行工作流、条件分支、循环工作流
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握状态追踪
+- [ ] 理解进度监控
+- [ ] 掌握错误处理
+- [ ] 了解重试策略
+- [ ] 能够实现完整的工作流监控
+
+## 🚀 下一步
+
+→ [集群基础](../03-distributed-systems/01-cluster-basics.mdx)
