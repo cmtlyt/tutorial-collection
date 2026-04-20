@@ -1,0 +1,512 @@
+# 状态模式
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了多种状态管理模式，让你能够根据不同的场景选择合适的状态管理方式。
+
+## 🎯 局部状态
+
+### 函数内部状态
+
+```js
+import { Effect } from 'effect'
+
+// 函数内部的局部状态
+const createLocalCounter = () =>
+  Effect.gen(function* () {
+    const counter = yield* Effect.Ref.make(0)
+    
+    const increment = Effect.sync(() =>
+      Effect.Ref.modify(counter, (value) => [value + 1, value + 1])
+    )
+    
+    const get = Effect.sync(() => Effect.Ref.get(counter))
+    
+    return { increment, get }
+  })
+
+const program = Effect.gen(function* () {
+  // 创建两个独立的计数器
+  const counter1 = yield* createLocalCounter()
+  const counter2 = yield* createLocalCounter()
+  
+  // 它们互不影响
+  yield* counter1.increment()
+  yield* counter1.increment()
+  
+  yield* counter2.increment()
+  
+  const value1 = yield* counter1.get()
+  const value2 = yield* counter2.get()
+  
+  console.log('Counter 1:', value1)  // 2
+  console.log('Counter 2:', value2)  // 1
+  
+  return { value1, value2 }
+})
+
+Effect.runSync(program)
+```
+
+### 作用域状态
+
+```js
+import { Effect } from 'effect'
+
+// 作用域内的状态
+const scopedState = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 在作用域内使用状态
+  yield* Effect.Ref.update(counter, (value) => value + 1)
+  yield* Effect.Ref.update(counter, (value) => value + 1)
+  
+  const value = yield* Effect.Ref.get(counter)
+  console.log('Scoped value:', value)  // 2
+  
+  return value
+})
+
+Effect.runSync(scopedState)
+```
+
+## 💡 共享状态
+
+### 全局共享状态
+
+```js
+import { Effect } from 'effect'
+
+// 全局共享状态
+const globalCounter = Effect.runSync(Effect.Ref.make(0))
+
+const incrementGlobal = Effect.sync(() =>
+  Effect.Ref.modify(globalCounter, (value) => [value + 1, value + 1])
+)
+
+const getGlobal = Effect.sync(() => Effect.Ref.get(globalCounter))
+
+const program = Effect.gen(function* () {
+  // 多个地方使用同一个 Ref
+  yield* incrementGlobal
+  yield* incrementGlobal
+  yield* incrementGlobal
+  
+  const value = yield* getGlobal
+  console.log('Global value:', value)  // 3
+  
+  return value
+})
+
+Effect.runSync(program)
+```
+
+### 服务共享状态
+
+```js
+import { Effect } from 'effect'
+
+// 通过服务共享状态
+interface CounterService {
+  increment: Effect.Effect<never, never, number>
+  get: Effect.Effect<never, never, number>
+}
+
+const createCounterService = (): CounterService => {
+  const counter = Effect.runSync(Effect.Ref.make(0))
+  
+  return {
+    increment: Effect.sync(() =>
+      Effect.Ref.modify(counter, (value) => [value + 1, value + 1])
+    ),
+    get: Effect.sync(() => Effect.Ref.get(counter))
+  }
+}
+
+const program = Effect.gen(function* () {
+  const service = createCounterService()
+  
+  // 通过服务访问共享状态
+  yield* service.increment
+  yield* service.increment
+  
+  const value = yield* service.get
+  console.log('Service value:', value)  // 2
+  
+  return value
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 状态传递
+
+### 通过参数传递
+
+```js
+import { Effect } from 'effect'
+
+// 通过参数传递状态
+const processWithState = (state: any) =>
+  Effect.gen(function* () {
+    const value = yield* Effect.Ref.get(state)
+    console.log('Processing with state:', value)
+    
+    yield* Effect.Ref.update(state, (v) => v + 1)
+    
+    return value
+  })
+
+const program = Effect.gen(function* () {
+  const state = yield* Effect.Ref.make(0)
+  
+  // 传递状态给不同的函数
+  yield* processWithState(state)
+  yield* processWithState(state)
+  yield* processWithState(state)
+  
+  const finalValue = yield* Effect.Ref.get(state)
+  console.log('Final value:', finalValue)  // 3
+  
+  return finalValue
+})
+
+Effect.runSync(program)
+```
+
+### 通过 Effect.gen 传递
+
+```js
+import { Effect } from 'effect'
+
+// 在 Effect.gen 中传递状态
+const program = Effect.gen(function* () {
+  const state = yield* Effect.Ref.make(0)
+  
+  // 在同一个 Effect.gen 中使用
+  yield* Effect.Ref.update(state, (v) => v + 1)
+  const value1 = yield* Effect.Ref.get(state)
+  
+  yield* Effect.Ref.update(state, (v) => v + 1)
+  const value2 = yield* Effect.Ref.get(state)
+  
+  console.log('Values:', value1, value2)  // 1, 2
+  
+  return state
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 状态隔离
+
+### 独立状态实例
+
+```js
+import { Effect } from 'effect'
+
+// 创建独立的状态实例
+const createIsolatedState = (initialValue: number) =>
+  Effect.gen(function* () {
+    const state = yield* Effect.Ref.make(initialValue)
+    
+    const update = (fn: (value: number) => number) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(state, (value) => [fn(value), void 0])
+      )
+    
+    const get = Effect.sync(() => Effect.Ref.get(state))
+    
+    return { update, get }
+  })
+
+const program = Effect.gen(function* () {
+  // 创建两个独立的状态实例
+  const state1 = yield* createIsolatedState(10)
+  const state2 = yield* createIsolatedState(20)
+  
+  // 它们完全独立
+  yield* state1.update(v => v + 1)
+  yield* state2.update(v => v + 1)
+  
+  const value1 = yield* state1.get()
+  const value2 = yield* state2.get()
+  
+  console.log('State 1:', value1)  // 11
+  console.log('State 2:', value2)  // 21
+  
+  return { value1, value2 }
+})
+
+Effect.runSync(program)
+```
+
+### 作用域隔离
+
+```js
+import { Effect } from 'effect'
+
+// 作用域隔离的状态
+const isolatedScope = Effect.gen(function* () {
+  const state = yield* Effect.Ref.make(0)
+  
+  // 在作用域内修改状态
+  yield* Effect.Ref.update(state, (v) => v + 1)
+  yield* Effect.Ref.update(state, (v) => v + 1)
+  
+  const value = yield* Effect.Ref.get(state)
+  console.log('Isolated value:', value)  // 2
+  
+  return value
+})
+
+// 外部无法访问内部状态
+Effect.runSync(isolatedScope)
+```
+
+## 📝 实际应用示例
+
+### 应用状态管理
+
+```js
+import { Effect } from 'effect'
+
+// 应用状态管理
+const createAppState = () =>
+  Effect.gen(function* () {
+    const user = yield* Effect.Ref.make(null)
+    const isLoading = yield* Effect.Ref.make(false)
+    const error = yield* Effect.Ref.make(null)
+    
+    const setUser = (userData: any) =>
+      Effect.sync(() => Effect.Ref.set(user, userData))
+    
+    const setLoading = (loading: boolean) =>
+      Effect.sync(() => Effect.Ref.set(isLoading, loading))
+    
+    const setError = (errorMessage: string | null) =>
+      Effect.sync(() => Effect.Ref.set(error, errorMessage))
+    
+    const clearError = Effect.sync(() => Effect.Ref.set(error, null))
+    
+    const getUser = Effect.sync(() => Effect.Ref.get(user))
+    const getIsLoading = Effect.sync(() => Effect.Ref.get(isLoading))
+    const getError = Effect.sync(() => Effect.Ref.get(error))
+    
+    return {
+      setUser,
+      setLoading,
+      setError,
+      clearError,
+      getUser,
+      getIsLoading,
+      getError
+    }
+  })
+
+const program = Effect.gen(function* () {
+  const appState = yield* createAppState()
+  
+  // 使用应用状态
+  yield* appState.setLoading(true)
+  
+  yield* appState.setUser({ id: 1, name: 'Alice' })
+  
+  yield* appState.setLoading(false)
+  
+  const user = yield* appState.getUser()
+  const isLoading = yield* appState.getIsLoading()
+  
+  console.log('User:', user)
+  console.log('Loading:', isLoading)
+  
+  return appState
+})
+
+Effect.runSync(program)
+```
+
+### 表单状态
+
+```js
+import { Effect } from 'effect'
+
+// 表单状态管理
+const createFormState = <T extends Record<string, any>>(initialValues: T) =>
+  Effect.gen(function* () {
+    const values = yield* Effect.Ref.make(initialValues)
+    const touched = yield* Effect.Ref.make({} as Record<string, boolean>)
+    const errors = yield* Effect.Ref.make({} as Record<string, string>)
+    
+    const setValue = (field: keyof T, value: any) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(values, (current) => {
+          const newValues = { ...current, [field]: value }
+          return [newValues, void 0]
+        })
+      )
+    
+    const setTouched = (field: keyof T) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(touched, (current) => {
+          const newTouched = { ...current, [field]: true }
+          return [newTouched, void 0]
+        })
+      )
+    
+    const setError = (field: keyof T, error: string) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(errors, (current) => {
+          const newErrors = { ...current, [field]: error }
+          return [newErrors, void 0]
+        })
+      )
+    
+    const clearError = (field: keyof T) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(errors, (current) => {
+          const newErrors = { ...current }
+          delete newErrors[field as string]
+          return [newErrors, void 0]
+        })
+      )
+    
+    const getValues = Effect.sync(() => Effect.Ref.get(values))
+    const getTouched = Effect.sync(() => Effect.Ref.get(touched))
+    const getErrors = Effect.sync(() => Effect.Ref.get(errors))
+    
+    return {
+      setValue,
+      setTouched,
+      setError,
+      clearError,
+      getValues,
+      getTouched,
+      getErrors
+    }
+  })
+
+const program = Effect.gen(function* () {
+  const formState = yield* createFormState({
+    username: '',
+    email: '',
+    age: 0
+  })
+  
+  // 使用表单状态
+  yield* formState.setValue('username', 'Alice')
+  yield* formState.setValue('email', 'alice@example.com')
+  yield* formState.setTouched('username')
+  yield* formState.setError('email', 'Invalid email format')
+  
+  const values = yield* formState.getValues()
+  const touched = yield* formState.getTouched()
+  const errors = yield* formState.getErrors()
+  
+  console.log('Values:', values)
+  console.log('Touched:', touched)
+  console.log('Errors:', errors)
+  
+  return formState
+})
+
+Effect.runSync(program)
+```
+
+### 购物车状态
+
+```js
+import { Effect } from 'effect'
+
+// 购物车状态管理
+const createCartState = () =>
+  Effect.gen(function* () {
+    const items = yield* Effect.Ref.make<any[]>([])
+    const total = yield* Effect.Ref.make(0)
+    
+    const addItem = (item: any) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(items, (current) => {
+          const newItems = [...current, { ...item, quantity: 1 }]
+          return [newItems, void 0]
+        })
+      )
+    
+    const removeItem = (itemId: string) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(items, (current) => {
+          const newItems = current.filter(item => item.id !== itemId)
+          return [newItems, void 0]
+        })
+      )
+    
+    const updateQuantity = (itemId: string, quantity: number) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(items, (current) => {
+          const newItems = current.map(item =>
+            item.id === itemId ? { ...item, quantity } : item
+          )
+          return [newItems, void 0]
+        })
+      )
+    
+    const calculateTotal = Effect.sync(() =>
+      Effect.Ref.modify(items, (current) => {
+        const total = current.reduce((sum, item) => sum + item.price * item.quantity, 0)
+        return [current, total]
+      })
+    )
+    
+    const getItems = Effect.sync(() => Effect.Ref.get(items))
+    const getTotal = Effect.sync(() => Effect.Ref.get(total))
+    
+    return {
+      addItem,
+      removeItem,
+      updateQuantity,
+      calculateTotal,
+      getItems,
+      getTotal
+    }
+  })
+
+const program = Effect.gen(function* () {
+  const cartState = yield* createCartState()
+  
+  // 使用购物车状态
+  yield* cartState.addItem({ id: '1', name: 'Product 1', price: 10 })
+  yield* cartState.addItem({ id: '2', name: 'Product 2', price: 20 })
+  yield* cartState.addItem({ id: '3', name: 'Product 3', price: 30 })
+  
+  const total = yield* cartState.calculateTotal()
+  console.log('Total:', total)  // 60
+  
+  const items = yield* cartState.getItems()
+  console.log('Items:', items)
+  
+  return cartState
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **Ref 可变引用**：Ref 的基本使用
+- **原子操作**：并发安全的原子操作
+- **并发安全**：Ref 的并发安全特性
+
+## 📚 学习检查点
+
+- [ ] 理解局部状态的使用
+- [ ] 掌握共享状态的管理
+- [ ] 了解状态传递的方法
+- [ ] 理解状态隔离
+- [ ] 能够实现复杂的状态管理模式
+
+## 🚀 下一步
+
+→ [数据结构与集合](../../03-ecosystem/01-data-structures/01-immutable-collections.mdx)

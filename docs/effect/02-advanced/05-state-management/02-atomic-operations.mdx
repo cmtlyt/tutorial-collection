@@ -1,0 +1,416 @@
+# 原子操作
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Ref 提供了原子操作，确保在并发环境下状态修改的安全性和一致性。
+
+## 🎯 原子更新
+
+### Effect.Ref.update - 原子更新
+
+```js
+import { Effect } from 'effect'
+
+// 原子更新 Ref 的值
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 原子更新
+  yield* Effect.Ref.update(counter, (value) => value + 1)
+  
+  const value = yield* Effect.Ref.get(counter)
+  console.log('Updated value:', value)  // 1
+  
+  return value
+})
+
+Effect.runSync(program)
+```
+
+### 复杂原子更新
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 复杂的原子更新
+  yield* Effect.Ref.update(counter, (value) => {
+    const newValue = value * 2 + 1
+    console.log(`Updating ${value} to ${newValue}`)
+    return newValue
+  })
+  
+  const value = yield* Effect.Ref.get(counter)
+  console.log('Final value:', value)  // 1
+  
+  return value
+})
+
+Effect.runSync(program)
+```
+
+## 💡 比较交换
+
+### Effect.Ref.compareAndSet - 比较并设置
+
+```js
+import { Effect } from 'effect'
+
+// 比较并设置（CAS）
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 只有当前值为 0 时才设置为 1
+  const success1 = yield* Effect.Ref.compareAndSet(counter, 0, 1)
+  console.log('CAS 0 -> 1:', success1)  // true
+  
+  const value1 = yield* Effect.Ref.get(counter)
+  console.log('Value:', value1)  // 1
+  
+  // 当前值是 1，尝试设置为 2（期望值是 0，会失败）
+  const success2 = yield* Effect.Ref.compareAndSet(counter, 0, 2)
+  console.log('CAS 0 -> 2:', success2)  // false
+  
+  const value2 = yield* Effect.Ref.get(counter)
+  console.log('Value:', value2)  // 1
+  
+  return counter
+})
+
+Effect.runSync(program)
+```
+
+### CAS 实现自增
+
+```js
+import { Effect } from 'effect'
+
+// 使用 CAS 实现自增
+const atomicIncrement = (ref: any) =>
+  Effect.sync(() =>
+    Effect.Ref.modify(ref, (value) => [value + 1, value + 1])
+  )
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 并发自增
+  const results = yield* Effect.all([
+    atomicIncrement(counter),
+    atomicIncrement(counter),
+    atomicIncrement(counter)
+  ], { concurrency: 'unbounded' })
+  
+  const finalValue = yield* Effect.Ref.get(counter)
+  console.log('Results:', results)  // [1, 2, 3]
+  console.log('Final value:', finalValue)  // 3
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 事务操作
+
+### 复合原子操作
+
+```js
+import { Effect } from 'effect'
+
+// 复合原子操作
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 复合操作：读取、修改、写入
+  const result = yield* Effect.Ref.modify(counter, (value) => {
+    const doubled = value * 2
+    const incremented = doubled + 1
+    return [incremented, incremented]
+  })
+  
+  console.log('Result:', result)  // 1
+  
+  const value = yield* Effect.Ref.get(counter)
+  console.log('Value:', value)  // 1
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 多步原子操作
+
+```js
+import { Effect } from 'effect'
+
+// 多步原子操作
+const multiStepAtomic = (ref: any) =>
+  Effect.sync(() =>
+    Effect.Ref.modify(ref, (value) => {
+      // 步骤 1: 加倍
+      const step1 = value * 2
+      // 步骤 2: 加 1
+      const step2 = step1 + 1
+      // 步骤 3: 模 10
+      const step3 = step2 % 10
+      return [step3, step3]
+    })
+  )
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(7)
+  
+  const result = yield* multiStepAtomic(counter)
+  console.log('Result:', result)  // 5
+  
+  const value = yield* Effect.Ref.get(counter)
+  console.log('Value:', value)  // 5
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 并发安全
+
+### 并发修改测试
+
+```js
+import { Effect } from 'effect'
+
+// 并发修改测试
+const concurrentTest = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 并发执行 100 次自增
+  yield* Effect.forEach(
+    Array.from({ length: 100 }, (_, i) => i),
+    () =>
+      Effect.sync(() =>
+        Effect.Ref.modify(counter, (value) => [value + 1, void 0])
+      ),
+    { concurrency: 'unbounded' }
+  )
+  
+  const finalValue = yield* Effect.Ref.get(counter)
+  console.log('Final value:', finalValue)  // 100
+  
+  return finalValue
+})
+
+Effect.runSync(concurrentTest)
+```
+
+### 竞态条件避免
+
+```js
+import { Effect } from 'effect'
+
+// 避免竞态条件
+const safeIncrement = (ref: any) =>
+  Effect.sync(() =>
+    Effect.Ref.modify(ref, (value) => [value + 1, value + 1])
+  )
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 并发自增，不会出现竞态条件
+  const results = yield* Effect.all(
+    Array.from({ length: 1000 }, () => safeIncrement(counter)),
+    { concurrency: 'unbounded' }
+  )
+  
+  const finalValue = yield* Effect.Ref.get(counter)
+  console.log('Final value:', finalValue)  // 1000
+  
+  return finalValue
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 线程安全计数器
+
+```js
+import { Effect } from 'effect'
+
+// 线程安全计数器
+const createThreadSafeCounter = () =>
+  Effect.gen(function* () {
+    const counter = yield* Effect.Ref.make(0)
+    
+    const increment = Effect.sync(() =>
+      Effect.Ref.modify(counter, (value) => [value + 1, value + 1])
+    )
+    
+    const decrement = Effect.sync(() =>
+      Effect.Ref.modify(counter, (value) => [value - 1, value - 1])
+    )
+    
+    const add = (value: number) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(counter, (current) => [current + value, current + value])
+      )
+    
+    const get = Effect.sync(() => Effect.Ref.get(counter))
+    
+    return { increment, decrement, add, get }
+  })
+
+const program = Effect.gen(function* () {
+  const counter = yield* createThreadSafeCounter()
+  
+  // 并发操作
+  const results = yield* Effect.all([
+    counter.increment(),
+    counter.increment(),
+    counter.add(5),
+    counter.decrement()
+  ], { concurrency: 'unbounded' })
+  
+  const finalValue = yield* counter.get()
+  console.log('Final value:', finalValue)  // 6
+  
+  return finalValue
+})
+
+Effect.runSync(program)
+```
+
+### 并发缓存
+
+```js
+import { Effect } from 'effect'
+
+// 并发安全的缓存
+const createConcurrentCache = <K, V>() =>
+  Effect.gen(function* () {
+    const cache = yield* Effect.Ref.make(new Map<K, V>())
+    
+    const get = (key: K) =>
+      Effect.sync(() => Effect.Ref.get(cache)).pipe(
+        Effect.map(map => map.get(key))
+      )
+    
+    const set = (key: K, value: V) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(cache, (map) => {
+          const newMap = new Map(map)
+          newMap.set(key, value)
+          return [newMap, void 0]
+        })
+      )
+    
+    const getOrSet = (key: K, valueFactory: () => V) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(cache, (map) => {
+          if (map.has(key)) {
+            return [map, map.get(key)]
+          }
+          const value = valueFactory()
+          const newMap = new Map(map)
+          newMap.set(key, value)
+          return [newMap, value]
+        })
+      )
+    
+    return { get, set, getOrSet }
+  })
+
+const program = Effect.gen(function* () {
+  const cache = yield* createConcurrentCache<string, number>()
+  
+  // 并发访问
+  const results = yield* Effect.all([
+    cache.getOrSet('a', () => 1),
+    cache.getOrSet('a', () => 2),  // 不会执行，因为 'a' 已存在
+    cache.getOrSet('b', () => 3)
+  ], { concurrency: 'unbounded' })
+  
+  console.log('Results:', results)  // [1, 1, 3]
+  
+  return cache
+})
+
+Effect.runSync(program)
+```
+
+### 限流器
+
+```js
+import { Effect } from 'effect'
+
+// 原子限流器
+const createRateLimiter = (maxRequests: number, windowMs: number) =>
+  Effect.gen(function* () {
+    const requests = yield* Effect.Ref.make<number[]>([])
+    const windowStart = yield* Effect.Ref.make(Date.now())
+    
+    const acquire = Effect.sync(() =>
+      Effect.Ref.modify(requests, (current) => {
+        const now = Date.now()
+        
+        // 清理过期的请求
+        const validRequests = current.filter(t => now - t < windowMs)
+        
+        if (validRequests.length < maxRequests) {
+          // 可以请求
+          const newRequests = [...validRequests, now]
+          return [newRequests, true]
+        } else {
+          // 超出限制
+          return [validRequests, false]
+        }
+      })
+    )
+    
+    return { acquire }
+  })
+
+const program = Effect.gen(function* () {
+  const limiter = yield* createRateLimiter(5, 1000)
+  
+  // 尝试获取许可
+  const results = yield* Effect.forEach(
+    Array.from({ length: 10 }, (_, i) => i),
+    () => limiter.acquire(),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('Results:', results)
+  // [true, true, true, true, true, false, false, false, false, false]
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **Ref 可变引用**：Ref 的基本使用
+- **状态模式**：不同的状态管理模式
+- **并发安全**：Ref 的并发安全特性
+
+## 📚 学习检查点
+
+- [ ] 掌握原子更新的方法
+- [ ] 理解比较交换（CAS）机制
+- [ ] 了解事务操作
+- [ ] 理解并发安全
+- [ ] 能够实现线程安全的状态管理
+
+## 🚀 下一步
+
+→ [状态模式](./03-state-patterns.mdx)

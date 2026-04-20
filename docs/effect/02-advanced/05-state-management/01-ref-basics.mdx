@@ -1,0 +1,364 @@
+# Ref 可变引用
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Ref 是 Effect 提供的并发安全的可变引用，它允许你在 Effect 中安全地管理可变状态。
+
+## 🎯 Effect.Ref.make - 创建可变状态
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 创建 Ref
+const ref = Effect.runSync(Effect.Ref.make(0))
+
+console.log(ref)  // Ref { ... }
+```
+
+### 初始化值
+
+```js
+import { Effect } from 'effect'
+
+// 使用不同类型的初始值
+const numberRef = Effect.runSync(Effect.Ref.make(42))
+const stringRef = Effect.runSync(Effect.Ref.make('hello'))
+const objectRef = Effect.runSync(Effect.Ref.make({ count: 0 }))
+const arrayRef = Effect.runSync(Effect.Ref.make([1, 2, 3]))
+```
+
+### 在 Effect 中创建 Ref
+
+```js
+import { Effect } from 'effect'
+
+// 在 Effect 中创建和使用 Ref
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 使用 Ref
+  const value = yield* Effect.Ref.get(counter)
+  console.log('Initial value:', value)
+  
+  return counter
+})
+
+Effect.runSync(program)
+```
+
+## 💡 Effect.Ref.get - 读取状态
+
+### 基本读取
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(42)
+  
+  // 读取 Ref 的值
+  const value = yield* Effect.Ref.get(counter)
+  console.log('Value:', value)  // 42
+  
+  return value
+})
+
+Effect.runSync(program)
+```
+
+### 多次读取
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 多次读取
+  const value1 = yield* Effect.Ref.get(counter)
+  const value2 = yield* Effect.Ref.get(counter)
+  const value3 = yield* Effect.Ref.get(counter)
+  
+  console.log(value1, value2, value3)  // 0, 0, 0
+  
+  return counter
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 Effect.Ref.set - 设置状态
+
+### 基本设置
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 设置新值
+  yield* Effect.Ref.set(counter, 10)
+  
+  const value = yield* Effect.Ref.get(counter)
+  console.log('New value:', value)  // 10
+  
+  return value
+})
+
+Effect.runSync(program)
+```
+
+### 链式设置
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 链式设置
+  yield* Effect.Ref.set(counter, 10)
+  yield* Effect.Ref.set(counter, 20)
+  yield* Effect.Ref.set(counter, 30)
+  
+  const value = yield* Effect.Ref.get(counter)
+  console.log('Final value:', value)  // 30
+  
+  return value
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 Effect.Ref.modify - 修改状态
+
+### 基本修改
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 修改 Ref 的值并返回结果
+  const result = yield* Effect.Ref.modify(counter, (value) => [
+    value + 1,  // 新值
+    value      // 返回旧值
+  ])
+  
+  console.log('Old value:', result)  // 0
+  
+  const newValue = yield* Effect.Ref.get(counter)
+  console.log('New value:', newValue)  // 1
+  
+  return { old: result, new: newValue }
+})
+
+Effect.runSync(program)
+```
+
+### 复杂修改
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const counter = yield* Effect.Ref.make(0)
+  
+  // 复杂的修改逻辑
+  const result = yield* Effect.Ref.modify(counter, (value) => {
+    const newValue = value * 2 + 1
+    return [newValue, newValue % 2 === 0 ? 'even' : 'odd']
+  })
+  
+  console.log('Result:', result)  // 'odd'
+  
+  const newValue = yield* Effect.Ref.get(counter)
+  console.log('New value:', newValue)  // 1
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 计数器
+
+```js
+import { Effect } from 'effect'
+
+// 简单计数器
+const createCounter = () =>
+  Effect.gen(function* () {
+    const counter = yield* Effect.Ref.make(0)
+    
+    const increment = Effect.sync(() =>
+      Effect.Ref.modify(counter, (value) => [value + 1, value + 1])
+    )
+    
+    const decrement = Effect.sync(() =>
+      Effect.Ref.modify(counter, (value) => [value - 1, value - 1])
+    )
+    
+    const get = Effect.sync(() => Effect.Ref.get(counter))
+    
+    return { increment, decrement, get }
+  })
+
+const program = Effect.gen(function* () {
+  const counter = yield* createCounter()
+  
+  const value1 = yield* counter.get()
+  console.log('Initial:', value1)  // 0
+  
+  const value2 = yield* counter.increment()
+  console.log('After increment:', value2)  // 1
+  
+  const value3 = yield* counter.increment()
+  console.log('After increment:', value3)  // 2
+  
+  const value4 = yield* counter.decrement()
+  console.log('After decrement:', value4)  // 1
+  
+  return counter
+})
+
+Effect.runSync(program)
+```
+
+### 状态缓存
+
+```js
+import { Effect } from 'effect'
+
+// 状态缓存
+const createCache = <K, V>() =>
+  Effect.gen(function* () {
+    const cache = yield* Effect.Ref.make(new Map<K, V>())
+    
+    const get = (key: K) =>
+      Effect.sync(() => Effect.Ref.get(cache)).pipe(
+        Effect.map(map => map.get(key))
+      )
+    
+    const set = (key: K, value: V) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(cache, (map) => {
+          const newMap = new Map(map)
+          newMap.set(key, value)
+          return [newMap, void 0]
+        })
+      )
+    
+    const has = (key: K) =>
+      Effect.sync(() => Effect.Ref.get(cache)).pipe(
+        Effect.map(map => map.has(key))
+      )
+    
+    const clear = Effect.sync(() =>
+      Effect.Ref.set(cache, new Map())
+    )
+    
+    return { get, set, has, clear }
+  })
+
+const program = Effect.gen(function* () {
+  const cache = yield* createCache<string, number>()
+  
+  yield* cache.set('a', 1)
+  yield* cache.set('b', 2)
+  yield* cache.set('c', 3)
+  
+  const value = yield* cache.get('b')
+  console.log('Value for b:', value)  // 2
+  
+  const exists = yield* cache.has('a')
+  console.log('Has a:', exists)  // true
+  
+  return cache
+})
+
+Effect.runSync(program)
+```
+
+### 累加器
+
+```js
+import { Effect } from 'effect'
+
+// 累加器
+const createAccumulator = () =>
+  Effect.gen(function* () {
+    const accumulator = yield* Effect.Ref.make(0)
+    
+    const add = (value: number) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(accumulator, (current) => [
+          current + value,
+          current + value
+        ])
+      )
+    
+    const multiply = (value: number) =>
+      Effect.sync(() =>
+        Effect.Ref.modify(accumulator, (current) => [
+          current * value,
+          current * value
+        ])
+      )
+    
+    const reset = Effect.sync(() =>
+      Effect.Ref.set(accumulator, 0)
+    )
+    
+    const get = Effect.sync(() => Effect.Ref.get(accumulator))
+    
+    return { add, multiply, reset, get }
+  })
+
+const program = Effect.gen(function* () {
+  const acc = yield* createAccumulator()
+  
+  yield* acc.add(10)
+  const value1 = yield* acc.get()
+  console.log('After add 10:', value1)  // 10
+  
+  yield* acc.multiply(2)
+  const value2 = yield* acc.get()
+  console.log('After multiply 2:', value2)  // 20
+  
+  yield* acc.add(5)
+  const value3 = yield* acc.get()
+  console.log('After add 5:', value3)  // 25
+  
+  return acc
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **原子操作**：并发安全的原子操作
+- **状态模式**：不同的状态管理模式
+- **并发安全**：Ref 的并发安全特性
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.Ref.make 的使用
+- [ ] 掌握 Effect.Ref.get 的使用
+- [ ] 掌握 Effect.Ref.set 的使用
+- [ ] 掌握 Effect.Ref.modify 的使用
+- [ ] 能够使用 Ref 实现状态管理
+
+## 🚀 下一步
+
+→ [原子操作](./02-atomic-operations.mdx)
