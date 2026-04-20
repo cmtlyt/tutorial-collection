@@ -1,0 +1,375 @@
+# 函数组合（Function Composition）
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+函数组合是将多个函数组合成一个新函数的过程。在函数式编程中，函数组合是一种强大的技术，可以构建复杂的行为，同时保持代码的可读性和可维护性。
+
+## 🎯 基本概念
+
+### 函数组合的定义
+
+如果有两个函数 `f` 和 `g`，那么它们的组合 `f ∘ g`（读作 "f after g"）定义为：
+
+```js
+(f ∘ g)(x) = f(g(x))
+```
+
+### 数学表示
+
+```
+x → g → f → result
+```
+
+## 🔍 JavaScript 中的函数组合
+
+### 手动组合
+
+```js
+// 定义简单函数
+const double = (x) => x * 2
+const square = (x) => x * x
+const increment = (x) => x + 1
+
+// 手动组合
+const result1 = square(double(increment(3)))
+console.log(result1) // ((3 + 1) * 2)² = 64
+```
+
+### 组合函数
+
+```js
+// 创建组合函数
+const compose = (f, g) => (x) => f(g(x))
+
+// 使用组合
+const doubleThenSquare = compose(square, double)
+const result2 = doubleThenSquare(3)
+console.log(result2) // (3 * 2)² = 36
+
+const incrementDoubleSquare = compose(square, compose(double, increment))
+const result3 = incrementDoubleSquare(3)
+console.log(result3) // ((3 + 1) * 2)² = 64
+```
+
+### 管道函数
+
+```js
+// 创建管道函数（从左到右）
+const pipe = (x, ...fns) => fns.reduce((acc, fn) => fn(acc), x)
+
+// 使用管道
+const result4 = pipe(
+  3,
+  increment,  // 4
+  double,     // 8
+  square      // 64
+)
+console.log(result4) // 64
+```
+
+## 💡 Effect 中的函数组合
+
+Effect 提供了强大的组合能力，主要通过 `pipe` 操作符实现。
+
+### 基础组合
+
+```js
+import { Effect } from 'effect'
+
+// 定义 Effect
+const fetchUser = Effect.succeed({ id: 1, name: 'Alice' })
+const fetchPosts = (userId) => Effect.succeed([
+  { id: 1, userId, title: 'Post 1' },
+  { id: 2, userId, title: 'Post 2' }
+])
+
+// 组合 Effect
+const program = fetchUser.pipe(
+  Effect.map(user => user.id),
+  Effect.flatMap(fetchPosts),
+  Effect.map(posts => posts.length)
+)
+
+Effect.runPromise(program).then(console.log) // 2
+```
+
+### 使用 Effect.gen
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const user = yield* fetchUser
+  const userId = user.id
+  const posts = yield* fetchPosts(userId)
+  const postCount = posts.length
+  return postCount
+})
+```
+
+### 复杂组合
+
+```js
+import { Effect } from 'effect'
+
+// 验证用户
+const validateUser = (user) => 
+  user.age >= 18 
+    ? Effect.succeed(user)
+    : Effect.fail(new Error('User must be 18 or older'))
+
+// 格式化用户
+const formatUser = (user) => ({
+  fullName: `${user.firstName} ${user.lastName}`,
+  age: user.age
+})
+
+// 保存用户
+const saveUser = (user) => 
+  Effect.tryPromise(() => 
+    fetch('/api/users', {
+      method: 'POST',
+      body: JSON.stringify(user)
+    }).then(res => res.json())
+  )
+
+// 组合所有操作
+const program = Effect.succeed({
+  firstName: 'Alice',
+  lastName: 'Smith',
+  age: 25
+}).pipe(
+  validateUser,
+  Effect.map(formatUser),
+  Effect.flatMap(saveUser)
+)
+```
+
+## 🎯 组合模式
+
+### 1. 映射（Map）
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.succeed([1, 2, 3]).pipe(
+  Effect.map(numbers => numbers.map(n => n * 2))
+)
+
+Effect.runPromise(program).then(console.log) // [2, 4, 6]
+```
+
+### 2. 扁平映射（FlatMap）
+
+```js
+import { Effect } from 'effect'
+
+const fetchUser = (id) => Effect.succeed({ id, name: `User ${id}` })
+
+const program = Effect.succeed([1, 2, 3]).pipe(
+  Effect.flatMap(ids => Effect.all(ids.map(fetchUser)))
+)
+
+Effect.runPromise(program).then(console.log)
+// [{ id: 1, name: 'User 1' }, { id: 2, name: 'User 2' }, { id: 3, name: 'User 3' }]
+```
+
+### 3. 过滤（Filter）
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.succeed([1, 2, 3, 4, 5]).pipe(
+  Effect.map(numbers => numbers.filter(n => n % 2 === 0))
+)
+
+Effect.runPromise(program).then(console.log) // [2, 4]
+```
+
+### 4. 归约（Reduce）
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.succeed([1, 2, 3, 4, 5]).pipe(
+  Effect.map(numbers => numbers.reduce((sum, n) => sum + n, 0))
+)
+
+Effect.runPromise(program).then(console.log) // 15
+```
+
+## 🚀 实际应用示例
+
+### 数据处理管道
+
+```js
+import { Effect } from 'effect'
+
+// 定义处理步骤
+const fetchData = Effect.tryPromise(() =>
+  fetch('/api/data').then(res => res.json())
+)
+
+const validateData = (data) =>
+  data.length > 0
+    ? Effect.succeed(data)
+    : Effect.fail(new Error('No data found'))
+
+const transformData = (data) =>
+  Effect.succeed(
+    data.map(item => ({
+      ...item,
+      processed: true,
+      timestamp: Date.now()
+    }))
+  )
+
+const saveData = (data) =>
+  Effect.tryPromise(() =>
+    fetch('/api/processed', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    })
+  )
+
+// 组合处理管道
+const pipeline = fetchData.pipe(
+  Effect.flatMap(validateData),
+  Effect.flatMap(transformData),
+  Effect.flatMap(saveData)
+)
+```
+
+### 错误处理组合
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.tryPromise(() =>
+  fetch('/api/data')
+).pipe(
+  Effect.flatMap(response => 
+    response.ok 
+      ? Effect.succeed(response)
+      : Effect.fail(new Error(`HTTP ${response.status}`))
+  ),
+  Effect.flatMap(response => 
+    Effect.tryPromise(() => response.json())
+  ),
+  Effect.catchAll(error =>
+    Effect.succeed({ error: error.message, data: null })
+  )
+)
+```
+
+### 重试组合
+
+```js
+import { Effect } from 'effect'
+
+const fetchWithRetry = (url, maxRetries = 3) =>
+  Effect.tryPromise(() => fetch(url)).pipe(
+  Effect.retry({
+    while: (error) => error instanceof NetworkError,
+    times: maxRetries
+  }),
+  Effect.timeout(5000),
+  Effect.catchAll(error =>
+    Effect.succeed({ error: error.message, data: null })
+  )
+)
+```
+
+## 📝 实践建议
+
+### 1. 保持函数单一职责
+
+```js
+// ❌ 函数职责过多
+const processUser = (user) => {
+  if (!user.email) throw new Error('Email required')
+  const normalized = user.email.toLowerCase()
+  const hashed = hash(normalized)
+  return { ...user, emailHash: hashed }
+}
+
+// ✅ 拆分为小函数
+const validateEmail = (user) =>
+  user.email ? Effect.succeed(user) : Effect.fail(new Error('Email required'))
+
+const normalizeEmail = (user) =>
+  Effect.succeed({ ...user, email: user.email.toLowerCase() })
+
+const hashEmail = (user) =>
+  Effect.succeed({ ...user, emailHash: hash(user.email) })
+
+// 组合
+const processUser = (user) =>
+  validateEmail(user).pipe(
+    Effect.flatMap(normalizeEmail),
+    Effect.flatMap(hashEmail)
+  )
+```
+
+### 2. 使用有意义的函数名
+
+```js
+// ✅ 清晰的函数名
+const fetchUserData = (id) => Effect.tryPromise(() => fetch(`/api/users/${id}`))
+const validateUser = (user) => Effect.succeed(user)
+const formatUserResponse = (user) => Effect.succeed(format(user))
+
+// 组合时清晰易懂
+const getUserHandler = (id) =>
+  fetchUserData(id).pipe(
+    Effect.flatMap(validateUser),
+    Effect.map(formatUserResponse)
+  )
+```
+
+### 3. 避免过度嵌套
+
+```js
+// ❌ 过度嵌套
+const program = fetchUser(1).pipe(
+  Effect.flatMap(user => 
+    fetchPosts(user.id).pipe(
+      Effect.flatMap(posts =>
+        fetchComments(posts[0].id).pipe(
+          Effect.map(comments => ({ user, posts, comments }))
+        )
+      )
+    )
+  )
+)
+
+// ✅ 使用 Effect.gen
+const program = Effect.gen(function* () {
+  const user = yield* fetchUser(1)
+  const posts = yield* fetchPosts(user.id)
+  const comments = yield* fetchComments(posts[0].id)
+  return { user, posts, comments }
+})
+```
+
+## 🔗 相关概念
+
+- **纯函数（Pure Functions）**：易于组合的基础
+- **高阶函数（Higher-Order Functions）**：接受或返回函数的函数
+- **Point-free 风格**：不显式提及参数的函数组合风格
+- **柯里化（Currying）**：将多参数函数转换为单参数函数链
+
+## 📚 学习检查点
+
+- [ ] 理解函数组合的概念
+- [ ] 掌握 JavaScript 中的函数组合
+- [ ] 熟悉 Effect 中的组合操作
+- [ ] 能够使用组合构建复杂功能
+- [ ] 了解常见的组合模式
+
+## 🚀 下一步
+
+→ [TypeScript 类型基础](../02-effect-types/01-typescript-generics.mdx)

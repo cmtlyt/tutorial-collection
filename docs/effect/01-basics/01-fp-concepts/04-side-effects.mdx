@@ -1,0 +1,373 @@
+# 副作用（Side Effects）
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+副作用是指函数或表达式除了返回值之外，对外部环境产生的任何可观察的影响。在函数式编程中，副作用是需要特别关注和管理的重要概念。
+
+## 🎯 什么是副作用
+
+副作用包括但不限于：
+
+```js
+// 1. 修改外部变量
+let globalVar = 0
+function modifyGlobal() {
+  globalVar = 1 // 副作用：修改全局变量
+}
+
+// 2. DOM 操作
+function updateUI() {
+  document.getElementById('app').innerHTML = 'Hello' // 副作用：修改 DOM
+}
+
+// 3. 网络请求
+function fetchData(url) {
+  return fetch(url) // 副作用：网络 I/O
+}
+
+// 4. 文件操作
+function writeFile(path, content) {
+  fs.writeFileSync(path, content) // 副作用：文件 I/O
+}
+
+// 5. 数据库操作
+function queryDatabase(sql) {
+  return db.query(sql) // 副作用：数据库 I/O
+}
+
+// 6. 获取系统时间
+function getTime() {
+  return Date.now() // 副作用：每次调用结果不同
+}
+
+// 7. 随机数生成
+function getRandom() {
+  return Math.random() // 副作用：每次调用结果不同
+}
+
+// 8. 打印日志
+function log(message) {
+  console.log(message) // 副作用：输出到控制台
+}
+```
+
+## 🔍 副作用的问题
+
+### 1. 难以测试
+
+```js
+// ❌ 难以测试 - 依赖外部环境
+function processUser(id) {
+  const user = fetch(`/api/users/${id}`).then(res => res.json())
+  return user
+}
+
+// ✅ 易于测试 - 副作用被隔离
+function processUser(fetchUser, id) {
+  return fetchUser(id)
+}
+
+// 测试时可以注入 mock 函数
+const mockFetch = (id) => Promise.resolve({ id, name: 'Alice' })
+processUser(mockFetch, 1) // 易于测试
+```
+
+### 2. 难以推理
+
+```js
+// ❌ 难以推理 - 函数行为不明确
+let counter = 0
+function increment() {
+  counter += 1
+  console.log(counter)
+  return counter
+}
+
+// ✅ 易于推理 - 函数行为明确
+function increment(counter) {
+  const newCounter = counter + 1
+  return { newCounter, log: `Counter: ${newCounter}` }
+}
+```
+
+### 3. 并发安全问题
+
+```js
+// ❌ 并发不安全 - 多个线程同时修改
+let sharedState = { count: 0 }
+function increment() {
+  sharedState.count += 1 // 竞态条件
+}
+
+// ✅ 并发安全 - 每个操作独立
+function increment(state) {
+  return { ...state, count: state.count + 1 }
+}
+```
+
+## 🚀 Effect 的副作用管理
+
+Effect 的核心思想是将副作用作为值（values）来处理，而不是直接执行。
+
+### 副作用作为描述
+
+```js
+import { Effect } from 'effect'
+
+// Effect 不是函数，而是一个描述
+const fetchData = Effect.tryPromise(() =>
+  fetch('/api/data').then(res => res.json())
+)
+
+// Effect 只是描述，不会立即执行
+console.log(typeof fetchData) // 'object'
+```
+
+### 延迟执行
+
+```js
+import { Effect } from 'effect'
+
+// 创建 Effect 描述
+const program = Effect.gen(function* () {
+  const data = yield* Effect.tryPromise(() =>
+    fetch('/api/data').then(res => res.json())
+  )
+  console.log(data)
+})
+
+// 只有运行时才执行副作用
+Effect.runPromise(program)
+```
+
+### 可组合性
+
+```js
+import { Effect } from 'effect'
+
+// 将副作用组合
+const fetchUser = (id) => Effect.tryPromise(() =>
+  fetch(`/api/users/${id}`).then(res => res.json())
+)
+
+const fetchPosts = (userId) => Effect.tryPromise(() =>
+  fetch(`/api/users/${userId}/posts`).then(res => res.json())
+)
+
+const program = Effect.gen(function* () {
+  const user = yield* fetchUser(1)
+  const posts = yield* fetchPosts(user.id)
+  return { user, posts }
+})
+```
+
+## 💡 Effect 中的常见副作用
+
+### 1. 网络请求
+
+```js
+import { Effect } from 'effect'
+
+const httpGet = (url) => Effect.tryPromise({
+  try: () => fetch(url).then(res => res.json()),
+  catch: (error) => new NetworkError(error.message)
+})
+
+const program = httpGet('https://api.example.com/data')
+```
+
+### 2. 文件操作
+
+```js
+import { Effect } from 'effect'
+import { FileSystem } from '@effect/platform'
+
+const readFile = (path) => Effect.tryPromise({
+  try: () => FileSystem.FileSystem.readTextFile(path),
+  catch: (error) => new FileError(error.message)
+})
+```
+
+### 3. 控制台输出
+
+```js
+import { Effect } from 'effect'
+
+const logMessage = (message) => Effect.sync(() => {
+  console.log(message)
+})
+
+const program = logMessage('Hello, Effect!')
+```
+
+### 4. 随机数生成
+
+```js
+import { Effect } from 'effect'
+
+const random = Effect.sync(() => Math.random())
+
+const program = Effect.gen(function* () {
+  const value = yield* random
+  return value * 100
+})
+```
+
+### 5. 时间操作
+
+```js
+import { Effect } from 'effect'
+
+const getCurrentTime = Effect.sync(() => Date.now())
+
+const delay = (ms) => Effect.sleep(ms)
+
+const program = Effect.gen(function* () {
+  const start = yield* getCurrentTime
+  yield* delay(1000)
+  const end = yield* getCurrentTime
+  return end - start
+})
+```
+
+## 🎯 副作用隔离策略
+
+### 1. 纯函数 + Effect
+
+```js
+// 纯函数 - 业务逻辑
+function calculateTotal(items) {
+  return items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+}
+
+// Effect - 副作用处理
+const fetchItems = Effect.tryPromise(() =>
+  fetch('/api/items').then(res => res.json())
+)
+
+const program = fetchItems.pipe(
+  Effect.map(calculateTotal) // 使用纯函数
+)
+```
+
+### 2. 依赖注入
+
+```js
+// 定义接口
+interface Logger {
+  log: (message: string) => Effect.Effect<void>
+}
+
+// 实现
+const consoleLogger: Logger = {
+  log: (message) => Effect.sync(() => console.log(message))
+}
+
+// 使用
+const program = (logger: Logger) =>
+  Effect.gen(function* () {
+    yield* logger.log('Starting program')
+    // ... 业务逻辑
+  })
+
+// 运行时注入具体实现
+Effect.runPromise(program(consoleLogger))
+```
+
+### 3. 错误处理
+
+```js
+import { Effect } from 'effect'
+
+// 将副作用错误转换为 Effect 错误
+const safeFetch = (url) => Effect.tryPromise({
+  try: () => fetch(url).then(res => {
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
+    return res.json()
+  }),
+  catch: (error) => new HttpError(error.message)
+})
+
+// 错误恢复
+const program = safeFetch('https://api.example.com/data').pipe(
+  Effect.catchAll((error) =>
+    Effect.succeed({ error: error.message, data: null })
+  )
+)
+```
+
+## 📝 实践建议
+
+### 1. 识别副作用
+
+在编写代码时，明确识别哪些操作会产生副作用：
+
+```js
+// 标记副作用操作
+// ❌ 直接执行
+const data = fetch('/api/data')
+
+// ✅ 延迟执行
+const fetchData = Effect.tryPromise(() => fetch('/api/data'))
+```
+
+### 2. 隔离副作用
+
+将副作用操作与纯逻辑分离：
+
+```js
+// 纯逻辑
+function processData(data) {
+  return data.filter(item => item.active).map(item => item.value)
+}
+
+// 副作用
+const fetchData = Effect.tryPromise(() => fetch('/api/data'))
+
+// 组合
+const program = fetchData.pipe(
+  Effect.map(processData)
+)
+```
+
+### 3. 类型化错误
+
+为副作用错误定义明确的类型：
+
+```js
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+type AppError = NetworkError | ValidationError
+```
+
+## 🔗 相关概念
+
+- **纯函数（Pure Functions）**：无副作用的函数
+- **不可变性（Immutability）**：避免副作用的重要手段
+- **Effect 类型**：将副作用作为值处理
+- **引用透明（Referential Transparency）**：无副作用的特性
+
+## 📚 学习检查点
+
+- [ ] 理解什么是副作用
+- [ ] 识别代码中的副作用
+- [ ] 了解副作用的问题
+- [ ] 掌握 Effect 如何管理副作用
+- [ ] 能够隔离和处理副作用
+
+## 🚀 下一步
+
+→ [函数组合（Function Composition）](./05-function-composition.mdx)

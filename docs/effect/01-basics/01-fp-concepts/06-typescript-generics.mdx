@@ -1,0 +1,402 @@
+# TypeScript 泛型（Generics）
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+泛型是 TypeScript 中强大的类型系统特性，它允许我们在定义函数、接口或类时使用类型变量，从而创建可重用的组件，同时保持类型安全。
+
+## 🎯 基本概念
+
+### 泛型函数
+
+```js
+// ❌ 不使用泛型 - 失去类型信息
+function identity(value) {
+  return value
+}
+
+// ✅ 使用泛型 - 保持类型信息
+function identity<T>(value: T): T {
+  return value
+}
+
+// 使用
+const num = identity<number>(42)        // number
+const str = identity<string>('hello')    // string
+const bool = identity<boolean>(true)     // boolean
+
+// 类型推断
+const inferredNum = identity(42)         // number
+const inferredStr = identity('hello')    // string
+```
+
+### 泛型接口
+
+```js
+// 泛型接口
+interface Box<T> {
+  value: T
+}
+
+// 使用
+const numberBox: Box<number> = { value: 42 }
+const stringBox: Box<string> = { value: 'hello' }
+const userBox: Box<{ name: string }> = { 
+  value: { name: 'Alice' } 
+}
+```
+
+### 泛型类
+
+```js
+// 泛型类
+class Storage<T> {
+  private items: T[] = []
+
+  add(item: T): void {
+    this.items.push(item)
+  }
+
+  get(index: number): T | undefined {
+    return this.items[index]
+  }
+
+  getAll(): T[] {
+    return [...this.items]
+  }
+}
+
+// 使用
+const numberStorage = new Storage<number>()
+numberStorage.add(1)
+numberStorage.add(2)
+
+const stringStorage = new Storage<string>()
+stringStorage.add('hello')
+stringStorage.add('world')
+```
+
+## 🔍 泛型约束
+
+### 基础约束
+
+```js
+// 约束 T 必须有 length 属性
+function getLength<T extends { length: number }>(arg: T): number {
+  return arg.length
+}
+
+// 使用
+getLength('hello')        // 5
+getLength([1, 2, 3])      // 3
+getLength({ length: 10 }) // 10
+// getLength(42)         // ❌ 错误：number 没有 length 属性
+```
+
+### 使用 keyof 约束
+
+```js
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key]
+}
+
+// 使用
+const user = { name: 'Alice', age: 25, email: 'alice@example.com' }
+
+const name = getProperty(user, 'name')  // string
+const age = getProperty(user, 'age')    // number
+// const invalid = getProperty(user, 'invalid') // ❌ 错误
+```
+
+### 条件类型约束
+
+```js
+type NonNullable<T> = T extends null | undefined ? never : T
+
+type Result = NonNullable<string | null>  // string
+type Result2 = NonNullable<number | undefined> // number
+type Result3 = NonNullable<null>  // never
+```
+
+## 💡 Effect 中的泛型
+
+Effect 类型本身就是泛型，理解泛型对于掌握 Effect 至关重要。
+
+### Effect 类型定义
+
+```js
+// Effect 的类型签名（简化版）
+interface Effect<R, E, A> {
+  // R: Requirements (依赖/上下文)
+  // E: Error (错误类型)
+  // A: Success (成功值类型)
+}
+```
+
+### 基础 Effect 泛型
+
+```js
+import { Effect } from 'effect'
+
+// Effect<never, never, number> - 无依赖、无错误、返回 number
+const succeed = Effect.succeed(42)
+
+// Effect<never, Error, string> - 无依赖、可能失败、返回 string
+const fail = Effect.fail(new Error('Something went wrong'))
+
+// Effect<never, never, void> - 无依赖、无错误、无返回值
+const log = Effect.sync(() => console.log('Hello'))
+```
+
+### 泛型函数与 Effect
+
+```js
+// 泛型函数返回 Effect
+function fetchById<T>(id: string): Effect.Effect<never, Error, T> {
+  return Effect.tryPromise(() =>
+    fetch(`/api/${id}`).then(res => res.json())
+  )
+}
+
+// 使用
+type User = { id: string; name: string }
+type Post = { id: string; title: string }
+
+const userEffect = fetchById<User>('user-1')
+const postEffect = fetchById<Post>('post-1')
+```
+
+### 泛型工具函数
+
+```js
+// 泛型验证函数
+function validate<T>(
+  value: unknown,
+  validator: (v: unknown) => v is T
+): Effect.Effect<never, ValidationError, T> {
+  return validator(value)
+    ? Effect.succeed(value)
+    : Effect.fail(new ValidationError('Invalid value'))
+}
+
+// 使用
+function isString(value: unknown): value is string {
+  return typeof value === 'string'
+}
+
+const result = validate('hello', isString)
+```
+
+## 🎯 高级泛型模式
+
+### 泛型默认类型
+
+```js
+interface Response<T = any, E = Error> {
+  data: T
+  error?: E
+}
+
+const response1: Response = { data: 42 }
+const response2: Response<string> = { data: 'hello' }
+const response3: Response<string, NetworkError> = { 
+  data: 'hello',
+  error: new NetworkError()
+}
+```
+
+### 泛型条件类型
+
+```js
+type ExtractArrayType<T> = T extends (infer U)[] ? U : never
+
+type Numbers = ExtractArrayType<number[]>  // number
+type Strings = ExtractArrayType<string[]>  // string
+type NotArray = ExtractArrayType<number>   // never
+```
+
+### 映射类型
+
+```js
+type Readonly<T> = {
+  readonly [K in keyof T]: T[K]
+}
+
+type Partial<T> = {
+  [K in keyof T]?: T[K]
+}
+
+type User = {
+  name: string
+  age: number
+  email: string
+}
+
+type ReadonlyUser = Readonly<User>
+type PartialUser = Partial<User>
+```
+
+## 🚀 实际应用示例
+
+### API 响应处理
+
+```js
+// 定义泛型 API 响应类型
+interface ApiResponse<T> {
+  data: T
+  status: number
+  message: string
+}
+
+// 泛型 fetch 函数
+function fetchApi<T>(url: string): Effect.Effect<never, Error, ApiResponse<T>> {
+  return Effect.tryPromise(() =>
+    fetch(url)
+      .then(res => res.json())
+      .then(data => ({
+        data: data as T,
+        status: 200,
+        message: 'Success'
+      }))
+  )
+}
+
+// 使用
+type User = { id: string; name: string }
+type Post = { id: string; title: string }
+
+const userResponse = fetchApi<User>('/api/user/1')
+const postResponse = fetchApi<Post>('/api/post/1')
+```
+
+### 数据转换管道
+
+```js
+// 泛型转换函数
+function transform<T, U>(
+  effect: Effect.Effect<never, Error, T>,
+  transformer: (value: T) => U
+): Effect.Effect<never, Error, U> {
+  return effect.pipe(Effect.map(transformer))
+}
+
+// 使用
+const numbers = Effect.succeed([1, 2, 3, 4, 5])
+
+const doubled = transform(numbers, arr => arr.map(n => n * 2))
+const filtered = transform(numbers, arr => arr.filter(n => n % 2 === 0))
+const summed = transform(numbers, arr => arr.reduce((sum, n) => sum + n, 0))
+```
+
+### 错误处理泛型
+
+```js
+// 泛型错误类型
+class AppError<E = string> {
+  readonly _tag = 'AppError'
+  constructor(readonly message: E) {}
+}
+
+// 泛型错误处理
+function handleErrors<T, E>(
+  effect: Effect.Effect<never, AppError<E>, T>,
+  handler: (error: AppError<E>) => T
+): Effect.Effect<never, never, T> {
+  return effect.pipe(
+    Effect.catchAll(error => Effect.succeed(handler(error)))
+  )
+}
+
+// 使用
+const program = Effect.fail(new AppError('Network error'))
+
+const handled = handleErrors(program, error => {
+  console.log(`Error: ${error.message}`)
+  return null as any
+})
+```
+
+## 📝 实践建议
+
+### 1. 优先使用类型推断
+
+```js
+// ❌ 显式指定类型（冗余）
+const result = identity<string>('hello')
+
+// ✅ 让 TypeScript 推断类型
+const result = identity('hello')
+```
+
+### 2. 使用有意义的泛型名称
+
+```js
+// ❌ 不清晰的泛型名称
+function map<T, U>(array: T[], fn: (item: T) => U): U[] {
+  return array.map(fn)
+}
+
+// ✅ 清晰的泛型名称
+function map<TInput, TOutput>(
+  array: TInput[],
+  fn: (item: TInput) => TOutput
+): TOutput[] {
+  return array.map(fn)
+}
+```
+
+### 3. 合理使用泛型约束
+
+```js
+// ❌ 过于宽松的约束
+function log<T>(value: T): void {
+  console.log(value.toString()) // 可能运行时错误
+}
+
+// ✅ 适当的约束
+function log<T extends { toString(): string }>(value: T): void {
+  console.log(value.toString())
+}
+```
+
+### 4. 避免过度泛化
+
+```js
+// ❌ 过度泛化 - 复杂且难以理解
+function process<T extends Record<string, any>, K extends keyof T>(
+  obj: T,
+  key: K,
+  transformer: (value: T[K]) => any
+): any {
+  return transformer(obj[key])
+}
+
+// ✅ 简化 - 更清晰
+function processValue<T>(
+  value: T,
+  transformer: (value: T) => any
+): any {
+  return transformer(value)
+}
+```
+
+## 🔗 相关概念
+
+- **高阶类型（Higher-Kinded Types）**：更高级的类型抽象
+- **类型推断（Type Inference）**：TypeScript 自动推断类型的能力
+- **条件类型（Conditional Types）**：基于条件的类型选择
+- **映射类型（Mapped Types）**：基于现有类型创建新类型
+
+## 📚 学习检查点
+
+- [ ] 理解泛型的基本概念
+- [ ] 掌握泛型函数、接口和类的使用
+- [ ] 了解泛型约束的方法
+- [ ] 理解 Effect 中的泛型应用
+- [ ] 能够使用泛型编写类型安全的代码
+
+## 🚀 下一步
+
+→ [高阶类型（Higher-Kinded Types）](./07-higher-kinded-types.mdx)

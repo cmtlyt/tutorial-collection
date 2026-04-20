@@ -1,0 +1,348 @@
+# 高阶类型（Higher-Kinded Types）
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+高阶类型（Higher-Kinded Types，简称 HKT）是一种类型系统特性，它允许我们对类型构造器（type constructors）进行抽象。简单来说，就是"类型的类型"。
+
+## 🎯 基本概念
+
+### 类型构造器
+
+在理解高阶类型之前，我们需要先理解类型构造器：
+
+```js
+// 普通类型
+type User = { name: string; age: number }
+
+// 类型构造器 - 接受一个类型参数，返回一个新类型
+type Box<T> = { value: T }
+
+// 使用
+type NumberBox = Box<number>      // { value: number }
+type StringBox = Box<string>      // { value: string }
+type UserBox = Box<User>          // { value: User }
+```
+
+### 高阶类型的直观理解
+
+```js
+// 普通函数：值 -> 值
+const add = (a: number, b: number): number => a + b
+
+// 高阶函数：函数 -> 函数
+const compose = <A, B, C>(
+  f: (b: B) => C,
+  g: (a: A) => B
+): ((a: A) => C) => (a: A) => f(g(a))
+
+// 普通类型：类型
+type User = { name: string }
+
+// 类型构造器：类型 -> 类型
+type Box<T> = { value: T }
+
+// 高阶类型：类型构造器 -> 类型构造器
+// (Type -> Type) -> (Type -> Type)
+```
+
+## 🔍 TypeScript 中的高阶类型模拟
+
+TypeScript 原生不支持真正的高阶类型，但我们可以通过一些模式来模拟。
+
+### 使用接口模拟 HKT
+
+```js
+// 定义 HKT 接口
+interface HKT<F, A> {
+  _F: F
+  _A: A
+}
+
+// 定义类型构造器标识
+interface BoxKind {}
+type BoxHKT<A> = HKT<BoxKind, A>
+
+// 实际的 Box 类型
+type Box<A> = { value: A }
+
+// 类型级别的映射
+interface URI2Kind<A> {
+  BoxKind: Box<A>
+}
+
+// 使用
+type Mapped<A> = URI2Kind<A>['BoxKind']
+type Result = Mapped<number>  // Box<number>
+```
+
+### 使用泛型约束模拟
+
+```js
+// 定义 Functor 接口
+interface Functor<F> {
+  map<A, B>(fa: F<A>, f: (a: A) => B): F<B>
+}
+
+// 为 Box 实现 Functor
+interface Box<A> {
+  map<B>(f: (a: A) => B): Box<B>
+}
+
+// 使用
+const box: Box<number> = { value: 42 }
+const doubled = box.map(x => x * 2)  // Box<number>
+```
+
+## 💡 Effect 中的高阶类型
+
+Effect 本身就是一个类型构造器，支持高阶类型的操作。
+
+### Effect 作为类型构造器
+
+```js
+import { Effect } from 'effect'
+
+// Effect 是一个类型构造器
+// Effect<R, E, A> 接受三个类型参数，返回一个类型
+
+// Effect<never, never, number> - 具体的 Effect 类型
+const numberEffect: Effect<never, never, number> = Effect.succeed(42)
+
+// Effect<never, never, string> - 另一个具体的 Effect 类型
+const stringEffect: Effect<never, never, string> = Effect.succeed('hello')
+```
+
+### Effect 的 Functor 实现
+
+```js
+import { Effect } from 'effect'
+
+// Effect 实现了 map 操作
+const numberEffect = Effect.succeed(42)
+
+// map: Effect<R, E, A> -> (A -> B) -> Effect<R, E, B>
+const stringEffect = numberEffect.pipe(
+  Effect.map(n => n.toString())  // Effect<never, never, string>
+)
+
+const doubledEffect = numberEffect.pipe(
+  Effect.map(n => n * 2)  // Effect<never, never, number>
+)
+```
+
+### Effect 的 Monad 实现
+
+```js
+import { Effect } from 'effect'
+
+// Effect 实现了 flatMap (bind) 操作
+const fetchUser = (id: string) => 
+  Effect.succeed({ id, name: `User ${id}` })
+
+const fetchPosts = (userId: string) =>
+  Effect.succeed([
+    { id: '1', userId, title: 'Post 1' }
+  ])
+
+// flatMap: Effect<R, E, A> -> (A -> Effect<R, E, B>) -> Effect<R, E, B>
+const program = fetchUser('1').pipe(
+  Effect.flatMap(user => fetchPosts(user.id))
+)
+```
+
+## 🎯 高阶类型模式
+
+### 1. Functor（函子）
+
+```js
+// Functor 接口
+interface Functor<F> {
+  map<A, B>(fa: F<A>, f: (a: A) => B): F<B>
+}
+
+// Effect 作为 Functor
+const functorEffect = Effect.succeed([1, 2, 3]).pipe(
+  Effect.map(arr => arr.map(n => n * 2))  // [2, 4, 6]
+)
+```
+
+### 2. Monad（单子）
+
+```js
+// Monad 接口
+interface Monad<M> extends Functor<M> {
+  of<A>(a: A): M<A>
+  flatMap<A, B>(ma: M<A>, f: (a: A) => M<B>): M<B>
+}
+
+// Effect 作为 Monad
+const monadEffect = Effect.gen(function* () {
+  const user = yield* fetchUser('1')
+  const posts = yield* fetchPosts(user.id)
+  return { user, posts }
+})
+```
+
+### 3. Applicative（应用式）
+
+```js
+// Applicative 接口
+interface Applicative<F> extends Functor<F> {
+  of<A>(a: A): F<A>
+  ap<A, B>(fab: F<(a: A) => B>, fa: F<A>): F<B>
+}
+
+// Effect 作为 Applicative
+const applicativeEffect = Effect.all([
+  Effect.succeed(1),
+  Effect.succeed(2),
+  Effect.succeed(3)
+])  // Effect<never, never, [number, number, number]>
+```
+
+## 🚀 实际应用示例
+
+### 泛型数据处理
+
+```js
+import { Effect } from 'effect'
+
+// 泛型数据处理函数
+function processData<T, U>(
+  data: T[],
+  transformer: (item: T) => Effect.Effect<never, Error, U>
+): Effect.Effect<never, Error, U[]> {
+  return Effect.all(data.map(transformer))
+}
+
+// 使用
+type User = { id: string; name: string }
+type EnrichedUser = User & { email: string }
+
+function enrichUser(user: User): Effect.Effect<never, Error, EnrichedUser> {
+  return Effect.succeed({
+    ...user,
+    email: `${user.name.toLowerCase()}@example.com`
+  })
+}
+
+const users: User[] = [
+  { id: '1', name: 'Alice' },
+  { id: '2', name: 'Bob' }
+]
+
+const enrichedUsers = processData(users, enrichUser)
+```
+
+### 类型安全的管道
+
+```js
+import { Effect } from 'effect'
+
+// 定义管道类型
+type Pipe<T, R> = T extends Effect.Effect<infer A, infer E, infer B>
+  ? Effect.Effect<R, E, B>
+  : never
+
+// 使用管道
+const pipeline = Effect.succeed(42)
+  .pipe(
+    Effect.map(n => n * 2),      // 84
+    Effect.map(n => n.toString()), // "84"
+    Effect.map(s => s.length)     // 2
+  )
+```
+
+### 组合多个 Effect
+
+```js
+import { Effect } from 'effect'
+
+// 组合多个 Effect
+const program = Effect.gen(function* () {
+  // 并行执行
+  const [user, posts, comments] = yield* Effect.all([
+    fetchUser('1'),
+    fetchPosts('1'),
+    fetchComments('1')
+  ])
+
+  // 处理数据
+  const result = {
+    user,
+    posts,
+    comments,
+    total: posts.length + comments.length
+  }
+
+  return result
+})
+```
+
+## 📝 实践建议
+
+### 1. 理解类型构造器
+
+```js
+// 识别类型构造器
+type Box<T> = { value: T }        // 类型构造器
+type Array<T> = T[]               // 类型构造器
+type Promise<T> = Promise<T>      // 类型构造器
+type Effect<R, E, A> = Effect<R, E, A>  // 类型构造器
+```
+
+### 2. 使用类型别名简化
+
+```js
+// ❌ 复杂的类型表达式
+const program: Effect<never, Error, { user: User; posts: Post[] }>
+
+// ✅ 使用类型别名
+type ProgramResult = { user: User; posts: Post[] }
+const program: Effect<never, Error, ProgramResult>
+```
+
+### 3. 利用 TypeScript 的类型推断
+
+```js
+// ❌ 显式指定所有类型
+const result: Effect<never, never, number> = Effect.succeed(42)
+
+// ✅ 让 TypeScript 推断
+const result = Effect.succeed(42)  // 自动推断为 Effect<never, never, number>
+```
+
+### 4. 理解 Effect 的类型参数
+
+```js
+// Effect<R, E, A>
+// R: Requirements (依赖/上下文)
+// E: Error (错误类型)
+// A: Success (成功值类型)
+
+const effect1: Effect<never, never, number> = Effect.succeed(42)
+const effect2: Effect<never, Error, string> = Effect.fail(new Error('error'))
+const effect3: Effect<Logger, never, void> = Effect.sync(() => console.log('hello'))
+```
+
+## 🔗 相关概念
+
+- **泛型（Generics）**：高阶类型的基础
+- **类型推断（Type Inference）**：自动推断复杂类型
+- **Functor/Monad**：高阶类型的数学抽象
+- **Effect 类型系统**：Effect 的类型构造器实现
+
+## 📚 学习检查点
+
+- [ ] 理解高阶类型的概念
+- [ ] 掌握类型构造器的使用
+- [ ] 了解 TypeScript 中 HKT 的模拟
+- [ ] 理解 Effect 中的高阶类型应用
+- [ ] 能够使用高阶类型编写抽象代码
+
+## 🚀 下一步
+
+→ [类型推断（Type Inference）](./08-type-inference.mdx)

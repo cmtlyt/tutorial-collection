@@ -1,0 +1,371 @@
+# 类型推断（Type Inference）
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+类型推断是 TypeScript 编译器自动推断表达式类型的能力。良好的类型推断可以减少显式类型注解的需求，让代码更加简洁，同时保持类型安全。
+
+## 🎯 基本推断
+
+### 变量推断
+
+```js
+// TypeScript 自动推断类型
+let num = 42              // 推断为 number
+let str = 'hello'         // 推断为 string
+let bool = true           // 推断为 boolean
+let arr = [1, 2, 3]       // 推断为 number[]
+let obj = { x: 1, y: 2 }  // 推断为 { x: number; y: number }
+```
+
+### 函数返回类型推断
+
+```js
+// 自动推断返回类型
+function add(a: number, b: number) {
+  return a + b  // 推断返回类型为 number
+}
+
+function greet(name: string) {
+  return `Hello, ${name}!`  // 推断返回类型为 string
+}
+
+function createUser(name: string, age: number) {
+  return { name, age }  // 推断返回类型为 { name: string; age: number }
+}
+```
+
+### 上下文推断
+
+```js
+// 根据上下文推断类型
+const numbers: number[] = [1, 2, 3]
+
+// map 回调的参数自动推断为 number
+const doubled = numbers.map(n => n * 2)
+
+// 根据赋值目标推断
+type User = { name: string; age: number }
+const user: User = {
+  name: 'Alice',
+  age: 25  // 自动推断为 number
+}
+```
+
+## 🔍 Effect 中的类型推断
+
+### 基础 Effect 推断
+
+```js
+import { Effect } from 'effect'
+
+// 自动推断 Effect 类型
+const succeed = Effect.succeed(42)
+// 推断为: Effect<never, never, number>
+
+const fail = Effect.fail(new Error('error'))
+// 推断为: Effect<never, Error, never>
+
+const sync = Effect.sync(() => Date.now())
+// 推断为: Effect<never, never, number>
+```
+
+### map 操作推断
+
+```js
+import { Effect } from 'effect'
+
+// map 操作自动推断类型
+const numberEffect = Effect.succeed(42)
+
+const stringEffect = numberEffect.pipe(
+  Effect.map(n => n.toString())
+)
+// 推断为: Effect<never, never, string>
+
+const doubledEffect = numberEffect.pipe(
+  Effect.map(n => n * 2)
+)
+// 推断为: Effect<never, never, number>
+```
+
+### flatMap 操作推断
+
+```js
+import { Effect } from 'effect'
+
+// flatMap 操作自动推断类型
+const fetchUser = (id: string) =>
+  Effect.succeed({ id, name: `User ${id}` })
+
+const fetchPosts = (userId: string) =>
+  Effect.succeed([{ id: '1', userId, title: 'Post 1' }])
+
+const program = fetchUser('1').pipe(
+  Effect.flatMap(user => fetchPosts(user.id))
+)
+// 推断为: Effect<never, never, { id: string; userId: string; title: string }[]>
+```
+
+### Effect.gen 推断
+
+```js
+import { Effect } from 'effect'
+
+// Effect.gen 自动推断类型
+const program = Effect.gen(function* () {
+  const user = yield* Effect.succeed({ id: '1', name: 'Alice' })
+  const posts = yield* Effect.succeed([{ id: '1', title: 'Post 1' }])
+  
+  return { user, posts }
+})
+// 推断为: Effect<never, never, { user: { id: string; name: string }; posts: { id: string; title: string }[] }>
+```
+
+## 💡 高级推断模式
+
+### 泛型函数推断
+
+```js
+// 泛型函数自动推断类型参数
+function identity<T>(value: T): T {
+  return value
+}
+
+// 自动推断 T 为 number
+const num = identity(42)
+
+// 自动推断 T 为 string
+const str = identity('hello')
+
+// 自动推断 T 为 { name: string }
+const obj = identity({ name: 'Alice' })
+```
+
+### 条件类型推断
+
+```js
+// 条件类型推断
+type NonNullable<T> = T extends null | undefined ? never : T
+
+function process<T>(value: T): NonNullable<T> {
+  return value as NonNullable<T>
+}
+
+const result1 = process('hello')  // 推断为 string
+const result2 = process(null)     // 推断为 never
+```
+
+### 映射类型推断
+
+```js
+// 映射类型推断
+type Readonly<T> = {
+  readonly [K in keyof T]: T[K]
+}
+
+type User = {
+  name: string
+  age: number
+}
+
+const readonlyUser: Readonly<User> = {
+  name: 'Alice',
+  age: 25
+}
+// 推断为: Readonly<User>
+```
+
+## 🎯 推断最佳实践
+
+### 1. 优先使用推断
+
+```js
+// ❌ 过度使用显式类型
+const numbers: number[] = [1, 2, 3]
+const doubled: number[] = numbers.map((n: number) => n * 2)
+
+// ✅ 依赖类型推断
+const numbers = [1, 2, 3]
+const doubled = numbers.map(n => n * 2)
+```
+
+### 2. 在必要时提供类型
+
+```js
+// ✅ 复杂逻辑提供类型注解
+function processUserData(data: unknown): User {
+  if (typeof data === 'object' && data !== null && 'name' in data) {
+    return {
+      name: String(data.name),
+      age: 'age' in data ? Number(data.age) : 0
+    }
+  }
+  throw new Error('Invalid user data')
+}
+```
+
+### 3. 使用类型断言谨慎
+
+```js
+// ❌ 过度使用类型断言
+const value = someValue as any
+
+// ✅ 使用类型守卫
+function isUser(value: unknown): value is User {
+  return typeof value === 'object' && value !== null && 'name' in value
+}
+
+if (isUser(someValue)) {
+  // TypeScript 知道 someValue 是 User
+}
+```
+
+### 4. 利用上下文推断
+
+```js
+// ✅ 利用上下文推断
+const users: User[] = []
+
+// TypeScript 知道这里需要 User 类型
+users.push({
+  name: 'Alice',
+  age: 25
+})
+```
+
+## 🚀 实际应用示例
+
+### API 响应处理
+
+```js
+import { Effect } from 'effect'
+
+// 类型推断简化 API 处理
+const fetchUser = (id: string) =>
+  Effect.tryPromise(() =>
+    fetch(`/api/users/${id}`)
+      .then(res => res.json())
+  )
+// 推断为: Effect<never, Error, unknown>
+
+const program = fetchUser('1').pipe(
+  Effect.map(data => {
+    // TypeScript 推断 data 为 unknown
+    if (typeof data === 'object' && data !== null && 'name' in data) {
+      return {
+        name: String(data.name),
+        email: 'email' in data ? String(data.email) : ''
+      }
+    }
+    throw new Error('Invalid user data')
+  })
+)
+```
+
+### 数据转换管道
+
+```js
+import { Effect } from 'effect'
+
+// 类型推断在管道中的应用
+const pipeline = Effect.succeed([1, 2, 3, 4, 5])
+  .pipe(
+    Effect.map(arr => arr.filter(n => n % 2 === 0)),  // [2, 4]
+    Effect.map(arr => arr.map(n => n * 2)),         // [4, 8]
+    Effect.map(arr => arr.reduce((sum, n) => sum + n, 0))  // 12
+  )
+// 推断为: Effect<never, never, number>
+```
+
+### 错误处理推断
+
+```js
+import { Effect } from 'effect'
+
+// 错误类型推断
+const program = Effect.tryPromise({
+  try: () => fetch('/api/data').then(res => res.json()),
+  catch: (error) => {
+    if (error instanceof TypeError) {
+      return new NetworkError(error.message)
+    }
+    return new UnknownError(String(error))
+  }
+})
+// 推断为: Effect<never, NetworkError | UnknownError, unknown>
+```
+
+## 📝 推断技巧
+
+### 1. 使用 const 断言
+
+```js
+// const 断言获得更精确的类型
+let obj1 = { x: 1, y: 2 }
+// 推断为: { x: number; y: number }
+
+const obj2 = { x: 1, y: 2 } as const
+// 推断为: { readonly x: 1; readonly y: 2 }
+```
+
+### 2. 使用 satisfies 操作符
+
+```js
+// satisfies 操作符
+type Theme = {
+  primary: string
+  secondary: string
+}
+
+const theme = {
+  primary: '#007bff',
+  secondary: '#6c757d'
+} satisfies Theme
+// 推断为: { primary: string; secondary: string }
+```
+
+### 3. 使用 ReturnType 获取函数返回类型
+
+```js
+// 获取函数返回类型
+function createUser() {
+  return { name: 'Alice', age: 25 }
+}
+
+type User = ReturnType<typeof createUser>
+// 推断为: { name: string; age: number }
+```
+
+### 4. 使用 Parameters 获取函数参数类型
+
+```js
+// 获取函数参数类型
+function processUser(name: string, age: number): User {
+  return { name, age }
+}
+
+type ProcessUserParams = Parameters<typeof processUser>
+// 推断为: [string, number]
+```
+
+## 🔗 相关概念
+
+- **泛型（Generics）**：类型推断的基础
+- **类型守卫（Type Guards）**：运行时类型检查
+- **条件类型（Conditional Types）**：基于条件的类型推断
+- **Effect 类型系统**：Effect 中的类型推断机制
+
+## 📚 学习检查点
+
+- [ ] 理解类型推断的基本概念
+- [ ] 掌握 TypeScript 中的推断规则
+- [ ] 了解 Effect 中的类型推断
+- [ ] 能够利用类型推断简化代码
+- [ ] 理解何时需要显式类型注解
+
+## 🚀 下一步
+
+→ [Effect 哲学](./09-effect-philosophy.mdx)
