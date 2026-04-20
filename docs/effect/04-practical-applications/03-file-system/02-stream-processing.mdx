@@ -1,0 +1,493 @@
+# 流处理
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的流处理能力，通过 `@effect/platform` 包提供文件流、数据转换、管道操作等功能。
+
+## 🎯 文件流
+
+### 读取文件流
+
+```js
+import { Effect, FileSystem, Stream } from 'effect'
+import { NodeFileSystem } from '@effect/platform-node'
+
+// 创建文件读取流
+const readFileStream = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  
+  const stream = fs.readFileStream('./large-file.txt')
+  
+  return stream
+})
+
+// 处理文件流
+const processFileStream = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  
+  const stream = fs.readFileStream('./large-file.txt')
+  
+  // 读取文件内容并按行分割
+  const content = yield* Stream.runCollect(
+    Stream.pipeThrough(
+      stream,
+      new TextDecoderStream()
+    )
+  )
+  
+  const text = content.join('')
+  const lines = text.split('\n')
+  
+  console.log('Total lines:', lines.length)
+  return lines
+})
+
+Effect.runSync(
+  processFileStream.pipe(
+    Effect.provide(NodeFileSystem.layer)
+  )
+)
+```
+
+### 写入文件流
+
+```js
+import { Effect, FileSystem, Stream } from 'effect'
+import { NodeFileSystem } from '@effect/platform-node'
+
+// 创建文件写入流
+const writeFileStream = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  
+  const data = ['Line 1', 'Line 2', 'Line 3']
+  const stream = Stream.fromIterable(data)
+  
+  yield* Stream.runDrain(
+    Stream.pipeThrough(
+      stream,
+      new TextEncoderStream(),
+      fs.writeFileStream('./output.txt')
+    )
+  )
+  
+  console.log('File written successfully')
+})
+
+Effect.runSync(
+  writeFileStream.pipe(
+    Effect.provide(NodeFileSystem.layer)
+  )
+)
+```
+
+## 💡 数据转换
+
+### 流转换
+
+```js
+import { Effect, Stream } from 'effect'
+
+// 基本流转换
+const transformStream = Effect.gen(function* () {
+  const numbers = Stream.fromIterable([1, 2, 3, 4, 5])
+  
+  // 映射转换
+  const doubled = Stream.map(numbers, (n) => n * 2)
+  
+  // 过滤转换
+  const evens = Stream.filter(numbers, (n) => n % 2 === 0)
+  
+  // 扁平映射
+  const nested = Stream.flatMap(numbers, (n) => Stream.fromIterable([n, n * 2]))
+  
+  // 执行并收集结果
+  const result = yield* Stream.runCollect(doubled)
+  console.log('Doubled:', result)
+  
+  return result
+})
+
+Effect.runSync(transformStream)
+```
+
+### 文本处理
+
+```js
+import { Effect, Stream } from 'effect'
+
+// 文本处理流
+const processTextStream = Effect.gen(function* () {
+  const text = Stream.fromIterable(['hello', 'world', 'effect'])
+  
+  // 转换为大写
+  const uppercased = Stream.map(text, (word) => word.toUpperCase())
+  
+  // 连接字符串
+  const joined = Stream.reduce(uppercased, '', (acc, word) => acc + ' ' + word)
+  
+  const result = yield* joined
+  console.log('Result:', result.trim())
+  
+  return result
+})
+
+Effect.runSync(processTextStream)
+```
+
+## 🚀 管道操作
+
+### 基本管道
+
+```js
+import { Effect, Stream } from 'effect'
+
+// 基本管道操作
+const pipelineExample = Effect.gen(function* () {
+  const numbers = Stream.fromIterable([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+  
+  // 管道操作链
+  const result = yield* Stream.runCollect(
+    numbers.pipe(
+      Stream.filter((n) => n % 2 === 0),  // 过滤偶数
+      Stream.map((n) => n * 2),           // 乘以 2
+      Stream.take(3)                      // 取前 3 个
+    )
+  )
+  
+  console.log('Pipeline result:', result)
+  return result
+})
+
+Effect.runSync(pipelineExample)
+```
+
+### 复杂管道
+
+```js
+import { Effect, Stream } from 'effect'
+
+// 复杂管道操作
+const complexPipeline = Effect.gen(function* () {
+  const data = Stream.fromIterable([
+    { id: 1, name: 'Alice', age: 30 },
+    { id: 2, name: 'Bob', age: 25 },
+    { id: 3, name: 'Charlie', age: 35 },
+    { id: 4, name: 'David', age: 28 }
+  ])
+  
+  // 复杂处理管道
+  const result = yield* Stream.runCollect(
+    data.pipe(
+      // 过滤年龄大于 28 的
+      Stream.filter((person) => person.age > 28),
+      // 提取姓名
+      Stream.map((person) => person.name),
+      // 转换为大写
+      Stream.map((name) => name.toUpperCase()),
+      // 按字母排序
+      Stream.sort((a, b) => a.localeCompare(b))
+    )
+  )
+  
+  console.log('Processed names:', result)
+  return result
+})
+
+Effect.runSync(complexPipeline)
+```
+
+## 🎯 背压处理
+
+### 基本背压
+
+```js
+import { Effect, Stream } from 'effect'
+
+// 背压处理示例
+const backpressureExample = Effect.gen(function* () {
+  const source = Stream.fromIterable([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+  
+  // 模拟慢速消费者
+  const slowConsumer = (n: number) => Effect.gen(function* () {
+    yield* Effect.sleep(100)  // 模拟处理延迟
+    console.log('Processed:', n)
+    return n * 2
+  })
+  
+  // 使用背压处理
+  const result = yield* Stream.runCollect(
+    Stream.mapEffect(source, slowConsumer, {
+      concurrency: 2  // 限制并发数
+    })
+  )
+  
+  console.log('Result:', result)
+  return result
+})
+
+Effect.runSync(backpressureExample)
+```
+
+### 缓冲策略
+
+```js
+import { Effect, Stream } from 'effect'
+
+// 缓冲策略
+const bufferExample = Effect.gen(function* () {
+  const source = Stream.fromIterable([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+  
+  // 使用缓冲
+  const buffered = Stream.buffer(source, 3)
+  
+  const result = yield* Stream.runCollect(buffered)
+  console.log('Buffered result:', result)
+  
+  return result
+})
+
+Effect.runSync(bufferExample)
+```
+
+## 📝 实际应用示例
+
+### 大文件处理
+
+```js
+import { Effect, FileSystem, Stream } from 'effect'
+import { NodeFileSystem } from '@effect/platform-node'
+
+// 大文件处理器
+const LargeFileProcessor = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  
+  return {
+    // 逐行处理大文件
+    processLineByLine: (
+      filePath: string,
+      processor: (line: string) => Effect.Effect<never, never, void>
+    ) => Effect.gen(function* () {
+      const stream = fs.readFileStream(filePath)
+      
+      // 读取文件内容
+      const content = yield* Stream.runCollect(
+        Stream.pipeThrough(
+          stream,
+          new TextDecoderStream()
+        )
+      )
+      
+      // 按行分割并处理
+      const text = content.join('')
+      const lines = text.split('\n')
+      
+      // 逐行处理
+      for (const line of lines) {
+        yield* processor(line)
+      }
+    }),
+    
+    // 统计行数
+    countLines: (filePath: string) => Effect.gen(function* () {
+      const stream = fs.readFileStream(filePath)
+      
+      // 读取文件内容
+      const content = yield* Stream.runCollect(
+        Stream.pipeThrough(
+          stream,
+          new TextDecoderStream()
+        )
+      )
+      
+      // 按行分割并计数
+      const text = content.join('')
+      const lines = text.split('\n')
+      
+      return lines.length
+    }),
+    
+    // 搜索内容
+    search: (filePath: string, pattern: RegExp) => Effect.gen(function* () {
+      const stream = fs.readFileStream(filePath)
+      
+      // 读取文件内容
+      const content = yield* Stream.runCollect(
+        Stream.pipeThrough(
+          stream,
+          new TextDecoderStream()
+        )
+      )
+      
+      // 按行分割并过滤
+      const text = content.join('')
+      const lines = text.split('\n')
+      
+      // 过滤匹配的行
+      const matches = lines.filter((line) => pattern.test(line))
+      
+      return matches
+    })
+  }
+})
+
+// 使用大文件处理器
+const program = Effect.gen(function* () {
+  const processor = yield* LargeFileProcessor
+  
+  // 统计行数
+  const lineCount = yield* processor.countLines('./large-file.txt')
+  console.log('Total lines:', lineCount)
+  
+  // 搜索内容
+  const matches = yield* processor.search('./large-file.txt', /error/i)
+  console.log('Found matches:', matches.length)
+  
+  return { lineCount, matches }
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(NodeFileSystem.layer)
+  )
+)
+```
+
+### 数据转换管道
+
+```js
+import { Effect, Stream } from 'effect'
+
+// 数据转换管道
+const DataTransformPipeline = Effect.gen(function* () {
+  return {
+    // CSV 解析管道
+    parseCSV: (csvData: string) => Effect.gen(function* () {
+      const lines = csvData.split('\n')
+      const headers = lines[0].split(',')
+      
+      const rows = Stream.fromIterable(lines.slice(1))
+      
+      const parsed = yield* Stream.runCollect(
+        Stream.map(rows, (line) => {
+          const values = line.split(',')
+          const obj = {}
+          headers.forEach((header, index) => {
+            obj[header.trim()] = values[index]?.trim()
+          })
+          return obj
+        })
+      )
+      
+      return parsed
+    }),
+    
+    // JSON 转换管道
+    transformJSON: (jsonStream: Stream.Stream<never, never, string>) => Effect.gen(function* () {
+      const transformed = yield* Stream.runCollect(
+        Stream.mapEffect(jsonStream, (jsonString) =>
+          Effect.tryPromise(() => JSON.parse(jsonString))
+        )
+      )
+      
+      return transformed
+    })
+  }
+})
+
+// 使用数据转换管道
+const program = Effect.gen(function* () {
+  const pipeline = yield* DataTransformPipeline
+  
+  // 解析 CSV
+  const csvData = 'name,age,email\nAlice,30,alice@example.com\nBob,25,bob@example.com'
+  const parsed = yield* pipeline.parseCSV(csvData)
+  console.log('Parsed CSV:', parsed)
+  
+  return parsed
+})
+
+Effect.runSync(program)
+```
+
+### 实时数据处理
+
+```js
+import { Effect, Stream } from 'effect'
+
+// 实时数据处理器
+const RealtimeProcessor = Effect.gen(function* () {
+  return {
+    // 创建实时数据流
+    createStream: Effect.gen(function* () {
+      let counter = 0
+      
+      const stream = Stream.repeatEffect(
+        Effect.gen(function* () {
+          counter++
+          yield* Effect.sleep(100)
+          return {
+            id: counter,
+            timestamp: Date.now(),
+            value: Math.random()
+          }
+        })
+      )
+      
+      return stream
+    }),
+    
+    // 处理实时数据
+    processStream: (stream: Stream.Stream<never, never, any>) => Effect.gen(function* () {
+      const processed = yield* Stream.runCollect(
+        stream.pipe(
+          Stream.filter((data) => data.value > 0.5),
+          Stream.take(10),
+          Stream.map((data) => ({
+            ...data,
+            processed: true
+          }))
+        )
+      )
+      
+      return processed
+    })
+  }
+})
+
+// 使用实时数据处理器
+const program = Effect.gen(function* () {
+  const processor = yield* RealtimeProcessor
+  
+  // 创建数据流
+  const stream = yield* processor.createStream
+  
+  // 处理数据流
+  const processed = yield* processor.processStream(stream)
+  console.log('Processed data:', processed)
+  
+  return processed
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **文件操作**：文件读写、目录管理
+- **路径操作**：路径解析、路径组合
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握文件流的使用
+- [ ] 理解数据转换
+- [ ] 掌握管道操作
+- [ ] 了解背压处理
+- [ ] 能够实现完整的流处理
+
+## 🚀 下一步
+
+→ [路径操作](./03-path-operations.mdx)
