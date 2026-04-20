@@ -1,0 +1,772 @@
+# ORM 集成
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 可以与多种 ORM 集成，包括 Drizzle ORM、Kysely 等，提供类型安全的数据库操作。
+
+## 🎯 Drizzle ORM
+
+### 基本设置
+
+```js
+// 安装依赖
+// npm install drizzle-orm
+// npm install drizzle-kit
+
+// 安装数据库驱动
+// npm install @effect/sql-pg
+// npm install drizzle-orm/pg-core
+
+// 基本导入
+import { Effect } from 'effect'
+import { drizzle } from 'drizzle-orm/node-postgres'
+import { PgClient } from '@effect/sql-pg'
+```
+
+### 定义 Schema
+
+```js
+import { pgTable, serial, text, integer, timestamp } from 'drizzle-orm/pg-core'
+
+// 定义用户表
+export const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  age: integer('age'),
+  createdAt: timestamp('created_at').defaultNow()
+})
+
+// 定义订单表
+export const orders = pgTable('orders', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id),
+  totalAmount: integer('total_amount'),
+  status: text('status'),
+  createdAt: timestamp('created_at').defaultNow()
+})
+```
+
+### 基本 CRUD 操作
+
+```js
+import { Effect, Sql } from 'effect'
+import { PgClient } from '@effect/sql-pg'
+import { drizzle } from 'drizzle-orm/node-postgres'
+import { eq } from 'drizzle-orm'
+import { users, orders } from './schema'
+
+// Drizzle ORM 集成
+const program = Effect.gen(function* () {
+  const sql = yield* Sql.client()
+  const db = drizzle(sql)
+  
+  // 创建用户
+  const newUser = yield* Effect.tryPromise(() =>
+    db.insert(users).values({
+      name: 'Alice',
+      email: 'alice@example.com',
+      age: 30
+    }).returning()
+  )
+  
+  console.log('Created user:', newUser)
+  
+  // 查询用户
+  const foundUser = yield* Effect.tryPromise(() =>
+    db.select().from(users).where(eq(users.id, newUser[0].id))
+  )
+  
+  console.log('Found user:', foundUser)
+  
+  // 更新用户
+  const updatedUser = yield* Effect.tryPromise(() =>
+    db.update(users)
+      .set({ age: 31 })
+      .where(eq(users.id, newUser[0].id))
+      .returning()
+  )
+  
+  console.log('Updated user:', updatedUser)
+  
+  // 删除用户
+  yield* Effect.tryPromise(() =>
+    db.delete(users).where(eq(users.id, newUser[0].id))
+  )
+  
+  console.log('Deleted user')
+  
+  return { newUser, foundUser, updatedUser }
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(
+      PgClient.layer({
+        database: 'mydb',
+        host: 'localhost',
+        port: 5432,
+        user: 'postgres',
+        password: 'password'
+      })
+    )
+  )
+)
+```
+
+## 💡 Kysely
+
+### 基本设置
+
+```js
+// 安装依赖
+// npm install kysely
+
+// 安装数据库驱动
+// npm install @effect/sql-pg
+// npm install pg
+
+// 基本导入
+import { Effect, Sql } from 'effect'
+import { PgClient } from '@effect/sql-pg'
+import { Kysely, PostgresDialect } from 'kysely'
+import { Pool } from 'pg'
+
+// 定义类型
+interface Database {
+  users: {
+    id: number
+    name: string
+    email: string
+    age: number
+    created_at: Date
+  }
+  orders: {
+    id: number
+    user_id: number
+    total_amount: number
+    status: string
+    created_at: Date
+  }
+}
+```
+
+### 基本 CRUD 操作
+
+```js
+import { Effect, Sql } from 'effect'
+import { PgClient } from '@effect/sql-pg'
+import { Kysely, PostgresDialect } from 'kysely'
+
+// Kysely 集成
+const program = Effect.gen(function* () {
+  const sql = yield* Sql.client()
+  
+  // 创建 Kysely 实例
+  const db = new Kysely<Database>({
+    dialect: new PostgresDialect({
+      pool: sql.pool
+    })
+  })
+  
+  // 创建用户
+  const newUser = yield* Effect.tryPromise(() =>
+    db.insertInto('users')
+      .values({
+        name: 'Alice',
+        email: 'alice@example.com',
+        age: 30
+      })
+      .returningAll()
+      .execute()
+  )
+  
+  console.log('Created user:', newUser)
+  
+  // 查询用户
+  const foundUser = yield* Effect.tryPromise(() =>
+    db.selectFrom('users')
+      .selectAll()
+      .where('id', '=', newUser[0].id)
+      .execute()
+  )
+  
+  console.log('Found user:', foundUser)
+  
+  // 更新用户
+  const updatedUser = yield* Effect.tryPromise(() =>
+    db.updateTable('users')
+      .set({ age: 31 })
+      .where('id', '=', newUser[0].id)
+      .returningAll()
+      .execute()
+  )
+  
+  console.log('Updated user:', updatedUser)
+  
+  // 删除用户
+  yield* Effect.tryPromise(() =>
+    db.deleteFrom('users')
+      .where('id', '=', newUser[0].id)
+      .execute()
+  )
+  
+  console.log('Deleted user')
+  
+  return { newUser, foundUser, updatedUser }
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(
+      PgClient.layer({
+        database: 'mydb',
+        host: 'localhost',
+        port: 5432,
+        user: 'postgres',
+        password: 'password'
+      })
+    )
+  )
+)
+```
+
+## 🚀 自定义适配器
+
+### 创建自定义适配器
+
+```js
+import { Effect, Sql, Context } from 'effect'
+import { PgClient } from '@effect/sql-pg'
+
+// 定义仓库接口
+interface Repository<T> {
+  findAll: () => Effect.Effect<never, never, T[]>
+  findById: (id: number) => Effect.Effect<never, never, T>
+  create: (data: Partial<T>) => Effect.Effect<never, never, T>
+  update: (id: number, data: Partial<T>) => Effect.Effect<never, never, T>
+  delete: (id: number) => Effect.Effect<never, never, void>
+}
+
+// 创建通用仓库
+const createRepository = <T>(
+  tableName: string
+): Effect.Effect<Sql.SqlClient, never, Repository<T>> =>
+  Effect.gen(function* () {
+    const sql = yield* Sql.client({
+      transform: ['names']
+    })
+    
+    return {
+      findAll: () => Sql`SELECT * FROM ${sql.unsafe(tableName)}`,
+      
+      findById: (id: number) => Effect.gen(function* () {
+        const results = yield* Sql`
+          SELECT * FROM ${sql.unsafe(tableName)} WHERE id = ${id}
+        `
+        
+        if (results.length === 0) {
+          return Effect.fail('Not found')
+        }
+        
+        return results[0]
+      }),
+      
+      create: (data: Partial<T>) => Effect.gen(function* () {
+        const columns = Object.keys(data).join(', ')
+        const values = Object.values(data)
+        const placeholders = values.map((_, i) => `$${i + 1}`).join(', ')
+        
+        const results = yield* Sql.unsafe(`
+          INSERT INTO ${tableName} (${columns})
+          VALUES (${placeholders})
+          RETURNING *
+        `)(...values)
+        
+        return results[0]
+      }),
+      
+      update: (id: number, data: Partial<T>) => Effect.gen(function* () {
+        const setClause = Object.entries(data)
+          .map(([key, _], i) => `${key} = $${i + 2}`)
+          .join(', ')
+        
+        const values = Object.values(data)
+        const results = yield* Sql.unsafe(`
+          UPDATE ${tableName}
+          SET ${setClause}
+          WHERE id = $1
+          RETURNING *
+        `)(id, ...values)
+        
+        if (results.length === 0) {
+          return Effect.fail('Not found')
+        }
+        
+        return results[0]
+      }),
+      
+      delete: (id: number) => Sql`
+        DELETE FROM ${sql.unsafe(tableName)} WHERE id = ${id}
+      `
+    }
+  })
+
+// 使用自定义适配器
+const program = Effect.gen(function* () {
+  const userRepository = yield* createRepository<any>('users')
+  
+  // 创建用户
+  const newUser = yield* userRepository.create({
+    name: 'Alice',
+    email: 'alice@example.com',
+    age: 30
+  })
+  console.log('Created user:', newUser)
+  
+  // 查询用户
+  const foundUser = yield* userRepository.findById(newUser.id)
+  console.log('Found user:', foundUser)
+  
+  // 更新用户
+  const updatedUser = yield* userRepository.update(newUser.id, {
+    age: 31
+  })
+  console.log('Updated user:', updatedUser)
+  
+  // 删除用户
+  yield* userRepository.delete(newUser.id)
+  console.log('Deleted user')
+  
+  return { newUser, foundUser, updatedUser }
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(
+      PgClient.layer({
+        database: 'mydb',
+        host: 'localhost',
+        port: 5432,
+        user: 'postgres',
+        password: 'password'
+      })
+    )
+  )
+)
+```
+
+## 🎯 迁移管理
+
+### Drizzle 迁移
+
+```js
+// drizzle.config.js
+import { defineConfig } from 'drizzle-kit'
+
+export default defineConfig({
+  schema: './src/schema.ts',
+  out: './drizzle',
+  dialect: 'postgresql',
+  dbCredentials: {
+    host: 'localhost',
+    port: 5432,
+    user: 'postgres',
+    password: 'password',
+    database: 'mydb'
+  }
+})
+
+// 生成迁移
+// npx drizzle-kit generate
+
+// 应用迁移
+// npx drizzle-kit migrate
+```
+
+### 自定义迁移系统
+
+```js
+import { Effect, Sql } from 'effect'
+import { PgClient } from '@effect/sql-pg'
+
+// 迁移定义
+interface Migration {
+  version: number
+  name: string
+  up: Effect.Effect<Sql.SqlClient, never, void>
+  down: Effect.Effect<Sql.SqlClient, never, void>
+}
+
+// 迁移管理器
+const createMigrationManager = (migrations: Migration[]) =>
+  Effect.gen(function* () {
+    const sql = yield* Sql.client({
+      transform: ['names']
+    })
+    
+    // 初始化迁移表
+    yield* Sql`
+      CREATE TABLE IF NOT EXISTS _migrations (
+        version INTEGER PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `
+    
+    return {
+      // 获取已应用的迁移
+      getAppliedMigrations: Effect.gen(function* () {
+        const result = yield* Sql`
+          SELECT version FROM _migrations ORDER BY version
+        `
+        return new Set(result.map(m => m.version))
+      }),
+      
+      // 运行迁移
+      migrate: Effect.gen(function* () {
+        const appliedMigrations = yield* this.getAppliedMigrations
+        
+        for (const migration of migrations) {
+          if (!appliedMigrations.has(migration.version)) {
+            console.log(`Running migration: ${migration.name}`)
+            
+            yield* Sql.withTransaction(
+              Effect.gen(function* () {
+                yield* migration.up
+                
+                yield* Sql`
+                  INSERT INTO _migrations (version, name)
+                  VALUES (${migration.version}, ${migration.name})
+                `
+              })
+            )
+            
+            console.log(`Migration ${migration.name} completed`)
+          }
+        }
+      }),
+      
+      // 回滚迁移
+      rollback: Effect.gen(function* () {
+        const appliedMigrations = yield* this.getAppliedMigrations
+        
+        for (let i = migrations.length - 1; i >= 0; i--) {
+          const migration = migrations[i]
+          
+          if (appliedMigrations.has(migration.version)) {
+            console.log(`Rolling back migration: ${migration.name}`)
+            
+            yield* Sql.withTransaction(
+              Effect.gen(function* () {
+                yield* migration.down
+                
+                yield* Sql`
+                  DELETE FROM _migrations WHERE version = ${migration.version}
+                `
+              })
+            )
+            
+            console.log(`Migration ${migration.name} rolled back`)
+          }
+        }
+      })
+    }
+  })
+
+// 使用迁移管理器
+const migrations: Migration[] = [
+  {
+    version: 1,
+    name: 'create_users_table',
+    up: Sql`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        age INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `,
+    down: Sql`DROP TABLE IF EXISTS users`
+  },
+  {
+    version: 2,
+    name: 'create_orders_table',
+    up: Sql`
+      CREATE TABLE IF NOT EXISTS orders (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        total_amount DECIMAL(10, 2),
+        status VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `,
+    down: Sql`DROP TABLE IF EXISTS orders`
+  }
+]
+
+const program = Effect.gen(function* () {
+  const migrationManager = yield* createMigrationManager(migrations)
+  
+  // 运行迁移
+  yield* migrationManager.migrate
+  console.log('Migrations completed')
+  
+  return 'Done'
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(
+      PgClient.layer({
+        database: 'mydb',
+        host: 'localhost',
+        port: 5432,
+        user: 'postgres',
+        password: 'password'
+      })
+    )
+  )
+)
+```
+
+## 📝 实际应用示例
+
+### 完整的用户管理系统
+
+```js
+import { Effect, Sql, Context } from 'effect'
+import { PgClient } from '@effect/sql-pg'
+
+// 用户服务接口
+interface UserService {
+  create: (data: any) => Effect.Effect<never, never, any>
+  findById: (id: number) => Effect.Effect<never, never, any>
+  findAll: () => Effect.Effect<never, never, any[]>
+  update: (id: number, data: any) => Effect.Effect<never, never, any>
+  delete: (id: number) => Effect.Effect<never, never, void>
+}
+
+const UserService = Context.GenericTag<UserService>('UserService')
+
+// 实现 UserService
+const makeUserService = Effect.gen(function* () {
+  const sql = yield* Sql.client({
+    transform: ['names']
+  })
+  
+  return {
+    create: (data: any) => Effect.gen(function* () {
+      const result = yield* Sql`
+        INSERT INTO users (name, email, age)
+        VALUES (${data.name}, ${data.email}, ${data.age})
+        RETURNING *
+      `
+      return result[0]
+    }),
+    
+    findById: (id: number) => Effect.gen(function* () {
+      const result = yield* Sql`
+        SELECT * FROM users WHERE id = ${id}
+      `
+      
+      if (result.length === 0) {
+        return Effect.fail('User not found')
+      }
+      
+      return result[0]
+    }),
+    
+    findAll: () => Sql`SELECT * FROM users ORDER BY created_at DESC`,
+    
+    update: (id: number, data: any) => Effect.gen(function* () {
+      const result = yield* Sql`
+        UPDATE users
+        SET name = ${data.name},
+            email = ${data.email},
+            age = ${data.age}
+        WHERE id = ${id}
+        RETURNING *
+      `
+      
+      if (result.length === 0) {
+        return Effect.fail('User not found')
+      }
+      
+      return result[0]
+    }),
+    
+    delete: (id: number) => Sql`DELETE FROM users WHERE id = ${id}`
+  }
+})
+
+// 使用 UserService
+const program = Effect.gen(function* () {
+  const userService = yield* UserService
+  
+  // 创建用户
+  const user = yield* userService.create({
+    name: 'Alice',
+    email: 'alice@example.com',
+    age: 30
+  })
+  console.log('Created user:', user)
+  
+  // 查询用户
+  const foundUser = yield* userService.findById(user.id)
+  console.log('Found user:', foundUser)
+  
+  // 查询所有用户
+  const allUsers = yield* userService.findAll()
+  console.log('All users:', allUsers)
+  
+  // 更新用户
+  const updatedUser = yield* userService.update(user.id, {
+    name: 'Alice Updated',
+    email: 'alice.updated@example.com',
+    age: 31
+  })
+  console.log('Updated user:', updatedUser)
+  
+  // 删除用户
+  yield* userService.delete(user.id)
+  console.log('Deleted user')
+  
+  return { user, foundUser, allUsers, updatedUser }
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(UserService, Effect.runSync(makeUserService)),
+    Effect.provide(
+      PgClient.layer({
+        database: 'mydb',
+        host: 'localhost',
+        port: 5432,
+        user: 'postgres',
+        password: 'password'
+      })
+    )
+  )
+)
+```
+
+### 事务处理
+
+```js
+import { Effect, Sql } from 'effect'
+import { PgClient } from '@effect/sql-pg'
+
+// 订单服务
+const OrderService = Effect.gen(function* () {
+  const sql = yield* Sql.client({
+    transform: ['names']
+  })
+  
+  return {
+    createOrder: (userId: number, items: any[]) => Effect.gen(function* () {
+      // 在事务中创建订单
+      const order = yield* Sql.withTransaction(
+        Effect.gen(function* () {
+          // 计算总金额
+          const totalAmount = items.reduce(
+            (sum, item) => sum + item.price * item.quantity,
+            0
+          )
+          
+          // 创建订单
+          const orderResult = yield* Sql`
+            INSERT INTO orders (user_id, total_amount, status)
+            VALUES (${userId}, ${totalAmount}, ${'pending'})
+            RETURNING *
+          `
+          
+          const orderId = orderResult[0].id
+          
+          // 创建订单项
+          for (const item of items) {
+            yield* Sql`
+              INSERT INTO order_items (order_id, product_id, quantity, price)
+              VALUES (${orderId}, ${item.productId}, ${item.quantity}, ${item.price})
+            `
+          }
+          
+          // 更新订单状态
+          yield* Sql`
+            UPDATE orders
+            SET status = ${'completed'}
+            WHERE id = ${orderId}
+          `
+          
+          return orderResult[0]
+        })
+      )
+      
+      return order
+    }),
+    
+    getUserOrders: (userId: number) => Sql`
+      SELECT o.*, COUNT(oi.id) as item_count
+      FROM orders o
+      LEFT JOIN order_items oi ON o.id = oi.order_id
+      WHERE o.user_id = ${userId}
+      GROUP BY o.id
+      ORDER BY o.created_at DESC
+    `
+  }
+})
+
+// 使用订单服务
+const program = Effect.gen(function* () {
+  const orderService = yield* OrderService
+  
+  // 创建订单
+  const order = yield* orderService.createOrder(1, [
+    { productId: 1, quantity: 2, price: 50 },
+    { productId: 2, quantity: 1, price: 100 }
+  ])
+  console.log('Created order:', order)
+  
+  // 查询用户订单
+  const orders = yield* orderService.getUserOrders(1)
+  console.log('User orders:', orders)
+  
+  return { order, orders }
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(
+      PgClient.layer({
+        database: 'mydb',
+        host: 'localhost',
+        port: 5432,
+        user: 'postgres',
+        password: 'password'
+      })
+    )
+  )
+)
+```
+
+## 🔗 相关概念
+
+- **SQL 数据库**：@effect/sql 抽象层
+- **数据库驱动**：PostgreSQL、MySQL、SQLite、SQL Server
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握 Drizzle ORM 的集成
+- [ ] 理解 Kysely 的使用
+- [ ] 掌握自定义适配器的创建
+- [ ] 了解迁移管理
+- [ ] 能够实现完整的 ORM 集成
+
+## 🚀 下一步
+
+→ [文件系统](../03-file-system/01-file-operations.mdx)
