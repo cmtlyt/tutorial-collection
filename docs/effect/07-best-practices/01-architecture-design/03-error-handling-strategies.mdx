@@ -1,0 +1,785 @@
+# 错误处理策略
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的错误处理能力，支持错误分类、错误边界、错误恢复和错误监控，帮助开发者构建健壮、可靠的应用。
+
+## 🎯 错误分类
+
+### 基本错误分类
+
+```js
+import { Effect } from 'effect'
+
+// 基本错误分类
+const program = Effect.gen(function* () {
+  // 定义错误类型
+  const Errors = {
+    ValidationError: class extends Error {
+      constructor(message) {
+        super(message)
+        this.name = 'ValidationError'
+      }
+    },
+    
+    NotFoundError: class extends Error {
+      constructor(message) {
+        super(message)
+        this.name = 'NotFoundError'
+      }
+    },
+    
+    UnauthorizedError: class extends Error {
+      constructor(message) {
+        super(message)
+        this.name = 'UnauthorizedError'
+      }
+    },
+    
+    SystemError: class extends Error {
+      constructor(message) {
+        super(message)
+        this.name = 'SystemError'
+      }
+    }
+  }
+  
+  // 错误处理器
+  const ErrorHandler = {
+    classify: (error) => {
+      if (error instanceof Errors.ValidationError) {
+        return 'validation'
+      } else if (error instanceof Errors.NotFoundError) {
+        return 'not_found'
+      } else if (error instanceof Errors.UnauthorizedError) {
+        return 'unauthorized'
+      } else if (error instanceof Errors.SystemError) {
+        return 'system'
+      }
+      return 'unknown'
+    },
+    
+    handle: (error) => Effect.gen(function* () {
+      const type = ErrorHandler.classify(error)
+      
+      console.log(`Error type: ${type}`)
+      console.log(`Error message: ${error.message}`)
+      
+      switch (type) {
+        case 'validation':
+          return { status: 400, error: 'Validation failed' }
+        case 'not_found':
+          return { status: 404, error: 'Resource not found' }
+        case 'unauthorized':
+          return { status: 401, error: 'Unauthorized' }
+        case 'system':
+          return { status: 500, error: 'Internal server error' }
+        default:
+          return { status: 500, error: 'Unknown error' }
+      }
+    })
+  }
+  
+  // 使用错误分类
+  const validateUser = (data) => Effect.gen(function* () {
+    if (!data.name || !data.email) {
+      return Effect.fail(new Errors.ValidationError('Name and email are required'))
+    }
+    return Effect.succeed(data)
+  })
+  
+  const findUser = (id) => Effect.gen(function* () {
+    if (id !== 1) {
+      return Effect.fail(new Errors.NotFoundError('User not found'))
+    }
+    return Effect.succeed({ id, name: 'John Doe' })
+  })
+  
+  // 测试错误处理
+  const result1 = yield* validateUser({}).pipe(
+    Effect.catchAll(error => ErrorHandler.handle(error))
+  )
+  console.log('Result 1:', result1)
+  
+  const result2 = yield* findUser(999).pipe(
+    Effect.catchAll(error => ErrorHandler.handle(error))
+  )
+  console.log('Result 2:', result2)
+  
+  return { result1, result2 }
+})
+
+Effect.runSync(program)
+```
+
+### 错误层级
+
+```js
+import { Effect } from 'effect'
+
+// 错误层级
+const program = Effect.gen(function* () {
+  // 定义错误层级
+  const BaseError = class extends Error {
+    constructor(message, code) {
+      super(message)
+      this.name = this.constructor.name
+      this.code = code
+    }
+  }
+  
+  const DomainError = class extends BaseError {
+    constructor(message, code) {
+      super(message, code || 'DOMAIN_ERROR')
+    }
+  }
+  
+  const ApplicationError = class extends BaseError {
+    constructor(message, code) {
+      super(message, code || 'APPLICATION_ERROR')
+    }
+  }
+  
+  const InfrastructureError = class extends BaseError {
+    constructor(message, code) {
+      super(message, code || 'INFRASTRUCTURE_ERROR')
+    }
+  }
+  
+  // 具体错误
+  const UserValidationError = class extends DomainError {
+    constructor(message) {
+      super(message, 'USER_VALIDATION_ERROR')
+    }
+  }
+  
+  const DatabaseConnectionError = class extends InfrastructureError {
+    constructor(message) {
+      super(message, 'DATABASE_CONNECTION_ERROR')
+    }
+  }
+  
+  // 错误分析器
+  const ErrorAnalyzer = {
+    analyze: (error) => {
+      const analysis = {
+        type: error.name,
+        code: error.code,
+        message: error.message,
+        level: 'unknown',
+        recoverable: false
+      }
+      
+      if (error instanceof DomainError) {
+        analysis.level = 'domain'
+        analysis.recoverable = true
+      } else if (error instanceof ApplicationError) {
+        analysis.level = 'application'
+        analysis.recoverable = true
+      } else if (error instanceof InfrastructureError) {
+        analysis.level = 'infrastructure'
+        analysis.recoverable = false
+      }
+      
+      return analysis
+    }
+  }
+  
+  // 使用错误层级
+  const validateUser = (data) => Effect.gen(function* () {
+    if (!data.name) {
+      return Effect.fail(new UserValidationError('Name is required'))
+    }
+    return Effect.succeed(data)
+  })
+  
+  const connectToDatabase = () => Effect.gen(function* () {
+    return Effect.fail(new DatabaseConnectionError('Connection failed'))
+  })
+  
+  // 测试错误分析
+  const result1 = yield* validateUser({}).pipe(
+    Effect.catchAll(error => Effect.succeed(ErrorAnalyzer.analyze(error)))
+  )
+  console.log('Error analysis 1:', result1)
+  
+  const result2 = yield* connectToDatabase().pipe(
+    Effect.catchAll(error => Effect.succeed(ErrorAnalyzer.analyze(error)))
+  )
+  console.log('Error analysis 2:', result2)
+  
+  return { result1, result2 }
+})
+
+Effect.runSync(program)
+```
+
+## 💡 错误边界
+
+### 基本错误边界
+
+```js
+import { Effect } from 'effect'
+
+// 基本错误边界
+const program = Effect.gen(function* () {
+  // 错误边界
+  const ErrorBoundary = {
+    create: (handler) => ({
+      handle: (effect) => Effect.gen(function* () {
+        return yield* effect.pipe(
+          Effect.catchAll(error => handler(error))
+        )
+      })
+    })
+  }
+  
+  // 创建错误边界
+  const validationBoundary = ErrorBoundary.create((error) => {
+    console.log('[ValidationBoundary] Handling error:', error.message)
+    return Effect.succeed({ status: 'error', type: 'validation', message: error.message })
+  })
+  
+  const databaseBoundary = ErrorBoundary.create((error) => {
+    console.log('[DatabaseBoundary] Handling error:', error.message)
+    return Effect.succeed({ status: 'error', type: 'database', message: error.message })
+  })
+  
+  // 使用错误边界
+  const validate = (data) => Effect.gen(function* () {
+    if (!data.name) {
+      return Effect.fail(new Error('Name is required'))
+    }
+    return Effect.succeed(data)
+  })
+  
+  const saveToDatabase = (data) => Effect.gen(function* () {
+    if (data.name === 'error') {
+      return Effect.fail(new Error('Database error'))
+    }
+    return Effect.succeed({ ...data, saved: true })
+  })
+  
+  // 应用错误边界
+  const result1 = yield* validationBoundary.handle(validate({}))
+  console.log('Result 1:', result1)
+  
+  const result2 = yield* databaseBoundary.handle(saveToDatabase({ name: 'error' }))
+  console.log('Result 2:', result2)
+  
+  return { result1, result2 }
+})
+
+Effect.runSync(program)
+```
+
+### 嵌套错误边界
+
+```js
+import { Effect } from 'effect'
+
+// 嵌套错误边界
+const program = Effect.gen(function* () {
+  // 错误边界层级
+  const ErrorBoundaries = {
+    global: {
+      handle: (effect) => Effect.gen(function* () {
+        return yield* effect.pipe(
+          Effect.catchAll(error => {
+            console.log('[GlobalBoundary] Handling error:', error.message)
+            return Effect.succeed({ status: 'error', level: 'global', message: error.message })
+          })
+        )
+      })
+    },
+    
+    module: {
+      handle: (effect) => Effect.gen(function* () {
+        return yield* effect.pipe(
+          Effect.catchAll(error => {
+            console.log('[ModuleBoundary] Handling error:', error.message)
+            return Effect.fail(error) // 传递到全局边界
+          })
+        )
+      })
+    },
+    
+    component: {
+      handle: (effect) => Effect.gen(function* () {
+        return yield* effect.pipe(
+          Effect.catchAll(error => {
+            console.log('[ComponentBoundary] Handling error:', error.message)
+            return Effect.fail(error) // 传递到模块边界
+          })
+        )
+      })
+    }
+  }
+  
+  // 使用嵌套错误边界
+  const riskyOperation = () => Effect.gen(function* () {
+    return Effect.fail(new Error('Something went wrong'))
+  })
+  
+  const result = yield* ErrorBoundaries.global.handle(
+    ErrorBoundaries.module.handle(
+      ErrorBoundaries.component.handle(
+        riskyOperation()
+      )
+    )
+  )
+  
+  console.log('Result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 错误恢复
+
+### 基本错误恢复
+
+```js
+import { Effect } from 'effect'
+
+// 基本错误恢复
+const program = Effect.gen(function* () {
+  // 错误恢复策略
+  const RecoveryStrategies = {
+    retry: (effect, maxRetries = 3) => Effect.gen(function* () {
+      let lastError = null
+      
+      for (let i = 0; i < maxRetries; i++) {
+        const result = yield* effect.pipe(
+          Effect.catchAll(error => {
+            lastError = error
+            console.log(`Retry ${i + 1}/${maxRetries}`)
+            return Effect.fail(error)
+          })
+        )
+        
+        return result
+      }
+      
+      return Effect.fail(lastError)
+    }),
+    
+    fallback: (effect, fallbackValue) => Effect.gen(function* () {
+      return yield* effect.pipe(
+        Effect.catchAll(() => Effect.succeed(fallbackValue))
+      )
+    }),
+    
+    orElse: (effect, alternativeEffect) => Effect.gen(function* () {
+      return yield* effect.pipe(
+        Effect.catchAll(() => alternativeEffect)
+      )
+    })
+  }
+  
+  // 使用错误恢复
+  const unreliableOperation = () => Effect.gen(function* () {
+    if (Math.random() > 0.5) {
+      return Effect.succeed('Success!')
+    }
+    return Effect.fail(new Error('Failed'))
+  })
+  
+  // 重试策略
+  const result1 = yield* RecoveryStrategies.retry(unreliableOperation(), 5)
+  console.log('Retry result:', result1)
+  
+  // 回退策略
+  const result2 = yield* RecoveryStrategies.fallback(
+    Effect.fail(new Error('Failed')),
+    'Fallback value'
+  )
+  console.log('Fallback result:', result2)
+  
+  // 或者策略
+  const result3 = yield* RecoveryStrategies.orElse(
+    Effect.fail(new Error('Failed')),
+    Effect.succeed('Alternative success')
+  )
+  console.log('OrElse result:', result3)
+  
+  return { result1, result2, result3 }
+})
+
+Effect.runSync(program)
+```
+
+### 断路器模式
+
+```js
+import { Effect } from 'effect'
+
+// 断路器模式
+const program = Effect.gen(function* () {
+  // 断路器
+  const CircuitBreaker = {
+    create: (threshold = 5, timeout = 10000) => {
+      return {
+        failures: 0,
+        lastFailureTime: null,
+        state: 'closed', // closed, open, half-open
+        
+        execute: (effect) => Effect.gen(function* () {
+          const now = Date.now()
+          
+          // 检查断路器状态
+          if (CircuitBreaker.state === 'open') {
+            if (now - CircuitBreaker.lastFailureTime > timeout) {
+              CircuitBreaker.state = 'half-open'
+              console.log('[CircuitBreaker] Transitioning to half-open')
+            } else {
+              return Effect.fail(new Error('Circuit breaker is open'))
+            }
+          }
+          
+          // 执行操作
+          const result = yield* effect.pipe(
+            Effect.catchAll(error => {
+              CircuitBreaker.failures++
+              CircuitBreaker.lastFailureTime = now
+              
+              if (CircuitBreaker.failures >= threshold) {
+                CircuitBreaker.state = 'open'
+                console.log('[CircuitBreaker] Opening circuit')
+              }
+              
+              return Effect.fail(error)
+            })
+          )
+          
+          // 成功时重置
+          if (CircuitBreaker.state === 'half-open') {
+            CircuitBreaker.state = 'closed'
+            CircuitBreaker.failures = 0
+            console.log('[CircuitBreaker] Closing circuit')
+          }
+          
+          return result
+        })
+      }
+    }
+  }
+  
+  // 创建断路器
+  const circuitBreaker = CircuitBreaker.create(3, 5000)
+  
+  const unreliableService = () => Effect.gen(function* () {
+    if (Math.random() > 0.3) {
+      return Effect.succeed('Service response')
+    }
+    return Effect.fail(new Error('Service unavailable'))
+  })
+  
+  // 使用断路器
+  const results = []
+  
+  for (let i = 0; i < 10; i++) {
+    const result = yield* circuitBreaker.execute(unreliableService()).pipe(
+      Effect.catchAll(error => Effect.succeed({ error: error.message }))
+    )
+    results.push(result)
+    console.log(`Attempt ${i + 1}:`, result)
+  }
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 错误监控
+
+### 基本错误监控
+
+```js
+import { Effect } from 'effect'
+
+// 基本错误监控
+const program = Effect.gen(function* () {
+  // 错误监控器
+  const ErrorMonitor = {
+    errors: [],
+    
+    capture: (error, context = {}) => Effect.gen(function* () {
+      const errorRecord = {
+        timestamp: Date.now(),
+        error: error.message,
+        stack: error.stack,
+        context
+      }
+      
+      ErrorMonitor.errors.push(errorRecord)
+      console.log('[ErrorMonitor] Captured error:', errorRecord)
+      
+      return Effect.succeed(errorRecord)
+    }),
+    
+    getErrors: () => {
+      return ErrorMonitor.errors
+    },
+    
+    clear: () => {
+      ErrorMonitor.errors = []
+    }
+  }
+  
+  // 错误监控装饰器
+  const withMonitoring = (effect, context) => Effect.gen(function* () {
+    return yield* effect.pipe(
+      Effect.catchAll(error => ErrorMonitor.capture(error, context))
+    )
+  })
+  
+  // 使用错误监控
+  const riskyOperation = (id) => Effect.gen(function* () {
+    if (id % 2 === 0) {
+      return Effect.fail(new Error(`Operation failed for id ${id}`))
+    }
+    return Effect.succeed(`Operation succeeded for id ${id}`)
+  })
+  
+  // 监控操作
+  for (let i = 1; i <= 5; i++) {
+    yield* withMonitoring(riskyOperation(i), { operationId: i })
+  }
+  
+  console.log('\nCaptured errors:', ErrorMonitor.getErrors())
+  
+  return ErrorMonitor.getErrors()
+})
+
+Effect.runSync(program)
+```
+
+### 错误分析
+
+```js
+import { Effect } from 'effect'
+
+// 错误分析
+const program = Effect.gen(function* () {
+  // 错误分析器
+  const ErrorAnalyzer = {
+    errors: [],
+    
+    analyze: () => {
+      const analysis = {
+        total: ErrorAnalyzer.errors.length,
+        byType: {},
+        byContext: {},
+        recent: []
+      }
+      
+      for (const error of ErrorAnalyzer.errors) {
+        // 按类型统计
+        const type = error.error
+        analysis.byType[type] = (analysis.byType[type] || 0) + 1
+        
+        // 按上下文统计
+        const context = error.context.operationId || 'unknown'
+        analysis.byContext[context] = (analysis.byContext[context] || 0) + 1
+      }
+      
+      // 最近的错误
+      analysis.recent = ErrorAnalyzer.errors.slice(-5)
+      
+      return analysis
+    },
+    
+    record: (error, context) => {
+      ErrorAnalyzer.errors.push({
+        timestamp: Date.now(),
+        error: error.message,
+        context
+      })
+    }
+  }
+  
+  // 记录错误
+  ErrorAnalyzer.record(new Error('Validation error'), { operation: 'validate' })
+  ErrorAnalyzer.record(new Error('Database error'), { operation: 'save' })
+  ErrorAnalyzer.record(new Error('Network error'), { operation: 'fetch' })
+  ErrorAnalyzer.record(new Error('Validation error'), { operation: 'validate' })
+  ErrorAnalyzer.record(new Error('Database error'), { operation: 'save' })
+  
+  // 分析错误
+  const analysis = ErrorAnalyzer.analyze()
+  console.log('Error analysis:', analysis)
+  
+  return analysis
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 综合错误处理系统
+
+```js
+import { Effect } from 'effect'
+
+// 综合错误处理系统
+const program = Effect.gen(function* () {
+  // 错误类型
+  const AppErrors = {
+    ValidationError: class extends Error {
+      constructor(message, field) {
+        super(message)
+        this.name = 'ValidationError'
+        this.field = field
+      }
+    },
+    
+    NotFoundError: class extends Error {
+      constructor(message, resource) {
+        super(message)
+        this.name = 'NotFoundError'
+        this.resource = resource
+      }
+    },
+    
+    ExternalServiceError: class extends Error {
+      constructor(message, service) {
+        super(message)
+        this.name = 'ExternalServiceError'
+        this.service = service
+      }
+    }
+  }
+  
+  // 错误处理器
+  const ErrorHandler = {
+    monitor: {
+      errors: [],
+      
+      capture: (error, context) => {
+        ErrorHandler.monitor.errors.push({
+          timestamp: Date.now(),
+          error: error.message,
+          type: error.name,
+          context
+        })
+      }
+    },
+    
+    classify: (error) => {
+      if (error instanceof AppErrors.ValidationError) {
+        return { type: 'validation', recoverable: true }
+      } else if (error instanceof AppErrors.NotFoundError) {
+        return { type: 'not_found', recoverable: false }
+      } else if (error instanceof AppErrors.ExternalServiceError) {
+        return { type: 'external', recoverable: true }
+      }
+      return { type: 'unknown', recoverable: false }
+    },
+    
+    handle: (error, context) => Effect.gen(function* () {
+      ErrorHandler.monitor.capture(error, context)
+      
+      const classification = ErrorHandler.classify(error)
+      
+      console.log(`[ErrorHandler] Type: ${classification.type}, Recoverable: ${classification.recoverable}`)
+      
+      if (classification.recoverable) {
+        return { status: 'error', recoverable: true, message: error.message }
+      }
+      
+      return { status: 'error', recoverable: false, message: error.message }
+    })
+  }
+  
+  // 断路器
+  const CircuitBreaker = {
+    state: 'closed',
+    failures: 0,
+    threshold: 3,
+    
+    execute: (effect) => Effect.gen(function* () {
+      if (CircuitBreaker.state === 'open') {
+        return Effect.fail(new AppErrors.ExternalServiceError('Circuit breaker open', 'external'))
+      }
+      
+      const result = yield* effect.pipe(
+        Effect.catchAll(error => {
+          CircuitBreaker.failures++
+          
+          if (CircuitBreaker.failures >= CircuitBreaker.threshold) {
+            CircuitBreaker.state = 'open'
+          }
+          
+          return Effect.fail(error)
+        })
+      )
+      
+      CircuitBreaker.failures = 0
+      return result
+    })
+  }
+  
+  // 使用综合错误处理
+  const validateUser = (data) => Effect.gen(function* () {
+    if (!data.name) {
+      return Effect.fail(new AppErrors.ValidationError('Name is required', 'name'))
+    }
+    if (!data.email) {
+      return Effect.fail(new AppErrors.ValidationError('Email is required', 'email'))
+    }
+    return Effect.succeed(data)
+  })
+  
+  const fetchUser = (id) => Effect.gen(function* () {
+    return yield* CircuitBreaker.execute(Effect.gen(function* () {
+      if (id !== 1) {
+        return Effect.fail(new AppErrors.NotFoundError('User not found', 'user'))
+      }
+      return Effect.succeed({ id, name: 'John Doe' })
+    }))
+  })
+  
+  // 测试错误处理
+  const result1 = yield* validateUser({}).pipe(
+    Effect.catchAll(error => ErrorHandler.handle(error, { operation: 'validate' }))
+  )
+  console.log('Result 1:', result1)
+  
+  const result2 = yield* fetchUser(999).pipe(
+    Effect.catchAll(error => ErrorHandler.handle(error, { operation: 'fetch' }))
+  )
+  console.log('Result 2:', result2)
+  
+  console.log('\nMonitored errors:', ErrorHandler.monitor.errors)
+  
+  return { result1, result2, errors: ErrorHandler.monitor.errors }
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **应用架构**：分层架构、六边形架构、洋葱架构
+- **模块化设计**：模块边界、依赖管理、接口设计
+- **代码质量**：代码风格、测试策略
+
+## 📚 学习检查点
+
+- [ ] 掌握错误分类
+- [ ] 理解错误边界
+- [ ] 了解错误恢复
+- [ ] 掌握错误监控
+- [ ] 能够设计健壮的错误处理系统
+
+## 🚀 下一步
+
+→ [代码风格](../02-code-quality/01-code-style.mdx)

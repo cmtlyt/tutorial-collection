@@ -1,0 +1,980 @@
+# 模块化设计
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的模块化设计能力，支持清晰的模块边界、灵活的依赖管理、优雅的接口设计和可组合的模块组合，帮助开发者构建可维护、可扩展的应用。
+
+## 🎯 模块边界
+
+### 基本模块边界
+
+```js
+import { Effect } from 'effect'
+
+// 基本模块边界
+const program = Effect.gen(function* () {
+  // 定义模块
+  const UserModule = {
+    state: new Map(),
+    
+    // 公共接口
+    services: {
+      UserService: {
+        create: (data) => Effect.gen(function* () {
+          console.log('[UserModule] Creating user')
+          const user = { id: Date.now(), ...data }
+          UserModule.state.set(user.id, user)
+          return user
+        }),
+        
+        get: (id) => Effect.gen(function* () {
+          const user = UserModule.state.get(id)
+          return user ? Effect.succeed(user) : Effect.fail(new Error('User not found'))
+        })
+      }
+    },
+    
+    // 私有实现
+    private: {
+      validate: (data) => {
+        return data.name && data.email
+      }
+    }
+  }
+  
+  // 使用模块
+  const user = yield* UserModule.services.UserService.create({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Created user:', user)
+  
+  const retrieved = yield* UserModule.services.UserService.get(user.id)
+  console.log('Retrieved user:', retrieved)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+### 模块边界实现
+
+```js
+import { Effect } from 'effect'
+
+// 模块边界实现
+const program = Effect.gen(function* () {
+  // 模块定义
+  const createModule = (name, dependencies = {}) => {
+    const module = {
+      name,
+      dependencies,
+      state: new Map(),
+      services: {},
+      
+      registerService: (serviceName, service) => {
+        module.services[serviceName] = service
+      },
+      
+      getService: (serviceName) => {
+        return module.services[serviceName]
+      }
+    }
+    
+    return module
+  }
+  
+  // 创建用户模块
+  const userModule = createModule('UserModule')
+  
+  userModule.registerService('UserService', {
+    create: (data) => Effect.gen(function* () {
+      console.log(`[${userModule.name}] Creating user`)
+      
+      // 使用依赖
+      if (userModule.dependencies.validator) {
+        const isValid = yield* userModule.dependencies.validator.validate(data)
+        if (!isValid) {
+          return Effect.fail(new Error('Invalid user data'))
+        }
+      }
+      
+      const user = { id: Date.now(), ...data }
+      userModule.state.set(user.id, user)
+      return user
+    }),
+    
+    get: (id) => Effect.gen(function* () {
+      const user = userModule.state.get(id)
+      return user ? Effect.succeed(user) : Effect.fail(new Error('User not found'))
+    })
+  })
+  
+  // 创建验证模块
+  const validatorModule = createModule('ValidatorModule')
+  
+  validatorModule.registerService('ValidatorService', {
+    validate: (data) => Effect.gen(function* () {
+      console.log(`[${validatorModule.name}] Validating data`)
+      return Effect.succeed(!!data.name && !!data.email)
+    })
+  })
+  
+  // 设置依赖
+  userModule.dependencies = {
+    validator: validatorModule.services.ValidatorService
+  }
+  
+  // 使用模块
+  const user = yield* userModule.services.UserService.create({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Created user:', user)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+## 💡 依赖管理
+
+### 基本依赖管理
+
+```js
+import { Effect } from 'effect'
+
+// 基本依赖管理
+const program = Effect.gen(function* () {
+  // 依赖容器
+  const Container = {
+    services: new Map(),
+    
+    register: (name, service) => {
+      Container.services.set(name, service)
+    },
+    
+    get: (name) => {
+      return Container.services.get(name)
+    },
+    
+    resolve: (name) => {
+      const service = Container.get(name)
+      if (!service) {
+        throw new Error(`Service ${name} not found`)
+      }
+      return service
+    }
+  }
+  
+  // 注册服务
+  Container.register('Logger', {
+    log: (message) => Effect.gen(function* () {
+      console.log(`[Logger] ${message}`)
+      return Effect.succeed(true)
+    })
+  })
+  
+  Container.register('Database', {
+    save: (data) => Effect.gen(function* () {
+      const logger = Container.resolve('Logger')
+      yield* logger.log(`Saving data: ${JSON.stringify(data)}`)
+      yield* Effect.sleep(100)
+      return Effect.succeed({ id: Date.now(), ...data })
+    })
+  })
+  
+  Container.register('UserService', {
+    create: (data) => Effect.gen(function* () {
+      const logger = Container.resolve('Logger')
+      const database = Container.resolve('Database')
+      
+      yield* logger.log('Creating user')
+      const user = yield* database.save(data)
+      
+      return user
+    })
+  })
+  
+  // 使用依赖注入
+  const userService = Container.resolve('UserService')
+  const user = yield* userService.create({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Created user:', user)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+### 依赖注入
+
+```js
+import { Effect } from 'effect'
+
+// 依赖注入
+const program = Effect.gen(function* () {
+  // 服务定义
+  const Logger = {
+    create: (prefix) => ({
+      log: (message) => Effect.gen(function* () {
+        console.log(`[${prefix}] ${message}`)
+        return Effect.succeed(true)
+      })
+    })
+  }
+  
+  const Database = {
+    create: (logger) => ({
+      save: (data) => Effect.gen(function* () {
+        yield* logger.log(`Saving: ${JSON.stringify(data)}`)
+        yield* Effect.sleep(100)
+        return Effect.succeed({ id: Date.now(), ...data })
+      })
+    })
+  }
+  
+  const UserService = {
+    create: (logger, database) => ({
+      create: (data) => Effect.gen(function* () {
+        yield* logger.log('Creating user')
+        const user = yield* database.save(data)
+        return user
+      })
+    })
+  }
+  
+  // 依赖注入容器
+  const DIContainer = {
+    // 手动注入
+    createUserService: () => {
+      const logger = Logger.create('UserService')
+      const database = Database.create(logger)
+      return UserService.create(logger, database)
+    }
+  }
+  
+  // 使用依赖注入
+  const userService = DIContainer.createUserService()
+  const user = yield* userService.create({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Created user:', user)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+### 依赖解析
+
+```js
+import { Effect } from 'effect'
+
+// 依赖解析
+const program = Effect.gen(function* () {
+  // 依赖图
+  const DependencyGraph = {
+    nodes: new Map(),
+    
+    addNode: (name, factory, dependencies = []) => {
+      DependencyGraph.nodes.set(name, { factory, dependencies, instance: null })
+    },
+    
+    resolve: (name, visited = new Set()) => {
+      if (visited.has(name)) {
+        throw new Error(`Circular dependency detected: ${name}`)
+      }
+      
+      const node = DependencyGraph.nodes.get(name)
+      if (!node) {
+        throw new Error(`Service ${name} not found`)
+      }
+      
+      if (node.instance) {
+        return node.instance
+      }
+      
+      visited.add(name)
+      
+      // 解析依赖
+      const resolvedDependencies = node.dependencies.map(dep => 
+        DependencyGraph.resolve(dep, new Set(visited))
+      )
+      
+      // 创建实例
+      node.instance = node.factory(...resolvedDependencies)
+      
+      return node.instance
+    }
+  }
+  
+  // 添加服务
+  DependencyGraph.addNode('Logger', () => ({
+    log: (message) => Effect.gen(function* () {
+      console.log(`[Logger] ${message}`)
+      return Effect.succeed(true)
+    })
+  }))
+  
+  DependencyGraph.addNode('Database', (logger) => ({
+    save: (data) => Effect.gen(function* () {
+      yield* logger.log(`Saving: ${JSON.stringify(data)}`)
+      yield* Effect.sleep(100)
+      return Effect.succeed({ id: Date.now(), ...data })
+    })
+  }), ['Logger'])
+  
+  DependencyGraph.addNode('UserService', (logger, database) => ({
+    create: (data) => Effect.gen(function* () {
+      yield* logger.log('Creating user')
+      const user = yield* database.save(data)
+      return user
+    })
+  }), ['Logger', 'Database'])
+  
+  // 解析并使用服务
+  const userService = DependencyGraph.resolve('UserService')
+  const user = yield* userService.create({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Created user:', user)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 接口设计
+
+### 基本接口设计
+
+```js
+import { Effect } from 'effect'
+
+// 基本接口设计
+const program = Effect.gen(function* () {
+  // 定义接口
+  const Interfaces = {
+    UserRepository: {
+      save: (user) => Effect.Effect,
+      findById: (id) => Effect.Effect,
+      findByEmail: (email) => Effect.Effect,
+      delete: (id) => Effect.Effect
+    },
+    
+    EmailService: {
+      send: (to, subject, body) => Effect.Effect,
+      sendTemplate: (to, template, data) => Effect.Effect
+    },
+    
+    UserService: {
+      register: (data) => Effect.Effect,
+      login: (email, password) => Effect.Effect,
+      updateProfile: (id, data) => Effect.Effect
+    }
+  }
+  
+  // 实现接口
+  const InMemoryUserRepository = {
+    users: new Map(),
+    
+    save: (user) => Effect.gen(function* () {
+      console.log('[InMemoryUserRepository] Saving user')
+      InMemoryUserRepository.users.set(user.id, user)
+      return Effect.succeed(user)
+    }),
+    
+    findById: (id) => Effect.gen(function* () {
+      const user = InMemoryUserRepository.users.get(id)
+      return user ? Effect.succeed(user) : Effect.fail(new Error('User not found'))
+    }),
+    
+    findByEmail: (email) => Effect.gen(function* () {
+      const user = Array.from(InMemoryUserRepository.users.values())
+        .find(u => u.email === email)
+      return user ? Effect.succeed(user) : Effect.fail(new Error('User not found'))
+    }),
+    
+    delete: (id) => Effect.gen(function* () {
+      const deleted = InMemoryUserRepository.users.delete(id)
+      return deleted ? Effect.succeed(true) : Effect.fail(new Error('User not found'))
+    })
+  }
+  
+  const ConsoleEmailService = {
+    send: (to, subject, body) => Effect.gen(function* () {
+      console.log(`[ConsoleEmailService] To: ${to}, Subject: ${subject}`)
+      console.log(`Body: ${body}`)
+      yield* Effect.sleep(50)
+      return Effect.succeed(true)
+    }),
+    
+    sendTemplate: (to, template, data) => Effect.gen(function* () {
+      console.log(`[ConsoleEmailService] To: ${to}, Template: ${template}`)
+      console.log(`Data: ${JSON.stringify(data)}`)
+      yield* Effect.sleep(50)
+      return Effect.succeed(true)
+    })
+  }
+  
+  const UserServiceImpl = {
+    userRepository: null,
+    emailService: null,
+    
+    create: (userRepository, emailService) => {
+      UserServiceImpl.userRepository = userRepository
+      UserServiceImpl.emailService = emailService
+      
+      return {
+        register: (data) => Effect.gen(function* () {
+          console.log('[UserServiceImpl] Registering user')
+          
+          // 检查用户是否已存在
+          const existing = yield* UserServiceImpl.userRepository.findByEmail(data.email).pipe(
+            Effect.catchAll(() => Effect.succeed(null))
+          )
+          
+          if (existing) {
+            return Effect.fail(new Error('User already exists'))
+          }
+          
+          // 创建用户
+          const user = {
+            id: Date.now(),
+            name: data.name,
+            email: data.email,
+            createdAt: new Date()
+          }
+          
+          yield* UserServiceImpl.userRepository.save(user)
+          yield* UserServiceImpl.emailService.send(
+            user.email,
+            'Welcome',
+            'Welcome to our platform!'
+          )
+          
+          return user
+        }),
+        
+        login: (email, password) => Effect.gen(function* () {
+          console.log('[UserServiceImpl] Logging in user')
+          const user = yield* UserServiceImpl.userRepository.findByEmail(email)
+          return user
+        }),
+        
+        updateProfile: (id, data) => Effect.gen(function* () {
+          console.log('[UserServiceImpl] Updating user profile')
+          const user = yield* UserServiceImpl.userRepository.findById(id)
+          const updated = { ...user, ...data }
+          yield* UserServiceImpl.userRepository.save(updated)
+          return updated
+        })
+      }
+    }
+  }
+  
+  // 使用接口
+  const userService = UserServiceImpl.create(
+    InMemoryUserRepository,
+    ConsoleEmailService
+  )
+  
+  const user = yield* userService.register({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Registered user:', user)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+### 接口组合
+
+```js
+import { Effect } from 'effect'
+
+// 接口组合
+const program = Effect.gen(function* () {
+  // 定义基础接口
+  const BaseInterfaces = {
+    Repository: {
+      create: (data) => Effect.Effect,
+      read: (id) => Effect.Effect,
+      update: (id, data) => Effect.Effect,
+      delete: (id) => Effect.Effect
+    },
+    
+    Service: {
+      execute: (command) => Effect.Effect
+    }
+  }
+  
+  // 组合接口
+  const ComposedInterfaces = {
+    UserService: {
+      ...BaseInterfaces.Repository,
+      ...BaseInterfaces.Service,
+      
+      register: (data) => Effect.Effect,
+      login: (email, password) => Effect.Effect
+    },
+    
+    OrderService: {
+      ...BaseInterfaces.Repository,
+      ...BaseInterfaces.Service,
+      
+      createOrder: (data) => Effect.Effect,
+      cancelOrder: (id) => Effect.Effect
+    }
+  }
+  
+  // 实现组合接口
+  const UserServiceImpl = {
+    data: new Map(),
+    
+    create: (data) => Effect.gen(function* () {
+      console.log('[UserServiceImpl] Creating user')
+      const user = { id: Date.now(), ...data }
+      UserServiceImpl.data.set(user.id, user)
+      return user
+    }),
+    
+    read: (id) => Effect.gen(function* () {
+      const user = UserServiceImpl.data.get(id)
+      return user ? Effect.succeed(user) : Effect.fail(new Error('User not found'))
+    }),
+    
+    update: (id, data) => Effect.gen(function* () {
+      const user = UserServiceImpl.data.get(id)
+      if (!user) {
+        return Effect.fail(new Error('User not found'))
+      }
+      const updated = { ...user, ...data }
+      UserServiceImpl.data.set(id, updated)
+      return updated
+    }),
+    
+    delete: (id) => Effect.gen(function* () {
+      const deleted = UserServiceImpl.data.delete(id)
+      return deleted ? Effect.succeed(true) : Effect.fail(new Error('User not found'))
+    }),
+    
+    execute: (command) => Effect.gen(function* () {
+      console.log('[UserServiceImpl] Executing command:', command.type)
+      return Effect.succeed({ success: true })
+    }),
+    
+    register: (data) => Effect.gen(function* () {
+      console.log('[UserServiceImpl] Registering user')
+      return yield* UserServiceImpl.create(data)
+    }),
+    
+    login: (email, password) => Effect.gen(function* () {
+      console.log('[UserServiceImpl] Logging in')
+      const user = Array.from(UserServiceImpl.data.values()).find(u => u.email === email)
+      return user ? Effect.succeed(user) : Effect.fail(new Error('Invalid credentials'))
+    })
+  }
+  
+  // 使用组合接口
+  const user = yield* UserServiceImpl.register({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Registered user:', user)
+  
+  const loggedIn = yield* UserServiceImpl.login('john@example.com', 'password')
+  console.log('Logged in user:', loggedIn)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 模块组合
+
+### 基本模块组合
+
+```js
+import { Effect } from 'effect'
+
+// 基本模块组合
+const program = Effect.gen(function* () {
+  // 定义模块
+  const LoggerModule = {
+    create: (prefix) => ({
+      log: (message) => Effect.gen(function* () {
+        console.log(`[${prefix}] ${message}`)
+        return Effect.succeed(true)
+      })
+    })
+  }
+  
+  const DatabaseModule = {
+    create: (logger) => ({
+      save: (data) => Effect.gen(function* () {
+        yield* logger.log(`Saving: ${JSON.stringify(data)}`)
+        yield* Effect.sleep(100)
+        return Effect.succeed({ id: Date.now(), ...data })
+      })
+    })
+  }
+  
+  const UserModule = {
+    create: (logger, database) => ({
+      create: (data) => Effect.gen(function* () {
+        yield* logger.log('Creating user')
+        const user = yield* database.save(data)
+        return user
+      }),
+      
+      get: (id) => Effect.gen(function* () {
+        yield* logger.log(`Getting user: ${id}`)
+        return Effect.succeed({ id, name: 'John Doe' })
+      })
+    })
+  }
+  
+  // 组合模块
+  const App = {
+    create: () => {
+      const logger = LoggerModule.create('App')
+      const database = DatabaseModule.create(logger)
+      const userModule = UserModule.create(logger, database)
+      
+      return {
+        logger,
+        database,
+        userModule
+      }
+    }
+  }
+  
+  // 使用组合模块
+  const app = App.create()
+  
+  const user = yield* app.userModule.create({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Created user:', user)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+### 高级模块组合
+
+```js
+import { Effect } from 'effect'
+
+// 高级模块组合
+const program = Effect.gen(function* () {
+  // 模块工厂
+  const ModuleFactory = {
+    create: (name, config = {}) => {
+      const module = {
+        name,
+        config,
+        state: new Map(),
+        services: {},
+        dependencies: {},
+        
+        addService: (serviceName, service) => {
+          module.services[serviceName] = service
+        },
+        
+        addDependency: (depName, depModule) => {
+          module.dependencies[depName] = depModule
+        },
+        
+        getService: (serviceName) => {
+          return module.services[serviceName]
+        },
+        
+        getDependency: (depName) => {
+          return module.dependencies[depName]
+        }
+      }
+      
+      return module
+    }
+  }
+  
+  // 创建模块
+  const loggerModule = ModuleFactory.create('LoggerModule', { prefix: 'App' })
+  
+  loggerModule.addService('Logger', {
+    log: (message) => Effect.gen(function* () {
+      console.log(`[${loggerModule.config.prefix}] ${message}`)
+      return Effect.succeed(true)
+    })
+  })
+  
+  const databaseModule = ModuleFactory.create('DatabaseModule')
+  databaseModule.addDependency('logger', loggerModule)
+  
+  databaseModule.addService('Database', {
+    save: (data) => Effect.gen(function* () {
+      const logger = databaseModule.getDependency('logger').getService('Logger')
+      yield* logger.log(`Saving: ${JSON.stringify(data)}`)
+      yield* Effect.sleep(100)
+      return Effect.succeed({ id: Date.now(), ...data })
+    })
+  })
+  
+  const userModule = ModuleFactory.create('UserModule')
+  userModule.addDependency('logger', loggerModule)
+  userModule.addDependency('database', databaseModule)
+  
+  userModule.addService('UserService', {
+    create: (data) => Effect.gen(function* () {
+      const logger = userModule.getDependency('logger').getService('Logger')
+      const database = userModule.getDependency('database').getService('Database')
+      
+      yield* logger.log('Creating user')
+      const user = yield* database.save(data)
+      return user
+    })
+  })
+  
+  // 模块组合器
+  const ModuleComposer = {
+    compose: (modules) => {
+      const composed = {
+        modules: {},
+        
+        getModule: (name) => {
+          return composed.modules[name]
+        },
+        
+        getService: (moduleName, serviceName) => {
+          const module = composed.getModule(moduleName)
+          return module ? module.getService(serviceName) : null
+        }
+      }
+      
+      // 注册模块
+      for (const module of modules) {
+        composed.modules[module.name] = module
+      }
+      
+      return composed
+    }
+  }
+  
+  // 组合模块
+  const app = ModuleComposer.compose([
+    loggerModule,
+    databaseModule,
+    userModule
+  ])
+  
+  // 使用组合的模块
+  const userService = app.getService('UserModule', 'UserService')
+  const user = yield* userService.create({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Created user:', user)
+  
+  return user
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 综合模块系统
+
+```js
+import { Effect } from 'effect'
+
+// 综合模块系统
+const program = Effect.gen(function* () {
+  // 模块系统
+  const ModuleSystem = {
+    modules: new Map(),
+    
+    register: (module) => {
+      ModuleSystem.modules.set(module.name, module)
+    },
+    
+    get: (name) => {
+      return ModuleSystem.modules.get(name)
+    },
+    
+    init: () => Effect.gen(function* () {
+      console.log('[ModuleSystem] Initializing modules')
+      
+      // 初始化所有模块
+      for (const [name, module] of ModuleSystem.modules) {
+        if (module.init) {
+          yield* module.init()
+        }
+      }
+      
+      return Effect.succeed(true)
+    })
+  }
+  
+  // 创建核心模块
+  const CoreModule = ModuleFactory.create('CoreModule')
+  
+  CoreModule.addService('EventBus', {
+    events: [],
+    
+    publish: (event) => Effect.gen(function* () {
+      console.log(`[CoreModule] Publishing event: ${event.type}`)
+      CoreModule.services.EventBus.events.push(event)
+      return Effect.succeed(true)
+    }),
+    
+    subscribe: (handler) => {
+      CoreModule.services.EventBus.events.push({ type: 'SUBSCRIPTION', handler })
+      return Effect.succeed(true)
+    }
+  })
+  
+  // 创建用户模块
+  const UserModule = ModuleFactory.create('UserModule')
+  UserModule.addDependency('core', CoreModule)
+  
+  UserModule.addService('UserService', {
+    users: new Map(),
+    
+    create: (data) => Effect.gen(function* () {
+      console.log('[UserModule] Creating user')
+      
+      const eventBus = UserModule.getDependency('core').getService('EventBus')
+      
+      const user = { id: Date.now(), ...data }
+      UserModule.services.UserService.users.set(user.id, user)
+      
+      // 发布事件
+      yield* eventBus.publish({
+        type: 'USER_CREATED',
+        user
+      })
+      
+      return user
+    })
+  })
+  
+  // 创建订单模块
+  const OrderModule = ModuleFactory.create('OrderModule')
+  OrderModule.addDependency('core', CoreModule)
+  OrderModule.addDependency('user', UserModule)
+  
+  OrderModule.addService('OrderService', {
+    orders: new Map(),
+    
+    create: (data) => Effect.gen(function* () {
+      console.log('[OrderModule] Creating order')
+      
+      const eventBus = OrderModule.getDependency('core').getService('EventBus')
+      const userService = OrderModule.getDependency('user').getService('UserService')
+      
+      // 验证用户
+      const user = userService.users.get(data.userId)
+      if (!user) {
+        return Effect.fail(new Error('User not found'))
+      }
+      
+      const order = {
+        id: Date.now(),
+        userId: data.userId,
+        items: data.items,
+        total: data.items.reduce((sum, item) => sum + item.price, 0),
+        createdAt: new Date()
+      }
+      
+      OrderModule.services.OrderService.orders.set(order.id, order)
+      
+      // 发布事件
+      yield* eventBus.publish({
+        type: 'ORDER_CREATED',
+        order
+      })
+      
+      return order
+    })
+  })
+  
+  // 注册模块
+  ModuleSystem.register(CoreModule)
+  ModuleSystem.register(UserModule)
+  ModuleSystem.register(OrderModule)
+  
+  // 初始化系统
+  yield* ModuleSystem.init()
+  
+  // 使用模块系统
+  const userService = ModuleSystem.get('UserModule').getService('UserService')
+  const user = yield* userService.create({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Created user:', user)
+  
+  const orderService = ModuleSystem.get('OrderModule').getService('OrderService')
+  const order = yield* orderService.create({
+    userId: user.id,
+    items: [{ name: 'Product 1', price: 100 }]
+  })
+  
+  console.log('Created order:', order)
+  
+  return { user, order }
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **应用架构**：分层架构、六边形架构、洋葱架构
+- **错误处理策略**：错误分类、错误边界、错误恢复
+- **代码质量**：代码风格、测试策略
+
+## 📚 学习检查点
+
+- [ ] 掌握模块边界
+- [ ] 理解依赖管理
+- [ ] 了解接口设计
+- [ ] 掌握模块组合
+- [ ] 能够设计可维护的模块系统
+
+## 🚀 下一步
+
+→ [错误处理策略](./03-error-handling-strategies.mdx)

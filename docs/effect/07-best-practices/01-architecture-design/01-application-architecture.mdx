@@ -1,0 +1,997 @@
+# 应用架构
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了灵活的架构设计能力，支持多种应用架构模式，包括分层架构、六边形架构、洋葱架构和微服务架构，帮助开发者构建可维护、可扩展的应用。
+
+## 🎯 分层架构
+
+### 基本分层架构
+
+```js
+import { Effect } from 'effect'
+
+// 基本分层架构
+const program = Effect.gen(function* () {
+  // 表现层
+  const presentationLayer = {
+    handleRequest: (request) => Effect.gen(function* () {
+      console.log('Presentation: Handling request')
+      const processed = yield* businessLayer.process(request)
+      return { status: 'success', data: processed }
+    })
+  }
+  
+  // 业务逻辑层
+  const businessLayer = {
+    process: (data) => Effect.gen(function* () {
+      console.log('Business: Processing data')
+      const validated = yield* validationLayer.validate(data)
+      const result = yield* dataLayer.save(validated)
+      return result
+    })
+  }
+  
+  // 验证层
+  const validationLayer = {
+    validate: (data) => Effect.gen(function* () {
+      console.log('Validation: Validating data')
+      if (!data || typeof data !== 'object') {
+        return Effect.fail(new Error('Invalid data'))
+      }
+      return Effect.succeed({ ...data, validated: true })
+    })
+  }
+  
+  // 数据层
+  const dataLayer = {
+    save: (data) => Effect.gen(function* () {
+      console.log('Data: Saving data')
+      yield* Effect.sleep(100)
+      return { id: 1, ...data, saved: true }
+    })
+  }
+  
+  // 使用分层架构
+  const result = yield* presentationLayer.handleRequest({ name: 'Test' })
+  console.log('Result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 分层架构实现
+
+```js
+import { Effect } from 'effect'
+
+// 分层架构实现
+const program = Effect.gen(function* () {
+  // 定义层
+  const Layers = {
+    // 表现层
+    Presentation: {
+      create: (business) => ({
+        handle: (request) => Effect.gen(function* () {
+          console.log(`[Presentation] Handling: ${request.type}`)
+          const result = yield* business.execute(request)
+          return { success: true, result }
+        })
+      })
+    },
+    
+    // 业务逻辑层
+    Business: {
+      create: (data) => ({
+        execute: (request) => Effect.gen(function* () {
+          console.log(`[Business] Executing: ${request.type}`)
+          const validated = yield* Business.validate(request)
+          return yield* data.persist(validated)
+        }),
+        
+        validate: (request) => Effect.gen(function* () {
+          if (!request.type) {
+            return Effect.fail(new Error('Type is required'))
+          }
+          return Effect.succeed({ ...request, valid: true })
+        })
+      })
+    },
+    
+    // 数据访问层
+    Data: {
+      create: () => ({
+        persist: (data) => Effect.gen(function* () {
+          console.log(`[Data] Persisting: ${data.type}`)
+          yield* Effect.sleep(50)
+          return { id: Math.random(), ...data, persisted: true }
+        })
+      })
+    }
+  }
+  
+  // 构建应用
+  const dataLayer = Layers.Data.create()
+  const businessLayer = Layers.Business.create(dataLayer)
+  const presentationLayer = Layers.Presentation.create(businessLayer)
+  
+  // 使用应用
+  const result = yield* presentationLayer.handle({ type: 'create', data: 'test' })
+  console.log('Result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 💡 六边形架构
+
+### 基本六边形架构
+
+```js
+import { Effect } from 'effect'
+
+// 基本六边形架构
+const program = Effect.gen(function* () {
+  // 六边形架构：端口和适配器
+  
+  // 端口（接口）
+  const Ports = {
+    UserRepository: {
+      save: (user) => Effect.Effect,
+      findById: (id) => Effect.Effect
+    },
+    
+    EmailService: {
+      send: (to, subject, body) => Effect.Effect
+    }
+  }
+  
+  // 适配器（实现）
+  const Adapters = {
+    // 主适配器（入口）
+    Web: {
+      handle: (request) => Effect.gen(function* () {
+        console.log('[Web Adapter] Handling request')
+        // 调用应用核心
+        return { status: 'ok' }
+      })
+    },
+    
+    // 次级适配器（出口）
+    Database: {
+      save: (user) => Effect.gen(function* () {
+        console.log('[Database Adapter] Saving user')
+        yield* Effect.sleep(100)
+        return Effect.succeed({ id: 1, ...user })
+      })
+    },
+    
+    Email: {
+      send: (to, subject, body) => Effect.gen(function* () {
+        console.log('[Email Adapter] Sending email')
+        yield* Effect.sleep(50)
+        return Effect.succeed(true)
+      })
+    }
+  }
+  
+  // 应用核心
+  const Application = {
+    createUser: (userData) => Effect.gen(function* () {
+      console.log('[Application Core] Creating user')
+      
+      // 使用端口（通过适配器）
+      const user = yield* Adapters.Database.save(userData)
+      yield* Adapters.Email.send(user.email, 'Welcome', 'Welcome!')
+      
+      return user
+    })
+  }
+  
+  // 使用六边形架构
+  const result = yield* Application.createUser({
+    name: 'John',
+    email: 'john@example.com'
+  })
+  
+  console.log('Result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 六边形架构实现
+
+```js
+import { Effect } from 'effect'
+
+// 六边形架构实现
+const program = Effect.gen(function* () {
+  // 定义端口
+  const Ports = {
+    // 输入端口
+    Input: {
+      UserCommands: {
+        register: (command) => Effect.Effect
+      }
+    },
+    
+    // 输出端口
+    Output: {
+      UserRepository: {
+        save: (user) => Effect.Effect,
+        findByEmail: (email) => Effect.Effect
+      },
+      
+      EventPublisher: {
+        publish: (event) => Effect.Effect
+      }
+    }
+  }
+  
+  // 适配器实现
+  const Adapters = {
+    // 主适配器
+    Http: {
+      handleRegister: (request) => Effect.gen(function* () {
+        console.log('[HTTP Adapter] Processing register request')
+        
+        const command = {
+          type: 'REGISTER',
+          name: request.name,
+          email: request.email
+        }
+        
+        return yield* Application.handle(command)
+      })
+    },
+    
+    // 次级适配器
+    InMemoryUserRepository: {
+      users: new Map(),
+      
+      save: (user) => Effect.gen(function* () {
+        console.log('[InMemory Adapter] Saving user')
+        Adapters.InMemoryUserRepository.users.set(user.email, user)
+        return Effect.succeed(user)
+      }),
+      
+      findByEmail: (email) => Effect.gen(function* () {
+        const user = Adapters.InMemoryUserRepository.users.get(email)
+        return user ? Effect.succeed(user) : Effect.fail(new Error('User not found'))
+      })
+    },
+    
+    ConsoleEventPublisher: {
+      publish: (event) => Effect.gen(function* () {
+        console.log('[Console Adapter] Publishing event:', event)
+        return Effect.succeed(true)
+      })
+    }
+  }
+  
+  // 应用核心
+  const Application = {
+    handle: (command) => Effect.gen(function* () {
+      switch (command.type) {
+        case 'REGISTER':
+          return yield* Application.register(command)
+        default:
+          return Effect.fail(new Error('Unknown command'))
+      }
+    }),
+    
+    register: (command) => Effect.gen(function* () {
+      console.log('[Application] Registering user')
+      
+      // 检查用户是否存在
+      const existing = yield* Adapters.InMemoryUserRepository.findByEmail(command.email).pipe(
+        Effect.catchAll(() => Effect.succeed(null))
+      )
+      
+      if (existing) {
+        return Effect.fail(new Error('User already exists'))
+      }
+      
+      // 创建用户
+      const user = {
+        id: Date.now(),
+        name: command.name,
+        email: command.email,
+        createdAt: new Date()
+      }
+      
+      // 保存用户
+      yield* Adapters.InMemoryUserRepository.save(user)
+      
+      // 发布事件
+      yield* Adapters.ConsoleEventPublisher.publish({
+        type: 'USER_REGISTERED',
+        user
+      })
+      
+      return Effect.succeed(user)
+    })
+  }
+  
+  // 使用应用
+  const result = yield* Adapters.Http.handleRegister({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 洋葱架构
+
+### 基本洋葱架构
+
+```js
+import { Effect } from 'effect'
+
+// 基本洋葱架构
+const program = Effect.gen(function* () {
+  // 洋葱架构：由内向外
+  
+  // 核心领域层（最内层）
+  const Domain = {
+    User: {
+      create: (data) => Effect.gen(function* () {
+        console.log('[Domain] Creating user entity')
+        
+        if (!data.name || !data.email) {
+          return Effect.fail(new Error('Name and email are required'))
+        }
+        
+        return Effect.succeed({
+          id: Date.now(),
+          name: data.name,
+          email: data.email,
+          createdAt: new Date()
+        })
+      })
+    }
+  }
+  
+  // 应用服务层
+  const Application = {
+    UserService: {
+      register: (userData) => Effect.gen(function* () {
+        console.log('[Application] Registering user')
+        
+        const user = yield* Domain.User.create(userData)
+        
+        // 领域逻辑
+        console.log('[Application] User registered successfully')
+        
+        return user
+      })
+    }
+  }
+  
+  // 基础设施层
+  const Infrastructure = {
+    UserRepository: {
+      save: (user) => Effect.gen(function* () {
+        console.log('[Infrastructure] Saving user to database')
+        yield* Effect.sleep(100)
+        return Effect.succeed({ ...user, saved: true })
+      })
+    },
+    
+    EmailService: {
+      sendWelcome: (user) => Effect.gen(function* () {
+        console.log('[Infrastructure] Sending welcome email')
+        yield* Effect.sleep(50)
+        return Effect.succeed(true)
+      })
+    }
+  }
+  
+  // 表现层
+  const Presentation = {
+    UserController: {
+      register: (request) => Effect.gen(function* () {
+        console.log('[Presentation] Handling registration request')
+        
+        const user = yield* Application.UserService.register(request)
+        yield* Infrastructure.UserRepository.save(user)
+        yield* Infrastructure.EmailService.sendWelcome(user)
+        
+        return { success: true, user }
+      })
+    }
+  }
+  
+  // 使用洋葱架构
+  const result = yield* Presentation.UserController.register({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 洋葱架构实现
+
+```js
+import { Effect } from 'effect'
+
+// 洋葱架构实现
+const program = Effect.gen(function* () {
+  // 核心领域层
+  const Core = {
+    Entities: {
+      User: {
+        create: (data) => Effect.gen(function* () {
+          // 验证
+          if (!data.name || data.name.length < 2) {
+            return Effect.fail(new Error('Name must be at least 2 characters'))
+          }
+          
+          if (!data.email || !data.email.includes('@')) {
+            return Effect.fail(new Error('Invalid email'))
+          }
+          
+          return Effect.succeed({
+            id: Date.now(),
+            name: data.name,
+            email: data.email,
+            createdAt: new Date()
+          })
+        })
+      }
+    },
+    
+    ValueObjects: {
+      Email: {
+        create: (value) => Effect.gen(function* () {
+          if (!value.includes('@')) {
+            return Effect.fail(new Error('Invalid email format'))
+          }
+          return Effect.succeed({ value })
+        })
+      }
+    }
+  }
+  
+  // 应用服务层
+  const Services = {
+    UserService: {
+      register: (data) => Effect.gen(function* () {
+        console.log('[UserService] Registering user')
+        
+        const email = yield* Core.ValueObjects.Email.create(data.email)
+        const user = yield* Core.Entities.User.create({
+          ...data,
+          email: email.value
+        })
+        
+        return user
+      })
+    }
+  }
+  
+  // 基础设施层
+  const Infrastructure = {
+    Repositories: {
+      InMemoryUserRepository: {
+        users: new Map(),
+        
+        save: (user) => Effect.gen(function* () {
+          console.log('[Repository] Saving user')
+          Infrastructure.Repositories.InMemoryUserRepository.users.set(user.id, user)
+          return Effect.succeed(user)
+        })
+      }
+    },
+    
+    Services: {
+      EmailService: {
+        send: (to, subject, body) => Effect.gen(function* () {
+          console.log('[EmailService] Sending email')
+          yield* Effect.sleep(50)
+          return Effect.succeed(true)
+        })
+      }
+    }
+  }
+  
+  // 表现层
+  const Presentation = {
+    Controllers: {
+      UserController: {
+        register: (request) => Effect.gen(function* () {
+          console.log('[Controller] Handling request')
+          
+          const user = yield* Services.UserService.register(request)
+          yield* Infrastructure.Repositories.InMemoryUserRepository.save(user)
+          yield* Infrastructure.Services.EmailService.send(
+            user.email,
+            'Welcome',
+            'Welcome to our platform!'
+          )
+          
+          return { success: true, user }
+        })
+      }
+    }
+  }
+  
+  // 使用应用
+  const result = yield* Presentation.Controllers.UserController.register({
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  
+  console.log('Result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 微服务架构
+
+### 基本微服务架构
+
+```js
+import { Effect } from 'effect'
+
+// 基本微服务架构
+const program = Effect.gen(function* () {
+  // 微服务架构：独立的服务
+  
+  // 用户服务
+  const UserService = {
+    users: new Map(),
+    
+    createUser: (data) => Effect.gen(function* () {
+      console.log('[UserService] Creating user')
+      const user = { id: Date.now(), ...data, createdAt: new Date() }
+      UserService.users.set(user.id, user)
+      return user
+    }),
+    
+    getUser: (id) => Effect.gen(function* () {
+      const user = UserService.users.get(id)
+      return user ? Effect.succeed(user) : Effect.fail(new Error('User not found'))
+    })
+  }
+  
+  // 订单服务
+  const OrderService = {
+    orders: new Map(),
+    
+    createOrder: (data) => Effect.gen(function* () {
+      console.log('[OrderService] Creating order')
+      
+      // 验证用户
+      const user = yield* UserService.getUser(data.userId)
+      if (!user) {
+        return Effect.fail(new Error('User not found'))
+      }
+      
+      const order = {
+        id: Date.now(),
+        userId: data.userId,
+        items: data.items,
+        total: data.items.reduce((sum, item) => sum + item.price, 0),
+        createdAt: new Date()
+      }
+      
+      OrderService.orders.set(order.id, order)
+      return order
+    }),
+    
+    getOrder: (id) => Effect.gen(function* () {
+      const order = OrderService.orders.get(id)
+      return order ? Effect.succeed(order) : Effect.fail(new Error('Order not found'))
+    })
+  }
+  
+  // 通知服务
+  const NotificationService = {
+    sendNotification: (userId, message) => Effect.gen(function* () {
+      console.log('[NotificationService] Sending notification to user', userId)
+      yield* Effect.sleep(50)
+      return Effect.succeed(true)
+    })
+  }
+  
+  // API 网关
+  const APIGateway = {
+    handleRequest: (service, method, data) => Effect.gen(function* () {
+      console.log(`[Gateway] Routing to ${service}.${method}`)
+      
+      switch (service) {
+        case 'user':
+          if (method === 'create') {
+            return yield* UserService.createUser(data)
+          } else if (method === 'get') {
+            return yield* UserService.getUser(data.id)
+          }
+          break
+        case 'order':
+          if (method === 'create') {
+            return yield* OrderService.createOrder(data)
+          } else if (method === 'get') {
+            return yield* OrderService.getOrder(data.id)
+          }
+          break
+        case 'notification':
+          if (method === 'send') {
+            return yield* NotificationService.sendNotification(data.userId, data.message)
+          }
+          break
+      }
+      
+      return Effect.fail(new Error('Unknown service or method'))
+    })
+  }
+  
+  // 使用微服务架构
+  const user = yield* APIGateway.handleRequest('user', 'create', {
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  console.log('Created user:', user)
+  
+  const order = yield* APIGateway.handleRequest('order', 'create', {
+    userId: user.id,
+    items: [{ name: 'Product 1', price: 100 }]
+  })
+  console.log('Created order:', order)
+  
+  yield* APIGateway.handleRequest('notification', 'send', {
+    userId: user.id,
+    message: 'Order created successfully!'
+  })
+  
+  return { user, order }
+})
+
+Effect.runSync(program)
+```
+
+### 微服务架构实现
+
+```js
+import { Effect } from 'effect'
+
+// 微服务架构实现
+const program = Effect.gen(function* () {
+  // 服务定义
+  const Services = {
+    // 用户服务
+    User: {
+      name: 'user-service',
+      port: 3001,
+      data: new Map(),
+      
+      endpoints: {
+        createUser: (data) => Effect.gen(function* () {
+          console.log(`[${Services.User.name}] Creating user`)
+          const user = { id: Date.now(), ...data }
+          Services.User.data.set(user.id, user)
+          return { status: 'created', user }
+        }),
+        
+        getUser: (id) => Effect.gen(function* () {
+          const user = Services.User.data.get(id)
+          return user ? { status: 'ok', user } : { status: 'not_found' }
+        })
+      }
+    },
+    
+    // 产品服务
+    Product: {
+      name: 'product-service',
+      port: 3002,
+      data: new Map(),
+      
+      endpoints: {
+        createProduct: (data) => Effect.gen(function* () {
+          console.log(`[${Services.Product.name}] Creating product`)
+          const product = { id: Date.now(), ...data }
+          Services.Product.data.set(product.id, product)
+          return { status: 'created', product }
+        }),
+        
+        getProduct: (id) => Effect.gen(function* () {
+          const product = Services.Product.data.get(id)
+          return product ? { status: 'ok', product } : { status: 'not_found' }
+        })
+      }
+    },
+    
+    // 订单服务
+    Order: {
+      name: 'order-service',
+      port: 3003,
+      data: new Map(),
+      
+      endpoints: {
+        createOrder: (data) => Effect.gen(function* () {
+          console.log(`[${Services.Order.name}] Creating order`)
+          
+          // 调用其他服务
+          const userResult = yield* Services.User.endpoints.getUser(data.userId)
+          if (userResult.status !== 'ok') {
+            return { status: 'error', message: 'User not found' }
+          }
+          
+          const order = {
+            id: Date.now(),
+            userId: data.userId,
+            items: data.items,
+            total: data.items.reduce((sum, item) => sum + item.price, 0),
+            createdAt: new Date()
+          }
+          
+          Services.Order.data.set(order.id, order)
+          return { status: 'created', order }
+        }),
+        
+        getOrder: (id) => Effect.gen(function* () {
+          const order = Services.Order.data.get(id)
+          return order ? { status: 'ok', order } : { status: 'not_found' }
+        })
+      }
+    }
+  }
+  
+  // 服务发现
+  const ServiceDiscovery = {
+    services: {
+      'user': Services.User,
+      'product': Services.Product,
+      'order': Services.Order
+    },
+    
+    getService: (name) => {
+      return ServiceDiscovery.services[name]
+    },
+    
+    callService: (serviceName, endpoint, data) => Effect.gen(function* () {
+      const service = ServiceDiscovery.getService(serviceName)
+      
+      if (!service) {
+        return Effect.fail(new Error(`Service ${serviceName} not found`))
+      }
+      
+      const endpointFn = service.endpoints[endpoint]
+      
+      if (!endpointFn) {
+        return Effect.fail(new Error(`Endpoint ${endpoint} not found`))
+      }
+      
+      return yield* endpointFn(data)
+    })
+  }
+  
+  // 使用微服务架构
+  const user = yield* ServiceDiscovery.callService('user', 'createUser', {
+    name: 'John Doe',
+    email: 'john@example.com'
+  })
+  console.log('User:', user)
+  
+  const product = yield* ServiceDiscovery.callService('product', 'createProduct', {
+    name: 'Laptop',
+    price: 999
+  })
+  console.log('Product:', product)
+  
+  const order = yield* ServiceDiscovery.callService('order', 'createOrder', {
+    userId: user.user.id,
+    items: [{ productId: product.product.id, price: product.product.price }]
+  })
+  console.log('Order:', order)
+  
+  return { user, product, order }
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 综合架构系统
+
+```js
+import { Effect } from 'effect'
+
+// 综合架构系统
+const program = Effect.gen(function* () {
+  // 结合多种架构模式的综合系统
+  
+  // 核心领域层（洋葱架构）
+  const Domain = {
+    Entities: {
+      Order: {
+        create: (data) => Effect.gen(function* () {
+          if (!data.userId || !data.items || data.items.length === 0) {
+            return Effect.fail(new Error('Invalid order data'))
+          }
+          
+          return Effect.succeed({
+            id: Date.now(),
+            userId: data.userId,
+            items: data.items,
+            total: data.items.reduce((sum, item) => sum + item.price, 0),
+            status: 'pending',
+            createdAt: new Date()
+          })
+        })
+      }
+    }
+  }
+  
+  // 应用服务层（六边形架构）
+  const Application = {
+    OrderService: {
+      createOrder: (command) => Effect.gen(function* () {
+        console.log('[Application] Creating order')
+        
+        const order = yield* Domain.Entities.Order.create(command)
+        
+        // 发布领域事件
+        yield* EventPublisher.publish({
+          type: 'ORDER_CREATED',
+          order
+        })
+        
+        return order
+      })
+    }
+  }
+  
+  // 事件发布器
+  const EventPublisher = {
+    subscribers: [],
+    
+    subscribe: (handler) => {
+      EventPublisher.subscribers.push(handler)
+    },
+    
+    publish: (event) => Effect.gen(function* () {
+      console.log('[EventPublisher] Publishing event:', event.type)
+      
+      yield* Effect.all(
+        EventPublisher.subscribers.map(handler => handler(event)),
+        { concurrency: 'unbounded' }
+      )
+      
+      return Effect.succeed(true)
+    })
+  }
+  
+  // 基础设施层（分层架构）
+  const Infrastructure = {
+    Repositories: {
+      OrderRepository: {
+        orders: new Map(),
+        
+        save: (order) => Effect.gen(function* () {
+          console.log('[Repository] Saving order')
+          Infrastructure.Repositories.OrderRepository.orders.set(order.id, order)
+          return Effect.succeed(order)
+        })
+      }
+    },
+    
+    Services: {
+      NotificationService: {
+        send: (userId, message) => Effect.gen(function* () {
+          console.log('[NotificationService] Sending notification')
+          yield* Effect.sleep(50)
+          return Effect.succeed(true)
+        })
+      },
+      
+      EmailService: {
+        send: (to, subject, body) => Effect.gen(function* () {
+          console.log('[EmailService] Sending email')
+          yield* Effect.sleep(50)
+          return Effect.succeed(true)
+        })
+      }
+    }
+  }
+  
+  // 事件处理器
+  const EventHandlers = {
+    OrderCreatedHandler: (event) => Effect.gen(function* () {
+      if (event.type === 'ORDER_CREATED') {
+        // 保存订单
+        yield* Infrastructure.Repositories.OrderRepository.save(event.order)
+        
+        // 发送通知
+        yield* Infrastructure.Services.NotificationService.send(
+          event.order.userId,
+          'Order created successfully!'
+        )
+        
+        // 发送邮件
+        yield* Infrastructure.Services.EmailService.send(
+          'admin@example.com',
+          'New Order',
+          `Order ${event.order.id} created`
+        )
+      }
+    })
+  }
+  
+  // 订阅事件
+  EventPublisher.subscribe(EventHandlers.OrderCreatedHandler)
+  
+  // API 层（微服务架构）
+  const API = {
+    handleCreateOrder: (request) => Effect.gen(function* () {
+      console.log('[API] Handling create order request')
+      
+      const order = yield* Application.OrderService.createOrder(request)
+      
+      return {
+        success: true,
+        order
+      }
+    })
+  }
+  
+  // 使用综合架构系统
+  const result = yield* API.handleCreateOrder({
+    userId: 1,
+    items: [
+      { name: 'Product 1', price: 100 },
+      { name: 'Product 2', price: 200 }
+    ]
+  })
+  
+  console.log('Result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **模块化设计**：模块边界、依赖管理、接口设计
+- **错误处理策略**：错误分类、错误边界、错误恢复
+- **代码质量**：代码风格、测试策略
+
+## 📚 学习检查点
+
+- [ ] 掌握分层架构
+- [ ] 理解六边形架构
+- [ ] 了解洋葱架构
+- [ ] 掌握微服务架构
+- [ ] 能够设计合适的应用架构
+
+## 🚀 下一步
+
+→ [模块化设计](./02-modular-design.mdx)
