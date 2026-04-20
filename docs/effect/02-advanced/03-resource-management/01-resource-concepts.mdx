@@ -1,0 +1,354 @@
+# 资源概念
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+资源管理是 Effect 的核心特性之一，它提供了类型安全的资源获取、使用和释放机制，确保资源在任何情况下都能被正确清理。
+
+## 🎯 资源管理基础
+
+### 什么是资源
+
+```js
+import { Effect } from 'effect'
+
+// 资源是需要获取和释放的对象
+// 例如：数据库连接、文件句柄、网络连接、临时文件等
+
+// ❌ 传统方式 - 容易忘记释放资源
+async function traditionalWay() {
+  const connection = await createConnection()
+  try {
+    const result = await connection.query('SELECT * FROM users')
+    return result
+  } finally {
+    await connection.close()
+  }
+}
+
+// ✅ Effect 方式 - 自动管理资源
+const effectWay = Effect.acquireRelease(
+  Effect.tryPromise(() => createConnection()),
+  connection => Effect.tryPromise(() => connection.close())
+).pipe(
+  Effect.flatMap(connection =>
+    Effect.tryPromise(() => connection.query('SELECT * FROM users'))
+  )
+)
+```
+
+### 资源的生命周期
+
+```js
+import { Effect } from 'effect'
+
+// 资源生命周期：获取 → 使用 → 释放
+const resourceLifecycle = Effect.acquireRelease(
+  // 1. 获取资源
+  Effect.sync(() => {
+    console.log('Acquiring resource')
+    return { id: 1, value: 'Resource' }
+  }),
+  // 2. 释放资源
+  resource => Effect.sync(() => {
+    console.log('Releasing resource')
+  })
+).pipe(
+  // 3. 使用资源
+  Effect.flatMap(resource =>
+    Effect.sync(() => {
+      console.log('Using resource:', resource.id)
+      return resource.value
+    })
+  )
+)
+
+Effect.runSync(resourceLifecycle)
+// 输出：
+// Acquiring resource
+// Using resource: 1
+// Releasing resource
+```
+
+## 💡 Effect.acquireRelease - 资源获取与释放
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 基本语法：Effect.acquireRelease(acquire, release)
+const managedResource = Effect.acquireRelease(
+  // acquire: 获取资源的 Effect
+  Effect.sync(() => {
+    console.log('Opening file')
+    return { handle: 'file-handle-123' }
+  }),
+  // release: 释放资源的函数
+  resource => Effect.sync(() => {
+    console.log('Closing file:', resource.handle)
+  })
+)
+
+Effect.runSync(managedResource)
+// 输出：
+// Opening file
+// Closing file: file-handle-123
+```
+
+### 使用资源
+
+```js
+import { Effect } from 'effect'
+
+// 使用资源
+const useResource = Effect.acquireRelease(
+  Effect.sync(() => ({ id: 1, name: 'Resource' })),
+  resource => Effect.sync(() => {
+    console.log('Cleaning up:', resource.id)
+  })
+).pipe(
+  Effect.flatMap(resource =>
+    Effect.sync(() => {
+      console.log('Using:', resource.name)
+      return `Processed ${resource.name}`
+    })
+  )
+)
+
+Effect.runSync(useResource)
+// 输出：
+// Using: Resource
+// Cleaning up: 1
+```
+
+## 🚀 Scope 作用域管理
+
+### Effect.scoped - 作用域内执行
+
+```js
+import { Effect } from 'effect'
+
+// 在作用域内使用资源
+const scopedResource = Effect.scoped(
+  Effect.acquireRelease(
+    Effect.sync(() => ({ id: 1 })),
+    resource => Effect.sync(() => {
+      console.log('Auto-released:', resource.id)
+    })
+  ).pipe(
+    Effect.flatMap(resource =>
+      Effect.sync(() => `Used ${resource.id}`)
+    )
+  )
+)
+
+Effect.runSync(scopedResource)
+// 输出：
+// Auto-released: 1
+```
+
+### 嵌套作用域
+
+```js
+import { Effect } from 'effect'
+
+// 嵌套多个资源
+const nestedResources = Effect.scoped(
+  Effect.gen(function* () {
+    const resource1 = yield* Effect.acquireRelease(
+      Effect.sync(() => ({ id: 1 })),
+      r => Effect.sync(() => console.log('Released 1'))
+    )
+    
+    const resource2 = yield* Effect.acquireRelease(
+      Effect.sync(() => ({ id: 2 })),
+      r => Effect.sync(() => console.log('Released 2'))
+    )
+    
+    return { r1: resource1, r2: resource2 }
+  })
+)
+
+Effect.runSync(nestedResources)
+// 输出：
+// Released 2
+// Released 1
+```
+
+## 🎯 资源自动清理机制
+
+### 错误时的清理
+
+```js
+import { Effect } from 'effect'
+
+// 即使发生错误，资源也会被正确清理
+const cleanupOnError = Effect.acquireRelease(
+  Effect.sync(() => ({ id: 1 })),
+  resource => Effect.sync(() => {
+    console.log('Always cleaned up:', resource.id)
+  })
+).pipe(
+  Effect.flatMap(resource =>
+    Effect.fail(new Error('Something went wrong'))
+  )
+)
+
+Effect.runPromise(cleanupOnError).catch(error => {
+  console.log('Error:', error.message)
+})
+// 输出：
+// Always cleaned up: 1
+// Error: Something went wrong
+```
+
+### 中断时的清理
+
+```js
+import { Effect } from 'effect'
+
+// 即使被中断，资源也会被正确清理
+const cleanupOnInterrupt = Effect.acquireRelease(
+  Effect.sync(() => ({ id: 1 })),
+  resource => Effect.sync(() => {
+    console.log('Cleaned up on interrupt:', resource.id)
+  })
+).pipe(
+  Effect.flatMap(resource =>
+    Effect.gen(function* () {
+      yield* Effect.sleep(10000)  // 长时间运行
+      return resource
+    })
+  ),
+  Effect.timeout(1000)  // 1 秒后超时
+)
+
+Effect.runPromise(cleanupOnInterrupt).catch(error => {
+  console.log('Interrupted')
+})
+// 输出：
+// Cleaned up on interrupt: 1
+// Interrupted
+```
+
+## 📝 实际应用示例
+
+### 数据库连接管理
+
+```js
+import { Effect } from 'effect'
+
+// 数据库连接管理
+const withDatabase = Effect.acquireRelease(
+  Effect.tryPromise(() => createDatabaseConnection()),
+  connection => Effect.tryPromise(() => connection.close())
+).pipe(
+  Effect.flatMap(connection =>
+    Effect.tryPromise(() =>
+      connection.query('SELECT * FROM users')
+    )
+  )
+)
+
+Effect.runPromise(withDatabase).then(results => {
+  console.log(results)
+})
+```
+
+### 文件操作
+
+```js
+import { Effect } from 'effect'
+
+// 文件操作
+const readFile = (path: string) =>
+  Effect.acquireRelease(
+    Effect.tryPromise(() => openFile(path)),
+    handle => Effect.tryPromise(() => closeFile(handle))
+  ).pipe(
+    Effect.flatMap(handle =>
+      Effect.tryPromise(() => readFileContent(handle))
+    )
+  )
+
+Effect.runPromise(readFile('./data.txt')).then(content => {
+  console.log(content)
+})
+```
+
+### 网络连接
+
+```js
+import { Effect } from 'effect'
+
+// 网络连接管理
+const withConnection = (url: string) =>
+  Effect.acquireRelease(
+    Effect.tryPromise(() => createConnection(url)),
+    connection => Effect.tryPromise(() => connection.close())
+  ).pipe(
+    Effect.flatMap(connection =>
+      Effect.tryPromise(() =>
+        connection.send('Hello')
+      ).pipe(
+        Effect.andThen(() =>
+          Effect.tryPromise(() => connection.receive())
+        )
+      )
+    )
+  )
+
+Effect.runPromise(withConnection('ws://localhost:8080')).then(message => {
+  console.log('Received:', message)
+})
+```
+
+### 临时文件
+
+```js
+import { Effect } from 'effect'
+
+// 临时文件管理
+const withTempFile = Effect.acquireRelease(
+  Effect.sync(() => {
+    const tempPath = `/tmp/temp-${Date.now()}.txt`
+    console.log('Created temp file:', tempPath)
+    return tempPath
+  }),
+  tempPath => Effect.sync(() => {
+    console.log('Deleting temp file:', tempPath)
+    // 删除临时文件
+  })
+).pipe(
+  Effect.flatMap(tempPath =>
+    Effect.sync(() => {
+      // 使用临时文件
+      console.log('Writing to:', tempPath)
+      return tempPath
+    })
+  )
+)
+
+Effect.runSync(withTempFile)
+```
+
+## 🔗 相关概念
+
+- **资源生命周期**：资源的完整生命周期管理
+- **常见资源场景**：实际应用中的资源管理
+- **资源自动清理**：确保资源在任何情况下都能被清理
+
+## 📚 学习检查点
+
+- [ ] 理解资源管理的基本概念
+- [ ] 掌握 Effect.acquireRelease 的使用
+- [ ] 了解 Scope 作用域管理
+- [ ] 理解资源自动清理机制
+- [ ] 能够管理常见资源
+
+## 🚀 下一步
+
+→ [资源生命周期](./02-resource-lifecycle.mdx)

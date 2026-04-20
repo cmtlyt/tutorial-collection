@@ -1,0 +1,401 @@
+# 资源生命周期
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+理解资源的生命周期对于正确管理资源至关重要。Effect 提供了完整的生命周期管理机制，确保资源在任何情况下都能被正确处理。
+
+## 🎯 资源创建
+
+### Effect.scoped - 创建作用域资源
+
+```js
+import { Effect } from 'effect'
+
+// 使用 Effect.scoped 创建作用域资源
+const scopedResource = Effect.scoped(
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      console.log('Creating resource')
+      return { id: 1 }
+    }),
+    resource => Effect.sync(() => {
+      console.log('Cleaning up resource:', resource.id)
+    })
+  )
+)
+
+Effect.runSync(scopedResource)
+// 输出：
+// Creating resource
+// Cleaning up resource: 1
+```
+
+### 资源工厂
+
+```js
+import { Effect } from 'effect'
+
+// 创建资源工厂
+const createResource = (id: number) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      console.log(`Creating resource ${id}`)
+      return { id, created: Date.now() }
+    }),
+    resource => Effect.sync(() => {
+      console.log(`Cleaning up resource ${resource.id}`)
+    })
+  )
+
+// 使用工厂创建多个资源
+const multipleResources = Effect.scoped(
+  Effect.gen(function* () {
+    const resource1 = yield* createResource(1)
+    const resource2 = yield* createResource(2)
+    const resource3 = yield* createResource(3)
+    
+    return [resource1, resource2, resource3]
+  })
+)
+
+Effect.runSync(multipleResources)
+// 输出：
+// Creating resource 1
+// Creating resource 2
+// Creating resource 3
+// Cleaning up resource 3
+// Cleaning up resource 2
+// Cleaning up resource 1
+```
+
+## 💡 资源使用
+
+### 基本使用
+
+```js
+import { Effect } from 'effect'
+
+// 使用资源
+const useResource = Effect.acquireRelease(
+  Effect.sync(() => ({ id: 1, value: 100 })),
+  resource => Effect.sync(() => {
+    console.log('Releasing resource:', resource.id)
+  })
+).pipe(
+  Effect.flatMap(resource =>
+    Effect.sync(() => {
+      console.log('Using resource value:', resource.value)
+      return resource.value * 2
+    })
+  )
+)
+
+Effect.runSync(useResource)
+// 输出：
+// Using resource value: 100
+// Releasing resource: 1
+```
+
+### 链式使用
+
+```js
+import { Effect } from 'effect'
+
+// 链式使用多个资源
+const chainResources = Effect.gen(function* () {
+  const resource1 = yield* Effect.acquireRelease(
+    Effect.sync(() => ({ id: 1 })),
+    r => Effect.sync(() => console.log('Released 1'))
+  )
+  
+  const resource2 = yield* Effect.acquireRelease(
+    Effect.sync(() => ({ id: 2 })),
+    r => Effect.sync(() => console.log('Released 2'))
+  )
+  
+  return { r1: resource1, r2: resource2 }
+})
+
+Effect.runSync(chainResources)
+// 输出：
+// Released 2
+// Released 1
+```
+
+## 🚀 资源清理
+
+### 正常清理
+
+```js
+import { Effect } from 'effect'
+
+// 正常情况下的清理
+const normalCleanup = Effect.acquireRelease(
+  Effect.sync(() => ({ id: 1 })),
+  resource => Effect.sync(() => {
+    console.log('Normal cleanup:', resource.id)
+  })
+).pipe(
+  Effect.flatMap(resource =>
+    Effect.sync(() => {
+      console.log('Processing:', resource.id)
+      return 'Success'
+    })
+  )
+)
+
+Effect.runSync(normalCleanup)
+// 输出：
+// Processing: 1
+// Normal cleanup: 1
+```
+
+### 错误清理
+
+```js
+import { Effect } from 'effect'
+
+// 错误时的清理
+const errorCleanup = Effect.acquireRelease(
+  Effect.sync(() => ({ id: 1 })),
+  resource => Effect.sync(() => {
+    console.log('Error cleanup:', resource.id)
+  })
+).pipe(
+  Effect.flatMap(resource =>
+    Effect.fail(new Error('Processing failed'))
+  )
+)
+
+Effect.runPromise(errorCleanup).catch(error => {
+  console.log('Caught error:', error.message)
+})
+// 输出：
+// Error cleanup: 1
+// Caught error: Processing failed
+```
+
+### 中断清理
+
+```js
+import { Effect } from 'effect'
+
+// 中断时的清理
+const interruptCleanup = Effect.acquireRelease(
+  Effect.sync(() => ({ id: 1 })),
+  resource => Effect.sync(() => {
+    console.log('Interrupt cleanup:', resource.id)
+  })
+).pipe(
+  Effect.flatMap(resource =>
+    Effect.gen(function* () {
+      for (let i = 0; i < 100; i++) {
+        console.log(`Step ${i}`)
+        yield* Effect.sleep(100)
+      }
+      return resource
+    })
+  ),
+  Effect.timeout(500)  // 500ms 后超时
+)
+
+Effect.runPromise(interruptCleanup).catch(error => {
+  console.log('Interrupted')
+})
+// 输出：
+// Step 0
+// Step 1
+// Step 2
+// Step 3
+// Step 4
+// Interrupt cleanup: 1
+// Interrupted
+```
+
+## 🎯 异常处理
+
+### 清理中的错误
+
+```js
+import { Effect } from 'effect'
+
+// 清理过程中的错误处理
+const cleanupError = Effect.acquireRelease(
+  Effect.sync(() => ({ id: 1 })),
+  resource => Effect.sync(() => {
+    console.log('Cleanup with error')
+    throw new Error('Cleanup failed')
+  })
+).pipe(
+  Effect.flatMap(resource =>
+    Effect.sync(() => 'Success')
+  )
+)
+
+Effect.runPromise(cleanupError).catch(error => {
+  console.log('Error during cleanup:', error.message)
+})
+// 输出：
+// Cleanup with error
+// Error during cleanup: Cleanup failed
+```
+
+### 使用和清理都失败
+
+```js
+import { Effect } from 'effect'
+
+// 使用和清理都失败的情况
+const bothFail = Effect.acquireRelease(
+  Effect.sync(() => ({ id: 1 })),
+  resource => Effect.fail(new Error('Cleanup failed'))
+).pipe(
+  Effect.flatMap(resource =>
+    Effect.fail(new Error('Usage failed'))
+  )
+)
+
+Effect.runPromise(bothFail).catch(error => {
+  console.log('Error:', error.message)
+})
+// 输出：
+// Error: Usage failed
+```
+
+## 📝 实际应用示例
+
+### 数据库事务
+
+```js
+import { Effect } from 'effect'
+
+// 数据库事务管理
+const withTransaction = Effect.gen(function* () {
+  const connection = yield* Effect.acquireRelease(
+    Effect.tryPromise(() => createConnection()),
+    conn => Effect.tryPromise(() => conn.close())
+  )
+  
+  yield* Effect.acquireRelease(
+    Effect.tryPromise(() => connection.beginTransaction()),
+    () => Effect.tryPromise(() => connection.rollbackTransaction())
+  ).pipe(
+    Effect.flatMap(() =>
+      Effect.gen(function* () {
+        // 执行多个操作
+        yield* Effect.tryPromise(() =>
+          connection.query('INSERT INTO users VALUES (1, "Alice")')
+        )
+        yield* Effect.tryPromise(() =>
+          connection.query('INSERT INTO posts VALUES (1, "Hello")')
+        )
+        
+        // 提交事务
+        yield* Effect.tryPromise(() => connection.commitTransaction())
+      })
+    )
+  )
+  
+  return { success: true }
+})
+
+Effect.runPromise(withTransaction).then(result => {
+  console.log(result)
+})
+```
+
+### 文件流处理
+
+```js
+import { Effect } from 'effect'
+
+// 文件流处理
+const processFileStream = (inputPath: string, outputPath: string) =>
+  Effect.gen(function* () {
+    const inputStream = yield* Effect.acquireRelease(
+      Effect.tryPromise(() => openReadStream(inputPath)),
+      stream => Effect.tryPromise(() => closeStream(stream))
+    )
+    
+    const outputStream = yield* Effect.acquireRelease(
+      Effect.tryPromise(() => openWriteStream(outputPath)),
+      stream => Effect.tryPromise(() => closeStream(stream))
+    )
+    
+    yield* Effect.tryPromise(() =>
+      pipeStream(inputStream, outputStream)
+    )
+    
+    return { success: true }
+  })
+
+Effect.runPromise(processFileStream('./input.txt', './output.txt'))
+```
+
+### 连接池
+
+```js
+import { Effect } from 'effect'
+
+// 连接池管理
+const createConnectionPool = (size: number) => {
+  const connections: any[] = []
+  
+  return {
+    acquire: Effect.acquireRelease(
+      Effect.sync(() => {
+        if (connections.length > 0) {
+          return connections.pop()
+        }
+        console.log('Creating new connection')
+        return { id: Math.random() }
+      }),
+      connection => Effect.sync(() => {
+        console.log('Returning connection to pool')
+        if (connections.length < size) {
+          connections.push(connection)
+        } else {
+          // 关闭连接
+        }
+      })
+    ),
+    shutdown: Effect.sync(() => {
+      console.log('Shutting down pool, closing all connections')
+      connections.length = 0
+    })
+  }
+}
+
+// 使用连接池
+const pool = createConnectionPool(5)
+
+const useConnection = Effect.gen(function* () {
+  const connection = yield* pool.acquire
+  console.log('Using connection:', connection.id)
+  yield* Effect.sleep(1000)
+  return connection.id
+})
+
+Effect.runPromise(useConnection)
+```
+
+## 🔗 相关概念
+
+- **资源概念**：资源管理的基础
+- **常见资源场景**：实际应用中的资源管理
+- **资源自动清理**：确保资源在任何情况下都能被清理
+
+## 📚 学习检查点
+
+- [ ] 理解资源的创建过程
+- [ ] 掌握资源的使用方法
+- [ ] 了解资源清理的机制
+- [ ] 理解异常处理
+- [ ] 能够管理复杂资源场景
+
+## 🚀 下一步
+
+→ [常见资源场景](./03-common-resource-scenarios.mdx)

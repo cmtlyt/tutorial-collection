@@ -1,0 +1,415 @@
+# 常见资源场景
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+在实际开发中，我们经常需要管理各种类型的资源。本章节介绍常见资源场景的管理方法。
+
+## 🎯 数据库连接
+
+### 基本连接管理
+
+```js
+import { Effect } from 'effect'
+
+// 数据库连接管理
+const withDatabase = Effect.acquireRelease(
+  Effect.tryPromise(() => createDatabaseConnection()),
+  connection => Effect.tryPromise(() => connection.close())
+).pipe(
+  Effect.flatMap(connection =>
+    Effect.tryPromise(() =>
+      connection.query('SELECT * FROM users')
+    )
+  )
+)
+
+Effect.runPromise(withDatabase).then(results => {
+  console.log(results)
+})
+```
+
+### 事务管理
+
+```js
+import { Effect } from 'effect'
+
+// 带事务的数据库操作
+const withTransaction = Effect.gen(function* () {
+  const connection = yield* Effect.acquireRelease(
+    Effect.tryPromise(() => createConnection()),
+    conn => Effect.tryPromise(() => conn.close())
+  )
+  
+  // 开始事务
+  yield* Effect.tryPromise(() => connection.beginTransaction())
+  
+  try {
+    // 执行操作
+    yield* Effect.tryPromise(() =>
+      connection.query('INSERT INTO users VALUES (1, "Alice")')
+    )
+    yield* Effect.tryPromise(() =>
+      connection.query('UPDATE accounts SET balance = balance - 100 WHERE user_id = 1')
+    )
+    
+    // 提交事务
+    yield* Effect.tryPromise(() => connection.commitTransaction())
+    
+    return { success: true }
+  } catch (error) {
+    // 回滚事务
+    yield* Effect.tryPromise(() => connection.rollbackTransaction())
+    throw error
+  }
+})
+
+Effect.runPromise(withTransaction).then(result => {
+  console.log(result)
+})
+```
+
+### 连接池
+
+```js
+import { Effect } from 'effect'
+
+// 连接池实现
+const createConnectionPool = (config: { max: number }) => {
+  const pool: any[] = []
+  
+  return {
+    acquire: Effect.acquireRelease(
+      Effect.sync(() => {
+        if (pool.length > 0) {
+          return pool.pop()
+        }
+        return { id: Math.random(), created: Date.now() }
+      }),
+      connection => Effect.sync(() => {
+        if (pool.length < config.max) {
+          pool.push(connection)
+        }
+      })
+    ),
+    shutdown: Effect.sync(() => {
+      pool.length = 0
+    })
+  }
+}
+
+// 使用连接池
+const pool = createConnectionPool({ max: 10 })
+
+const queryWithPool = Effect.gen(function* () {
+  const connection = yield* pool.acquire
+  const result = yield* Effect.tryPromise(() =>
+    connection.query('SELECT * FROM users')
+  )
+  return result
+})
+
+Effect.runPromise(queryWithPool).then(results => {
+  console.log(results)
+  pool.shutdown()
+})
+```
+
+## 💡 文件句柄
+
+### 文件读写
+
+```js
+import { Effect } from 'effect'
+
+// 文件读写
+const readFile = (path: string) =>
+  Effect.acquireRelease(
+    Effect.tryPromise(() => openFile(path, 'r')),
+    handle => Effect.tryPromise(() => closeFile(handle))
+  ).pipe(
+    Effect.flatMap(handle =>
+      Effect.tryPromise(() => readFileContent(handle))
+    )
+  )
+
+const writeFile = (path: string, content: string) =>
+  Effect.acquireRelease(
+    Effect.tryPromise(() => openFile(path, 'w')),
+    handle => Effect.tryPromise(() => closeFile(handle))
+  ).pipe(
+    Effect.flatMap(handle =>
+      Effect.tryPromise(() => writeFileContent(handle, content))
+    )
+  )
+```
+
+### 文件流处理
+
+```js
+import { Effect } from 'effect'
+
+// 文件流处理
+const processFileStream = (inputPath: string, outputPath: string) =>
+  Effect.gen(function* () {
+    const inputStream = yield* Effect.acquireRelease(
+      Effect.tryPromise(() => createReadStream(inputPath)),
+      stream => Effect.tryPromise(() => closeStream(stream))
+    )
+    
+    const outputStream = yield* Effect.acquireRelease(
+      Effect.tryPromise(() => createWriteStream(outputPath)),
+      stream => Effect.tryPromise(() => closeStream(stream))
+    )
+    
+    yield* Effect.tryPromise(() =>
+      pipeStream(inputStream, outputStream)
+    )
+    
+    return { success: true }
+  })
+
+Effect.runPromise(processFileStream('./input.txt', './output.txt'))
+```
+
+### 临时文件
+
+```js
+import { Effect } from 'effect'
+
+// 临时文件管理
+const withTempFile = Effect.acquireRelease(
+  Effect.sync(() => {
+    const tempPath = `/tmp/temp-${Date.now()}.txt`
+    console.log('Created temp file:', tempPath)
+    return tempPath
+  }),
+  tempPath => Effect.sync(() => {
+    console.log('Deleting temp file:', tempPath)
+    // 删除临时文件
+  })
+).pipe(
+  Effect.flatMap(tempPath =>
+    Effect.gen(function* () {
+      // 写入临时文件
+      yield* Effect.tryPromise(() => writeFile(tempPath, 'Temporary content'))
+      
+      // 读取临时文件
+      const content = yield* Effect.tryPromise(() => readFile(tempPath))
+      
+      return content
+    })
+  )
+)
+
+Effect.runPromise(withTempFile).then(content => {
+  console.log('Content:', content)
+})
+```
+
+## 🚀 网络连接
+
+### HTTP 客户端
+
+```js
+import { Effect } from 'effect'
+
+// HTTP 客户端连接管理
+const withHttpClient = Effect.acquireRelease(
+  Effect.sync(() => {
+    console.log('Creating HTTP client')
+    return { baseUrl: 'https://api.example.com' }
+  }),
+  client => Effect.sync(() => {
+    console.log('Closing HTTP client')
+  })
+).pipe(
+  Effect.flatMap(client =>
+    Effect.tryPromise(() =>
+      fetch(`${client.baseUrl}/users`)
+    ).pipe(
+      Effect.andThen(response => response.json())
+    )
+  )
+)
+
+Effect.runPromise(withHttpClient).then(users => {
+  console.log(users)
+})
+```
+
+### WebSocket 连接
+
+```js
+import { Effect } from 'effect'
+
+// WebSocket 连接管理
+const withWebSocket = (url: string) =>
+  Effect.acquireRelease(
+    Effect.tryPromise(() => createWebSocketConnection(url)),
+    ws => Effect.tryPromise(() => ws.close())
+  ).pipe(
+    Effect.flatMap(ws =>
+      Effect.gen(function* () {
+        // 发送消息
+        yield* Effect.tryPromise(() => ws.send('Hello'))
+        
+        // 接收消息
+        const message = yield* Effect.tryPromise(() => ws.receive())
+        
+        return message
+      })
+    )
+  )
+
+Effect.runPromise(withWebSocket('ws://localhost:8080')).then(message => {
+  console.log('Received:', message)
+})
+```
+
+### TCP 连接
+
+```js
+import { Effect } from 'effect'
+
+// TCP 连接管理
+const withTcpConnection = (host: string, port: number) =>
+  Effect.acquireRelease(
+    Effect.tryPromise(() => createTcpConnection(host, port)),
+    socket => Effect.tryPromise(() => socket.close())
+  ).pipe(
+    Effect.flatMap(socket =>
+      Effect.gen(function* () {
+        // 发送数据
+        yield* Effect.tryPromise(() => socket.write('Hello'))
+        
+        // 接收数据
+        const data = yield* Effect.tryPromise(() => socket.read())
+        
+        return data
+      })
+    )
+  )
+
+Effect.runPromise(withTcpConnection('localhost', 8080)).then(data => {
+  console.log('Received:', data)
+})
+```
+
+## 📝 其他资源场景
+
+### 定时器
+
+```js
+import { Effect } from 'effect'
+
+// 定时器管理
+const withTimer = Effect.acquireRelease(
+  Effect.sync(() => {
+    console.log('Starting timer')
+    const timerId = setInterval(() => {
+      console.log('Timer tick')
+    }, 1000)
+    return timerId
+  }),
+  timerId => Effect.sync(() => {
+    console.log('Clearing timer')
+    clearInterval(timerId)
+  })
+).pipe(
+  Effect.flatMap(timerId =>
+    Effect.gen(function* () {
+      // 使用定时器
+      yield* Effect.sleep(5000)
+      return 'Timer completed'
+    })
+  )
+)
+
+Effect.runPromise(withTimer).then(result => {
+  console.log(result)
+})
+```
+
+### 事件监听器
+
+```js
+import { Effect } from 'effect'
+
+// 事件监听器管理
+const withEventListener = (target: any, event: string) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      console.log(`Adding ${event} listener`)
+      const handler = (e: any) => console.log('Event:', e)
+      target.addEventListener(event, handler)
+      return handler
+    }),
+    handler => Effect.sync(() => {
+      console.log(`Removing ${event} listener`)
+      target.removeEventListener(event, handler)
+    })
+  ).pipe(
+    Effect.flatMap(handler =>
+      Effect.gen(function* () {
+        // 使用事件监听器
+        yield* Effect.sleep(5000)
+        return 'Listener completed'
+      })
+    )
+  )
+
+Effect.runPromise(withEventListener(window, 'click')).then(result => {
+  console.log(result)
+})
+```
+
+### 内存缓冲区
+
+```js
+import { Effect } from 'effect'
+
+// 内存缓冲区管理
+const withBuffer = (size: number) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      console.log(`Allocating buffer of size ${size}`)
+      return new ArrayBuffer(size)
+    }),
+    buffer => Effect.sync(() => {
+      console.log('Freeing buffer')
+      // 释放缓冲区
+    })
+  ).pipe(
+    Effect.flatMap(buffer =>
+      Effect.sync(() => {
+        // 使用缓冲区
+        const view = new Uint8Array(buffer)
+        view[0] = 42
+        return view[0]
+      })
+    )
+  )
+
+Effect.runSync(withBuffer(1024))
+```
+
+## 🔗 相关概念
+
+- **资源概念**：资源管理的基础
+- **资源生命周期**：资源的完整生命周期
+- **资源自动清理**：确保资源在任何情况下都能被清理
+
+## 📚 学习检查点
+
+- [ ] 掌握数据库连接管理
+- [ ] 掌握文件句柄管理
+- [ ] 掌握网络连接管理
+- [ ] 了解其他资源场景
+- [ ] 能够管理实际项目中的资源
+
+## 🚀 下一步
+
+→ [调度与时间](../04-scheduling-time/01-scheduler-basics.mdx)
