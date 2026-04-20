@@ -1,0 +1,403 @@
+# Fiber 深入
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Fiber 是 Effect 的并发原语，类似于其他语言中的轻量级线程或协程。Fiber 提供了强大的并发和异步能力。
+
+## 🎯 Fiber 生命周期
+
+### 基本 Fiber 创建
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// 创建 Fiber
+const program = Effect.gen(function* () {
+  const fiber = yield* Effect.fork(
+    Effect.gen(function* () {
+      console.log('Fiber started')
+      yield* Effect.sleep(1000)
+      console.log('Fiber completed')
+    })
+  )
+  
+  console.log('Main fiber continues')
+  yield* Effect.sleep(2000)
+  
+  return fiber
+})
+
+Effect.runSync(program)
+```
+
+### Fiber 状态
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// Fiber 状态监控
+const program = Effect.gen(function* () {
+  const fiber = yield* Effect.fork(
+    Effect.gen(function* () {
+      yield* Effect.sleep(1000)
+      console.log('Fiber task completed')
+    })
+  )
+  
+  // 检查 Fiber 状态
+  const status = yield* fiber.status
+  console.log('Fiber status:', status)
+  
+  yield* Effect.sleep(1500)
+  
+  const finalStatus = yield* fiber.status
+  console.log('Final Fiber status:', finalStatus)
+})
+
+Effect.runSync(program)
+```
+
+### Fiber 完成
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// 等待 Fiber 完成
+const program = Effect.gen(function* () {
+  const fiber = yield* Effect.fork(
+    Effect.gen(function* () {
+      yield* Effect.sleep(1000)
+      return 'Fiber result'
+    })
+  )
+  
+  console.log('Waiting for fiber to complete...')
+  const result = yield* fiber.await
+  console.log('Fiber result:', result)
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 💡 Fiber 层级
+
+### Fiber 层级关系
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// Fiber 层级
+const program = Effect.gen(function* () {
+  const parentFiber = yield* Effect.fork(
+    Effect.gen(function* () {
+      console.log('Parent fiber started')
+      
+      const childFiber = yield* Effect.fork(
+        Effect.gen(function* () {
+          console.log('Child fiber started')
+          yield* Effect.sleep(500)
+          console.log('Child fiber completed')
+        })
+      )
+      
+      yield* Effect.sleep(1000)
+      console.log('Parent fiber completed')
+    })
+  )
+  
+  yield* parentFiber.await
+})
+
+Effect.runSync(program)
+```
+
+### Fiber 继承
+
+```js
+import { Effect, Fiber, Context } from 'effect'
+
+// Fiber 上下文继承
+interface Logger {
+  log: (message: string) => Effect.Effect<never, never, void>
+}
+
+const Logger = Context.GenericTag<Logger>('Logger')
+
+const program = Effect.gen(function* () {
+  const logger = {
+    log: (message: string) => Effect.sync(() => console.log(message))
+  }
+  
+  const parentFiber = yield* Effect.fork(
+    Effect.gen(function* () {
+      const logger = yield* Logger
+      yield* logger.log('Parent fiber')
+      
+      const childFiber = yield* Effect.fork(
+        Effect.gen(function* () {
+          const logger = yield* Logger
+          yield* logger.log('Child fiber')
+        })
+      )
+      
+      yield* childFiber.await
+    })
+  )
+  
+  yield* parentFiber.await
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(Logger, logger)
+  )
+)
+```
+
+## 🚀 Fiber 监控
+
+### Fiber 追踪
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// Fiber 追踪
+const program = Effect.gen(function* () {
+  const fiber = yield* Effect.fork(
+    Effect.gen(function* () {
+      for (let i = 0; i < 5; i++) {
+        console.log(`Working on item ${i}`)
+        yield* Effect.sleep(200)
+      }
+    })
+  )
+  
+  // 监控 Fiber
+  const monitor = Effect.gen(function* () {
+    while (true) {
+      const status = yield* fiber.status
+      console.log('Fiber status:', status)
+      yield* Effect.sleep(300)
+    }
+  })
+  
+  yield* Effect.fork(monitor)
+  yield* fiber.await
+})
+
+Effect.runSync(program)
+```
+
+### Fiber 中断
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// Fiber 中断
+const program = Effect.gen(function* () {
+  const fiber = yield* Effect.fork(
+    Effect.gen(function* () {
+      try {
+        for (let i = 0; i < 10; i++) {
+          console.log(`Working on item ${i}`)
+          yield* Effect.sleep(500)
+        }
+      } catch (error) {
+        console.log('Fiber interrupted:', error)
+      }
+    })
+  )
+  
+  // 等待一段时间后中断
+  yield* Effect.sleep(1500)
+  console.log('Interrupting fiber...')
+  yield* fiber.interrupt
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 Fiber 调试
+
+### Fiber ID
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// Fiber ID 获取
+const program = Effect.gen(function* () {
+  const fiber = yield* Effect.fork(
+    Effect.gen(function* () {
+      const currentFiberId = yield* Fiber.id
+      console.log('Current fiber ID:', currentFiberId)
+      yield* Effect.sleep(1000)
+    })
+  )
+  
+  const fiberId = yield* fiber.id
+  console.log('Fiber ID:', fiberId)
+  
+  yield* fiber.await
+})
+
+Effect.runSync(program)
+```
+
+### Fiber 堆栈追踪
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// Fiber 堆栈追踪
+const program = Effect.gen(function* () {
+  const fiber = yield* Effect.fork(
+    Effect.gen(function* () {
+      yield* Effect.sleep(500)
+      throw new Error('Something went wrong')
+    })
+  )
+  
+  const result = yield* fiber.await
+  console.log('Fiber result:', result)
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 并行任务执行
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// 并行执行多个任务
+const program = Effect.gen(function* () {
+  const task1 = Effect.gen(function* () {
+    console.log('Task 1 started')
+    yield* Effect.sleep(1000)
+    console.log('Task 1 completed')
+    return 'Result 1'
+  })
+  
+  const task2 = Effect.gen(function* () {
+    console.log('Task 2 started')
+    yield* Effect.sleep(1500)
+    console.log('Task 2 completed')
+    return 'Result 2'
+  })
+  
+  const task3 = Effect.gen(function* () {
+    console.log('Task 3 started')
+    yield* Effect.sleep(800)
+    console.log('Task 3 completed')
+    return 'Result 3'
+  })
+  
+  // 并行执行
+  const fiber1 = yield* Effect.fork(task1)
+  const fiber2 = yield* Effect.fork(task2)
+  const fiber3 = yield* Effect.fork(task3)
+  
+  // 等待所有任务完成
+  const result1 = yield* fiber1.await
+  const result2 = yield* fiber2.await
+  const result3 = yield* fiber3.await
+  
+  console.log('All tasks completed:', { result1, result2, result3 })
+  return { result1, result2, result3 }
+})
+
+Effect.runSync(program)
+```
+
+### 超时控制
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// 超时控制
+const program = Effect.gen(function* () {
+  const longRunningTask = Effect.gen(function* () {
+    console.log('Long running task started')
+    yield* Effect.sleep(5000)
+    console.log('Long running task completed')
+    return 'Task completed'
+  })
+  
+  const fiber = yield* Effect.fork(longRunningTask)
+  
+  // 设置超时
+  const timeout = Effect.gen(function* () {
+    yield* Effect.sleep(2000)
+    console.log('Timeout reached, interrupting fiber...')
+    yield* fiber.interrupt
+  })
+  
+  yield* Effect.fork(timeout)
+  
+  const result = yield* fiber.await
+  console.log('Result:', result)
+})
+
+Effect.runSync(program)
+```
+
+### 任务取消
+
+```js
+import { Effect, Fiber } from 'effect'
+
+// 任务取消
+const program = Effect.gen(function* () {
+  const cancellableTask = Effect.gen(function* () {
+    console.log('Cancellable task started')
+    
+    try {
+      for (let i = 0; i < 10; i++) {
+        console.log(`Processing item ${i}`)
+        yield* Effect.sleep(500)
+      }
+      return 'Task completed successfully'
+    } catch (error) {
+      console.log('Task was cancelled')
+      return 'Task cancelled'
+    }
+  })
+  
+  const fiber = yield* Effect.fork(cancellableTask)
+  
+  // 模拟用户取消
+  yield* Effect.sleep(1500)
+  console.log('Cancelling task...')
+  yield* fiber.interrupt
+  
+  const result = yield* fiber.await
+  console.log('Final result:', result)
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **并发原语**：Queue、Deque、Hub、BoundedQueue
+- **并发模式**：生产者消费者、工作池模式、扇出扇入
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握 Fiber 生命周期
+- [ ] 理解 Fiber 层级
+- [ ] 掌握 Fiber 监控
+- [ ] 了解 Fiber 调试
+- [ ] 能够实现完整的 Fiber 管理
+
+## 🚀 下一步
+
+→ [并发原语](./02-concurrency-primitives.mdx)

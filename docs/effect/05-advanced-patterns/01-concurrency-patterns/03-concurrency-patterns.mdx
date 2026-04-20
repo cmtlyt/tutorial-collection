@@ -1,0 +1,548 @@
+# 并发模式
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了丰富的并发模式，包括生产者消费者、工作池模式、扇出扇入、批处理模式等。
+
+## 🎯 生产者消费者
+
+### 基本生产者消费者
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 生产者消费者模式
+const program = Effect.gen(function* () {
+  const queue = yield* Queue.bounded<number>(10)
+  
+  // 生产者
+  const producer = Effect.gen(function* () {
+    for (let i = 0; i < 10; i++) {
+      yield* Queue.offer(queue, i)
+      console.log(`Produced: ${i}`)
+      yield* Effect.sleep(100)
+    }
+  })
+  
+  // 消费者
+  const consumer = Effect.gen(function* () {
+    while (true) {
+      const item = yield* Queue.take(queue)
+      console.log(`Consumed: ${item}`)
+      yield* Effect.sleep(150)
+    }
+  })
+  
+  // 并行运行
+  yield* Effect.all([producer, consumer], { concurrency: 2 })
+})
+
+Effect.runSync(program)
+```
+
+### 多生产者多消费者
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 多生产者多消费者
+const program = Effect.gen(function* () {
+  const queue = yield* Queue.bounded<number>(10)
+  
+  // 创建生产者
+  const createProducer = (id: number) => Effect.gen(function* () {
+    for (let i = 0; i < 5; i++) {
+      const item = id * 100 + i
+      yield* Queue.offer(queue, item)
+      console.log(`Producer ${id} produced: ${item}`)
+      yield* Effect.sleep(100)
+    }
+  })
+  
+  // 创建消费者
+  const createConsumer = (id: number) => Effect.gen(function* () {
+    for (let i = 0; i < 5; i++) {
+      const item = yield* Queue.take(queue)
+      console.log(`Consumer ${id} consumed: ${item}`)
+      yield* Effect.sleep(150)
+    }
+  })
+  
+  // 启动多个生产者和消费者
+  const producers = [1, 2].map(id => Effect.fork(createProducer(id)))
+  const consumers = [1, 2, 3].map(id => Effect.fork(createConsumer(id)))
+  
+  yield* Effect.all([...producers, ...consumers])
+})
+
+Effect.runSync(program)
+```
+
+## 💡 工作池模式
+
+### 基本 WorkPool
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 工作池模式
+const program = Effect.gen(function* () {
+  const workQueue = yield* Queue.bounded<number>(10)
+  
+  // 工作器
+  const worker = (id: number) => Effect.gen(function* () {
+    while (true) {
+      const work = yield* Queue.take(workQueue)
+      console.log(`Worker ${id} processing: ${work}`)
+      yield* Effect.sleep(500)
+      console.log(`Worker ${id} completed: ${work}`)
+    }
+  })
+  
+  // 启动工作池
+  const workers = [1, 2, 3, 4].map(id => Effect.fork(worker(id)))
+  yield* Effect.all(workers)
+  
+  // 提交工作
+  for (let i = 0; i < 10; i++) {
+    yield* Queue.offer(workQueue, i)
+    console.log(`Submitted: ${i}`)
+    yield* Effect.sleep(100)
+  }
+})
+
+Effect.runSync(program)
+```
+
+### 动态工作池
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 动态工作池
+const program = Effect.gen(function* () {
+  const workQueue = yield* Queue.bounded<number>(10)
+  const controlQueue = yield* Queue.bounded<string>(10)
+  
+  // 工作器
+  const worker = (id: number) => Effect.gen(function* () {
+    while (true) {
+      const work = yield* Queue.take(workQueue)
+      console.log(`Worker ${id} processing: ${work}`)
+      yield* Effect.sleep(500)
+      console.log(`Worker ${id} completed: ${work}`)
+    }
+  })
+  
+  // 控制器
+  const controller = Effect.gen(function* () {
+    let workerCount = 2
+    const workers = []
+    
+    // 初始工作器
+    for (let i = 0; i < workerCount; i++) {
+      workers.push(Effect.fork(worker(i)))
+    }
+    yield* Effect.all(workers)
+    
+    // 处理控制命令
+    while (true) {
+      const command = yield* Queue.take(controlQueue)
+      
+      if (command === 'add') {
+        workers.push(Effect.fork(worker(workerCount)))
+        workerCount++
+        console.log(`Added worker ${workerCount}`)
+      } else if (command === 'remove') {
+        console.log('Remove worker not implemented')
+      }
+    }
+  })
+  
+  // 启动控制器
+  yield* Effect.fork(controller)
+  
+  // 提交工作
+  for (let i = 0; i < 10; i++) {
+    yield* Queue.offer(workQueue, i)
+    console.log(`Submitted: ${i}`)
+    yield* Effect.sleep(100)
+  }
+  
+  // 添加工作器
+  yield* Queue.offer(controlQueue, 'add')
+  yield* Effect.sleep(1000)
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 扇出扇入
+
+### 扇出模式
+
+```js
+import { Effect, Hub } from 'effect'
+
+// 扇出模式
+const program = Effect.gen(function* () {
+  const hub = yield* Hub.bounded<number>(10)
+  
+  // 处理器
+  const processor = (id: number) => Effect.gen(function* () {
+    const subscription = yield* Hub.subscribe(hub)
+    
+    while (true) {
+      const item = yield* subscription.take
+      console.log(`Processor ${id} processing: ${item}`)
+      yield* Effect.sleep(300)
+      console.log(`Processor ${id} completed: ${item}`)
+    }
+  })
+  
+  // 启动多个处理器
+  const processors = [1, 2, 3].map(id => Effect.fork(processor(id)))
+  yield* Effect.all(processors)
+  
+  // 发布数据
+  for (let i = 0; i < 5; i++) {
+    yield* Hub.publish(hub, i)
+    console.log(`Published: ${i}`)
+    yield* Effect.sleep(200)
+  }
+})
+
+Effect.runSync(program)
+```
+
+### 扇入模式
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 扇入模式
+const program = Effect.gen(function* () {
+  const resultQueue = yield* Queue.bounded<number>(10)
+  
+  // 数据源
+  const dataSource = (id: number) => Effect.gen(function* () {
+    for (let i = 0; i < 3; i++) {
+      const value = id * 100 + i
+      yield* Queue.offer(resultQueue, value)
+      console.log(`Source ${id} produced: ${value}`)
+      yield* Effect.sleep(200)
+    }
+  })
+  
+  // 消费者
+  const consumer = Effect.gen(function* () {
+    while (true) {
+      const value = yield* Queue.take(resultQueue)
+      console.log(`Consumed: ${value}`)
+      yield* Effect.sleep(100)
+    }
+  })
+  
+  // 启动多个数据源和消费者
+  const sources = [1, 2, 3].map(id => Effect.fork(dataSource(id)))
+  const consumerFiber = Effect.fork(consumer)
+  
+  yield* Effect.all([...sources, consumerFiber])
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 批处理模式
+
+### 基本 Batch
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 批处理模式
+const program = Effect.gen(function* () {
+  const queue = yield* Queue.bounded<number>(10)
+  const batchSize = 5
+  
+  // 生产者
+  const producer = Effect.gen(function* () {
+    for (let i = 0; i < 20; i++) {
+      yield* Queue.offer(queue, i)
+      console.log(`Produced: ${i}`)
+      yield* Effect.sleep(50)
+    }
+  })
+  
+  // 批处理器
+  const batchProcessor = Effect.gen(function* () {
+    let batch = []
+    
+    while (true) {
+      const item = yield* Queue.take(queue)
+      batch.push(item)
+      
+      if (batch.length >= batchSize) {
+        console.log(`Processing batch: ${batch.join(', ')}`)
+        yield* Effect.sleep(500)
+        batch = []
+      }
+    }
+  })
+  
+  // 并行运行
+  yield* Effect.all([producer, batchProcessor], { concurrency: 2 })
+})
+
+Effect.runSync(program)
+```
+
+### 时间窗口批处理
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 时间窗口批处理
+const program = Effect.gen(function* () {
+  const queue = yield* Queue.bounded<number>(10)
+  const windowSize = 1000  // 1秒
+  
+  // 生产者
+  const producer = Effect.gen(function* () {
+    for (let i = 0; i < 20; i++) {
+      yield* Queue.offer(queue, i)
+      console.log(`Produced: ${i}`)
+      yield* Effect.sleep(100)
+    }
+  })
+  
+  // 时间窗口处理器
+  const windowProcessor = Effect.gen(function* () {
+    let batch = []
+    let lastProcessTime = Date.now()
+    
+    while (true) {
+      const item = yield* Queue.take(queue)
+      batch.push(item)
+      
+      const now = Date.now()
+      if (now - lastProcessTime >= windowSize || batch.length >= 10) {
+        console.log(`Processing batch (${batch.length} items): ${batch.join(', ')}`)
+        yield* Effect.sleep(200)
+        batch = []
+        lastProcessTime = now
+      }
+    }
+  })
+  
+  // 并行运行
+  yield* Effect.all([producer, windowProcessor], { concurrency: 2 })
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 并行数据处理
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 并行数据处理
+const program = Effect.gen(function* () {
+  const inputQueue = yield* Queue.bounded<number>(10)
+  const outputQueue = yield* Queue.bounded<number>(10)
+  
+  // 数据生产者
+  const producer = Effect.gen(function* () {
+    for (let i = 0; i < 10; i++) {
+      yield* Queue.offer(inputQueue, i)
+      console.log(`Produced: ${i}`)
+      yield* Effect.sleep(100)
+    }
+  })
+  
+  // 数据处理器
+  const processor = (id: number) => Effect.gen(function* () {
+    while (true) {
+      const item = yield* Queue.take(inputQueue)
+      const result = item * item
+      yield* Queue.offer(outputQueue, result)
+      console.log(`Processor ${id}: ${item} -> ${result}`)
+      yield* Effect.sleep(200)
+    }
+  })
+  
+  // 结果收集器
+  const collector = Effect.gen(function* () {
+    const results = []
+    for (let i = 0; i < 10; i++) {
+      const result = yield* Queue.take(outputQueue)
+      results.push(result)
+      console.log(`Collected: ${result}`)
+    }
+    return results
+  })
+  
+  // 启动处理器
+  const processors = [1, 2, 3].map(id => Effect.fork(processor(id)))
+  yield* Effect.all(processors)
+  
+  // 运行生产者和收集器
+  const results = yield* Effect.all([producer, collector], { concurrency: 2 })
+  console.log('All results:', results[1])
+})
+
+Effect.runSync(program)
+```
+
+### 任务调度器
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 任务调度器
+const program = Effect.gen(function* () {
+  const taskQueue = yield* Queue.bounded<string>(10)
+  const priorityQueue = yield* Queue.bounded<{ task: string; priority: number }>(10)
+  
+  // 任务提交器
+  const taskSubmitter = Effect.gen(function* () {
+    const tasks = [
+      { task: 'Low priority task', priority: 3 },
+      { task: 'High priority task', priority: 1 },
+      { task: 'Medium priority task', priority: 2 }
+    ]
+    
+    for (const { task, priority } of tasks) {
+      yield* Queue.offer(priorityQueue, { task, priority })
+      console.log(`Submitted: ${task} (priority: ${priority})`)
+      yield* Effect.sleep(100)
+    }
+  })
+  
+  // 任务调度器
+  const scheduler = Effect.gen(function* () {
+    const tasks = []
+    
+    while (true) {
+      const item = yield* Queue.take(priorityQueue)
+      tasks.push(item)
+      
+      if (tasks.length >= 3) {
+        // 按优先级排序
+        tasks.sort((a, b) => a.priority - b.priority)
+        
+        for (const { task } of tasks) {
+          yield* Queue.offer(taskQueue, task)
+          console.log(`Scheduled: ${task}`)
+        }
+        
+        tasks.length = 0
+      }
+    }
+  })
+  
+  // 任务执行器
+  const executor = Effect.gen(function* () {
+    while (true) {
+      const task = yield* Queue.take(taskQueue)
+      console.log(`Executing: ${task}`)
+      yield* Effect.sleep(500)
+      console.log(`Completed: ${task}`)
+    }
+  })
+  
+  // 并行运行
+  yield* Effect.all([taskSubmitter, scheduler, executor], { concurrency: 3 })
+})
+
+Effect.runSync(program)
+```
+
+### 流水线处理
+
+```js
+import { Effect, Queue } from 'effect'
+
+// 流水线处理
+const program = Effect.gen(function* () {
+  const stage1Queue = yield* Queue.bounded<number>(10)
+  const stage2Queue = yield* Queue.bounded<number>(10)
+  const stage3Queue = yield* Queue.bounded<number>(10)
+  
+  // 阶段 1: 数据生成
+  const stage1 = Effect.gen(function* () {
+    for (let i = 0; i < 10; i++) {
+      yield* Queue.offer(stage1Queue, i)
+      console.log(`Stage 1 produced: ${i}`)
+      yield* Effect.sleep(100)
+    }
+  })
+  
+  // 阶段 2: 数据处理
+  const stage2 = Effect.gen(function* () {
+    while (true) {
+      const item = yield* Queue.take(stage1Queue)
+      const result = item * 2
+      yield* Queue.offer(stage2Queue, result)
+      console.log(`Stage 2 processed: ${item} -> ${result}`)
+      yield* Effect.sleep(150)
+    }
+  })
+  
+  // 阶段 3: 结果收集
+  const stage3 = Effect.gen(function* () {
+    while (true) {
+      const item = yield* Queue.take(stage2Queue)
+      const result = item + 10
+      yield* Queue.offer(stage3Queue, result)
+      console.log(`Stage 3 processed: ${item} -> ${result}`)
+      yield* Effect.sleep(100)
+    }
+  })
+  
+  // 结果输出
+  const output = Effect.gen(function* () {
+    const results = []
+    for (let i = 0; i < 10; i++) {
+      const item = yield* Queue.take(stage3Queue)
+      results.push(item)
+      console.log(`Output: ${item}`)
+    }
+    return results
+  })
+  
+  // 并行运行所有阶段
+  const results = yield* Effect.all(
+    [stage1, stage2, stage3, output],
+    { concurrency: 4 }
+  )
+  
+  console.log('Final results:', results[3])
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **Fiber 深入**：Fiber 生命周期、层级、监控、调试
+- **并发原语**：Queue、Deque、Hub、BoundedQueue
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握生产者消费者模式
+- [ ] 理解工作池模式
+- [ ] 掌握扇出扇入模式
+- [ ] 了解批处理模式
+- [ ] 能够实现完整的并发模式应用
+
+## 🚀 下一步
+
+→ [工作流与编排](../02-workflow-orchestration/01-workflow-basics.mdx)
