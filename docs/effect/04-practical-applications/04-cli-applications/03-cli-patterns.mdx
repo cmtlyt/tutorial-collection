@@ -1,0 +1,673 @@
+# CLI 模式
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的 CLI 模式，包括子命令、中间件、插件系统、配置管理等。
+
+## 🎯 子命令
+
+### 基本子命令
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 定义子命令
+const buildCommand = Command.make('build', {
+  description: 'Build the project'
+}).pipe(
+  Command.withOptions({
+    watch: Options.boolean('watch').pipe(
+      Options.withDefault(false)
+    )
+  })
+)
+
+const testCommand = Command.make('test', {
+  description: 'Run tests'
+}).pipe(
+  Command.withOptions({
+    coverage: Options.boolean('coverage').pipe(
+      Options.withDefault(false)
+    )
+  })
+)
+
+const deployCommand = Command.make('deploy', {
+  description: 'Deploy the project'
+}).pipe(
+  Command.withOptions({
+    environment: Options.choice('env', ['dev', 'staging', 'prod']).pipe(
+      Options.withDefault('dev')
+    )
+  })
+)
+
+// 创建主命令
+const mainCommand = Command.make('my-cli', {
+  description: 'A CLI tool for project management'
+}).pipe(
+  Command.withSubcommands([buildCommand, testCommand, deployCommand])
+)
+
+// 运行程序
+const program = Effect.gen(function* () {
+  yield* Command.run(mainCommand, {
+    name: 'my-cli',
+    version: '1.0.0'
+  })
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+### 嵌套子命令
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 数据库子命令
+const dbMigrateCommand = Command.make('migrate', {
+  description: 'Run database migrations'
+})
+
+const dbSeedCommand = Command.make('seed', {
+  description: 'Seed the database'
+})
+
+const dbCommand = Command.make('db', {
+  description: 'Database operations'
+}).pipe(
+  Command.withSubcommands([dbMigrateCommand, dbSeedCommand])
+)
+
+// 用户子命令
+const userListCommand = Command.make('list', {
+  description: 'List users'
+})
+
+const userCreateCommand = Command.make('create', {
+  description: 'Create a user'
+})
+
+const userCommand = Command.make('user', {
+  description: 'User operations'
+}).pipe(
+  Command.withSubcommands([userListCommand, userCreateCommand])
+)
+
+// 主命令
+const mainCommand = Command.make('my-cli', {
+  description: 'A CLI tool'
+}).pipe(
+  Command.withSubcommands([dbCommand, userCommand])
+)
+
+// 运行程序
+const program = Effect.gen(function* () {
+  yield* Command.run(mainCommand, {
+    name: 'my-cli',
+    version: '1.0.0'
+  })
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 💡 中间件
+
+### 基本中间件
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 日志中间件
+const loggingMiddleware = <A, E>(
+  command: Command.Command<A, E>
+): Command.Command<A, E> => {
+  return Command.make(command.name, {
+    description: command.description
+  }).pipe(
+    Command.withHandler(Effect.gen(function* () {
+      console.log(`[LOG] Executing command: ${command.name}`)
+      const result = yield* command.handler
+      console.log(`[LOG] Command completed`)
+      return result
+    }))
+  )
+}
+
+// 使用中间件
+const command = Command.make('hello', {
+  description: 'Say hello'
+})
+
+const wrappedCommand = loggingMiddleware(command)
+
+// 运行程序
+const program = Effect.gen(function* () {
+  yield* Command.run(wrappedCommand, {
+    name: 'my-cli',
+    version: '1.0.0'
+  })
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+### 错误处理中间件
+
+```js
+import { Effect } from 'effect'
+import { Command } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 错误处理中间件
+const errorHandlerMiddleware = <A, E>(
+  command: Command.Command<A, E>
+): Command.Command<A, E> => {
+  return Command.make(command.name, {
+    description: command.description
+  }).pipe(
+    Command.withHandler(
+      command.handler.pipe(
+        Effect.catchAll((error) => {
+          console.error(`Error: ${error}`)
+          return Effect.fail(error)
+        })
+      )
+    )
+  )
+}
+
+// 使用中间件
+const command = Command.make('risky', {
+  description: 'A risky command'
+})
+
+const wrappedCommand = errorHandlerMiddleware(command)
+
+// 运行程序
+const program = Effect.gen(function* () {
+  yield* Command.run(wrappedCommand, {
+    name: 'my-cli',
+    version: '1.0.0'
+  })
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 🚀 插件系统
+
+### 基本插件
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 插件接口
+interface Plugin {
+  name: string
+  version: string
+  commands: Command.Command<any, any>[]
+}
+
+// 创建插件
+const createPlugin = (
+  name: string,
+  version: string,
+  commands: Command.Command<any, any>[]
+): Plugin => ({
+  name,
+  version,
+  commands
+})
+
+// 示例插件
+const databasePlugin = createPlugin('database', '1.0.0', [
+  Command.make('migrate', {
+    description: 'Run migrations'
+  }),
+  Command.make('seed', {
+    description: 'Seed database'
+  })
+])
+
+const authPlugin = createPlugin('auth', '1.0.0', [
+  Command.make('login', {
+    description: 'Login user'
+  }),
+  Command.make('logout', {
+    description: 'Logout user'
+  })
+])
+
+// 加载插件
+const loadPlugins = (plugins: Plugin[]) => {
+  const allCommands = plugins.flatMap(plugin => plugin.commands)
+  
+  return Command.make('my-cli', {
+    description: 'A CLI with plugins'
+  }).pipe(
+    Command.withSubcommands(allCommands)
+  )
+}
+
+// 运行程序
+const program = Effect.gen(function* () {
+  const plugins = [databasePlugin, authPlugin]
+  const command = loadPlugins(plugins)
+  
+  yield* Command.run(command, {
+    name: 'my-cli',
+    version: '1.0.0'
+  })
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+### 插件配置
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 插件配置
+interface PluginConfig {
+  enabled: boolean
+  options: Record<string, any>
+}
+
+// 插件管理器
+const PluginManager = Effect.gen(function* () {
+  const plugins = new Map<string, PluginConfig>()
+  
+  return {
+    register: (name: string, config: PluginConfig) => Effect.sync(() => {
+      plugins.set(name, config)
+    }),
+    
+    isEnabled: (name: string) => Effect.sync(() => {
+      const config = plugins.get(name)
+      return config?.enabled ?? false
+    }),
+    
+    getOptions: (name: string) => Effect.sync(() => {
+      const config = plugins.get(name)
+      return config?.options ?? {}
+    })
+  }
+})
+
+// 使用插件管理器
+const program = Effect.gen(function* () {
+  const pluginManager = yield* PluginManager
+  
+  // 注册插件
+  yield* pluginManager.register('database', {
+    enabled: true,
+    options: { host: 'localhost', port: 5432 }
+  })
+  
+  yield* pluginManager.register('auth', {
+    enabled: false,
+    options: { provider: 'github' }
+  })
+  
+  // 检查插件状态
+  const dbEnabled = yield* pluginManager.isEnabled('database')
+  const authEnabled = yield* pluginManager.isEnabled('auth')
+  
+  console.log('Database plugin enabled:', dbEnabled)
+  console.log('Auth plugin enabled:', authEnabled)
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 🎯 配置管理
+
+### 基本配置
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext, FileSystem } from '@effect/platform-node'
+
+// 配置选项
+const configOption = Options.text('config').pipe(
+  Options.withDefault('./config.json'),
+  Options.withDescription('Path to config file')
+)
+
+// 加载配置
+const loadConfig = (configPath: string) => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const exists = yield* fs.exists(configPath)
+  
+  if (!exists) {
+    return Effect.succeed({})
+  }
+  
+  const content = yield* fs.readFileString(configPath)
+  return JSON.parse(content)
+})
+
+// 创建命令
+const command = Command.make('run', {
+  description: 'Run the application'
+}).pipe(
+  Command.withOptions({
+    config: configOption
+  })
+)
+
+// 运行程序
+const program = Effect.gen(function* () {
+  const { config } = yield* Command.options(command)
+  
+  const configData = yield* loadConfig(config)
+  
+  console.log('Loaded config:', configData)
+  console.log('Running application...')
+})
+
+Effect.runPromise(
+  Command.run(program, {
+    name: 'my-cli',
+    version: '1.0.0'
+  }).pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+### 配置层级
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext, FileSystem } from '@effect/platform-node'
+
+// 配置层级
+const loadConfigHierarchy = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  
+  const configPaths = [
+    './config.local.json',
+    './config.json',
+    '~/.my-cli/config.json'
+  ]
+  
+  let mergedConfig = {}
+  
+  for (const path of configPaths) {
+    const exists = yield* fs.exists(path)
+    
+    if (exists) {
+      const content = yield* fs.readFileString(path)
+      const config = JSON.parse(content)
+      mergedConfig = { ...mergedConfig, ...config }
+    }
+  }
+  
+  return mergedConfig
+})
+
+// 创建命令
+const command = Command.make('run', {
+  description: 'Run the application'
+})
+
+// 运行程序
+const program = Effect.gen(function* () {
+  const config = yield* loadConfigHierarchy
+  
+  console.log('Merged config:', config)
+  console.log('Running application...')
+})
+
+Effect.runPromise(
+  Command.run(command, {
+    name: 'my-cli',
+    version: '1.0.0'
+  }).pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 📝 实际应用示例
+
+### 完整的 CLI 应用
+
+```js
+import { Effect } from 'effect'
+import { Command, Options, Args } from '@effect/cli'
+import { NodeContext, FileSystem } from '@effect/platform-node'
+
+// 定义选项
+const verboseOption = Options.boolean('verbose').pipe(
+  Options.withDefault(false),
+  Options.withAlias('v')
+)
+
+const configOption = Options.text('config').pipe(
+  Options.withDefault('./config.json')
+)
+
+// 定义子命令
+const initCommand = Command.make('init', {
+  description: 'Initialize a new project'
+}).pipe(
+  Command.withOptions({ verbose: verboseOption }),
+  Command.withArgs({
+    name: Args.text({ name: 'name' })
+  })
+)
+
+const buildCommand = Command.make('build', {
+  description: 'Build the project'
+}).pipe(
+  Command.withOptions({
+    verbose: verboseOption,
+    watch: Options.boolean('watch').pipe(Options.withDefault(false))
+  })
+)
+
+const deployCommand = Command.make('deploy', {
+  description: 'Deploy the project'
+}).pipe(
+  Command.withOptions({
+    verbose: verboseOption,
+    environment: Options.choice('env', ['dev', 'staging', 'prod']).pipe(
+      Options.withDefault('dev')
+    )
+  })
+)
+
+// 主命令
+const mainCommand = Command.make('my-cli', {
+  description: 'A CLI tool for project management',
+  version: '1.0.0'
+}).pipe(
+  Command.withOptions({
+    config: configOption
+  }),
+  Command.withSubcommands([initCommand, buildCommand, deployCommand])
+)
+
+// 运行程序
+const program = Effect.gen(function* () {
+  yield* Command.run(mainCommand, {
+    name: 'my-cli',
+    version: '1.0.0'
+  })
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+### 插件系统示例
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 插件定义
+interface Plugin {
+  name: string
+  version: string
+  description: string
+  commands: Command.Command<any, any>[]
+}
+
+// 创建插件
+const createPlugin = (
+  name: string,
+  version: string,
+  description: string,
+  commands: Command.Command<any, any>[]
+): Plugin => ({
+  name,
+  version,
+  description,
+  commands
+})
+
+// 数据库插件
+const databasePlugin = createPlugin('database', '1.0.0', 'Database operations', [
+  Command.make('migrate', {
+    description: 'Run database migrations'
+  }),
+  Command.make('seed', {
+    description: 'Seed the database'
+  })
+])
+
+// 用户插件
+const userPlugin = createPlugin('user', '1.0.0', 'User management', [
+  Command.make('list', {
+    description: 'List users'
+  }),
+  Command.make('create', {
+    description: 'Create a user'
+  })
+])
+
+// 插件管理器
+const PluginManager = Effect.gen(function* () {
+  const plugins = new Map<string, Plugin>()
+  
+  return {
+    register: (plugin: Plugin) => Effect.sync(() => {
+      plugins.set(plugin.name, plugin)
+    }),
+    
+    getCommands: Effect.sync(() => {
+      return Array.from(plugins.values()).flatMap(plugin => plugin.commands)
+    }),
+    
+    list: Effect.sync(() => {
+      return Array.from(plugins.values())
+    })
+  }
+})
+
+// 使用插件系统
+const program = Effect.gen(function* () {
+  const pluginManager = yield* PluginManager
+  
+  // 注册插件
+  yield* pluginManager.register(databasePlugin)
+  yield* pluginManager.register(userPlugin)
+  
+  // 列出插件
+  const plugins = yield* pluginManager.list
+  console.log('Loaded plugins:')
+  plugins.forEach(plugin => {
+    console.log(`- ${plugin.name}@${plugin.version}: ${plugin.description}`)
+  })
+  
+  // 获取所有命令
+  const commands = yield* pluginManager.getCommands
+  
+  // 创建主命令
+  const mainCommand = Command.make('my-cli', {
+    description: 'A CLI with plugins',
+    version: '1.0.0'
+  }).pipe(
+    Command.withSubcommands(commands)
+  )
+  
+  yield* Command.run(mainCommand, {
+    name: 'my-cli',
+    version: '1.0.0'
+  })
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 🔗 相关概念
+
+- **命令行界面**：@effect/cli、命令定义、参数解析
+- **交互式 CLI**：用户输入、选择菜单、进度显示
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握子命令的使用
+- [ ] 理解中间件的实现
+- [ ] 掌握插件系统
+- [ ] 了解配置管理
+- [ ] 能够实现完整的 CLI 模式
+
+## 🚀 下一步
+
+→ [并发模式](../05-advanced-patterns/01-concurrency-patterns.mdx)

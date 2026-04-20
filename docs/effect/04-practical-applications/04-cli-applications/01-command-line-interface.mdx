@@ -1,0 +1,513 @@
+# 命令行界面
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的 CLI 框架，通过 `@effect/cli` 包提供命令行界面开发能力。
+
+## 🎯 @effect/cli - CLI 框架
+
+### 安装与设置
+
+```js
+// 安装依赖
+// npm install @effect/cli
+// npm install @effect/platform-node
+
+// 基本导入
+import { Effect } from 'effect'
+import { Command } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+```
+
+### 基本 CLI 应用
+
+```js
+import { Effect } from 'effect'
+import { Command } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 创建基本命令
+const command = Command.make('hello', {
+  description: 'Say hello to the world'
+})
+
+// 运行 CLI
+const program = Effect.gen(function* () {
+  const cli = Command.run(command, {
+    name: 'my-cli',
+    version: '1.0.0'
+  })
+  
+  yield* cli
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 💡 命令定义与配置
+
+### 命令选项
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 定义选项
+const nameOption = Options.text('name').pipe(
+  Options.withDefault('World')
+)
+
+const verboseOption = Options.boolean('verbose').pipe(
+  Options.withDefault(false)
+)
+
+const countOption = Options.integer('count').pipe(
+  Options.withDefault(1)
+)
+
+// 创建带选项的命令
+const command = Command.make('greet', {
+  description: 'Greet someone'
+}).pipe(
+  Command.withOptions({ name: nameOption, verbose: verboseOption, count: countOption })
+)
+
+// 运行命令
+const program = Effect.gen(function* () {
+  const { name, verbose, count } = yield* Command.options(command)
+  
+  for (let i = 0; i < count; i++) {
+    if (verbose) {
+      console.log(`[VERBOSE] Greeting ${i + 1}`)
+    }
+    console.log(`Hello, ${name}!`)
+  }
+})
+
+Effect.runPromise(
+  Command.run(program, {
+    name: 'my-cli',
+    version: '1.0.0'
+  }).pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+### 位置参数
+
+```js
+import { Effect } from 'effect'
+import { Command, Args } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 定义位置参数
+const nameArg = Args.text({ name: 'name' })
+
+const countArg = Args.integer({ name: 'count' }).pipe(
+  Args.withDefault(1)
+)
+
+// 创建带参数的命令
+const command = Command.make('repeat', {
+  description: 'Repeat a message'
+}).pipe(
+  Command.withArgs({ name: nameArg, count: countArg })
+)
+
+// 运行命令
+const program = Effect.gen(function* () {
+  const { name, count } = yield* Command.args(command)
+  
+  for (let i = 0; i < count; i++) {
+    console.log(name)
+  }
+})
+
+Effect.runPromise(
+  Command.run(program, {
+    name: 'my-cli',
+    version: '1.0.0'
+  }).pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 🚀 参数解析器
+
+### 基本参数类型
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 文本选项
+const textOption = Options.text('message')
+
+// 整数选项
+const integerOption = Options.integer('count')
+
+// 浮点数选项
+const floatOption = Options.float('ratio')
+
+// 布尔选项
+const booleanOption = Options.boolean('verbose')
+
+// 枚举选项
+const enumOption = Options.choice('level', ['debug', 'info', 'warn', 'error'])
+
+// 数组选项
+const arrayOption = Options.array('files')
+
+// 创建命令
+const command = Command.make('process', {
+  description: 'Process data with various options'
+}).pipe(
+  Command.withOptions({
+    message: textOption,
+    count: integerOption,
+    ratio: floatOption,
+    verbose: booleanOption,
+    level: enumOption,
+    files: arrayOption
+  })
+)
+
+// 运行命令
+const program = Effect.gen(function* () {
+  const options = yield* Command.options(command)
+  
+  console.log('Options:', options)
+  return options
+})
+
+Effect.runPromise(
+  Command.run(program, {
+    name: 'my-cli',
+    version: '1.0.0'
+  }).pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+### 自定义验证
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 带验证的选项
+const portOption = Options.integer('port').pipe(
+  Options.withDefault(3000),
+  Options.withDescription('Port number'),
+  Options.validate((port) => {
+    if (port < 1 || port > 65535) {
+      return Effect.fail('Port must be between 1 and 65535')
+    }
+    return Effect.succeed(port)
+  })
+)
+
+const emailOption = Options.text('email').pipe(
+  Options.withDescription('Email address'),
+  Options.validate((email) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) {
+      return Effect.fail('Invalid email format')
+    }
+    return Effect.succeed(email)
+  })
+)
+
+// 创建命令
+const command = Command.make('server', {
+  description: 'Start server'
+}).pipe(
+  Command.withOptions({
+    port: portOption,
+    email: emailOption
+  })
+)
+
+// 运行命令
+const program = Effect.gen(function* () {
+  const { port, email } = yield* Command.options(command)
+  
+  console.log(`Starting server on port ${port} with email ${email}`)
+})
+
+Effect.runPromise(
+  Command.run(program, {
+    name: 'my-cli',
+    version: '1.0.0'
+  }).pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 🎯 帮助系统生成
+
+### 自动帮助生成
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 创建带详细描述的命令
+const command = Command.make('build', {
+  description: 'Build the project',
+  examples: [
+    {
+      name: 'Build with production mode',
+      command: 'build --mode production'
+    },
+    {
+      name: 'Build with watch mode',
+      command: 'build --watch'
+    }
+  ]
+}).pipe(
+  Command.withOptions({
+    mode: Options.choice('mode', ['development', 'production']).pipe(
+      Options.withDefault('development'),
+      Options.withDescription('Build mode')
+    ),
+    watch: Options.boolean('watch').pipe(
+      Options.withDefault(false),
+      Options.withDescription('Watch for file changes')
+    ),
+    output: Options.text('output').pipe(
+      Options.withDefault('./dist'),
+      Options.withDescription('Output directory')
+    )
+  })
+)
+
+// 运行命令
+const program = Effect.gen(function* () {
+  const { mode, watch, output } = yield* Command.options(command)
+  
+  console.log(`Building in ${mode} mode`)
+  console.log(`Output: ${output}`)
+  console.log(`Watch: ${watch}`)
+})
+
+Effect.runPromise(
+  Command.run(program, {
+    name: 'my-cli',
+    version: '1.0.0',
+    description: 'A CLI tool for building projects'
+  }).pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+### 子命令帮助
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 创建子命令
+const buildCommand = Command.make('build', {
+  description: 'Build the project'
+})
+
+const testCommand = Command.make('test', {
+  description: 'Run tests'
+})
+
+const deployCommand = Command.make('deploy', {
+  description: 'Deploy the project'
+})
+
+// 创建主命令
+const mainCommand = Command.make('my-cli', {
+  description: 'A CLI tool for project management'
+}).pipe(
+  Command.withSubcommands([buildCommand, testCommand, deployCommand])
+)
+
+// 运行命令
+const program = Effect.gen(function* () {
+  yield* Command.run(mainCommand, {
+    name: 'my-cli',
+    version: '1.0.0'
+  })
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 📝 实际应用示例
+
+### 完整的 CLI 应用
+
+```js
+import { Effect } from 'effect'
+import { Command, Options, Args } from '@effect/cli'
+import { NodeContext } from '@effect/platform-node'
+
+// 定义选项
+const verboseOption = Options.boolean('verbose').pipe(
+  Options.withDefault(false),
+  Options.withAlias('v')
+)
+
+const dryRunOption = Options.boolean('dry-run').pipe(
+  Options.withDefault(false)
+)
+
+// 定义子命令
+const initCommand = Command.make('init', {
+  description: 'Initialize a new project'
+}).pipe(
+  Command.withOptions({ verbose: verboseOption }),
+  Command.withArgs({
+    name: Args.text({ name: 'name' })
+  })
+)
+
+const buildCommand = Command.make('build', {
+  description: 'Build the project'
+}).pipe(
+  Command.withOptions({
+    verbose: verboseOption,
+    dryRun: dryRunOption
+  })
+)
+
+const deployCommand = Command.make('deploy', {
+  description: 'Deploy the project'
+}).pipe(
+  Command.withOptions({
+    verbose: verboseOption,
+    dryRun: dryRunOption
+  }),
+  Command.withArgs({
+    environment: Args.choice('environment', ['dev', 'staging', 'prod'])
+  })
+)
+
+// 创建主命令
+const mainCommand = Command.make('my-cli', {
+  description: 'A CLI tool for project management',
+  version: '1.0.0'
+}).pipe(
+  Command.withSubcommands([initCommand, buildCommand, deployCommand])
+)
+
+// 运行程序
+const program = Effect.gen(function* () {
+  yield* Command.run(mainCommand, {
+    name: 'my-cli',
+    version: '1.0.0',
+    description: 'A CLI tool for project management'
+  })
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+### 配置管理
+
+```js
+import { Effect } from 'effect'
+import { Command, Options } from '@effect/cli'
+import { NodeContext, FileSystem } from '@effect/platform-node'
+
+// 配置选项
+const configOption = Options.text('config').pipe(
+  Options.withDefault('./config.json'),
+  Options.withDescription('Path to config file')
+)
+
+// 加载配置
+const loadConfig = (configPath: string) => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const exists = yield* fs.exists(configPath)
+  
+  if (!exists) {
+    return Effect.succeed({})
+  }
+  
+  const content = yield* fs.readFileString(configPath)
+  return JSON.parse(content)
+})
+
+// 创建命令
+const command = Command.make('run', {
+  description: 'Run the application'
+}).pipe(
+  Command.withOptions({
+    config: configOption,
+    verbose: Options.boolean('verbose').pipe(
+      Options.withDefault(false)
+    )
+  })
+)
+
+// 运行程序
+const program = Effect.gen(function* () {
+  const { config, verbose } = yield* Command.options(command)
+  
+  const configData = yield* loadConfig(config)
+  
+  if (verbose) {
+    console.log('Loaded config:', configData)
+  }
+  
+  console.log('Running application...')
+})
+
+Effect.runPromise(
+  Command.run(program, {
+    name: 'my-cli',
+    version: '1.0.0'
+  }).pipe(
+    Effect.provide(NodeContext.layer)
+  )
+)
+```
+
+## 🔗 相关概念
+
+- **交互式 CLI**：用户输入、选择菜单、进度显示
+- **CLI 模式**：子命令、中间件、插件系统
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握 @effect/cli 的使用
+- [ ] 理解命令定义与配置
+- [ ] 掌握参数解析器
+- [ ] 了解帮助系统生成
+- [ ] 能够实现完整的 CLI 应用
+
+## 🚀 下一步
+
+→ [交互式 CLI](./02-interactive-cli.mdx)
