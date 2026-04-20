@@ -1,0 +1,419 @@
+# 延迟与定时
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了灵活的延迟和定时机制，让你能够精确控制任务的执行时机和频率。
+
+## 🎯 延迟执行
+
+### Effect.sleep - 基本延迟
+
+```js
+import { Effect } from 'effect'
+
+// 基本延迟执行
+const delayed = Effect.gen(function* () {
+  console.log('Start')
+  yield* Effect.sleep(1000)
+  console.log('After 1 second')
+  return 'Done'
+})
+
+Effect.runPromise(delayed)
+```
+
+### 链式延迟
+
+```js
+import { Effect } from 'effect'
+
+// 链式延迟执行
+const chainedDelay = Effect.gen(function* () {
+  console.log('Step 1')
+  yield* Effect.sleep(500)
+  
+  console.log('Step 2')
+  yield* Effect.sleep(500)
+  
+  console.log('Step 3')
+  yield* Effect.sleep(500)
+  
+  console.log('Step 4')
+  return 'Completed'
+})
+
+Effect.runPromise(chainedDelay)
+```
+
+### 条件延迟
+
+```js
+import { Effect } from 'effect'
+
+// 条件延迟
+const conditionalDelay = Effect.gen(function* () {
+  const shouldDelay = Math.random() > 0.5
+  
+  if (shouldDelay) {
+    console.log('Delaying...')
+    yield* Effect.sleep(1000)
+  } else {
+    console.log('No delay')
+  }
+  
+  return 'Done'
+})
+
+Effect.runPromise(conditionalDelay)
+```
+
+## 💡 定时重复
+
+### Effect.repeat - 重复执行
+
+```js
+import { Effect } from 'effect'
+
+// 重复执行指定次数
+const repeatTimes = Effect.sync(() => {
+  console.log('Execution')
+  return Math.random()
+}).pipe(
+  Effect.repeat(3)
+)
+
+Effect.runPromise(repeatTimes).then(results => {
+  console.log(results)
+})
+```
+
+### 固定间隔重复
+
+```js
+import { Effect } from 'effect'
+
+// 固定间隔重复
+const repeatWithInterval = Effect.sync(() => {
+  console.log('Tick')
+  return Date.now()
+}).pipe(
+  Effect.repeat({
+    schedule: Effect.scheduleSpaced(1000),
+    times: 5
+  })
+)
+
+Effect.runPromise(repeatWithInterval)
+```
+
+### 指数退避重复
+
+```js
+import { Effect } from 'effect'
+
+// 指数退避重复
+const repeatWithBackoff = Effect.sync(() => {
+  console.log('Attempt')
+  return Math.random()
+}).pipe(
+  Effect.repeat({
+    schedule: Effect.scheduleExponential(1000),
+    times: 3
+  })
+)
+
+Effect.runPromise(repeatWithBackoff)
+```
+
+## 🚀 节流与防抖
+
+### 节流
+
+```js
+import { Effect } from 'effect'
+
+// 节流 - 限制执行频率
+const throttle = <A>(effect: Effect.Effect<never, never, A>, interval: number) => {
+  let lastExecution = 0
+  
+  return Effect.sync(() => {
+    const now = Date.now()
+    if (now - lastExecution >= interval) {
+      lastExecution = now
+      return Effect.runSync(effect)
+    }
+    return null
+  })
+}
+
+const throttledLog = throttle(
+  Effect.sync(() => console.log('Throttled log')),
+  1000
+)
+
+// 快速调用多次
+Effect.runSync(throttledLog)
+Effect.runSync(throttledLog)
+Effect.runSync(throttledLog)
+// 只会执行一次
+```
+
+### 防抖
+
+```js
+import { Effect } from 'effect'
+
+// 防抖 - 延迟执行，只执行最后一次
+const debounce = <A>(effect: Effect.Effect<never, never, A>, delay: number) => {
+  let timeoutId: any = null
+  
+  return Effect.sync(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId)
+    }
+    
+    timeoutId = setTimeout(() => {
+      Effect.runSync(effect)
+      timeoutId = null
+    }, delay)
+  })
+}
+
+const debouncedLog = debounce(
+  Effect.sync(() => console.log('Debounced log')),
+  500
+)
+
+// 快速调用多次
+Effect.runSync(debouncedLog)
+Effect.runSync(debouncedLog)
+Effect.runSync(debouncedLog)
+// 只会执行最后一次
+```
+
+## 📝 批处理
+
+### 时间窗口批处理
+
+```js
+import { Effect } from 'effect'
+
+// 时间窗口批处理
+const timeWindowBatch = <T>(
+  items: T[],
+  windowSize: number,
+  processor: (batch: T[]) => Effect.Effect<never, never, any>
+) =>
+  Effect.gen(function* () {
+    const batches: T[][] = []
+    let currentBatch: T[] = []
+    
+    for (const item of items) {
+      currentBatch.push(item)
+      
+      if (currentBatch.length >= windowSize) {
+        batches.push([...currentBatch])
+        currentBatch = []
+        yield* Effect.sleep(1000)
+      }
+    }
+    
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch)
+    }
+    
+    const results = yield* Effect.forEach(
+      batches,
+      batch => processor(batch),
+      { concurrency: 1 }
+    )
+    
+    return results
+  })
+
+const items = Array.from({ length: 25 }, (_, i) => i)
+
+Effect.runPromise(
+  timeWindowBatch(items, 10, (batch) =>
+    Effect.sync(() => {
+      console.log(`Processing batch: ${batch.join(', ')}`)
+      return batch.length
+    })
+  )
+)
+```
+
+### 数量批处理
+
+```js
+import { Effect } from 'effect'
+
+// 数量批处理
+const sizeBatch = <T>(
+  items: T[],
+  batchSize: number,
+  processor: (batch: T[]) => Effect.Effect<never, never, any>
+) =>
+  Effect.gen(function* () {
+    const batches: T[][] = []
+    
+    for (let i = 0; i < items.length; i += batchSize) {
+      batches.push(items.slice(i, i + batchSize))
+    }
+    
+    const results = yield* Effect.forEach(
+      batches,
+      batch => processor(batch),
+      { concurrency: 3 }
+    )
+    
+    return results
+  })
+
+const items = Array.from({ length: 100 }, (_, i) => i)
+
+Effect.runPromise(
+  sizeBatch(items, 10, (batch) =>
+    Effect.sync(() => {
+      console.log(`Processing batch of ${batch.length} items`)
+      return batch.length
+    })
+  )
+)
+```
+
+## 🎯 实际应用示例
+
+### API 限流
+
+```js
+import { Effect } from 'effect'
+
+// API 限流
+const rateLimit = <A>(
+  effect: Effect.Effect<never, never, A>,
+  maxRequests: number,
+  windowMs: number
+) => {
+  const requests: number[] = []
+  
+  return Effect.sync(() => {
+    const now = Date.now()
+    const windowStart = now - windowMs
+    
+    // 清理过期请求
+    while (requests.length > 0 && requests[0] < windowStart) {
+      requests.shift()
+    }
+    
+    if (requests.length < maxRequests) {
+      requests.push(now)
+      return Effect.runSync(effect)
+    }
+    
+    // 超出限制，等待
+    const waitTime = requests[0] + windowMs - now
+    return Effect.runPromise(
+      Effect.sleep(waitTime).pipe(
+        Effect.andThen(() => effect)
+      )
+    )
+  })
+}
+
+const limitedFetch = rateLimit(
+  Effect.sync(() => console.log('API request')),
+  5,
+  1000
+)
+
+// 快速调用多次
+Effect.runSync(limitedFetch)
+Effect.runSync(limitedFetch)
+Effect.runSync(limitedFetch)
+```
+
+### 缓存更新
+
+```js
+import { Effect } from 'effect'
+
+// 定时缓存更新
+const createCachedValue = <T>(
+  fetcher: () => Effect.Effect<never, never, T>,
+  updateInterval: number
+) => {
+  let cache: T | null = null
+  let lastUpdate = 0
+  
+  return {
+    get: Effect.sync(() => {
+      const now = Date.now()
+      
+      if (!cache || now - lastUpdate > updateInterval) {
+        console.log('Updating cache')
+        cache = Effect.runSync(fetcher())
+        lastUpdate = now
+      }
+      
+      return cache
+    }),
+    invalidate: Effect.sync(() => {
+      console.log('Invalidating cache')
+      cache = null
+    })
+  }
+}
+
+const cachedData = createCachedValue(
+  () => Effect.sync(() => ({ data: 'fresh', timestamp: Date.now() })),
+  5000
+)
+
+Effect.runSync(cachedData.get)
+Effect.runSync(cachedData.get)
+```
+
+### 心跳检测
+
+```js
+import { Effect } from 'effect'
+
+// 心跳检测
+const heartbeat = (interval: number, handler: () => void) => {
+  return Effect.async<void>((resume) => {
+    const timer = setInterval(() => {
+      handler()
+    }, interval)
+    
+    return () => clearInterval(timer)
+  })
+}
+
+const startHeartbeat = heartbeat(1000, () => {
+  console.log('Heartbeat', Date.now())
+})
+
+Effect.runPromise(startHeartbeat)
+```
+
+## 🔗 相关概念
+
+- **调度器基础**：Effect 的调度机制
+- **时间操作**：Effect 的时间相关操作
+- **延迟与定时**：延迟执行和定时任务
+
+## 📚 学习检查点
+
+- [ ] 掌握延迟执行的方法
+- [ ] 理解定时重复的机制
+- [ ] 掌握节流与防抖
+- [ ] 了解批处理策略
+- [ ] 能够实现时间相关的功能
+
+## 🚀 下一步
+
+→ [状态管理](../05-state-management/01-ref-basics.mdx)

@@ -1,0 +1,344 @@
+# 时间操作
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了丰富的时间操作工具，让你能够精确控制任务的执行时机、测量时间和处理超时。
+
+## 🎯 Effect.clock - 时钟操作
+
+### 获取当前时间
+
+```js
+import { Effect } from 'effect'
+
+// 获取当前时间戳
+const getCurrentTime = Effect.sync(() => {
+  return Date.now()
+})
+
+Effect.runSync(getCurrentTime)  // 1713643200000
+
+// 使用 Effect.clock
+const withClock = Effect.sync(() => {
+  const now = Effect.runSync(Effect.clock)
+  return now
+})
+
+Effect.runSync(withClock)
+```
+
+### 自定义时钟
+
+```js
+import { Effect } from 'effect'
+
+// 自定义时钟用于测试
+const customClock = Effect.sync(() => {
+  return {
+    currentTime: 0,
+    increment: (ms: number) => {
+      customClock.currentTime += ms
+    }
+  }
+})
+
+const withCustomClock = Effect.sync(() => {
+  console.log('Current time:', customClock.currentTime)
+  return customClock.currentTime
+})
+
+Effect.runSync(withCustomClock)
+```
+
+## 💡 时间测量
+
+### 测量执行时间
+
+```js
+import { Effect } from 'effect'
+
+// 测量 Effect 执行时间
+const measureTime = <A>(effect: Effect.Effect<never, never, A>) =>
+  Effect.gen(function* () {
+    const start = yield* Effect.sync(() => Date.now())
+    const result = yield* effect
+    const end = yield* Effect.sync(() => Date.now())
+    const duration = end - start
+    
+    return { result, duration }
+  })
+
+const task = Effect.sync(() => {
+  // 模拟耗时操作
+  let sum = 0
+  for (let i = 0; i < 1000000; i++) {
+    sum += i
+  }
+  return sum
+})
+
+Effect.runSync(measureTime(task)).then(({ result, duration }) => {
+  console.log(`Result: ${result}, Duration: ${duration}ms`)
+})
+```
+
+### 基准测试
+
+```js
+import { Effect } from 'effect'
+
+// 基准测试
+const benchmark = <A>(
+  effect: Effect.Effect<never, never, A>,
+  iterations: number
+) =>
+  Effect.gen(function* () {
+    const results: number[] = []
+    
+    for (let i = 0; i < iterations; i++) {
+      const { duration } = yield* measureTime(effect)
+      results.push(duration)
+    }
+    
+    const avg = results.reduce((sum, d) => sum + d, 0) / results.length
+    const min = Math.min(...results)
+    const max = Math.max(...results)
+    
+    return { avg, min, max, iterations }
+  })
+
+const computation = Effect.sync(() => {
+  let sum = 0
+  for (let i = 0; i < 100000; i++) {
+    sum += Math.sqrt(i)
+  }
+  return sum
+})
+
+Effect.runSync(benchmark(computation, 10)).then(stats => {
+  console.log(`Average: ${stats.avg.toFixed(2)}ms`)
+  console.log(`Min: ${stats.min}ms`)
+  console.log(`Max: ${stats.max}ms`)
+})
+```
+
+## 🚀 定时任务
+
+### 延迟执行
+
+```js
+import { Effect } from 'effect'
+
+// 延迟执行
+const delayedExecution = Effect.gen(function* () {
+  console.log('Start')
+  yield* Effect.sleep(1000)
+  console.log('After 1 second')
+  return 'Done'
+})
+
+Effect.runPromise(delayedExecution)
+```
+
+### 定时重复
+
+```js
+import { Effect } from 'effect'
+
+// 定时重复执行
+const repeatedExecution = Effect.sync(() => {
+  console.log('Tick')
+  return Date.now()
+}).pipe(
+  Effect.repeat({
+    schedule: Effect.scheduleSpaced(1000),
+    times: 5
+  })
+)
+
+Effect.runPromise(repeatedExecution)
+```
+
+### 间隔执行
+
+```js
+import { Effect } from 'effect'
+
+// 间隔执行
+const intervalExecution = Effect.gen(function* () {
+  for (let i = 0; i < 5; i++) {
+    console.log(`Execution ${i + 1}`)
+    yield* Effect.sleep(1000)
+  }
+  return 'Completed'
+})
+
+Effect.runPromise(intervalExecution)
+```
+
+## 🎯 超时处理
+
+### 基本超时
+
+```js
+import { Effect } from 'effect'
+
+// 基本超时处理
+const withTimeout = Effect.gen(function* () {
+  console.log('Starting...')
+  yield* Effect.sleep(3000)
+  return 'Completed'
+}).pipe(
+  Effect.timeout(2000)
+)
+
+Effect.runPromise(withTimeout).catch(error => {
+  console.log('Timeout:', error._tag)
+})
+```
+
+### 超时降级
+
+```js
+import { Effect } from 'effect'
+
+// 超时降级
+const timeoutWithFallback = Effect.gen(function* () {
+  yield* Effect.sleep(3000)
+  return 'Primary result'
+}).pipe(
+  Effect.timeout(2000),
+  Effect.catchAll(() =>
+    Effect.succeed('Fallback result')
+  )
+)
+
+Effect.runSync(timeoutWithFallback)
+```
+
+### 超时重试
+
+```js
+import { Effect } from 'effect'
+
+// 超时重试
+const timeoutWithRetry = Effect.gen(function* () {
+  yield* Effect.sleep(3000)
+  return 'Success'
+}).pipe(
+  Effect.timeout(2000),
+  Effect.retry({
+    while: (error) => error._tag === 'TimeoutException',
+    times: 3
+  }),
+  Effect.catchAll(() =>
+    Effect.succeed('Failed after retries')
+  )
+)
+
+Effect.runSync(timeoutWithRetry)
+```
+
+## 📝 实际应用示例
+
+### API 请求超时
+
+```js
+import { Effect } from 'effect'
+
+// API 请求超时处理
+const fetchWithTimeout = (url: string, timeoutMs: number) =>
+  Effect.tryPromise(() => fetch(url)).pipe(
+  Effect.timeout(timeoutMs),
+  Effect.catchAll(error =>
+    Effect.succeed({ error: 'Request timeout', data: null })
+  )
+)
+
+Effect.runPromise(fetchWithTimeout('/api/data', 5000)).then(result => {
+  console.log(result)
+})
+```
+
+### 任务超时监控
+
+```js
+import { Effect } from 'effect'
+
+// 任务超时监控
+const monitorTask = <A>(
+  task: Effect.Effect<never, never, A>,
+  timeoutMs: number
+) =>
+  Effect.gen(function* () {
+    const { result, duration } = yield* measureTime(task.pipe(
+      Effect.timeout(timeoutMs)
+    ))
+    
+    if (duration > timeoutMs * 0.8) {
+      console.warn(`Task took ${duration}ms, close to timeout`)
+    }
+    
+    return result
+  })
+
+const longTask = Effect.gen(function* () {
+  yield* Effect.sleep(4000)
+  return 'Done'
+})
+
+Effect.runPromise(monitorTask(longTask, 5000))
+```
+
+### 性能监控
+
+```js
+import { Effect } from 'effect'
+
+// 性能监控
+const performanceMonitor = <A>(
+  effect: Effect.Effect<never, never, A>,
+  threshold: number
+) =>
+  Effect.gen(function* () {
+    const { result, duration } = yield* measureTime(effect)
+    
+    if (duration > threshold) {
+      console.error(`Performance issue: ${duration}ms > ${threshold}ms`)
+    }
+    
+    return { result, duration, withinThreshold: duration <= threshold }
+  })
+
+const operation = Effect.sync(() => {
+  // 模拟操作
+  let sum = 0
+  for (let i = 0; i < 1000000; i++) {
+    sum += i
+  }
+  return sum
+})
+
+Effect.runSync(performanceMonitor(operation, 100))
+```
+
+## 🔗 相关概念
+
+- **调度器基础**：Effect 的调度机制
+- **延迟与定时**：延迟执行和定时任务
+- **时间测量**：测量执行时间
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.clock 的使用
+- [ ] 理解时间测量的方法
+- [ ] 掌握定时任务的创建
+- [ ] 了解超时处理机制
+- [ ] 能够实现时间相关的功能
+
+## 🚀 下一步
+
+→ [延迟与定时](./03-delay-and-timing.mdx)

@@ -1,0 +1,318 @@
+# 调度器基础
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+调度器（Scheduler）是 Effect 中控制任务执行时间和顺序的核心机制。它提供了灵活的任务调度策略，让你能够精确控制任务的执行时机。
+
+## 🎯 Scheduler 概念
+
+### 什么是调度器
+
+```js
+import { Effect } from 'effect'
+
+// 调度器决定 Effect 的执行时机
+// 默认情况下，Effect 使用同步调度器
+
+const effect = Effect.sync(() => {
+  console.log('Executing effect')
+  return 42
+})
+
+Effect.runSync(effect)  // 立即执行
+```
+
+### 调度器的作用
+
+```js
+import { Effect } from 'effect'
+
+// 调度器控制：
+// 1. 任务的执行时机
+// 2. 任务的执行顺序
+// 3. 并发控制
+// 4. 优先级管理
+
+const scheduledEffect = Effect.sync(() => {
+  console.log('Scheduled task')
+  return Date.now()
+})
+```
+
+## 💡 Effect.scheduler - 调度器配置
+
+### 使用默认调度器
+
+```js
+import { Effect } from 'effect'
+
+// 默认调度器 - 同步执行
+const defaultScheduler = Effect.sync(() => {
+  console.log('Default scheduler - sync')
+  return 'sync'
+})
+
+Effect.runSync(defaultScheduler)
+```
+
+### 自定义调度器
+
+```js
+import { Effect } from 'effect'
+
+// 使用自定义调度器
+const withScheduler = Effect.sync(() => {
+  console.log('Custom scheduler')
+  return 'custom'
+}).pipe(
+  Effect.provideService(Effect.Scheduler, Effect.Scheduler.default)
+)
+
+Effect.runSync(withScheduler)
+```
+
+## 🚀 任务调度策略
+
+### 同步调度
+
+```js
+import { Effect } from 'effect'
+
+// 同步调度 - 立即执行
+const syncSchedule = Effect.sync(() => {
+  console.log('Sync execution')
+  return 'sync'
+})
+
+Effect.runSync(syncSchedule)
+```
+
+### 异步调度
+
+```js
+import { Effect } from 'effect'
+
+// 异步调度 - 延迟到下一个事件循环
+const asyncSchedule = Effect.async<void>((resume) => {
+  console.log('Scheduling async task')
+  setTimeout(() => {
+    console.log('Async execution')
+    resume(Effect.succeed(void 0))
+  }, 0)
+})
+
+Effect.runPromise(asyncSchedule)
+```
+
+### 延迟调度
+
+```js
+import { Effect } from 'effect'
+
+// 延迟调度 - 指定时间后执行
+const delayedSchedule = Effect.gen(function* () {
+  console.log('Start')
+  yield* Effect.sleep(1000)
+  console.log('After 1 second')
+  return 'delayed'
+})
+
+Effect.runPromise(delayedSchedule)
+```
+
+## 🎯 优先级调度
+
+### 任务优先级
+
+```js
+import { Effect } from 'effect'
+
+// 高优先级任务
+const highPriorityTask = Effect.sync(() => {
+  console.log('High priority task')
+  return 'high'
+}).pipe(
+  Effect.withScheduler(Effect.Scheduler.default)
+)
+
+// 低优先级任务
+const lowPriorityTask = Effect.sync(() => {
+  console.log('Low priority task')
+  return 'low'
+})
+
+Effect.runSync(
+  Effect.all([highPriorityTask, lowPriorityTask])
+)
+```
+
+### 优先级队列
+
+```js
+import { Effect } from 'effect'
+
+// 创建优先级队列
+const createPriorityQueue = () => {
+  const queue: { priority: number; task: any }[] = []
+  
+  return {
+    enqueue: (priority: number, task: any) =>
+      Effect.sync(() => {
+        queue.push({ priority, task })
+        queue.sort((a, b) => b.priority - a.priority)
+      }),
+    dequeue: Effect.sync(() => {
+      const item = queue.shift()
+      return item ? item.task : null
+    })
+  }
+}
+
+// 使用优先级队列
+const pq = createPriorityQueue()
+
+Effect.runSync(
+  Effect.gen(function* () {
+    yield* pq.enqueue(1, 'low')
+    yield* pq.enqueue(3, 'high')
+    yield* pq.enqueue(2, 'medium')
+    
+    const task1 = yield* pq.dequeue()
+    const task2 = yield* pq.dequeue()
+    const task3 = yield* pq.dequeue()
+    
+    console.log(task1, task2, task3)  // high, medium, low
+  })
+)
+```
+
+## 📝 实际应用示例
+
+### 定时任务调度
+
+```js
+import { Effect } from 'effect'
+
+// 定时任务
+const scheduleTask = (task: Effect.Effect<never, never, any>, delay: number) =>
+  Effect.async<void>((resume) => {
+    setTimeout(() => {
+      Effect.runPromise(task).then(() => {
+        resume(Effect.succeed(void 0))
+      })
+    }, delay)
+  })
+
+const task1 = Effect.sync(() => console.log('Task 1'))
+const task2 = Effect.sync(() => console.log('Task 2'))
+const task3 = Effect.sync(() => console.log('Task 3'))
+
+Effect.runPromise(
+  Effect.all([
+    scheduleTask(task1, 1000),
+    scheduleTask(task2, 500),
+    scheduleTask(task3, 1500)
+  ])
+)
+// 输出：
+// Task 2 (500ms)
+// Task 1 (1000ms)
+// Task 3 (1500ms)
+```
+
+### 批处理调度
+
+```js
+import { Effect } from 'effect'
+
+// 批处理调度
+const batchScheduler = Effect.gen(function* () {
+  const batch: any[] = []
+  const maxSize = 10
+  
+  const processBatch = Effect.sync(() => {
+    console.log(`Processing batch of ${batch.length} items`)
+    batch.length = 0
+  })
+  
+  for (let i = 0; i < 25; i++) {
+    batch.push(i)
+    if (batch.length >= maxSize) {
+      yield* processBatch
+    }
+  }
+  
+  if (batch.length > 0) {
+    yield* processBatch
+  }
+})
+
+Effect.runSync(batchScheduler)
+```
+
+### 工作队列
+
+```js
+import { Effect } from 'effect'
+
+// 工作队列调度
+const createWorkQueue = () => {
+  const queue: (() => void)[] = []
+  let processing = false
+  
+  const process = Effect.sync(() => {
+    if (processing || queue.length === 0) return
+    
+    processing = true
+    const task = queue.shift()!
+    
+    setTimeout(() => {
+      task()
+      processing = false
+      Effect.runSync(process)
+    }, 0)
+  })
+  
+  return {
+    enqueue: (task: () => void) =>
+      Effect.sync(() => {
+        queue.push(task)
+        Effect.runSync(process)
+      })
+  }
+}
+
+// 使用工作队列
+const workQueue = createWorkQueue()
+
+Effect.runSync(
+  Effect.gen(function* () {
+    for (let i = 0; i < 10; i++) {
+      yield* workQueue.enqueue(() => {
+        console.log(`Processing item ${i}`)
+      })
+    }
+  })
+)
+```
+
+## 🔗 相关概念
+
+- **时间操作**：Effect 的时间相关操作
+- **延迟与定时**：延迟执行和定时任务
+- **调度策略**：不同的调度策略
+
+## 📚 学习检查点
+
+- [ ] 理解调度器的概念
+- [ ] 掌握调度器配置方法
+- [ ] 了解任务调度策略
+- [ ] 理解优先级调度
+- [ ] 能够实现自定义调度器
+
+## 🚀 下一步
+
+→ [时间操作](./02-time-operations.mdx)
