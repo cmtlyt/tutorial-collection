@@ -1,0 +1,521 @@
+# 数据验证
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的数据验证功能，包括 Schema 定义与验证、运行时类型检查、编译时类型推断和错误报告机制。
+
+## 🎯 Schema 定义与验证
+
+### 基本 Schema
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 定义 Schema
+const UserSchema = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.String,
+  age: Schema.Number
+})
+
+// 验证数据
+const validateUser = (data: unknown) =>
+  Schema.decodeUnknown(UserSchema)(data)
+
+const program = Effect.gen(function* () {
+  const validUser = yield* validateUser({
+    id: 1,
+    name: 'Alice',
+    email: 'alice@example.com',
+    age: 30
+  })
+  
+  console.log('Valid user:', validUser)
+  return validUser
+})
+
+Effect.runSync(program)
+```
+
+### 嵌套 Schema
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 定义嵌套 Schema
+const AddressSchema = Schema.Struct({
+  street: Schema.String,
+  city: Schema.String,
+  zipCode: Schema.String
+})
+
+const UserSchema = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.String,
+  address: AddressSchema
+})
+
+const program = Effect.gen(function* () {
+  const validUser = yield* Schema.decodeUnknown(UserSchema)({
+    id: 1,
+    name: 'Alice',
+    email: 'alice@example.com',
+    address: {
+      street: '123 Main St',
+      city: 'New York',
+      zipCode: '10001'
+    }
+  })
+  
+  console.log('Valid user with address:', validUser)
+  return validUser
+})
+
+Effect.runSync(program)
+```
+
+### 可选字段
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 定义带可选字段的 Schema
+const UserSchema = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.optional(Schema.String),
+  age: Schema.optionalWith(Schema.Number, { exact: true })
+})
+
+const program = Effect.gen(function* () {
+  const validUser = yield* Schema.decodeUnknown(UserSchema)({
+    id: 1,
+    name: 'Alice'
+  })
+  
+  console.log('Valid user with optional fields:', validUser)
+  return validUser
+})
+
+Effect.runSync(program)
+```
+
+## 💡 运行时类型检查
+
+### 基本类型检查
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 运行时类型检查
+const checkType = <A>(schema: Schema.Schema<A>, value: unknown) =>
+  Effect.gen(function* () {
+    const validated = yield* Schema.decodeUnknown(schema)(value)
+    console.log('Type check passed:', validated)
+    return validated
+  })
+
+const program = Effect.gen(function* () {
+  // 检查字符串
+  const stringResult = yield* checkType(Schema.String, 'hello')
+  console.log('String:', stringResult)
+  
+  // 检查数字
+  const numberResult = yield* checkType(Schema.Number, 42)
+  console.log('Number:', numberResult)
+  
+  // 检查布尔值
+  const boolResult = yield* checkType(Schema.Boolean, true)
+  console.log('Boolean:', boolResult)
+  
+  return { stringResult, numberResult, boolResult }
+})
+
+Effect.runSync(program)
+```
+
+### 数组验证
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 数组验证
+const NumberArraySchema = Schema.Array(Schema.Number)
+const StringArraySchema = Schema.Array(Schema.String)
+
+const program = Effect.gen(function* () {
+  // 验证数字数组
+  const numbers = yield* Schema.decodeUnknown(NumberArraySchema)([1, 2, 3, 4, 5])
+  console.log('Numbers:', numbers)
+  
+  // 验证字符串数组
+  const strings = yield* Schema.decodeUnknown(StringArraySchema)(['a', 'b', 'c'])
+  console.log('Strings:', strings)
+  
+  return { numbers, strings }
+})
+
+Effect.runSync(program)
+```
+
+### 枚举验证
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 枚举验证
+const StatusSchema = Schema.Literal('active', 'inactive', 'pending')
+
+const program = Effect.gen(function* () {
+  // 验证有效的状态
+  const validStatus = yield* Schema.decodeUnknown(StatusSchema)('active')
+  console.log('Valid status:', validStatus)
+  
+  // 尝试验证无效的状态（会失败）
+  const invalidStatus = yield* Schema.decodeUnknown(StatusSchema)('unknown').pipe(
+    Effect.catchAll((error) => Effect.succeed(`Error: ${error}`))
+  )
+  console.log('Invalid status:', invalidStatus)
+  
+  return validStatus
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 编译时类型推断
+
+### 类型推断
+
+```js
+import { Schema } from 'effect'
+
+// 定义 Schema 并推断类型
+const UserSchema = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.String,
+  age: Schema.Number
+})
+
+// 推断类型
+type User = Schema.Schema.Type<typeof UserSchema>
+
+// 使用推断的类型
+const user: User = {
+  id: 1,
+  name: 'Alice',
+  email: 'alice@example.com',
+  age: 30
+}
+
+console.log('User:', user)
+```
+
+### 编码和解码
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 定义 Schema
+const DateSchema = Schema.DateFromString
+
+const program = Effect.gen(function* () {
+  // 编码：Date -> string
+  const date = new Date()
+  const encoded = yield* Schema.encode(DateSchema)(date)
+  console.log('Encoded date:', encoded)
+  
+  // 解码：string -> Date
+  const decoded = yield* Schema.decode(DateSchema)(encoded)
+  console.log('Decoded date:', decoded)
+  
+  return { encoded, decoded }
+})
+
+Effect.runSync(program)
+```
+
+### 转换 Schema
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 定义转换 Schema
+const TrimmedStringSchema = Schema.String.pipe(
+  Schema.transform(Schema.String, {
+    decode: (input) => input.trim(),
+    encode: (output) => output
+  })
+)
+
+const program = Effect.gen(function* () {
+  const trimmed = yield* Schema.decodeUnknown(TrimmedStringSchema)('  hello  ')
+  console.log('Trimmed string:', trimmed)
+  
+  return trimmed
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 错误报告机制
+
+### 基本错误处理
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 错误处理
+const program = Effect.gen(function* () {
+  const UserSchema = Schema.Struct({
+    id: Schema.Number,
+    name: Schema.String,
+    email: Schema.String
+  })
+  
+  // 尝试验证无效数据
+  const result = yield* Schema.decodeUnknown(UserSchema)({
+    id: 'invalid',  // 应该是数字
+    name: 'Alice',
+    email: 'alice@example.com'
+  }).pipe(
+    Effect.catchAll((error) => {
+      console.error('Validation error:', error)
+      return Effect.succeed(null)
+    })
+  )
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 详细错误信息
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 详细错误信息
+const program = Effect.gen(function* () {
+  const UserSchema = Schema.Struct({
+    id: Schema.Number,
+    name: Schema.String,
+    email: Schema.String
+  })
+  
+  // 验证数据并获取详细错误
+  const result = yield* Schema.decodeUnknown(UserSchema)({
+    id: 'invalid',
+    name: 123,  // 应该是字符串
+    email: 'not-an-email'
+  }).pipe(
+    Effect.catchAll((error) => {
+      console.error('Detailed errors:', error)
+      // 错误会包含每个字段的详细问题
+      return Effect.succeed({
+        errors: error,
+        message: 'Validation failed'
+      })
+    })
+  )
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+### 自定义错误消息
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 自定义错误消息
+const EmailSchema = Schema.String.pipe(
+  Schema.filter(
+    (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
+    {
+      message: 'Invalid email format'
+    }
+  )
+)
+
+const program = Effect.gen(function* () {
+  const result = yield* Schema.decodeUnknown(EmailSchema)('invalid-email').pipe(
+    Effect.catchAll((error) => {
+      console.error('Custom error:', error)
+      return Effect.succeed(null)
+    })
+  )
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 表单验证
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 表单验证 Schema
+const FormSchema = Schema.Struct({
+  username: Schema.String.pipe(
+    Schema.minLength(3, { message: 'Username must be at least 3 characters' }),
+    Schema.maxLength(20, { message: 'Username must be at most 20 characters' })
+  ),
+  email: Schema.String.pipe(
+    Schema.filter(
+      (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
+      { message: 'Invalid email format' }
+    )
+  ),
+  password: Schema.String.pipe(
+    Schema.minLength(8, { message: 'Password must be at least 8 characters' })
+  ),
+  age: Schema.Number.pipe(
+    Schema.int({ message: 'Age must be an integer' }),
+    Schema.greaterThanOrEqualTo(0, { message: 'Age must be positive' }),
+    Schema.lessThanOrEqualTo(120, { message: 'Age must be less than 120' })
+  )
+})
+
+const program = Effect.gen(function* () {
+  const formData = {
+    username: 'alice',
+    email: 'alice@example.com',
+    password: 'password123',
+    age: 30
+  }
+  
+  const validatedForm = yield* Schema.decodeUnknown(FormSchema)(formData)
+  console.log('Validated form:', validatedForm)
+  
+  return validatedForm
+})
+
+Effect.runSync(program)
+```
+
+### API 响应验证
+
+```js
+import { Effect, Schema } from 'effect'
+
+// API 响应 Schema
+const UserResponseSchema = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.String,
+  createdAt: Schema.DateFromString
+})
+
+const ApiResponseSchema = Schema.Struct({
+  success: Schema.Boolean,
+  data: UserResponseSchema,
+  message: Schema.String
+})
+
+const program = Effect.gen(function* () {
+  const apiResponse = {
+    success: true,
+    data: {
+      id: 1,
+      name: 'Alice',
+      email: 'alice@example.com',
+      createdAt: '2024-01-01T00:00:00.000Z'
+    },
+    message: 'User found'
+  }
+  
+  const validatedResponse = yield* Schema.decodeUnknown(ApiResponseSchema)(apiResponse)
+  console.log('Validated API response:', validatedResponse)
+  
+  return validatedResponse
+})
+
+Effect.runSync(program)
+```
+
+### 配置验证
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 配置 Schema
+const DatabaseConfigSchema = Schema.Struct({
+  host: Schema.String,
+  port: Schema.Number.pipe(
+    Schema.greaterThanOrEqualTo(1, { message: 'Port must be at least 1' }),
+    Schema.lessThanOrEqualTo(65535, { message: 'Port must be at most 65535' })
+  ),
+  user: Schema.String,
+  password: Schema.String,
+  database: Schema.String
+})
+
+const ServerConfigSchema = Schema.Struct({
+  port: Schema.Number,
+  host: Schema.String,
+  ssl: Schema.Boolean
+})
+
+const AppConfigSchema = Schema.Struct({
+  database: DatabaseConfigSchema,
+  server: ServerConfigSchema,
+  environment: Schema.Literal('development', 'staging', 'production')
+})
+
+const program = Effect.gen(function* () {
+  const config = {
+    database: {
+      host: 'localhost',
+      port: 5432,
+      user: 'admin',
+      password: 'secret',
+      database: 'mydb'
+    },
+    server: {
+      port: 3000,
+      host: '0.0.0.0',
+      ssl: true
+    },
+    environment: 'production'
+  }
+  
+  const validatedConfig = yield* Schema.decodeUnknown(AppConfigSchema)(config)
+  console.log('Validated config:', validatedConfig)
+  
+  return validatedConfig
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **测试工具**：Effect 的测试工具
+- **属性测试**：基于属性的测试方法
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握 Schema 定义与验证
+- [ ] 理解运行时类型检查
+- [ ] 掌握编译时类型推断
+- [ ] 了解错误报告机制
+- [ ] 能够实现完整的数据验证
+
+## 🚀 下一步
+
+→ [属性测试](./03-property-testing.mdx)

@@ -1,0 +1,594 @@
+# 测试工具
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的测试工具，包括与 Vitest 的集成、测试模式、断言库集成和测试覆盖率等功能。
+
+## 🎯 @effect/vitest - Vitest 集成
+
+### 基本设置
+
+```js
+// 安装依赖
+// npm install -D @effect/vitest vitest
+
+// vitest.config.js
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  test: {
+    include: ['**/*.test.js']
+  }
+})
+```
+
+### 基本测试
+
+```js
+// basic.test.js
+import { describe, it, expect } from 'vitest'
+import { Effect } from 'effect'
+
+describe('Basic Effect tests', () => {
+  it('should execute a simple Effect', () => {
+    const program = Effect.succeed(42)
+    const result = Effect.runSync(program)
+    expect(result).toBe(42)
+  })
+  
+  it('should handle errors', () => {
+    const program = Effect.fail('Error occurred')
+    const result = Effect.runSync(
+      program.pipe(
+        Effect.catchAll(() => Effect.succeed('caught'))
+      )
+    )
+    expect(result).toBe('caught')
+  })
+  
+  it('should chain Effects', () => {
+    const program = Effect.gen(function* () {
+      const a = yield* Effect.succeed(1)
+      const b = yield* Effect.succeed(2)
+      return a + b
+    })
+    
+    const result = Effect.runSync(program)
+    expect(result).toBe(3)
+  })
+})
+```
+
+### 异步测试
+
+```js
+// async.test.js
+import { describe, it, expect } from 'vitest'
+import { Effect } from 'effect'
+
+describe('Async Effect tests', () => {
+  it('should handle async operations', async () => {
+    const program = Effect.tryPromise(() =>
+      Promise.resolve(42)
+    )
+    
+    const result = await Effect.runPromise(program)
+    expect(result).toBe(42)
+  })
+  
+  it('should handle async errors', async () => {
+    const program = Effect.tryPromise(() =>
+      Promise.reject(new Error('Async error'))
+    )
+    
+    const result = await Effect.runPromise(
+      program.pipe(
+        Effect.catchAll(() => Effect.succeed('caught'))
+      )
+    )
+    expect(result).toBe('caught')
+  })
+  
+  it('should work with setTimeout', async () => {
+    const program = Effect.gen(function* () {
+      yield* Effect.sleep(100)
+      return 'done'
+    })
+    
+    const result = await Effect.runPromise(program)
+    expect(result).toBe('done')
+  })
+})
+```
+
+## 💡 Effect 测试模式
+
+### 纯函数测试
+
+```js
+// pure.test.js
+import { describe, it, expect } from 'vitest'
+import { Effect } from 'effect'
+
+describe('Pure function tests', () => {
+  const add = (a, b) => a + b
+  const multiply = (a, b) => a * b
+  
+  it('should add numbers', () => {
+    const program = Effect.sync(() => add(2, 3))
+    const result = Effect.runSync(program)
+    expect(result).toBe(5)
+  })
+  
+  it('should multiply numbers', () => {
+    const program = Effect.sync(() => multiply(4, 5))
+    const result = Effect.runSync(program)
+    expect(result).toBe(20)
+  })
+  
+  it('should chain pure functions', () => {
+    const program = Effect.gen(function* () {
+      const sum = yield* Effect.sync(() => add(2, 3))
+      const product = yield* Effect.sync(() => multiply(sum, 2))
+      return product
+    })
+    
+    const result = Effect.runSync(program)
+    expect(result).toBe(10)
+  })
+})
+```
+
+### 副作用测试
+
+```js
+// side-effect.test.js
+import { describe, it, expect, vi } from 'vitest'
+import { Effect } from 'effect'
+
+describe('Side effect tests', () => {
+  it('should handle console.log', () => {
+    const logSpy = vi.spyOn(console, 'log')
+    
+    const program = Effect.sync(() => {
+      console.log('Hello, World!')
+    })
+    
+    Effect.runSync(program)
+    expect(logSpy).toHaveBeenCalledWith('Hello, World!')
+    
+    logSpy.mockRestore()
+  })
+  
+  it('should handle external API calls', async () => {
+    const mockFetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ data: 'test' })
+      })
+    )
+    
+    global.fetch = mockFetch
+    
+    const program = Effect.tryPromise(() =>
+      fetch('https://api.example.com/data')
+    )
+    
+    const result = await Effect.runPromise(program)
+    const data = await result.json()
+    
+    expect(data).toEqual({ data: 'test' })
+    expect(mockFetch).toHaveBeenCalledWith('https://api.example.com/data')
+  })
+})
+```
+
+### 错误处理测试
+
+```js
+// error-handling.test.js
+import { describe, it, expect } from 'vitest'
+import { Effect } from 'effect'
+
+describe('Error handling tests', () => {
+  it('should handle errors with catchAll', () => {
+    const program = Effect.fail('Error')
+      .pipe(
+        Effect.catchAll(() => Effect.succeed('recovered'))
+      )
+    
+    const result = Effect.runSync(program)
+    expect(result).toBe('recovered')
+  })
+  
+  it('should handle errors with catchTag', () => {
+    class NetworkError {
+      readonly _tag = 'NetworkError'
+      constructor(readonly message: string) {}
+    }
+    
+    const program = Effect.fail(new NetworkError('Connection failed'))
+      .pipe(
+        Effect.catchTag('NetworkError', () => Effect.succeed('network error handled'))
+      )
+    
+    const result = Effect.runSync(program)
+    expect(result).toBe('network error handled')
+  })
+  
+  it('should retry on failure', async () => {
+    let attempts = 0
+    const program = Effect.sync(() => {
+      attempts++
+      if (attempts < 3) {
+        throw new Error('Not yet')
+      }
+      return 'success'
+    }).pipe(
+      Effect.retry({ times: 3 })
+    )
+    
+    const result = await Effect.runPromise(program)
+    expect(result).toBe('success')
+    expect(attempts).toBe(3)
+  })
+})
+```
+
+## 🚀 断言库集成
+
+### Expect 集成
+
+```js
+// expect.test.js
+import { describe, it, expect } from 'vitest'
+import { Effect } from 'effect'
+
+describe('Expect integration', () => {
+  it('should test values', () => {
+    const program = Effect.succeed(42)
+    const result = Effect.runSync(program)
+    
+    expect(result).toBe(42)
+    expect(result).toBeGreaterThan(40)
+    expect(result).toBeLessThan(50)
+  })
+  
+  it('should test objects', () => {
+    const program = Effect.succeed({
+      name: 'Alice',
+      age: 30
+    })
+    
+    const result = Effect.runSync(program)
+    
+    expect(result).toEqual({ name: 'Alice', age: 30 })
+    expect(result).toHaveProperty('name', 'Alice')
+    expect(result).toMatchObject({ age: 30 })
+  })
+  
+  it('should test arrays', () => {
+    const program = Effect.succeed([1, 2, 3, 4, 5])
+    const result = Effect.runSync(program)
+    
+    expect(result).toHaveLength(5)
+    expect(result).toContain(3)
+    expect(result).toEqual(expect.arrayContaining([2, 4]))
+  })
+})
+```
+
+### 自定义断言
+
+```js
+// custom-assertions.test.js
+import { describe, it, expect } from 'vitest'
+import { Effect } from 'effect'
+
+// 自定义断言
+expect.extend({
+  toBeValidEmail(received) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    const pass = emailRegex.test(received)
+    
+    return {
+      pass,
+      message: () =>
+        pass
+          ? `expected ${received} not to be a valid email`
+          : `expected ${received} to be a valid email`
+    }
+  }
+})
+
+describe('Custom assertions', () => {
+  it('should validate emails', () => {
+    const program = Effect.succeed('alice@example.com')
+    const result = Effect.runSync(program)
+    
+    expect(result).toBeValidEmail()
+  })
+  
+  it('should reject invalid emails', () => {
+    const program = Effect.succeed('invalid-email')
+    const result = Effect.runSync(program)
+    
+    expect(result).not.toBeValidEmail()
+  })
+})
+```
+
+### 异步断言
+
+```js
+// async-assertions.test.js
+import { describe, it, expect } from 'vitest'
+import { Effect } from 'effect'
+
+describe('Async assertions', () => {
+  it('should resolve to value', async () => {
+    const program = Effect.succeed(Promise.resolve(42))
+    const result = await Effect.runPromise(program)
+    
+    await expect(result).resolves.toBe(42)
+  })
+  
+  it('should reject with error', async () => {
+    const program = Effect.fail(new Error('Test error'))
+    const result = Effect.runPromise(program)
+    
+    await expect(result).rejects.toThrow('Test error')
+  })
+  
+  it('should handle timeouts', async () => {
+    const program = Effect.succeed(
+      new Promise(resolve => setTimeout(() => resolve('done'), 100))
+    )
+    
+    await expect(Effect.runPromise(program)).resolves.toBe('done')
+  })
+})
+```
+
+## 🎯 测试覆盖率
+
+### 覆盖率配置
+
+```js
+// vitest.config.js
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  test: {
+    include: ['**/*.test.js'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+      exclude: [
+        'node_modules/',
+        'dist/',
+        '**/*.test.js'
+      ]
+    }
+  }
+})
+```
+
+### 覆盖率报告
+
+```js
+// 运行测试并生成覆盖率报告
+// npx vitest run --coverage
+
+// coverage.test.js
+import { describe, it } from 'vitest'
+import { Effect } from 'effect'
+
+describe('Coverage tests', () => {
+  it('should cover all branches', () => {
+    const program = Effect.gen(function* () {
+      const value = Math.random()
+      
+      if (value > 0.5) {
+        return 'high'
+      } else {
+        return 'low'
+      }
+    })
+    
+    const result = Effect.runSync(program)
+    expect(['high', 'low']).toContain(result)
+  })
+  
+  it('should cover error paths', () => {
+    const program = Effect.fail('Error')
+      .pipe(
+        Effect.catchAll(() => Effect.succeed('handled'))
+      )
+    
+    const result = Effect.runSync(program)
+    expect(result).toBe('handled')
+  })
+})
+```
+
+### 分支覆盖
+
+```js
+// branch-coverage.test.js
+import { describe, it, expect } from 'vitest'
+import { Effect } from 'effect'
+
+describe('Branch coverage', () => {
+  const processValue = (value: number) => {
+    if (value > 100) {
+      return 'large'
+    } else if (value > 50) {
+      return 'medium'
+    } else {
+      return 'small'
+    }
+  }
+  
+  it('should cover large values', () => {
+    const program = Effect.sync(() => processValue(150))
+    const result = Effect.runSync(program)
+    expect(result).toBe('large')
+  })
+  
+  it('should cover medium values', () => {
+    const program = Effect.sync(() => processValue(75))
+    const result = Effect.runSync(program)
+    expect(result).toBe('medium')
+  })
+  
+  it('should cover small values', () => {
+    const program = Effect.sync(() => processValue(25))
+    const result = Effect.runSync(program)
+    expect(result).toBe('small')
+  })
+})
+```
+
+## 📝 实际应用示例
+
+### 单元测试
+
+```js
+// unit.test.js
+import { describe, it, expect, vi } from 'vitest'
+import { Effect } from 'effect'
+
+// 被测试的函数
+const calculateTotal = (items: { price: number; quantity: number }[]) => {
+  return items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+}
+
+describe('Unit tests', () => {
+  it('should calculate total correctly', () => {
+    const items = [
+      { price: 10, quantity: 2 },
+      { price: 20, quantity: 1 }
+    ]
+    
+    const program = Effect.sync(() => calculateTotal(items))
+    const result = Effect.runSync(program)
+    
+    expect(result).toBe(40)
+  })
+  
+  it('should handle empty items', () => {
+    const program = Effect.sync(() => calculateTotal([]))
+    const result = Effect.runSync(program)
+    
+    expect(result).toBe(0)
+  })
+})
+```
+
+### 集成测试
+
+```js
+// integration.test.js
+import { describe, it, expect, vi } from 'vitest'
+import { Effect } from 'effect'
+
+// 模拟 API
+const mockApi = {
+  getUser: (id: number) => Effect.tryPromise(() =>
+    Promise.resolve({ id, name: 'Alice' })
+  ),
+  getOrders: (userId: number) => Effect.tryPromise(() =>
+    Promise.resolve([
+      { id: 1, userId, amount: 100 },
+      { id: 2, userId, amount: 200 }
+    ])
+  )
+}
+
+describe('Integration tests', () => {
+  it('should fetch user and orders', async () => {
+    const program = Effect.gen(function* () {
+      const user = yield* mockApi.getUser(1)
+      const orders = yield* mockApi.getOrders(user.id)
+      return { user, orders }
+    })
+    
+    const result = await Effect.runPromise(program)
+    
+    expect(result.user).toEqual({ id: 1, name: 'Alice' })
+    expect(result.orders).toHaveLength(2)
+    expect(result.orders[0].amount).toBe(100)
+  })
+})
+```
+
+### 端到端测试
+
+```js
+// e2e.test.js
+import { describe, it, expect, vi } from 'vitest'
+import { Effect } from 'effect'
+
+// 模拟完整流程
+const completeCheckout = Effect.gen(function* () {
+  // 1. 获取用户
+  const user = yield* Effect.tryPromise(() =>
+    Promise.resolve({ id: 1, name: 'Alice' })
+  )
+  
+  // 2. 获取购物车
+  const cart = yield* Effect.tryPromise(() =>
+    Promise.resolve([
+      { productId: 1, quantity: 2, price: 10 },
+      { productId: 2, quantity: 1, price: 20 }
+    ])
+  )
+  
+  // 3. 计算总价
+  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0)
+  
+  // 4. 创建订单
+  const order = yield* Effect.tryPromise(() =>
+    Promise.resolve({
+      id: 1,
+      userId: user.id,
+      items: cart,
+      total
+    })
+  )
+  
+  return order
+})
+
+describe('E2E tests', () => {
+  it('should complete checkout flow', async () => {
+    const result = await Effect.runPromise(completeCheckout)
+    
+    expect(result.userId).toBe(1)
+    expect(result.items).toHaveLength(2)
+    expect(result.total).toBe(40)
+  })
+})
+```
+
+## 🔗 相关概念
+
+- **数据验证**：Effect 的数据验证功能
+- **属性测试**：基于属性的测试方法
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握 @effect/vitest 的使用
+- [ ] 理解 Effect 测试模式
+- [ ] 掌握断言库集成
+- [ ] 了解测试覆盖率
+- [ ] 能够编写完整的测试用例
+
+## 🚀 下一步
+
+→ [数据验证](./02-data-validation.mdx)

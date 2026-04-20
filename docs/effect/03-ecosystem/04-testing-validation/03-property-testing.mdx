@@ -1,0 +1,679 @@
+# 属性测试
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+属性测试是一种基于属性的测试方法，通过自动生成大量测试用例来验证代码的正确性。Effect 提供了强大的属性测试功能。
+
+## 🎯 生成器
+
+### 基本生成器
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 基本生成器
+const numberGenerator = Schema.Number
+const stringGenerator = Schema.String
+const booleanGenerator = Schema.Boolean
+
+const program = Effect.gen(function* () {
+  // 生成随机数
+  const randomNumbers = yield* Effect.all([
+    Schema.decodeUnknown(numberGenerator)(Math.random() * 100),
+    Schema.decodeUnknown(numberGenerator)(Math.random() * 100)
+  ])
+  
+  console.log('Random numbers:', randomNumbers)
+  
+  // 生成随机字符串
+  const randomString = yield* Schema.decodeUnknown(stringGenerator)('hello')
+  console.log('Random string:', randomString)
+  
+  // 生成随机布尔值
+  const randomBoolean = yield* Schema.decodeUnknown(booleanGenerator)(Math.random() > 0.5)
+  console.log('Random boolean:', randomBoolean)
+  
+  return randomNumbers
+})
+
+Effect.runSync(program)
+```
+
+### 数组生成器
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 数组生成器
+const numberArrayGenerator = Schema.Array(Schema.Number)
+const stringArrayGenerator = Schema.Array(Schema.String)
+
+const program = Effect.gen(function* () {
+  // 生成随机数字数组
+  const numbers = yield* Schema.decodeUnknown(numberArrayGenerator)([1, 2, 3, 4, 5])
+  console.log('Number array:', numbers)
+  
+  // 生成随机字符串数组
+  const strings = yield* Schema.decodeUnknown(stringArrayGenerator)(['a', 'b', 'c'])
+  console.log('String array:', strings)
+  
+  return { numbers, strings }
+})
+
+Effect.runSync(program)
+```
+
+### 对象生成器
+
+```js
+import { Effect, Schema } from 'effect'
+
+// 对象生成器
+const userGenerator = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.String,
+  age: Schema.Number
+})
+
+const program = Effect.gen(function* () {
+  // 生成随机用户对象
+  const user = yield* Schema.decodeUnknown(userGenerator)({
+    id: 1,
+    name: 'Alice',
+    email: 'alice@example.com',
+    age: 30
+  })
+  
+  console.log('Generated user:', user)
+  return user
+})
+
+Effect.runSync(program)
+```
+
+## 💡 属性定义
+
+### 基本属性
+
+```js
+import { Effect } from 'effect'
+
+// 定义属性：加法交换律
+const additionCommutative = (a: number, b: number) => {
+  return a + b === b + a
+}
+
+// 测试属性
+const testProperty = Effect.gen(function* () {
+  const testCases = [
+    [1, 2],
+    [3, 4],
+    [5, 6],
+    [100, 200],
+    [-1, -2]
+  ]
+  
+  const results = yield* Effect.forEach(testCases, ([a, b]) =>
+    Effect.sync(() => {
+      const result = additionCommutative(a, b)
+      console.log(`${a} + ${b} === ${b} + ${a}: ${result}`)
+      return result
+    })
+  )
+  
+  const allPassed = results.every(r => r)
+  console.log('All tests passed:', allPassed)
+  
+  return allPassed
+})
+
+Effect.runSync(testProperty)
+```
+
+### 复杂属性
+
+```js
+import { Effect } from 'effect'
+
+// 定义属性：数组反转两次等于原数组
+const reverseTwice = (arr: any[]) => {
+  const reversed = [...arr].reverse()
+  const reversedAgain = [...reversed].reverse()
+  return JSON.stringify(arr) === JSON.stringify(reversedAgain)
+}
+
+// 测试属性
+const testProperty = Effect.gen(function* () {
+  const testCases = [
+    [1, 2, 3, 4, 5],
+    ['a', 'b', 'c'],
+    [{ id: 1 }, { id: 2 }],
+    [],
+    [1]
+  ]
+  
+  const results = yield* Effect.forEach(testCases, (arr) =>
+    Effect.sync(() => {
+      const result = reverseTwice(arr)
+      console.log(`Reverse twice: ${result}`)
+      return result
+    })
+  )
+  
+  const allPassed = results.every(r => r)
+  console.log('All tests passed:', allPassed)
+  
+  return allPassed
+})
+
+Effect.runSync(testProperty)
+```
+
+### 函数属性
+
+```js
+import { Effect } from 'effect'
+
+// 定义属性：映射后的长度不变
+const mapLengthPreserved = (arr: number[], fn: (n: number) => number) => {
+  const mapped = arr.map(fn)
+  return arr.length === mapped.length
+}
+
+// 测试属性
+const testProperty = Effect.gen(function* () {
+  const testCases = [
+    { arr: [1, 2, 3], fn: (n: number) => n * 2 },
+    { arr: [1, 2, 3], fn: (n: number) => n + 1 },
+    { arr: [1, 2, 3], fn: (n: number) => Math.sqrt(n) }
+  ]
+  
+  const results = yield* Effect.forEach(testCases, ({ arr, fn }) =>
+    Effect.sync(() => {
+      const result = mapLengthPreserved(arr, fn)
+      console.log(`Map length preserved: ${result}`)
+      return result
+    })
+  )
+  
+  const allPassed = results.every(r => r)
+  console.log('All tests passed:', allPassed)
+  
+  return allPassed
+})
+
+Effect.runSync(testProperty)
+```
+
+## 🚀 收缩策略
+
+### 基本收缩
+
+```js
+import { Effect } from 'effect'
+
+// 收缩策略：当测试失败时，缩小输入范围
+const shrinkNumber = (value: number, min: number = 0, max: number = value) => {
+  if (value <= min) return []
+  
+  const mid = Math.floor((min + max) / 2)
+  return [mid, ...shrinkNumber(value, min, mid)]
+}
+
+// 测试收缩策略
+const testShrinking = Effect.gen(function* () {
+  const largeNumber = 1000
+  const shrunk = shrinkNumber(largeNumber, 0, largeNumber)
+  
+  console.log('Original:', largeNumber)
+  console.log('Shrunk:', shrunk)
+  
+  return shrunk
+})
+
+Effect.runSync(testShrinking)
+```
+
+### 列表收缩
+
+```js
+import { Effect } from 'effect'
+
+// 列表收缩策略
+const shrinkList = <T>(list: T[]): T[][] => {
+  if (list.length <= 1) return []
+  
+  const mid = Math.floor(list.length / 2)
+  const left = list.slice(0, mid)
+  const right = list.slice(mid)
+  
+  return [left, right, ...shrinkList(left), ...shrinkList(right)]
+}
+
+// 测试列表收缩
+const testListShrinking = Effect.gen(function* () {
+  const largeList = Array.from({ length: 100 }, (_, i) => i)
+  const shrunk = shrinkList(largeList)
+  
+  console.log('Original length:', largeList.length)
+  console.log('Shrunk lists:', shrunk.map(l => l.length))
+  
+  return shrunk
+})
+
+Effect.runSync(testListShrinking)
+```
+
+### 字符串收缩
+
+```js
+import { Effect } from 'effect'
+
+// 字符串收缩策略
+const shrinkString = (str: string): string[] => {
+  if (str.length <= 1) return []
+  
+  const mid = Math.floor(str.length / 2)
+  const left = str.slice(0, mid)
+  const right = str.slice(mid)
+  
+  return [left, right, ...shrinkString(left), ...shrinkString(right)]
+}
+
+// 测试字符串收缩
+const testStringShrinking = Effect.gen(function* () {
+  const longString = 'abcdefghijklmnopqrstuvwxyz'
+  const shrunk = shrinkString(longString)
+  
+  console.log('Original length:', longString.length)
+  console.log('Shrunk strings:', shrunk.map(s => s.length))
+  
+  return shrunk
+})
+
+Effect.runSync(testStringShrinking)
+```
+
+## 🎯 测试执行
+
+### 运行属性测试
+
+```js
+import { Effect } from 'effect'
+
+// 运行属性测试
+const runPropertyTest = <A, B>(
+  property: (a: A, b: B) => boolean,
+  generatorA: () => A,
+  generatorB: () => B,
+  iterations: number = 100
+) => Effect.gen(function* () {
+  const results: boolean[] = []
+  
+  for (let i = 0; i < iterations; i++) {
+    const a = generatorA()
+    const b = generatorB()
+    const result = property(a, b)
+    results.push(result)
+    
+    if (!result) {
+      console.log(`Failed at iteration ${i}:`, { a, b })
+      break
+    }
+  }
+  
+  const allPassed = results.every(r => r)
+  console.log(`Property test result: ${allPassed ? 'PASSED' : 'FAILED'}`)
+  
+  return allPassed
+})
+
+// 测试加法交换律
+const testAdditionCommutative = Effect.gen(function* () {
+  const property = (a: number, b: number) => a + b === b + a
+  const generatorA = () => Math.floor(Math.random() * 1000)
+  const generatorB = () => Math.floor(Math.random() * 1000)
+  
+  const result = yield* runPropertyTest(property, generatorA, generatorB, 100)
+  return result
+})
+
+Effect.runSync(testAdditionCommutative)
+```
+
+### 并行测试执行
+
+```js
+import { Effect } from 'effect'
+
+// 并行测试执行
+const runParallelTests = (
+  tests: Array<Effect.Effect<never, never, boolean>>
+) => Effect.all(tests, { concurrency: 'unbounded' })
+
+// 测试多个属性
+const testMultipleProperties = Effect.gen(function* () {
+  const tests = [
+    // 测试加法交换律
+    Effect.gen(function* () {
+      for (let i = 0; i < 10; i++) {
+        const a = Math.floor(Math.random() * 100)
+        const b = Math.floor(Math.random() * 100)
+        if (a + b !== b + a) return false
+      }
+      return true
+    }),
+    
+    // 测试乘法交换律
+    Effect.gen(function* () {
+      for (let i = 0; i < 10; i++) {
+        const a = Math.floor(Math.random() * 100)
+        const b = Math.floor(Math.random() * 100)
+        if (a * b !== b * a) return false
+      }
+      return true
+    }),
+    
+    // 测试加法结合律
+    Effect.gen(function* () {
+      for (let i = 0; i < 10; i++) {
+        const a = Math.floor(Math.random() * 100)
+        const b = Math.floor(Math.random() * 100)
+        const c = Math.floor(Math.random() * 100)
+        if ((a + b) + c !== a + (b + c)) return false
+      }
+      return true
+    })
+  ]
+  
+  const results = yield* runParallelTests(tests)
+  console.log('Parallel test results:', results)
+  
+  return results
+})
+
+Effect.runSync(testMultipleProperties)
+```
+
+### 测试报告
+
+```js
+import { Effect } from 'effect'
+
+// 测试报告
+interface TestReport {
+  name: string
+  passed: boolean
+  iterations: number
+  failures: any[]
+}
+
+const generateTestReport = (
+  testName: string,
+  passed: boolean,
+  iterations: number,
+  failures: any[]
+): TestReport => ({
+  name: testName,
+  passed,
+  iterations,
+  failures
+})
+
+// 使用测试报告
+const testWithReport = Effect.gen(function* () {
+  const tests = [
+    {
+      name: 'Addition Commutative',
+      test: Effect.gen(function* () {
+        for (let i = 0; i < 100; i++) {
+          const a = Math.floor(Math.random() * 100)
+          const b = Math.floor(Math.random() * 100)
+          if (a + b !== b + a) return false
+        }
+        return true
+      })
+    },
+    {
+      name: 'Multiplication Commutative',
+      test: Effect.gen(function* () {
+        for (let i = 0; i < 100; i++) {
+          const a = Math.floor(Math.random() * 100)
+          const b = Math.floor(Math.random() * 100)
+          if (a * b !== b * a) return false
+        }
+        return true
+      })
+    }
+  ]
+  
+  const reports: TestReport[] = []
+  
+  for (const { name, test } of tests) {
+    const passed = yield* test
+    const report = generateTestReport(name, passed, 100, [])
+    reports.push(report)
+  }
+  
+  console.log('Test Reports:')
+  reports.forEach(report => {
+    console.log(`- ${report.name}: ${report.passed ? 'PASSED' : 'FAILED'}`)
+  })
+  
+  return reports
+})
+
+Effect.runSync(testWithReport)
+```
+
+## 📝 实际应用示例
+
+### 排序算法测试
+
+```js
+import { Effect } from 'effect'
+
+// 排序算法属性测试
+const sortProperties = Effect.gen(function* () {
+  // 属性 1：排序后的数组长度不变
+  const lengthPreserved = (arr: number[]) => {
+    const sorted = [...arr].sort((a, b) => a - b)
+    return arr.length === sorted.length
+  }
+  
+  // 属性 2：排序后的数组是有序的
+  const isSorted = (arr: number[]) => {
+    const sorted = [...arr].sort((a, b) => a - b)
+    for (let i = 0; i < sorted.length - 1; i++) {
+      if (sorted[i] > sorted[i + 1]) return false
+    }
+    return true
+  }
+  
+  // 属性 3：排序后的数组包含相同的元素
+  const sameElements = (arr: number[]) => {
+    const sorted = [...arr].sort((a, b) => a - b)
+    return JSON.stringify(arr.sort()) === JSON.stringify(sorted)
+  }
+  
+  // 测试所有属性
+  const testCases = [
+    [3, 1, 4, 1, 5, 9, 2, 6],
+    [1, 2, 3, 4, 5],
+    [5, 4, 3, 2, 1],
+    [],
+    [1]
+  ]
+  
+  const results = yield* Effect.forEach(testCases, (arr) =>
+    Effect.sync(() => ({
+      array: arr,
+      lengthPreserved: lengthPreserved(arr),
+      isSorted: isSorted(arr),
+      sameElements: sameElements(arr)
+    }))
+  )
+  
+  console.log('Sort property test results:')
+  results.forEach(result => {
+    console.log(`Array: ${result.array}`)
+    console.log(`  Length preserved: ${result.lengthPreserved}`)
+    console.log(`  Is sorted: ${result.isSorted}`)
+    console.log(`  Same elements: ${result.sameElements}`)
+  })
+  
+  return results
+})
+
+Effect.runSync(sortProperties)
+```
+
+### 数据结构测试
+
+```js
+import { Effect } from 'effect'
+
+// 栈属性测试
+const stackProperties = Effect.gen(function* () {
+  // 创建栈
+  const createStack = () => ({
+    items: [] as number[],
+    push(item: number) {
+      this.items.push(item)
+    },
+    pop() {
+      return this.items.pop()
+    },
+    peek() {
+      return this.items[this.items.length - 1]
+    },
+    isEmpty() {
+      return this.items.length === 0
+    }
+  })
+  
+  // 属性 1：LIFO 顺序
+  const lifoOrder = () => {
+    const stack = createStack()
+    stack.push(1)
+    stack.push(2)
+    stack.push(3)
+    return stack.pop() === 3 && stack.pop() === 2 && stack.pop() === 1
+  }
+  
+  // 属性 2：peek 不改变栈
+  const peekDoesNotChange = () => {
+    const stack = createStack()
+    stack.push(1)
+    stack.push(2)
+    const beforePeek = stack.items.length
+    stack.peek()
+    const afterPeek = stack.items.length
+    return beforePeek === afterPeek
+  }
+  
+  // 属性 3：空栈 peek 返回 undefined
+  const emptyPeek = () => {
+    const stack = createStack()
+    return stack.peek() === undefined
+  }
+  
+  // 测试所有属性
+  const results = {
+    lifoOrder: lifoOrder(),
+    peekDoesNotChange: peekDoesNotChange(),
+    emptyPeek: emptyPeek()
+  }
+  
+  console.log('Stack property test results:', results)
+  
+  return results
+})
+
+Effect.runSync(stackProperties)
+```
+
+### 字符串操作测试
+
+```js
+import { Effect } from 'effect'
+
+// 字符串操作属性测试
+const stringProperties = Effect.gen(function* () {
+  // 属性 1：反转两次等于原字符串
+  const reverseTwice = (str: string) => {
+    const reversed = str.split('').reverse().join('')
+    const reversedAgain = reversed.split('').reverse().join('')
+    return str === reversedAgain
+  }
+  
+  // 属性 2：大写后再小写等于原字符串
+  const caseConversion = (str: string) => {
+    const upper = str.toUpperCase()
+    const lower = upper.toLowerCase()
+    return str === lower
+  }
+  
+  // 属性 3：拼接顺序不影响结果
+  const concatenation = (a: string, b: string, c: string) => {
+    const result1 = a + b + c
+    const result2 = (a + b) + c
+    const result3 = a + (b + c)
+    return result1 === result2 && result2 === result3
+  }
+  
+  // 测试所有属性
+  const testCases = [
+    'hello',
+    'WORLD',
+    'Hello World',
+    '12345',
+    ''
+  ]
+  
+  const results = yield* Effect.forEach(testCases, (str) =>
+    Effect.sync(() => ({
+      string: str,
+      reverseTwice: reverseTwice(str),
+      caseConversion: caseConversion(str)
+    }))
+  )
+  
+  console.log('String property test results:')
+  results.forEach(result => {
+    console.log(`String: "${result.string}"`)
+    console.log(`  Reverse twice: ${result.reverseTwice}`)
+    console.log(`  Case conversion: ${result.caseConversion}`)
+  })
+  
+  // 测试拼接属性
+  const concatResult = concatenation('a', 'b', 'c')
+  console.log(`Concatenation property: ${concatResult}`)
+  
+  return results
+})
+
+Effect.runSync(stringProperties)
+```
+
+## 🔗 相关概念
+
+- **测试工具**：Effect 的测试工具
+- **数据验证**：Effect 的数据验证功能
+- **错误处理**：Effect 的错误处理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握生成器的使用
+- [ ] 理解属性定义
+- [ ] 掌握收缩策略
+- [ ] 了解测试执行
+- [ ] 能够实现属性测试
+
+## 🚀 下一步
+
+→ [HTTP 与网络](../../04-practical-applications/01-http-networking/01-http-client.mdx)
