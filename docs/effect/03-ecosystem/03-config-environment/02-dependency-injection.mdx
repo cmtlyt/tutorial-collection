@@ -1,0 +1,831 @@
+# 依赖注入
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的依赖注入机制，通过 Context、Service、provide 和 Layer 模式实现松耦合的代码架构。
+
+## 🎯 Effect.Context - 上下文管理
+
+### 基本上下文
+
+```js
+import { Effect, Context } from 'effect'
+
+// 定义上下文标签
+const LoggerTag = Context.GenericTag('Logger')
+
+// 使用上下文
+const program = Effect.gen(function* () {
+  const logger = yield* LoggerTag
+  logger.log('Hello from context!')
+})
+
+// 提供上下文
+const loggerService = {
+  log: (message: string) => console.log(`[LOG] ${message}`)
+}
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(LoggerTag, loggerService)
+  )
+)
+```
+
+### 嵌套上下文
+
+```js
+import { Effect, Context } from 'effect'
+
+// 定义多个上下文标签
+const DatabaseTag = Context.GenericTag('Database')
+const CacheTag = Context.GenericTag('Cache')
+
+// 使用多个上下文
+const program = Effect.gen(function* () {
+  const database = yield* DatabaseTag
+  const cache = yield* CacheTag
+  
+  const data = yield* database.query('SELECT * FROM users')
+  yield* cache.set('users', data)
+  
+  return data
+})
+
+// 提供多个上下文
+const databaseService = {
+  query: (sql: string) => Effect.sync(() => {
+    console.log(`Executing SQL: ${sql}`)
+    return [{ id: 1, name: 'Alice' }]
+  })
+}
+
+const cacheService = {
+  set: (key: string, value: any) => Effect.sync(() => {
+    console.log(`Caching ${key}`)
+  })
+}
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(DatabaseTag, databaseService),
+    Effect.provideService(CacheTag, cacheService)
+  )
+)
+```
+
+### 上下文组合
+
+```js
+import { Effect, Context } from 'effect'
+
+// 定义上下文标签
+const ConfigTag = Context.GenericTag('Config')
+const LoggerTag = Context.GenericTag('Logger')
+const DatabaseTag = Context.GenericTag('Database')
+
+// 组合上下文
+const program = Effect.gen(function* () {
+  const config = yield* ConfigTag
+  const logger = yield* LoggerTag
+  const database = yield* DatabaseTag
+  
+  logger.log('Starting application with config:', config)
+  
+  const connection = yield* database.connect(config.dbUrl)
+  logger.log('Database connected')
+  
+  return connection
+})
+
+// 提供组合上下文
+const configService = {
+  dbUrl: 'postgresql://localhost:5432/mydb'
+}
+
+const loggerService = {
+  log: (...args: any[]) => console.log(...args)
+}
+
+const databaseService = {
+  connect: (url: string) => Effect.sync(() => {
+    console.log(`Connecting to database: ${url}`)
+    return { connected: true, url }
+  })
+}
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(ConfigTag, configService),
+    Effect.provideService(LoggerTag, loggerService),
+    Effect.provideService(DatabaseTag, databaseService)
+  )
+)
+```
+
+## 💡 Effect.Service - 服务定义
+
+### 基本服务
+
+```js
+import { Effect, Context } from 'effect'
+
+// 定义服务接口
+interface Logger {
+  log: (message: string) => Effect.Effect<never, never, void>
+  error: (message: string) => Effect.Effect<never, never, void>
+}
+
+// 定义服务标签
+const Logger = Context.GenericTag<Logger>('Logger')
+
+// 创建服务实现
+const makeLogger = Effect.sync(() => ({
+  log: (message: string) => Effect.sync(() => console.log(`[INFO] ${message}`)),
+  error: (message: string) => Effect.sync(() => console.error(`[ERROR] ${message}`))
+}))
+
+// 使用服务
+const program = Effect.gen(function* () {
+  const logger = yield* Logger
+  yield* logger.log('Application started')
+  yield* logger.error('Something went wrong')
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(Logger, Effect.runSync(makeLogger))
+  )
+)
+```
+
+### 服务依赖
+
+```js
+import { Effect, Context } from 'effect'
+
+// 定义服务接口
+interface Config {
+  get: (key: string) => Effect.Effect<never, never, string>
+}
+
+interface Database {
+  connect: () => Effect.Effect<never, never, void>
+  query: (sql: string) => Effect.Effect<never, never, any>
+}
+
+// 定义服务标签
+const Config = Context.GenericTag<Config>('Config')
+const Database = Context.GenericTag<Database>('Database')
+
+// 创建依赖 Config 的 Database 服务
+const makeDatabase = Effect.gen(function* () {
+  const config = yield* Config
+  
+  const dbUrl = yield* config.get('DB_URL')
+  console.log(`Creating database with URL: ${dbUrl}`)
+  
+  return {
+    connect: Effect.sync(() => {
+      console.log('Connecting to database...')
+    }),
+    query: (sql: string) => Effect.sync(() => {
+      console.log(`Executing query: ${sql}`)
+      return []
+    })
+  }
+})
+
+// 使用服务
+const program = Effect.gen(function* () {
+  const database = yield* Database
+  yield* database.connect()
+  yield* database.query('SELECT * FROM users')
+})
+
+// 提供服务
+const configService = {
+  get: (key: string) => Effect.sync(() => {
+    const env = { DB_URL: 'postgresql://localhost:5432/mydb' }
+    return env[key] || ''
+  })
+}
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(Config, configService),
+    Effect.provideService(Database, Effect.runSync(makeDatabase))
+  )
+)
+```
+
+### 服务工厂
+
+```js
+import { Effect, Context } from 'effect'
+
+// 定义服务接口
+interface UserRepository {
+  findById: (id: number) => Effect.Effect<never, never, any>
+  findAll: () => Effect.Effect<never, never, any[]>
+}
+
+// 定义服务标签
+const UserRepository = Context.GenericTag<UserRepository>('UserRepository')
+
+// 创建服务工厂
+const makeUserRepository = (options: { tableName: string }) =>
+  Effect.sync(() => {
+    console.log(`Creating UserRepository with table: ${options.tableName}`)
+    
+    return {
+      findById: (id: number) => Effect.sync(() => {
+        console.log(`Finding user by id: ${id}`)
+        return { id, name: 'Alice' }
+      }),
+      findAll: () => Effect.sync(() => {
+        console.log('Finding all users')
+        return [
+          { id: 1, name: 'Alice' },
+          { id: 2, name: 'Bob' }
+        ]
+      })
+    }
+  })
+
+// 使用服务
+const program = Effect.gen(function* () {
+  const userRepository = yield* UserRepository
+  
+  const user = yield* userRepository.findById(1)
+  console.log('Found user:', user)
+  
+  const users = yield* userRepository.findAll()
+  console.log('All users:', users)
+})
+
+// 提供服务
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(
+      UserRepository,
+      Effect.runSync(makeUserRepository({ tableName: 'users' }))
+    )
+  )
+)
+```
+
+## 🚀 Effect.provide - 依赖提供
+
+### 基本提供
+
+```js
+import { Effect, Context } from 'effect'
+
+// 定义服务
+const Logger = Context.GenericTag('Logger')
+
+const program = Effect.gen(function* () {
+  const logger = yield* Logger
+  logger.log('Hello from provided service!')
+})
+
+// 提供服务
+const loggerService = {
+  log: (message: string) => console.log(`[LOG] ${message}`)
+}
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(Logger, loggerService)
+  )
+)
+```
+
+### 链式提供
+
+```js
+import { Effect, Context } from 'effect'
+
+// 定义多个服务
+const Config = Context.GenericTag('Config')
+const Logger = Context.GenericTag('Logger')
+const Database = Context.GenericTag('Database')
+
+const program = Effect.gen(function* () {
+  const config = yield* Config
+  const logger = yield* Logger
+  const database = yield* Database
+  
+  logger.log('Starting with config:', config)
+  yield* database.connect(config.dbUrl)
+})
+
+// 链式提供服务
+const configService = { dbUrl: 'postgresql://localhost:5432/mydb' }
+const loggerService = { log: (...args: any[]) => console.log(...args) }
+const databaseService = {
+  connect: (url: string) => Effect.sync(() => console.log(`Connecting to ${url}`))
+}
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(Config, configService),
+    Effect.provideService(Logger, loggerService),
+    Effect.provideService(Database, databaseService)
+  )
+)
+```
+
+### 条件提供
+
+```js
+import { Effect, Context } from 'effect'
+
+// 定义服务
+const Logger = Context.GenericTag('Logger')
+
+const program = Effect.gen(function* () {
+  const logger = yield* Logger
+  logger.log('Hello!')
+})
+
+// 条件提供服务
+const useConsoleLogger = true
+
+const loggerService = useConsoleLogger
+  ? { log: (message: string) => console.log(`[CONSOLE] ${message}`) }
+  : { log: (message: string) => console.log(`[FILE] ${message}`) }
+
+Effect.runSync(
+  program.pipe(
+    Effect.provideService(Logger, loggerService)
+  )
+)
+```
+
+## 🎯 Layer 模式与组合
+
+### 基本 Layer
+
+```js
+import { Effect, Context, Layer } from 'effect'
+
+// 定义服务
+const Config = Context.GenericTag('Config')
+const Logger = Context.GenericTag('Logger')
+
+// 创建 Config Layer
+const ConfigLive = Layer.succeed(
+  Config,
+  { apiUrl: 'https://api.example.com', port: 3000 }
+)
+
+// 创建 Logger Layer（依赖 Config）
+const LoggerLive = Layer.effect(
+  Logger,
+  Effect.map(Config, (config) => ({
+    log: (message: string) => console.log(`[${config.apiUrl}] ${message}`)
+  }))
+)
+
+// 使用 Layer
+const program = Effect.gen(function* () {
+  const logger = yield* Logger
+  logger.log('Application started')
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(LoggerLive),
+    Effect.provide(ConfigLive)
+  )
+)
+```
+
+### Layer 组合
+
+```js
+import { Effect, Context, Layer } from 'effect'
+
+// 定义服务
+const Config = Context.GenericTag('Config')
+const Database = Context.GenericTag('Database')
+const UserRepository = Context.GenericTag('UserRepository')
+
+// 创建 Config Layer
+const ConfigLive = Layer.succeed(
+  Config,
+  { dbUrl: 'postgresql://localhost:5432/mydb' }
+)
+
+// 创建 Database Layer（依赖 Config）
+const DatabaseLive = Layer.effect(
+  Database,
+  Effect.map(Config, (config) => ({
+    connect: Effect.sync(() => console.log(`Connecting to ${config.dbUrl}`)),
+    query: (sql: string) => Effect.sync(() => [])
+  }))
+)
+
+// 创建 UserRepository Layer（依赖 Database）
+const UserRepositoryLive = Layer.effect(
+  UserRepository,
+  Effect.map(Database, (db) => ({
+    findById: (id: number) => Effect.gen(function* () {
+      yield* db.connect()
+      return { id, name: 'Alice' }
+    }),
+    findAll: () => db.query('SELECT * FROM users')
+  }))
+)
+
+// 组合 Layer
+const AppLayer = Layer.mergeAll(
+  ConfigLive,
+  DatabaseLive,
+  UserRepositoryLive
+)
+
+// 使用组合的 Layer
+const program = Effect.gen(function* () {
+  const userRepository = yield* UserRepository
+  const user = yield* userRepository.findById(1)
+  console.log('User:', user)
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(AppLayer)
+  )
+)
+```
+
+### Layer 重用
+
+```js
+import { Effect, Context, Layer } from 'effect'
+
+// 定义服务
+const Logger = Context.GenericTag('Logger')
+const Database = Context.GenericTag('Database')
+const Cache = Context.GenericTag('Cache')
+
+// 创建可重用的 Logger Layer
+const LoggerLive = Layer.succeed(
+  Logger,
+  { log: (message: string) => console.log(`[LOG] ${message}`) }
+)
+
+// 创建可重用的 Database Layer
+const DatabaseLive = Layer.succeed(
+  Database,
+  {
+    connect: Effect.sync(() => console.log('Connecting to database')),
+    query: (sql: string) => Effect.sync(() => [])
+  }
+)
+
+// 创建可重用的 Cache Layer
+const CacheLive = Layer.succeed(
+  Cache,
+  {
+    get: (key: string) => Effect.sync(() => console.log(`Getting ${key}`)),
+    set: (key: string, value: any) => Effect.sync(() => console.log(`Setting ${key}`))
+  }
+)
+
+// 为不同应用组合不同的 Layer
+const WebAppLayer = Layer.mergeAll(
+  LoggerLive,
+  DatabaseLive,
+  CacheLive
+)
+
+const ApiAppLayer = Layer.mergeAll(
+  LoggerLive,
+  DatabaseLive
+)
+
+// 使用 Web App Layer
+const webProgram = Effect.gen(function* () {
+  const logger = yield* Logger
+  const database = yield* Database
+  const cache = yield* Cache
+  
+  logger.log('Web app started')
+  yield* database.connect()
+  yield* cache.set('key', 'value')
+})
+
+Effect.runSync(
+  webProgram.pipe(
+    Effect.provide(WebAppLayer)
+  )
+)
+
+// 使用 API App Layer
+const apiProgram = Effect.gen(function* () {
+  const logger = yield* Logger
+  const database = yield* Database
+  
+  logger.log('API app started')
+  yield* database.connect()
+})
+
+Effect.runSync(
+  apiProgram.pipe(
+    Effect.provide(ApiAppLayer)
+  )
+)
+```
+
+## 📝 实际应用示例
+
+### 应用架构
+
+```js
+import { Effect, Context, Layer } from 'effect'
+
+// 定义服务接口
+interface Config {
+  get: (key: string) => Effect.Effect<never, never, string>
+}
+
+interface Logger {
+  info: (message: string) => Effect.Effect<never, never, void>
+  error: (message: string) => Effect.Effect<never, never, void>
+}
+
+interface Database {
+  connect: () => Effect.Effect<never, never, void>
+  query: (sql: string) => Effect.Effect<never, never, any>
+}
+
+interface UserService {
+  findById: (id: number) => Effect.Effect<never, never, any>
+  create: (data: any) => Effect.Effect<never, never, any>
+}
+
+// 定义服务标签
+const Config = Context.GenericTag<Config>('Config')
+const Logger = Context.GenericTag<Logger>('Logger')
+const Database = Context.GenericTag<Database>('Database')
+const UserService = Context.GenericTag<UserService>('UserService')
+
+// 创建 Config Layer
+const ConfigLive = Layer.succeed(Config, {
+  get: (key: string) => Effect.sync(() => {
+    const env = {
+      DB_URL: 'postgresql://localhost:5432/mydb',
+      LOG_LEVEL: 'info'
+    }
+    return env[key] || ''
+  })
+})
+
+// 创建 Logger Layer
+const LoggerLive = Layer.effect(
+  Logger,
+  Effect.map(Config, (config) => ({
+    info: (message: string) => Effect.sync(() => console.log(`[INFO] ${message}`)),
+    error: (message: string) => Effect.sync(() => console.error(`[ERROR] ${message}`))
+  }))
+)
+
+// 创建 Database Layer
+const DatabaseLive = Layer.effect(
+  Database,
+  Effect.gen(function* () {
+    const config = yield* Config
+    const logger = yield* Logger
+    
+    const dbUrl = yield* config.get('DB_URL')
+    
+    return {
+      connect: Effect.gen(function* () {
+        yield* logger.info(`Connecting to database: ${dbUrl}`)
+        console.log('Connected to database')
+      }),
+      query: (sql: string) => Effect.sync(() => {
+        console.log(`Executing query: ${sql}`)
+        return []
+      })
+    }
+  })
+)
+
+// 创建 UserService Layer
+const UserServiceLive = Layer.effect(
+  UserService,
+  Effect.gen(function* () {
+    const database = yield* Database
+    const logger = yield* Logger
+    
+    return {
+      findById: (id: number) => Effect.gen(function* () {
+        yield* logger.info(`Finding user by id: ${id}`)
+        yield* database.connect()
+        return { id, name: 'Alice' }
+      }),
+      create: (data: any) => Effect.gen(function* () {
+        yield* logger.info('Creating user')
+        yield* database.query(`INSERT INTO users VALUES (...)`)
+        return { id: 1, ...data }
+      })
+    }
+  })
+)
+
+// 组合应用 Layer
+const AppLayer = Layer.mergeAll(
+  ConfigLive,
+  LoggerLive,
+  DatabaseLive,
+  UserServiceLive
+)
+
+// 使用应用
+const program = Effect.gen(function* () {
+  const userService = yield* UserService
+  
+  const user = yield* userService.findById(1)
+  console.log('Found user:', user)
+  
+  const newUser = yield* userService.create({ name: 'Bob' })
+  console.log('Created user:', newUser)
+})
+
+Effect.runSync(
+  program.pipe(
+    Effect.provide(AppLayer)
+  )
+)
+```
+
+### 测试隔离
+
+```js
+import { Effect, Context, Layer } from 'effect'
+
+// 定义服务
+const Database = Context.GenericTag('Database')
+const UserService = Context.GenericTag('UserService')
+
+// 创建生产 Database Layer
+const DatabaseLive = Layer.succeed(Database, {
+  connect: Effect.sync(() => console.log('Connecting to real database')),
+  query: (sql: string) => Effect.sync(() => {
+    console.log(`Executing real query: ${sql}`)
+    return [{ id: 1, name: 'Alice' }]
+  })
+})
+
+// 创建测试 Database Layer
+const DatabaseTest = Layer.succeed(Database, {
+  connect: Effect.sync(() => console.log('Connecting to test database')),
+  query: (sql: string) => Effect.sync(() => {
+    console.log(`Executing test query: ${sql}`)
+    return [{ id: 1, name: 'Test User' }]
+  })
+})
+
+// 创建 UserService Layer
+const UserServiceLive = Layer.effect(
+  UserService,
+  Effect.map(Database, (db) => ({
+    findById: (id: number) => Effect.gen(function* () {
+      yield* db.connect()
+      return yield* db.query(`SELECT * FROM users WHERE id = ${id}`)
+    })
+  }))
+)
+
+// 生产环境
+const productionProgram = Effect.gen(function* () {
+  const userService = yield* UserService
+  const user = yield* userService.findById(1)
+  console.log('Production user:', user)
+})
+
+Effect.runSync(
+  productionProgram.pipe(
+    Effect.provide(UserServiceLive),
+    Effect.provide(DatabaseLive)
+  )
+)
+
+// 测试环境
+const testProgram = Effect.gen(function* () {
+  const userService = yield* UserService
+  const user = yield* userService.findById(1)
+  console.log('Test user:', user)
+})
+
+Effect.runSync(
+  testProgram.pipe(
+    Effect.provide(UserServiceLive),
+    Effect.provide(DatabaseTest)
+  )
+)
+```
+
+### 插件系统
+
+```js
+import { Effect, Context, Layer } from 'effect'
+
+// 定义插件接口
+interface Plugin {
+  name: string
+  initialize: Effect.Effect<never, never, void>
+  execute: Effect.Effect<never, never, any>
+}
+
+// 定义插件标签
+const Plugin = Context.GenericTag<Plugin>('Plugin')
+
+// 创建插件 Layer
+const createPluginLayer = (plugin: Plugin) =>
+  Layer.succeed(Plugin, plugin)
+
+// 插件 1
+const loggingPlugin: Plugin = {
+  name: 'LoggingPlugin',
+  initialize: Effect.sync(() => console.log('Initializing logging plugin')),
+  execute: Effect.sync(() => console.log('Logging plugin executed'))
+}
+
+// 插件 2
+const cachingPlugin: Plugin = {
+  name: 'CachingPlugin',
+  initialize: Effect.sync(() => console.log('Initializing caching plugin')),
+  execute: Effect.sync(() => console.log('Caching plugin executed'))
+}
+
+// 插件 3
+const authPlugin: Plugin = {
+  name: 'AuthPlugin',
+  initialize: Effect.sync(() => console.log('Initializing auth plugin')),
+  execute: Effect.sync(() => console.log('Auth plugin executed'))
+}
+
+// 创建插件管理器
+const pluginManager = Effect.gen(function* () {
+  const plugins: Plugin[] = []
+  
+  const registerPlugin = (plugin: Plugin) => Effect.sync(() => {
+    plugins.push(plugin)
+    console.log(`Registered plugin: ${plugin.name}`)
+  })
+  
+  const initializeAll = Effect.sync(() => {
+    console.log('Initializing all plugins...')
+    plugins.forEach(plugin => Effect.runSync(plugin.initialize))
+  })
+  
+  const executeAll = Effect.sync(() => {
+    console.log('Executing all plugins...')
+    return plugins.map(plugin => Effect.runSync(plugin.execute))
+  })
+  
+  return { registerPlugin, initializeAll, executeAll }
+})
+
+// 使用插件系统
+const program = Effect.gen(function* () {
+  const manager = yield* pluginManager
+  
+  yield* manager.registerPlugin(loggingPlugin)
+  yield* manager.registerPlugin(cachingPlugin)
+  yield* manager.registerPlugin(authPlugin)
+  
+  yield* manager.initializeAll()
+  const results = yield* manager.executeAll()
+  
+  console.log('Plugin results:', results)
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **配置管理**：Effect 的配置管理功能
+- **平台集成**：不同平台的依赖注入
+- **服务组合**：服务的组合和重用
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.Context 的使用
+- [ ] 理解 Effect.Service 的定义
+- [ ] 掌握 Effect.provide 的使用
+- [ ] 了解 Layer 模式与组合
+- [ ] 能够实现完整的依赖注入系统
+
+## 🚀 下一步
+
+→ [平台集成](./03-platform-integration.mdx)
