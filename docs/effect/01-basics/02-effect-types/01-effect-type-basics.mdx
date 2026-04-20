@@ -1,0 +1,395 @@
+# Effect 类型基础
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 是 Effect 库的核心类型，它是一个描述计算的容器。Effect 类型本身不会执行任何操作，它只是对"如何执行计算"的描述。
+
+## 🎯 Effect 类型签名
+
+```js
+// Effect 的类型签名
+interface Effect<R, E, A> {
+  // R: Requirements - 依赖/上下文
+  // E: Error - 可能发生的错误类型
+  // A: Success - 成功时的返回值类型
+}
+```
+
+### 类型参数说明
+
+- **R (Requirements)**: Effect 执行所需的依赖或上下文
+- **E (Error)**: Effect 可能抛出的错误类型
+- **A (Success)**: Effect 成功执行后返回的值类型
+
+## 🔍 Effect 作为描述而非执行
+
+Effect 是对计算的描述，而不是计算本身。这意味着创建 Effect 不会执行任何副作用。
+
+```js
+import { Effect } from 'effect'
+
+// 创建 Effect - 不会执行任何操作
+const program = Effect.gen(function* () {
+  console.log('This will not be printed yet')
+  return 42
+})
+
+// 只有运行时才执行
+Effect.runPromise(program).then(console.log)
+// 输出：
+// This will not be printed yet
+// 42
+```
+
+### 描述的本质
+
+```js
+import { Effect } from 'effect'
+
+// Effect 是一个对象，包含计算的所有信息
+const effect = Effect.succeed(42)
+
+console.log(typeof effect)        // 'object'
+console.log(effect.constructor.name) // 'Effect'
+
+// 可以多次运行，每次都独立
+const result1 = Effect.runSync(effect)  // 42
+const result2 = Effect.runSync(effect)  // 42
+const result3 = Effect.runSync(effect)  // 42
+```
+
+## 💡 延迟执行特性
+
+Effect 支持延迟执行，只有在需要时才执行计算。
+
+```js
+import { Effect } from 'effect'
+
+// 创建 Effect 不会执行
+let executed = false
+
+const lazyEffect = Effect.sync(() => {
+  executed = true
+  return 'Hello'
+})
+
+console.log(executed)  // false - 还没有执行
+
+// 运行时才执行
+Effect.runSync(lazyEffect)
+console.log(executed)  // true - 现在执行了
+```
+
+### 延迟执行的优势
+
+```js
+import { Effect } from 'effect'
+
+// 1. 可以组合而不立即执行
+const step1 = Effect.sync(() => console.log('Step 1'))
+const step2 = Effect.sync(() => console.log('Step 2'))
+const step3 = Effect.sync(() => console.log('Step 3'))
+
+// 组合 - 仍然不执行
+const program = step1.pipe(
+  Effect.andThen(step2),
+  Effect.andThen(step3)
+)
+
+// 只在运行时执行
+Effect.runSync(program)
+// 输出：
+// Step 1
+// Step 2
+// Step 3
+
+// 2. 可以多次运行
+Effect.runSync(program)
+Effect.runSync(program)
+```
+
+## 🎯 类型安全保证
+
+Effect 提供了完整的类型安全，确保错误和依赖都被正确处理。
+
+### 编译时类型检查
+
+```js
+import { Effect } from 'effect'
+
+// 类型安全的 Effect
+const numberEffect: Effect.Effect<never, never, number> = Effect.succeed(42)
+
+// 编译时错误检测
+const wrongUsage = numberEffect.pipe(
+  Effect.map(n => n.toString()),  // ✅ 正确
+  // Effect.map(s => s.toFixed(2)) // ❌ 编译错误：string 没有 toFixed
+)
+```
+
+### 错误类型追踪
+
+```js
+import { Effect } from 'effect'
+
+// 定义错误类型
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+// Effect 显式声明错误类型
+const fetchUser = (id: string): Effect.Effect<never, NetworkError, User> =>
+  Effect.tryPromise({
+    try: () => fetch(`/api/users/${id}`).then(res => res.json()),
+    catch: (error) => new NetworkError(error.message)
+  })
+
+// TypeScript 确保错误被处理
+const program = fetchUser('1').pipe(
+  Effect.catchAll((error) => {
+    // error 的类型被推断为 NetworkError
+    console.log(`Error: ${error.message}`)
+    return Effect.succeed(null as User | null)
+  })
+)
+```
+
+## 🚀 Effect 类型示例
+
+### 无依赖、无错误、有返回值
+
+```js
+import { Effect } from 'effect'
+
+// Effect<never, never, number>
+const succeed = Effect.succeed(42)
+
+// Effect<never, never, string>
+const message = Effect.succeed('Hello')
+
+// Effect<never, never, User>
+const user = Effect.succeed({ id: '1', name: 'Alice' })
+```
+
+### 无依赖、有错误、有返回值
+
+```js
+import { Effect } from 'effect'
+
+// Effect<never, Error, number>
+const mightFail = Effect.try(() => {
+  if (Math.random() > 0.5) {
+    throw new Error('Random failure')
+  }
+  return 42
+})
+
+// Effect<never, NetworkError, User>
+const fetchUser = Effect.tryPromise({
+  try: () => fetch('/api/users/1').then(res => res.json()),
+  catch: (error) => new NetworkError(error.message)
+})
+```
+
+### 有依赖、无错误、有返回值
+
+```js
+import { Effect } from 'effect'
+
+// 定义依赖
+interface Logger {
+  log: (message: string) => void
+}
+
+// Effect<Logger, never, void>
+const logMessage = (message: string) =>
+  Effect.gen(function* () {
+    const logger = yield* Effect.service<Logger>(Logger)
+    logger.log(message)
+  })
+
+// 提供依赖运行
+const consoleLogger: Logger = {
+  log: (message) => console.log(message)
+}
+
+Effect.runPromise(
+  logMessage('Hello').pipe(
+    Effect.provideService(Logger, consoleLogger)
+  )
+)
+```
+
+### 有依赖、有错误、有返回值
+
+```js
+import { Effect } from 'effect'
+
+// 定义依赖
+interface Database {
+  query: (sql: string) => Promise<any[]>
+}
+
+// Effect<Database, DatabaseError, User[]>
+const fetchUsers = Effect.gen(function* () {
+  const db = yield* Effect.service<Database>(Database)
+  try {
+    const results = yield* Effect.tryPromise(() => db.query('SELECT * FROM users'))
+    return results as User[]
+  } catch (error) {
+    return yield* Effect.fail(new DatabaseError(error.message))
+  }
+})
+```
+
+## 📝 类型参数详解
+
+### R (Requirements) - 依赖
+
+```js
+import { Effect } from 'effect'
+
+// 无依赖
+const noDeps = Effect.succeed(42)
+// Effect<never, never, number>
+
+// 单个依赖
+interface Config {
+  apiUrl: string
+}
+
+const withDeps = Effect.gen(function* () {
+  const config = yield* Effect.service<Config>(Config)
+  return config.apiUrl
+})
+// Effect<Config, never, string>
+
+// 多个依赖
+interface Logger {
+  log: (message: string) => void
+}
+
+interface Database {
+  query: (sql: string) => Promise<any[]>
+}
+
+const withMultipleDeps = Effect.gen(function* () {
+  const logger = yield* Effect.service<Logger>(Logger)
+  const db = yield* Effect.service<Database>(Database)
+  
+  logger.log('Querying database')
+  const results = yield* Effect.tryPromise(() => db.query('SELECT * FROM users'))
+  return results
+})
+// Effect<Logger & Database, Error, any[]>
+```
+
+### E (Error) - 错误
+
+```js
+import { Effect } from 'effect'
+
+// 无错误（never 表示不可能失败）
+const noError = Effect.succeed(42)
+// Effect<never, never, number>
+
+// 单个错误类型
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+const singleError = Effect.fail(new NetworkError('Connection failed'))
+// Effect<never, NetworkError, never>
+
+// 联合错误类型
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+type AppError = NetworkError | ValidationError
+
+const unionError = Effect.fail(new ValidationError('Invalid input'))
+// Effect<never, AppError, never>
+
+// 未知错误（Error）
+const unknownError = Effect.try(() => {
+  throw new Error('Unknown error')
+})
+// Effect<never, Error, never>
+```
+
+### A (Success) - 成功值
+
+```js
+import { Effect } from 'effect'
+
+// 基本类型
+const numberValue = Effect.succeed(42)
+// Effect<never, never, number>
+
+const stringValue = Effect.succeed('Hello')
+// Effect<never, never, string>
+
+// 对象类型
+type User = {
+  id: string
+  name: string
+}
+
+const objectValue = Effect.succeed({ id: '1', name: 'Alice' })
+// Effect<never, never, User>
+
+// 数组类型
+const arrayValue = Effect.succeed([1, 2, 3])
+// Effect<never, never, number[]>
+
+// 复杂类型
+type Result<T> = {
+  data: T
+  timestamp: number
+}
+
+const complexValue = Effect.succeed({
+  data: { id: '1', name: 'Alice' },
+  timestamp: Date.now()
+})
+// Effect<never, never, Result<User>>
+
+// void 类型（无返回值）
+const voidValue = Effect.sync(() => console.log('Hello'))
+// Effect<never, never, void>
+
+// never 类型（总是失败）
+const neverValue = Effect.fail(new Error('Always fails'))
+// Effect<never, Error, never>
+```
+
+## 🔗 相关概念
+
+- **基础 Effect 操作**：创建 Effect 的不同方法
+- **Effect 执行**：如何运行 Effect
+- **类型推断**：TypeScript 如何推断 Effect 类型
+- **错误处理**：如何处理 Effect 中的错误
+
+## 📚 学习检查点
+
+- [ ] 理解 Effect 类型的三个参数含义
+- [ ] 掌握 Effect 作为描述而非执行的概念
+- [ ] 理解延迟执行特性
+- [ ] 了解类型安全保证
+- [ ] 能够阅读和理解 Effect 类型签名
+
+## 🚀 下一步
+
+→ [基础 Effect 操作](./02-basic-effect-operations.mdx)

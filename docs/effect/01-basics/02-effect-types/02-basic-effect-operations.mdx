@@ -1,0 +1,522 @@
+# 基础 Effect 操作
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了多种基础操作来创建和处理 Effect。掌握这些基础操作是使用 Effect 库的第一步。
+
+## 🎯 创建 Effect
+
+### Effect.succeed - 成功值
+
+创建一个总是成功的 Effect，返回给定的值。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const numberEffect = Effect.succeed(42)
+Effect.runSync(numberEffect)  // 42
+
+const stringEffect = Effect.succeed('Hello')
+Effect.runSync(stringEffect)  // 'Hello'
+
+const objectEffect = Effect.succeed({ id: '1', name: 'Alice' })
+Effect.runSync(objectEffect)  // { id: '1', name: 'Alice' }
+
+// 延迟计算
+const lazyEffect = Effect.succeed(() => {
+  console.log('Computing value...')
+  return 42
+})
+
+Effect.runSync(lazyEffect)  // 42
+// 注意：succeed 不会执行函数，而是直接返回函数作为值
+```
+
+### Effect.fail - 失败值
+
+创建一个总是失败的 Effect，返回给定的错误。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const errorEffect = Effect.fail(new Error('Something went wrong'))
+
+Effect.runPromise(errorEffect).catch(error => {
+  console.log(error.message)  // 'Something went wrong'
+})
+
+// 自定义错误类型
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+const networkError = Effect.fail(new NetworkError('Connection failed'))
+
+Effect.runPromise(networkError).catch(error => {
+  console.log(error._tag)  // 'NetworkError'
+  console.log(error.message)  // 'Connection failed'
+})
+```
+
+### Effect.sync - 同步计算
+
+创建一个同步执行的 Effect，可能抛出错误。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const syncEffect = Effect.sync(() => {
+  console.log('Executing sync operation')
+  return Date.now()
+})
+
+Effect.runSync(syncEffect)  // 返回当前时间戳
+
+// 可能抛出错误
+const mightThrow = Effect.sync(() => {
+  if (Math.random() > 0.5) {
+    throw new Error('Random error')
+  }
+  return 'Success'
+})
+
+Effect.runPromise(mightThrow).catch(error => {
+  console.log(error.message)
+})
+```
+
+### Effect.async - 异步计算
+
+创建一个异步执行的 Effect。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const asyncEffect = Effect.async((resume) => {
+  setTimeout(() => {
+    resume(Effect.succeed('Async result'))
+  }, 1000)
+})
+
+Effect.runPromise(asyncEffect).then(result => {
+  console.log(result)  // 'Async result'
+})
+
+// 异步错误
+const asyncError = Effect.async((resume) => {
+  setTimeout(() => {
+    resume(Effect.fail(new Error('Async error')))
+  }, 1000)
+})
+
+Effect.runPromise(asyncError).catch(error => {
+  console.log(error.message)  // 'Async error'
+})
+```
+
+### Effect.try - 安全的 try-catch
+
+安全地执行可能抛出错误的同步代码。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const safeOperation = Effect.try({
+  try: () => {
+    const result = JSON.parse('{"name": "Alice"}')
+    return result
+  },
+  catch: (error) => new Error(`Parse error: ${error}`)
+})
+
+Effect.runPromise(safeOperation).then(result => {
+  console.log(result)  // { name: 'Alice' }
+})
+
+// 处理解析错误
+const invalidJson = Effect.try({
+  try: () => JSON.parse('invalid json'),
+  catch: (error) => new Error(`Parse error: ${error}`)
+})
+
+Effect.runPromise(invalidJson).catch(error => {
+  console.log(error.message)  // 'Parse error: ...'
+})
+```
+
+### Effect.tryPromise - 安全的 Promise
+
+安全地执行可能失败的 Promise。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const safeFetch = Effect.tryPromise({
+  try: () => fetch('/api/users/1').then(res => res.json()),
+  catch: (error) => new Error(`Fetch error: ${error}`)
+})
+
+Effect.runPromise(safeFetch).then(user => {
+  console.log(user)
+})
+
+// 自定义错误类型
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+const typedFetch = Effect.tryPromise({
+  try: () => fetch('/api/users/1').then(res => res.json()),
+  catch: (error) => new NetworkError(`Network error: ${error}`)
+})
+
+Effect.runPromise(typedFetch).catch(error => {
+  console.log(error._tag)  // 'NetworkError'
+  console.log(error.message)  // 'Network error: ...'
+})
+```
+
+## 🚀 Effect 执行操作
+
+### Effect.runSync - 同步执行
+
+同步执行 Effect，只适用于不会失败的同步 Effect。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const syncEffect = Effect.succeed(42)
+const result = Effect.runSync(syncEffect)
+console.log(result)  // 42
+
+// 使用 sync 创建的 Effect
+const computed = Effect.sync(() => {
+  return Math.random() * 100
+})
+
+const randomValue = Effect.runSync(computed)
+console.log(randomValue)
+
+// ⚠️ 注意：不能用于可能失败的 Effect
+const failingEffect = Effect.fail(new Error('Error'))
+// Effect.runSync(failingEffect)  // 运行时错误
+```
+
+### Effect.runPromise - 异步执行
+
+异步执行 Effect，返回 Promise。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const asyncEffect = Effect.succeed(42)
+Effect.runPromise(asyncEffect).then(result => {
+  console.log(result)  // 42
+})
+
+// 处理错误
+const errorEffect = Effect.fail(new Error('Error'))
+Effect.runPromise(errorEffect).catch(error => {
+  console.log(error.message)  // 'Error'
+})
+
+// 异步 Effect
+const delayed = Effect.async((resume) => {
+  setTimeout(() => {
+    resume(Effect.succeed('Delayed result'))
+  }, 1000)
+})
+
+Effect.runPromise(delayed).then(result => {
+  console.log(result)  // 'Delayed result'
+})
+```
+
+### Effect.runFork - 并发执行
+
+并发执行 Effect，返回 Fiber。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const effect1 = Effect.sync(() => {
+  console.log('Effect 1')
+  return 1
+})
+
+const effect2 = Effect.sync(() => {
+  console.log('Effect 2')
+  return 2
+})
+
+const fiber1 = Effect.runFork(effect1)
+const fiber2 = Effect.runFork(effect2)
+
+// 等待 Fiber 完成
+Effect.runPromise(Effect.all([
+  Effect.fromFiber(fiber1),
+  Effect.fromFiber(fiber2)
+])).then(results => {
+  console.log(results)  // [1, 2]
+})
+```
+
+### Effect.runCallback - 回调执行
+
+通过回调执行 Effect。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const effect = Effect.succeed(42)
+
+Effect.runCallback(effect, {
+  onSuccess: (result) => {
+    console.log('Success:', result)  // Success: 42
+  },
+  onFailure: (error) => {
+    console.log('Error:', error)
+  }
+})
+
+// 处理错误
+const errorEffect = Effect.fail(new Error('Error'))
+
+Effect.runCallback(errorEffect, {
+  onSuccess: (result) => {
+    console.log('Success:', result)
+  },
+  onFailure: (error) => {
+    console.log('Error:', error.message)  // Error: Error
+  }
+})
+```
+
+## 💡 组合操作
+
+### Effect.map - 值转换
+
+转换 Effect 的成功值。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const numberEffect = Effect.succeed(42)
+
+const stringEffect = numberEffect.pipe(
+  Effect.map(n => n.toString())
+)
+
+Effect.runSync(stringEffect)  // '42'
+
+// 链式转换
+const pipeline = Effect.succeed(42)
+  .pipe(
+    Effect.map(n => n * 2),      // 84
+    Effect.map(n => n.toString()), // '84'
+    Effect.map(s => s.length)     // 2
+  )
+
+Effect.runSync(pipeline)  // 2
+```
+
+### Effect.flatMap - 链式转换
+
+链式转换 Effect，可以返回新的 Effect。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const fetchUser = (id: string) => 
+  Effect.succeed({ id, name: `User ${id}` })
+
+const fetchPosts = (userId: string) =>
+  Effect.succeed([{ id: '1', userId, title: 'Post 1' }])
+
+const program = fetchUser('1').pipe(
+  Effect.flatMap(user => fetchPosts(user.id))
+)
+
+Effect.runSync(program)  // [{ id: '1', userId: '1', title: 'Post 1' }]
+```
+
+### Effect.andThen - 链式别名
+
+`andThen` 是 `flatMap` 的别名，提供更简洁的语法。
+
+```js
+import { Effect } from 'effect'
+
+// 与 flatMap 相同
+const program = Effect.succeed(42)
+  .pipe(
+    Effect.andThen(n => Effect.succeed(n * 2)),
+    Effect.andThen(n => Effect.succeed(n.toString()))
+  )
+
+Effect.runSync(program)  // '84'
+
+// 也可以直接传递值
+const simple = Effect.succeed(42)
+  .pipe(
+    Effect.andThen(84),
+    Effect.andThen('Result')
+  )
+
+Effect.runSync(simple)  // 'Result'
+```
+
+### Effect.as - 常量替换
+
+将 Effect 的成功值替换为常量。
+
+```js
+import { Effect } from 'effect'
+
+// 基本用法
+const effect = Effect.succeed(42)
+
+const replaced = effect.pipe(
+  Effect.as('Replaced value')
+)
+
+Effect.runSync(replaced)  // 'Replaced value'
+
+// 常用于副作用操作
+const logAndReturn = Effect.sync(() => {
+  console.log('Logging...')
+  return 42
+}).pipe(
+  Effect.as('Logged successfully')
+)
+
+Effect.runSync(logAndReturn)
+// 输出：Logging...
+// 返回：'Logged successfully'
+```
+
+## 📝 实践示例
+
+### 数据处理管道
+
+```js
+import { Effect } from 'effect'
+
+const fetchData = Effect.tryPromise(() =>
+  fetch('/api/data').then(res => res.json())
+)
+
+const validateData = (data: unknown) =>
+  Array.isArray(data)
+    ? Effect.succeed(data)
+    : Effect.fail(new Error('Invalid data'))
+
+const processData = (data: any[]) =>
+  Effect.succeed(
+    data.filter(item => item.active)
+         .map(item => ({ ...item, processed: true }))
+  )
+
+const saveData = (data: any[]) =>
+  Effect.tryPromise(() =>
+    fetch('/api/save', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    })
+  )
+
+// 组合管道
+const pipeline = fetchData.pipe(
+  Effect.flatMap(validateData),
+  Effect.flatMap(processData),
+  Effect.flatMap(saveData)
+)
+
+Effect.runPromise(pipeline)
+```
+
+### 错误处理
+
+```js
+import { Effect } from 'effect'
+
+const riskyOperation = Effect.try(() => {
+  if (Math.random() > 0.5) {
+    throw new Error('Random failure')
+  }
+  return 'Success'
+})
+
+const handled = riskyOperation.pipe(
+  Effect.catchAll(error =>
+    Effect.succeed(`Handled: ${error.message}`)
+  )
+)
+
+Effect.runPromise(handled).then(result => {
+  console.log(result)  // 'Success' 或 'Handled: Random failure'
+})
+```
+
+### 并发执行
+
+```js
+import { Effect } from 'effect'
+
+const task1 = Effect.sync(() => {
+  console.log('Task 1')
+  return 1
+})
+
+const task2 = Effect.sync(() => {
+  console.log('Task 2')
+  return 2
+})
+
+const task3 = Effect.sync(() => {
+  console.log('Task 3')
+  return 3
+})
+
+// 并行执行
+const parallel = Effect.all([task1, task2, task3])
+
+Effect.runSync(parallel)  // [1, 2, 3]
+```
+
+## 🔗 相关概念
+
+- **Effect 类型基础**：理解 Effect 的类型签名
+- **错误处理**：如何处理 Effect 中的错误
+- **数据流操作**：Effect 的转换和组合操作
+- **Effect 执行**：如何运行 Effect
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.succeed 的使用
+- [ ] 掌握 Effect.fail 的使用
+- [ ] 理解 Effect.sync 和 Effect.async 的区别
+- [ ] 掌握 Effect.try 和 Effect.tryPromise 的使用
+- [ ] 了解不同的 Effect 执行方法
+- [ ] 能够组合多个 Effect
+
+## 🚀 下一步
+
+→ [Effect 执行](./03-effect-execution.mdx)
