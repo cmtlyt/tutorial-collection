@@ -1,0 +1,498 @@
+# 错误作为值
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+在 Effect 中，错误不是异常，而是值。这意味着错误是类型系统的一部分，必须被显式处理。这种设计确保了代码的健壮性和可预测性。
+
+## 🎯 错误作为值的核心思想
+
+### 传统方式 vs Effect 方式
+
+```js
+// ❌ 传统方式 - 使用异常
+async function fetchUser(id: string) {
+  const response = await fetch(`/api/users/${id}`)
+  if (!response.ok) {
+    throw new Error('User not found')
+  }
+  return response.json()
+}
+
+// 调用者必须使用 try-catch
+try {
+  const user = await fetchUser('1')
+  console.log(user)
+} catch (error) {
+  console.error('Error:', error)
+}
+
+// ✅ Effect 方式 - 错误作为值
+import { Effect } from 'effect'
+
+class UserNotFoundError {
+  readonly _tag = 'UserNotFoundError'
+  constructor(readonly id: string) {}
+}
+
+const fetchUser = (id: string): Effect.Effect<never, UserNotFoundError, User> =>
+  Effect.tryPromise({
+    try: () => fetch(`/api/users/${id}`).then(res => res.json()),
+    catch: (error) => new UserNotFoundError(id)
+  })
+
+// 错误必须被处理
+const program = fetchUser('1').pipe(
+  Effect.catchAll(error =>
+    Effect.succeed({ error: error.id, user: null })
+  )
+)
+```
+
+## 🔍 错误类型定义
+
+### 定义错误类型
+
+```js
+import { Effect } from 'effect'
+
+// 使用类定义错误
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+class DatabaseError {
+  readonly _tag = 'DatabaseError'
+  constructor(readonly message: string) {}
+}
+
+// 联合错误类型
+type AppError = NetworkError | ValidationError | DatabaseError
+
+// 使用错误类型
+const fetchUser = (id: string): Effect.Effect<never, AppError, User> =>
+  Effect.tryPromise({
+    try: () => fetch(`/api/users/${id}`).then(res => res.json()),
+    catch: (error) => new NetworkError(error.message)
+  })
+```
+
+### 错误类型的好处
+
+```js
+import { Effect } from 'effect'
+
+// 1. 类型安全
+const program = fetchUser('1').pipe(
+  Effect.catchAll(error => {
+    // TypeScript 知道 error 的类型是 AppError
+    switch (error._tag) {
+      case 'NetworkError':
+        return Effect.succeed({ status: 'network_error', message: error.message })
+      case 'ValidationError':
+        return Effect.succeed({ status: 'validation_error', message: error.message })
+      case 'DatabaseError':
+        return Effect.succeed({ status: 'database_error', message: error.message })
+    }
+  })
+)
+
+// 2. 编译时检查
+// TypeScript 会确保所有可能的错误都被处理
+```
+
+## 💡 错误处理模式
+
+### 错误转换
+
+```js
+import { Effect } from 'effect'
+
+// 将底层错误转换为应用错误
+const fetchUser = (id: string): Effect.Effect<never, AppError, User> =>
+  Effect.tryPromise({
+    try: () => fetch(`/api/users/${id}`).then(res => res.json()),
+    catch: (error) => {
+      if (error instanceof TypeError) {
+        return new ValidationError('Invalid user ID format')
+      } else if (error instanceof Error && error.message.includes('404')) {
+        return new ValidationError('User not found')
+      } else {
+        return new NetworkError(`Failed to fetch user: ${error.message}`)
+      }
+    }
+  })
+```
+
+### 错误恢复
+
+```js
+import { Effect } from 'effect'
+
+// 提供默认值
+const fetchUserWithDefault = (id: string) =>
+  fetchUser(id).pipe(
+    Effect.catchAll(() =>
+      Effect.succeed({ id, name: 'Unknown', email: '' })
+    )
+  )
+
+// 重试逻辑
+const fetchUserWithRetry = (id: string, maxRetries = 3) =>
+  fetchUser(id).pipe(
+    Effect.retry({
+      while: (error) => error._tag === 'NetworkError',
+      times: maxRetries
+    })
+  )
+
+// 降级处理
+const fetchUserWithFallback = (id: string) =>
+  fetchUser(id).pipe(
+    Effect.catchAll(() =>
+      // 从缓存获取
+      getCachedUser(id).pipe(
+        Effect.catchAll(() =>
+          Effect.succeed({ id, name: 'Fallback', email: '' })
+        )
+      )
+    )
+  )
+```
+
+### 错误聚合
+
+```js
+import { Effect } from 'effect'
+
+// 收集多个错误
+const validateUser = (user: unknown): Effect.Effect<never, ValidationError[], User> =>
+  Effect.sync(() => {
+    const errors: ValidationError[] = []
+
+    if (typeof user !== 'object' || user === null) {
+      errors.push(new ValidationError('User must be an object'))
+    } else {
+      if (!('name' in user) || typeof user.name !== 'string') {
+        errors.push(new ValidationError('User must have a name'))
+      }
+      if (!('email' in user) || typeof user.email !== 'string') {
+        errors.push(new ValidationError('User must have an email'))
+      }
+    }
+
+    if (errors.length > 0) {
+      throw errors
+    }
+
+    return user as User
+  })
+
+const program = validateUser({ name: 'Alice' }).pipe(
+  Effect.catchAll(errors =>
+    Effect.succeed({ errors, user: null })
+  )
+)
+
+Effect.runPromise(program).then(result => {
+  console.log(result.errors)  // [ValidationError]
+  console.log(result.user)    // null
+})
+```
+
+## 🚀 实际应用示例
+
+### API 错误处理
+
+```js
+import { Effect } from 'effect'
+
+// 定义 API 错误类型
+class ApiError {
+  readonly _tag = 'ApiError'
+  constructor(
+    readonly status: number,
+    readonly message: string
+  ) {}
+}
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+type FetchError = ApiError | NetworkError
+
+// 安全的 fetch 封装
+const safeFetch = <T>(url: string): Effect.Effect<never, FetchError, T> =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new ApiError(response.status, `HTTP ${response.status}`)
+      }
+      return response.json()
+    },
+    catch: (error) => {
+      if (error instanceof ApiError) {
+        return error
+      }
+      return new NetworkError(error.message)
+    }
+  })
+
+// 使用
+const fetchUser = (id: string) =>
+  safeFetch<User>(`/api/users/${id}`)
+
+const program = fetchUser('1').pipe(
+  Effect.catchAll(error => {
+    switch (error._tag) {
+      case 'ApiError':
+        return Effect.succeed({
+          error: `API Error: ${error.status} - ${error.message}`,
+          user: null
+        })
+      case 'NetworkError':
+        return Effect.succeed({
+          error: `Network Error: ${error.message}`,
+          user: null
+        })
+    }
+  })
+)
+```
+
+### 表单验证错误
+
+```js
+import { Effect } from 'effect'
+
+// 定义验证错误
+class RequiredFieldError {
+  readonly _tag = 'RequiredFieldError'
+  constructor(readonly field: string) {}
+}
+
+class InvalidFormatError {
+  readonly _tag = 'InvalidFormatError'
+  constructor(readonly field: string, readonly expected: string) {}
+}
+
+type ValidationError = RequiredFieldError | InvalidFormatError
+
+// 验证函数
+const validateEmail = (email: string): Effect.Effect<never, ValidationError, string> =>
+  Effect.sync(() => {
+    if (!email) {
+      throw new RequiredFieldError('email')
+    }
+    if (!email.includes('@')) {
+      throw new InvalidFormatError('email', 'must contain @')
+    }
+    return email
+  })
+
+const validateAge = (age: number): Effect.Effect<never, ValidationError, number> =>
+  Effect.sync(() => {
+    if (age === undefined || age === null) {
+      throw new RequiredFieldError('age')
+    }
+    if (age < 0 || age > 150) {
+      throw new InvalidFormatError('age', 'must be between 0 and 150')
+    }
+    return age
+  })
+
+// 组合验证
+const validateUserForm = (data: { email?: string; age?: number }) =>
+  Effect.gen(function* () {
+    const email = yield* validateEmail(data.email || '')
+    const age = yield* validateAge(data.age || 0)
+    return { email, age }
+  })
+
+// 使用
+const program = validateUserForm({ email: 'invalid', age: 25 }).pipe(
+  Effect.catchAll(error => {
+    switch (error._tag) {
+      case 'RequiredFieldError':
+        return Effect.succeed({ valid: false, error: `Field ${error.field} is required` })
+      case 'InvalidFormatError':
+        return Effect.succeed({ valid: false, error: `Field ${error.field} ${error.expected}` })
+    }
+  })
+)
+```
+
+### 数据库操作错误
+
+```js
+import { Effect } from 'effect'
+
+// 定义数据库错误
+class ConnectionError {
+  readonly _tag = 'ConnectionError'
+  constructor(readonly message: string) {}
+}
+
+class QueryError {
+  readonly _tag = 'QueryError'
+  constructor(readonly message: string, readonly sql: string) {}
+}
+
+class ConstraintError {
+  readonly _tag = 'ConstraintError'
+  constructor(readonly constraint: string, readonly value: any) {}
+}
+
+type DatabaseError = ConnectionError | QueryError | ConstraintError
+
+// 数据库操作
+const queryDatabase = <T>(sql: string): Effect.Effect<never, DatabaseError, T[]> =>
+  Effect.tryPromise({
+    try: async () => {
+      // 模拟数据库查询
+      if (sql.includes('connection')) {
+        throw new Error('Connection failed')
+      }
+      if (sql.includes('syntax')) {
+        throw new Error('Syntax error')
+      }
+      return [] as T[]
+    },
+    catch: (error) => {
+      if (error.message.includes('connection')) {
+        return new ConnectionError(error.message)
+      } else if (error.message.includes('syntax')) {
+        return new QueryError(error.message, sql)
+      } else {
+        return new ConstraintError('unknown', error)
+      }
+    }
+  })
+
+// 使用
+const fetchUsers = () =>
+  queryDatabase<User>('SELECT * FROM users')
+
+const program = fetchUsers().pipe(
+  Effect.catchAll(error => {
+    switch (error._tag) {
+      case 'ConnectionError':
+        return Effect.succeed({ status: 'error', message: 'Database connection failed' })
+      case 'QueryError':
+        return Effect.succeed({ status: 'error', message: `Query error: ${error.sql}` })
+      case 'ConstraintError':
+        return Effect.succeed({ status: 'error', message: `Constraint violation: ${error.constraint}` })
+    }
+  })
+)
+```
+
+## 📝 最佳实践
+
+### 1. 定义明确的错误类型
+
+```js
+// ❌ 使用通用错误
+const fetchData = () =>
+  Effect.tryPromise(() =>
+    fetch('/api/data').then(res => res.json())
+  )
+
+// ✅ 定义具体的错误类型
+class DataFetchError {
+  readonly _tag = 'DataFetchError'
+  constructor(readonly message: string) {}
+}
+
+const fetchData = (): Effect.Effect<never, DataFetchError, Data> =>
+  Effect.tryPromise({
+    try: () => fetch('/api/data').then(res => res.json()),
+    catch: (error) => new DataFetchError(error.message)
+  })
+```
+
+### 2. 使用 _tag 进行类型区分
+
+```js
+// ✅ 使用 _tag 标识错误类型
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+// 这样可以在 switch 语句中安全地处理
+const handleError = (error: NetworkError | ValidationError) => {
+  switch (error._tag) {
+    case 'NetworkError':
+      console.log('Network:', error.message)
+      break
+    case 'ValidationError':
+      console.log('Validation:', error.message)
+      break
+  }
+}
+```
+
+### 3. 提供有用的错误信息
+
+```js
+// ❌ 错误信息不明确
+const error = new Error('Error')
+
+// ✅ 提供详细的错误信息
+const error = new NetworkError(
+  `Failed to connect to ${url}. Timeout after 5000ms.`
+)
+```
+
+### 4. 考虑错误恢复策略
+
+```js
+// ✅ 提供恢复策略
+const fetchWithRetry = (url: string) =>
+  fetch(url).pipe(
+    Effect.retry({
+      while: (error) => error._tag === 'NetworkError',
+      times: 3
+    }),
+    Effect.timeout(10000),
+    Effect.catchAll(() =>
+      Effect.succeed({ error: 'Request failed after retries', data: null })
+    )
+  )
+```
+
+## 🔗 相关概念
+
+- **错误处理操作符**：Effect 提供的错误处理方法
+- **错误转换**：如何转换和映射错误
+- **错误恢复**：如何从错误中恢复
+- **错误聚合**：如何处理多个错误
+
+## 📚 学习检查点
+
+- [ ] 理解错误作为值的概念
+- [ ] 掌握错误类型的定义方法
+- [ ] 了解错误处理模式
+- [ ] 能够定义和处理应用错误
+- [ ] 理解错误恢复策略
+
+## 🚀 下一步
+
+→ [错误处理操作符](./02-error-handling-operators.mdx)

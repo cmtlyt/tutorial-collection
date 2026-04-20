@@ -1,0 +1,561 @@
+# 错误聚合
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+在复杂的应用中，往往需要处理多个错误。Effect 提供了多种方式来聚合和处理多个错误。
+
+## 🎯 多错误处理
+
+### 并行执行中的错误
+
+```js
+import { Effect } from 'effect'
+
+// 定义错误类型
+class ErrorA {
+  readonly _tag = 'ErrorA'
+  constructor(readonly message: string) {}
+}
+
+class ErrorB {
+  readonly _tag = 'ErrorB'
+  constructor(readonly message: string) {}
+}
+
+// 可能失败的 Effect
+const taskA = Effect.fail(new ErrorA('Task A failed'))
+const taskB = Effect.succeed('Task B succeeded')
+const taskC = Effect.fail(new ErrorB('Task C failed'))
+
+// 使用 Effect.all - 第一个错误会中断
+const program1 = Effect.all([taskA, taskB, taskC])
+
+Effect.runPromise(program1).catch(error => {
+  console.log(error._tag)  // 'ErrorA'
+  console.log(error.message)  // 'Task A failed'
+})
+```
+
+### Effect.allWith - 收集所有错误
+
+```js
+import { Effect } from 'effect'
+
+// 使用 allWith 收集所有错误
+const program2 = Effect.allWith([taskA, taskB, taskC], {
+  // 配置选项
+  discard: false,  // 不丢弃成功的结果
+  concurrency: 'unbounded'  // 无限制并发
+})
+
+Effect.runPromise(program2).then(result => {
+  console.log(result)  // 包含所有结果，包括错误
+})
+```
+
+### Effect.forEach - 处理集合中的错误
+
+```js
+import { Effect } from 'effect'
+
+// 定义错误类型
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly field: string, readonly message: string) {}
+}
+
+// 验证函数
+const validateField = (field: string, value: unknown): Effect.Effect<never, ValidationError, any> =>
+  Effect.sync(() => {
+    if (value === undefined || value === null) {
+      throw new ValidationError(field, `${field} is required`)
+    }
+    return value
+  })
+
+// 验证多个字段
+const data = {
+  name: 'Alice',
+  age: 25,
+  email: undefined  // 这个字段会失败
+}
+
+const program = Effect.forEach(Object.entries(data), ([field, value]) =>
+  validateField(field, value)
+)
+
+Effect.runPromise(program).catch(errors => {
+  console.log('Validation errors:', errors)
+})
+```
+
+## 💡 错误收集模式
+
+### 收集验证错误
+
+```js
+import { Effect } from 'effect'
+
+class FieldError {
+  readonly _tag = 'FieldError'
+  constructor(readonly field: string, readonly message: string) {}
+}
+
+// 验证单个字段
+const validateField = (field: string, value: any, rules: any[]): Effect.Effect<never, FieldError, any> =>
+  Effect.sync(() => {
+    for (const rule of rules) {
+      const error = rule(value)
+      if (error) {
+        throw new FieldError(field, error)
+      }
+    }
+    return value
+  })
+
+// 验证整个表单
+const validateForm = (data: Record<string, any>, schema: Record<string, any[]>) =>
+  Effect.gen(function* () {
+    const errors: FieldError[] = []
+    const validated: Record<string, any> = {}
+
+    for (const [field, rules] of Object.entries(schema)) {
+      const result = yield* validateField(field, data[field], rules).pipe(
+        Effect.catchAll(error => {
+          errors.push(error)
+          return Effect.succeed(null)
+        })
+      )
+
+      if (result !== null) {
+        validated[field] = result
+      }
+    }
+
+    if (errors.length > 0) {
+      throw errors
+    }
+
+    return validated
+  })
+
+// 使用
+const schema = {
+  name: [
+    (value: any) => !value ? 'Name is required' : null,
+    (value: any) => value.length < 2 ? 'Name must be at least 2 characters' : null
+  ],
+  email: [
+    (value: any) => !value ? 'Email is required' : null,
+    (value: any) => !value.includes('@') ? 'Email must contain @' : null
+  ]
+}
+
+const data = {
+  name: 'A',  // 太短
+  email: 'invalid'  // 没有 @
+}
+
+const program = validateForm(data, schema).pipe(
+  Effect.catchAll((errors: FieldError[]) => {
+    return Effect.succeed({
+      valid: false,
+      errors: errors.map(e => `${e.field}: ${e.message}`)
+    })
+  })
+)
+
+Effect.runPromise(program).then(result => {
+  console.log(result)
+  // {
+  //   valid: false,
+  //   errors: ['name: Name must be at least 2 characters', 'email: Email must contain @']
+  // }
+})
+```
+
+### 批处理中的错误收集
+
+```js
+import { Effect } from 'effect'
+
+class BatchError {
+  readonly _tag = 'BatchError'
+  constructor(readonly errors: Error[]) {}
+}
+
+// 处理单个项目
+const processItem = (item: any): Effect.Effect<never, Error, any> =>
+  Effect.sync(() => {
+    if (item.id % 2 === 0) {
+      throw new Error(`Item ${item.id} failed`)
+    }
+    return { ...item, processed: true }
+  })
+
+// 批量处理
+const processBatch = (items: any[]): Effect.Effect<never, BatchError, any[]> =>
+  Effect.gen(function* () {
+    const errors: Error[] = []
+    const results: any[] = []
+
+    for (const item of items) {
+      const result = yield* processItem(item).pipe(
+        Effect.catchAll(error => {
+          errors.push(error)
+          return Effect.succeed(null)
+        })
+      )
+
+      if (result !== null) {
+        results.push(result)
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new BatchError(errors)
+    }
+
+    return results
+  })
+
+// 使用
+const items = [
+  { id: 1, data: 'item1' },
+  { id: 2, data: 'item2' },  // 会失败
+  { id: 3, data: 'item3' },
+  { id: 4, data: 'item4' }   // 会失败
+]
+
+const program = processBatch(items).pipe(
+  Effect.catchAll((error: BatchError) => {
+    return Effect.succeed({
+      success: false,
+      errors: error.errors.map(e => e.message),
+      processed: 2
+    })
+  })
+)
+
+Effect.runPromise(program).then(result => {
+  console.log(result)
+  // {
+  //   success: false,
+  //   errors: ['Item 2 failed', 'Item 4 failed'],
+  //   processed: 2
+  // }
+})
+```
+
+## 🚀 错误报告
+
+### 结构化错误报告
+
+```js
+import { Effect } from 'effect'
+
+interface ErrorReport {
+  timestamp: number
+  errors: ErrorDetail[]
+  summary: string
+}
+
+interface ErrorDetail {
+  type: string
+  message: string
+  context?: any
+}
+
+// 创建错误报告
+const createErrorReport = (errors: Error[]): Effect.Effect<never, never, ErrorReport> =>
+  Effect.sync(() => {
+    const errorDetails: ErrorDetail[] = errors.map(error => ({
+      type: error.constructor.name,
+      message: error.message,
+      context: (error as any).context
+    }))
+
+    return {
+      timestamp: Date.now(),
+      errors: errorDetails,
+      summary: `${errors.length} error(s) occurred`
+    }
+  })
+
+// 使用
+const program = Effect.all([
+  Effect.fail(new Error('Error 1')),
+  Effect.fail(new Error('Error 2')),
+  Effect.fail(new Error('Error 3'))
+]).pipe(
+  Effect.catchAll((errors: Error[]) => {
+    return createErrorReport(errors)
+  })
+)
+
+Effect.runPromise(program).then(report => {
+  console.log(report)
+  // {
+  //   timestamp: 1234567890,
+  //   errors: [
+  //     { type: 'Error', message: 'Error 1' },
+  //     { type: 'Error', message: 'Error 2' },
+  //     { type: 'Error', message: 'Error 3' }
+  //   ],
+  //   summary: '3 error(s) occurred'
+  // }
+})
+```
+
+### 错误分类和分组
+
+```js
+import { Effect } from 'effect'
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+class DatabaseError {
+  readonly _tag = 'DatabaseError'
+  constructor(readonly message: string) {}
+}
+
+// 按类型分组错误
+const groupErrors = (errors: Error[]): Effect.Effect<never, never, Record<string, Error[]>> =>
+  Effect.sync(() => {
+    const grouped: Record<string, Error[]> = {
+      NetworkError: [],
+      ValidationError: [],
+      DatabaseError: [],
+      Other: []
+    }
+
+    for (const error of errors) {
+      const type = error._tag || 'Other'
+      if (grouped[type]) {
+        grouped[type].push(error)
+      } else {
+        grouped.Other.push(error)
+      }
+    }
+
+    return grouped
+  })
+
+// 使用
+const errors = [
+  new NetworkError('Connection failed'),
+  new ValidationError('Invalid email'),
+  new DatabaseError('Query failed'),
+  new NetworkError('Timeout')
+]
+
+const program = groupErrors(errors).pipe(
+  Effect.map(grouped => ({
+    summary: Object.fromEntries(
+      Object.entries(grouped).map(([type, errs]) => [type, errs.length])
+    ),
+    details: grouped
+  }))
+)
+
+Effect.runSync(program)
+// {
+//   summary: { NetworkError: 2, ValidationError: 1, DatabaseError: 1, Other: 0 },
+//   details: { NetworkError: [...], ValidationError: [...], ... }
+// }
+```
+
+## 📝 实际应用示例
+
+### 表单验证错误聚合
+
+```js
+import { Effect } from 'effect'
+
+interface FormField {
+  name: string
+  value: any
+  required: boolean
+  validator?: (value: any) => string | null
+}
+
+class FieldValidationError {
+  readonly _tag = 'FieldValidationError'
+  constructor(readonly field: string, readonly message: string) {}
+}
+
+// 验证单个字段
+const validateFormField = (field: FormField): Effect.Effect<never, FieldValidationError, any> =>
+  Effect.sync(() => {
+    if (field.required && (field.value === undefined || field.value === null)) {
+      throw new FieldValidationError(field.name, `${field.name} is required`)
+    }
+
+    if (field.validator) {
+      const error = field.validator(field.value)
+      if (error) {
+        throw new FieldValidationError(field.name, error)
+      }
+    }
+
+    return field.value
+  })
+
+// 验证整个表单
+const validateForm = (fields: FormField[]): Effect.Effect<never, FieldValidationError[], Record<string, any>> =>
+  Effect.gen(function* () {
+    const errors: FieldValidationError[] = []
+    const validated: Record<string, any> = {}
+
+    for (const field of fields) {
+      const result = yield* validateFormField(field).pipe(
+        Effect.catchAll(error => {
+          errors.push(error)
+          return Effect.succeed(null)
+        })
+      )
+
+      if (result !== null) {
+        validated[field.name] = result
+      }
+    }
+
+    if (errors.length > 0) {
+      throw errors
+    }
+
+    return validated
+  })
+
+// 使用
+const formFields = [
+  {
+    name: 'username',
+    value: 'ab',
+    required: true,
+    validator: (v: string) => v.length < 3 ? 'Username must be at least 3 characters' : null
+  },
+  {
+    name: 'email',
+    value: 'invalid',
+    required: true,
+    validator: (v: string) => !v.includes('@') ? 'Email must contain @' : null
+  },
+  {
+    name: 'age',
+    value: 25,
+    required: false
+  }
+]
+
+const program = validateForm(formFields).pipe(
+  Effect.catchAll((errors: FieldValidationError[]) => {
+    return Effect.succeed({
+      valid: false,
+      errors: errors.map(e => ({ field: e.field, message: e.message })),
+      data: null
+    })
+  })
+)
+
+Effect.runPromise(program).then(result => {
+  console.log(result)
+  // {
+  //   valid: false,
+  //   errors: [
+  //     { field: 'username', message: 'Username must be at least 3 characters' },
+  //     { field: 'email', message: 'Email must contain @' }
+  //   ],
+  //   data: null
+  // }
+})
+```
+
+### API 批处理错误处理
+
+```js
+import { Effect } from 'effect'
+
+class ApiError {
+  readonly _tag = 'ApiError'
+  constructor(readonly status: number, readonly message: string) {}
+}
+
+interface BatchResult<T> {
+  successful: T[]
+  failed: { item: any; error: ApiError }[]
+}
+
+// 批量 API 请求
+const batchApiRequest = <T>(items: any[], requestFn: (item: any) => Promise<T>): Effect.Effect<never, never, BatchResult<T>> =>
+  Effect.gen(function* () {
+    const successful: T[] = []
+    const failed: { item: any; error: ApiError }[] = []
+
+    for (const item of items) {
+      const result = yield* Effect.tryPromise(() => requestFn(item)).pipe(
+        Effect.catchAll((error) => {
+          failed.push({
+            item,
+            error: new ApiError(500, error.message)
+          })
+          return Effect.succeed(null)
+        })
+      )
+
+      if (result !== null) {
+        successful.push(result)
+      }
+    }
+
+    return { successful, failed }
+  })
+
+// 使用
+const users = [
+  { id: 1, name: 'Alice' },
+  { id: 2, name: 'Bob' },
+  { id: 3, name: 'Charlie' }
+]
+
+const fetchUser = (user: any) =>
+  fetch(`/api/users/${user.id}`).then(res => res.json())
+
+const program = batchApiRequest(users, fetchUser)
+
+Effect.runPromise(program).then(result => {
+  console.log('Successful:', result.successful.length)
+  console.log('Failed:', result.failed.length)
+  console.log('Failed items:', result.failed.map(f => f.item.id))
+})
+```
+
+## 🔗 相关概念
+
+- **错误作为值**：理解 Effect 的错误处理哲学
+- **错误处理操作符**：Effect 提供的错误处理方法
+- **错误转换**：如何转换和映射错误
+- **错误恢复**：如何从错误中恢复
+
+## 📚 学习检查点
+
+- [ ] 理解多错误处理的场景
+- [ ] 掌握错误收集的方法
+- [ ] 了解错误报告的模式
+- [ ] 能够实现错误聚合逻辑
+- [ ] 理解错误分类和分组
+
+## 🚀 下一步
+
+→ [数据流操作](../04-data-flow/01-transformation-operations.mdx)

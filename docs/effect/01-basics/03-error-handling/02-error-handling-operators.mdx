@@ -1,0 +1,342 @@
+# 错误处理操作符
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了多种错误处理操作符，让你可以灵活地处理、转换和恢复错误。
+
+## 🎯 Effect.catchAll - 捕获所有错误
+
+捕获所有类型的错误，并提供恢复逻辑。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+// 定义错误类型
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+// 可能失败的 Effect
+const fetchData = (): Effect.Effect<never, NetworkError | ValidationError, Data> =>
+  Effect.fail(new NetworkError('Connection failed'))
+
+// 捕获所有错误
+const program = fetchData().pipe(
+  Effect.catchAll((error) => {
+    console.log('Caught error:', error.message)
+    return Effect.succeed({ error: error.message, data: null })
+  })
+)
+
+Effect.runPromise(program).then(result => {
+  console.log(result)  // { error: 'Connection failed', data: null }
+})
+```
+
+### 提供默认值
+
+```js
+import { Effect } from 'effect'
+
+const fetchUser = (id: string) =>
+  Effect.fail(new Error('User not found'))
+
+const withDefault = fetchUser('1').pipe(
+  Effect.catchAll(() =>
+    Effect.succeed({ id: '1', name: 'Default User' })
+  )
+)
+
+Effect.runSync(withDefault)  // { id: '1', name: 'Default User' }
+```
+
+### 错误日志记录
+
+```js
+import { Effect } from 'effect'
+
+const program = fetchData().pipe(
+  Effect.catchAll((error) => {
+    // 记录错误日志
+    console.error('Error occurred:', error)
+    
+    // 返回降级结果
+    return Effect.succeed({ status: 'error', data: null })
+  })
+)
+```
+
+## 💡 Effect.catchTag - 捕获特定错误
+
+根据错误的 `_tag` 属性捕获特定类型的错误。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+const fetchData = (): Effect.Effect<never, NetworkError | ValidationError, Data> =>
+  Effect.fail(new NetworkError('Connection failed'))
+
+// 只捕获 NetworkError
+const program = fetchData().pipe(
+  Effect.catchTag('NetworkError', (error) => {
+    console.log('Network error:', error.message)
+    return Effect.succeed({ error: 'network', data: null })
+  })
+)
+
+Effect.runPromise(program).then(result => {
+  console.log(result)  // { error: 'network', data: null }
+})
+```
+
+### 多个 catchTag
+
+```js
+import { Effect } from 'effect'
+
+const program = fetchData().pipe(
+  Effect.catchTag('NetworkError', (error) => {
+    return Effect.succeed({ error: 'network', data: null })
+  }),
+  Effect.catchTag('ValidationError', (error) => {
+    return Effect.succeed({ error: 'validation', data: null })
+  })
+)
+```
+
+### 处理未捕获的错误
+
+```js
+import { Effect } from 'effect'
+
+const program = fetchData().pipe(
+  Effect.catchTag('NetworkError', (error) => {
+    return Effect.succeed({ error: 'network', data: null })
+  }),
+  Effect.catchTag('ValidationError', (error) => {
+    return Effect.succeed({ error: 'validation', data: null })
+  }),
+  Effect.catchAll((error) => {
+    // 处理其他所有错误
+    return Effect.succeed({ error: 'unknown', data: null })
+  })
+)
+```
+
+## 🚀 Effect.orElse - 错误恢复
+
+在错误发生时提供替代的 Effect。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+const primarySource = Effect.fail(new Error('Primary failed'))
+
+const fallbackSource = Effect.succeed('Fallback result')
+
+const program = primarySource.pipe(
+  Effect.orElse(() => fallbackSource)
+)
+
+Effect.runSync(program)  // 'Fallback result'
+```
+
+### 多个备选方案
+
+```js
+import { Effect } from 'effect'
+
+const source1 = Effect.fail(new Error('Source 1 failed'))
+const source2 = Effect.fail(new Error('Source 2 failed'))
+const source3 = Effect.succeed('Source 3 result')
+
+const program = source1.pipe(
+  Effect.orElse(() => source2.pipe(
+    Effect.orElse(() => source3)
+  ))
+)
+
+Effect.runSync(program)  // 'Source 3 result'
+```
+
+### 条件恢复
+
+```js
+import { Effect } from 'effect'
+
+class RecoverableError {
+  readonly _tag = 'RecoverableError'
+  constructor(readonly message: string) {}
+}
+
+const program = Effect.fail(new RecoverableError('Can recover')).pipe(
+  Effect.orElse((error) => {
+    if (error._tag === 'RecoverableError') {
+      return Effect.succeed('Recovered')
+    }
+    return Effect.fail(error)
+  })
+)
+
+Effect.runSync(program)  // 'Recovered'
+```
+
+## 🎯 Effect.mapError - 错误转换
+
+转换错误类型或错误信息。
+
+### 基本用法
+
+```js
+import { Effect } from 'effect'
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+const program = Effect.fail(new Error('Raw error')).pipe(
+  Effect.mapError((error) => {
+    return new NetworkError(`Network: ${error.message}`)
+  })
+)
+
+Effect.runPromise(program).catch(error => {
+  console.log(error._tag)  // 'NetworkError'
+  console.log(error.message)  // 'Network: Raw error'
+})
+```
+
+### 错误信息增强
+
+```js
+import { Effect } from 'effect'
+
+const fetchUser = (id: string) =>
+  Effect.fail(new Error('User not found')).pipe(
+  Effect.mapError((error) => {
+    return new Error(`Failed to fetch user ${id}: ${error.message}`)
+  })
+)
+```
+
+### 错误类型转换
+
+```js
+import { Effect } from 'effect'
+
+class AppError {
+  readonly _tag = 'AppError'
+  constructor(readonly message: string, readonly code: string) {}
+}
+
+const program = Effect.fail(new Error('Database error')).pipe(
+  Effect.mapError((error) => {
+    return new AppError(error.message, 'DB_ERROR')
+  })
+)
+```
+
+## 📝 组合错误处理
+
+### 链式错误处理
+
+```js
+import { Effect } from 'effect'
+
+const program = fetchData().pipe(
+  // 首先尝试特定错误处理
+  Effect.catchTag('NetworkError', (error) => {
+    return Effect.succeed({ error: 'network', data: null })
+  }),
+  // 然后尝试恢复
+  Effect.orElse(() => fetchFromCache()),
+  // 最后捕获所有剩余错误
+  Effect.catchAll((error) => {
+    return Effect.succeed({ error: 'fallback', data: null })
+  })
+)
+```
+
+### 错误转换后恢复
+
+```js
+import { Effect } from 'effect'
+
+const program = fetchData().pipe(
+  Effect.mapError((error) => {
+    // 转换错误类型
+    return new AppError(error.message, 'FETCH_ERROR')
+  }),
+  Effect.catchTag('AppError', (error) => {
+    // 处理转换后的错误
+    return Effect.succeed({ error: error.code, data: null })
+  })
+)
+```
+
+### 带重试的错误处理
+
+```js
+import { Effect } from 'effect'
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+const fetchWithRetry = (url: string) =>
+  Effect.tryPromise(() => fetch(url)).pipe(
+  Effect.retry({
+    while: (error) => error instanceof NetworkError,
+    times: 3
+  }),
+  Effect.catchTag('NetworkError', (error) => {
+    return Effect.succeed({ error: 'network_timeout', data: null })
+  })
+)
+```
+
+## 🔗 相关概念
+
+- **错误作为值**：理解 Effect 的错误处理哲学
+- **错误转换**：如何转换和映射错误
+- **错误恢复**：如何从错误中恢复
+- **错误聚合**：如何处理多个错误
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.catchAll 的使用
+- [ ] 掌握 Effect.catchTag 的使用
+- [ ] 掌握 Effect.orElse 的使用
+- [ ] 掌握 Effect.mapError 的使用
+- [ ] 能够组合多种错误处理策略
+
+## 🚀 下一步
+
+→ [错误聚合](./03-error-aggregation.mdx)
