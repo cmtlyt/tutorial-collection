@@ -1,0 +1,256 @@
+# Effect.gen 基础
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect.gen 是 Effect 库中最强大的工具之一，它使用 JavaScript 的 Generator 语法提供了一种类似 async/await 的同步风格来编写异步代码。
+
+## 🎯 基本语法
+
+### Effect.gen 的结构
+
+```js
+import { Effect } from 'effect'
+
+// Effect.gen 的基本结构
+const program = Effect.gen(function* () {
+  // 在这里编写代码
+  const value = yield* Effect.succeed(42)
+  return value * 2
+})
+
+Effect.runSync(program)  // 84
+```
+
+### 与 async/await 的对比
+
+```js
+import { Effect } from 'effect'
+
+// ❌ async/await 风格
+async function traditionalAsync() {
+  try {
+    const user = await fetch('/api/users/1').then(res => res.json())
+    const posts = await fetch(`/api/users/${user.id}/posts`).then(res => res.json())
+    return { user, posts }
+  } catch (error) {
+    console.error(error)
+    throw error
+  }
+}
+
+// ✅ Effect.gen 风格
+const effectGen = Effect.gen(function* () {
+  const user = yield* Effect.tryPromise(() =>
+    fetch('/api/users/1').then(res => res.json())
+  )
+  const posts = yield* Effect.tryPromise(() =>
+    fetch(`/api/users/${user.id}/posts`).then(res => res.json())
+  )
+  return { user, posts }
+})
+```
+
+## 💡 yield* 的作用
+
+### yield* vs yield
+
+```js
+import { Effect } from 'effect'
+
+// yield* 用于 Effect
+const program1 = Effect.gen(function* () {
+  const value1 = yield* Effect.succeed(1)  // ✅ 正确
+  const value2 = yield* Effect.succeed(2)  // ✅ 正确
+  return value1 + value2
+})
+
+// ❌ 错误：使用 yield 而不是 yield*
+const program2 = Effect.gen(function* () {
+  const value1 = yield Effect.succeed(1)  // ❌ 错误
+  return value1
+})
+```
+
+### 为什么使用 yield*
+
+```js
+import { Effect } from 'effect'
+
+// yield* 让 Effect.gen 能够"委托"控制权
+const program = Effect.gen(function* () {
+  // yield* 将控制权传递给 Effect，等待其完成
+  const user = yield* fetchUser('1')
+  const posts = yield* fetchPosts(user.id)
+  const comments = yield* fetchComments(posts[0].id)
+  
+  return { user, posts, comments }
+})
+
+// 这等价于
+const equivalent = fetchUser('1').pipe(
+  Effect.flatMap(user => fetchPosts(user.id)),
+  Effect.flatMap(posts => fetchComments(posts[0].id)),
+  Effect.map(comments => ({ user, posts, comments }))
+)
+```
+
+## 🚀 实际应用
+
+### 顺序执行
+
+```js
+import { Effect } from 'effect'
+
+// 按顺序执行多个 Effect
+const sequentialProgram = Effect.gen(function* () {
+  console.log('Step 1')
+  const result1 = yield* Effect.succeed(1)
+  
+  console.log('Step 2')
+  const result2 = yield* Effect.succeed(2)
+  
+  console.log('Step 3')
+  const result3 = yield* Effect.succeed(3)
+  
+  return [result1, result2, result3]
+})
+
+Effect.runSync(sequentialProgram)
+// 输出：
+// Step 1
+// Step 2
+// Step 3
+// 返回：[1, 2, 3]
+```
+
+### 条件执行
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const user = yield* fetchUser('1')
+  
+  if (user.active) {
+    const posts = yield* fetchPosts(user.id)
+    return { user, posts }
+  } else {
+    return { user, posts: [] }
+  }
+})
+```
+
+### 循环执行
+
+```js
+import { Effect } from 'effect'
+
+// 使用 for 循环
+const program1 = Effect.gen(function* () {
+  const results = []
+  
+  for (let i = 0; i < 5; i++) {
+    const value = yield* Effect.succeed(i * 2)
+    results.push(value)
+  }
+  
+  return results
+})
+
+Effect.runSync(program1)  // [0, 2, 4, 6, 8]
+
+// 使用 while 循环
+const program2 = Effect.gen(function* () {
+  let count = 0
+  const results = []
+  
+  while (count < 3) {
+    const value = yield* Effect.succeed(count)
+    results.push(value)
+    count++
+  }
+  
+  return results
+})
+
+Effect.runSync(program2)  // [0, 1, 2]
+```
+
+## 📝 错误处理
+
+### try-catch 语法
+
+```js
+import { Effect } from 'effect'
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+const program = Effect.gen(function* () {
+  try {
+    const user = yield* fetchUser('1')
+    const posts = yield* fetchPosts(user.id)
+    return { user, posts }
+  } catch (error) {
+    // 捕获 Effect 中的错误
+    console.error('Error:', error)
+    return { user: null, posts: [] }
+  }
+})
+```
+
+### 错误类型处理
+
+```js
+import { Effect } from 'effect'
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+class ValidationError {
+  readonly _tag = 'ValidationError'
+  constructor(readonly message: string) {}
+}
+
+const program = Effect.gen(function* () {
+  try {
+    const user = yield* fetchUser('1')
+    return user
+  } catch (error) {
+    if (error._tag === 'NetworkError') {
+      console.log('Network error:', error.message)
+      return null
+    } else if (error._tag === 'ValidationError') {
+      console.log('Validation error:', error.message)
+      return null
+    } else {
+      throw error
+    }
+  }
+})
+```
+
+## 🔗 相关概念
+
+- **Effect.gen 高级用法**：更复杂的 Effect.gen 模式
+- **Generator 语法**：JavaScript Generator 的基础
+- **异步编程**：Effect.gen 与 async/await 的对比
+
+## 📚 学习检查点
+
+- [ ] 理解 Effect.gen 的基本语法
+- [ ] 掌握 yield* 的作用
+- [ ] 能够使用 Effect.gen 编写顺序执行的代码
+- [ ] 掌握 Effect.gen 中的错误处理
+- [ ] 理解 Effect.gen 与 async/await 的区别
+
+## 🚀 下一步
+
+→ [Effect.gen 高级用法](./02-effect-gen-advanced.mdx)

@@ -71,7 +71,24 @@
 
 ## 第二阶段：Effect 高级特性
 
-### 2.1 异步与并发
+### 2.1 Effect.gen 和 Generator
+- [ ] Effect.gen 基础
+  - Effect.gen 基本语法
+  - yield* 的作用
+  - 与 async/await 的对比
+  - 实际应用场景
+- [ ] Effect.gen 高级用法
+  - 并发控制
+  - 资源管理
+  - 复杂流程控制
+  - 模式和最佳实践
+- [ ] Generator 模式
+  - Generator 基础
+  - yield* 的委托机制
+  - 常见模式
+  - 错误处理模式
+
+### 2.2 异步与并发
 - [ ] 异步操作
   - Effect.sleep - 延迟执行
   - Effect.timeout - 超时控制
@@ -88,7 +105,7 @@
   - 并发限制
   - 背压控制
 
-### 2.2 资源管理
+### 2.3 资源管理
 - [ ] 资源概念
   - Effect.acquireRelease - 资源获取与释放
   - Scope 作用域管理
@@ -105,7 +122,7 @@
   - 网络连接
   - 临时文件
 
-### 2.3 调度与时间
+### 2.4 调度与时间
 - [ ] 调度器基础
   - Scheduler 概念
   - Effect.scheduler - 调度器配置
@@ -122,7 +139,7 @@
   - 节流与防抖
   - 批处理
 
-### 2.4 状态管理
+### 2.5 状态管理
 - [ ] Ref 可变引用
   - Effect.Ref.make - 创建可变状态
   - Effect.Ref.get - 读取状态

@@ -1,0 +1,289 @@
+# Effect.gen 高级用法
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect.gen 不仅提供了类似 async/await 的语法，还支持许多高级模式，让你能够编写更复杂、更优雅的代码。
+
+## 🎯 并发控制
+
+### Effect.all 并行执行
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // 并行执行多个 Effect
+  const [user, posts, comments] = yield* Effect.all([
+    fetchUser('1'),
+    fetchPosts('1'),
+    fetchComments('1')
+  ])
+  
+  return { user, posts, comments }
+})
+
+Effect.runSync(program)
+```
+
+### 并发限制
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // 限制并发数量为 3
+  const results = yield* Effect.all(
+    ['1', '2', '3', '4', '5'].map(id => fetchUser(id)),
+    { concurrency: 3 }
+  )
+  
+  return results
+})
+```
+
+### Effect.forEach 并发遍历
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const userIds = ['1', '2', '3', '4', '5']
+  
+  // 并发遍历
+  const users = yield* Effect.forEach(userIds, id => fetchUser(id), {
+    concurrency: 3
+  })
+  
+  return users
+})
+```
+
+## 💡 资源管理
+
+### Effect.acquireRelease 资源获取和释放
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // 获取资源
+  const connection = yield* Effect.acquireRelease(
+    Effect.tryPromise(() => createDatabaseConnection()),
+    connection => Effect.tryPromise(() => connection.close())
+  )
+  
+  // 使用资源
+  const result = yield* Effect.tryPromise(() =>
+    connection.query('SELECT * FROM users')
+  )
+  
+  return result
+})
+
+// 资源会在 Effect 完成后自动释放
+Effect.runPromise(program)
+```
+
+### 多个资源管理
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // 管理多个资源
+  const connection = yield* Effect.acquireRelease(
+    Effect.tryPromise(() => createDatabaseConnection()),
+    connection => Effect.tryPromise(() => connection.close())
+  )
+  
+  const cache = yield* Effect.acquireRelease(
+    Effect.sync(() => createCache()),
+    cache => Effect.sync(() => cache.clear())
+  )
+  
+  // 使用资源
+  const result = yield* Effect.gen(function* () {
+    const cached = cache.get('users')
+    if (cached) {
+      return cached
+    }
+    
+    const data = yield* Effect.tryPromise(() =>
+      connection.query('SELECT * FROM users')
+    )
+    cache.set('users', data)
+    return data
+  })
+  
+  return result
+})
+```
+
+## 🚀 复杂流程控制
+
+### 分支和条件
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const user = yield* fetchUser('1')
+  
+  // 复杂的条件逻辑
+  if (user.role === 'admin') {
+    const allUsers = yield* fetchAllUsers()
+    const allPosts = yield* fetchAllPosts()
+    return { type: 'admin', users: allUsers, posts: allPosts }
+  } else if (user.role === 'moderator') {
+    const posts = yield* fetchPosts(user.id)
+    const comments = yield* fetchComments(user.id)
+    return { type: 'moderator', posts, comments }
+  } else {
+    const profile = yield* fetchProfile(user.id)
+    return { type: 'user', profile }
+  }
+})
+```
+
+### 重试逻辑
+
+```js
+import { Effect } from 'effect'
+
+class NetworkError {
+  readonly _tag = 'NetworkError'
+  constructor(readonly message: string) {}
+}
+
+const program = Effect.gen(function* () {
+  // 带重试的操作
+  const user = yield* fetchUser('1').pipe(
+    Effect.retry({
+      while: (error) => error._tag === 'NetworkError',
+      times: 3
+    })
+  )
+  
+  return user
+})
+```
+
+### 超时控制
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // 带超时的操作
+  const user = yield* fetchUser('1').pipe(
+    Effect.timeout(5000)  // 5 秒超时
+  )
+  
+  return user
+})
+```
+
+## 📝 模式和最佳实践
+
+### Effect.gen 嵌套
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // 外层 Effect.gen
+  const user = yield* fetchUser('1')
+  
+  // 内层 Effect.gen
+  const enrichedUser = yield* Effect.gen(function* () {
+    const posts = yield* fetchPosts(user.id)
+    const comments = yield* fetchComments(user.id)
+    
+    return {
+      ...user,
+      posts,
+      comments,
+      totalEngagement: posts.length + comments.length
+    }
+  })
+  
+  return enrichedUser
+})
+```
+
+### 数据转换管道
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // 获取原始数据
+  const rawData = yield* fetchData()
+  
+  // 验证数据
+  const validated = yield* validateData(rawData)
+  
+  // 转换数据
+  const transformed = yield* transformData(validated)
+  
+  // 保存数据
+  const saved = yield* saveData(transformed)
+  
+  return saved
+})
+
+// 等价于
+const pipeline = fetchData().pipe(
+  Effect.flatMap(validateData),
+  Effect.flatMap(transformData),
+  Effect.flatMap(saveData)
+)
+```
+
+### 错误恢复和降级
+
+```js
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  let user
+  
+  try {
+    // 尝试从主数据源获取
+    user = yield* fetchUserFromPrimary('1')
+  } catch (primaryError) {
+    try {
+      // 降级到备用数据源
+      console.log('Primary failed, trying fallback')
+      user = yield* fetchUserFromFallback('1')
+    } catch (fallbackError) {
+      // 最终降级到默认值
+      console.log('Fallback failed, using default')
+      user = { id: '1', name: 'Default User' }
+    }
+  }
+  
+  return user
+})
+```
+
+## 🔗 相关概念
+
+- **Effect.gen 基础**：Effect.gen 的基本语法
+- **并发编程**：Effect 的并发控制能力
+- **资源管理**：Effect 的资源管理机制
+
+## 📚 学习检查点
+
+- [ ] 掌握 Effect.gen 中的并发控制
+- [ ] 理解 Effect.gen 中的资源管理
+- [ ] 能够编写复杂的流程控制逻辑
+- [ ] 掌握 Effect.gen 的嵌套使用
+- [ ] 了解 Effect.gen 的最佳实践
+
+## 🚀 下一步
+
+→ [并发编程](../02-concurrency/01-fibers.mdx)
