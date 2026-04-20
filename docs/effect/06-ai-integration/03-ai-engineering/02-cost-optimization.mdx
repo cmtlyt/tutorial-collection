@@ -1,0 +1,920 @@
+# 成本优化
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了全面的 AI 成本优化能力，包括 Token 优化、缓存策略、批处理和模型切换，帮助开发者降低 AI 应用的运营成本。
+
+## 🎯 Token 优化
+
+### 提示词压缩
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 提示词压缩
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 提示词压缩器
+  const promptCompressor = {
+    compress: (prompt) => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          {
+            role: 'system',
+            content: 'Compress the following prompt while maintaining its meaning. Use concise language.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ]
+      })
+      
+      return response.text
+    })
+  }
+  
+  const originalPrompt = 'I would like you to please provide me with a detailed explanation of the concept of functional programming, including its key principles and benefits.'
+  
+  console.log('Original prompt:', originalPrompt)
+  console.log('Original length:', originalPrompt.length)
+  
+  const compressedPrompt = yield* promptCompressor.compress(originalPrompt)
+  console.log('\nCompressed prompt:', compressedPrompt)
+  console.log('Compressed length:', compressedPrompt.length)
+  console.log('Compression ratio:', ((originalPrompt.length - compressedPrompt.length) / originalPrompt.length * 100).toFixed(1) + '%')
+  
+  return { originalPrompt, compressedPrompt }
+})
+
+Effect.runSync(program)
+```
+
+### 响应截断
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 响应截断
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 响应截断器
+  const responseTruncator = {
+    truncate: (response, maxLength) => {
+      if (response.length <= maxLength) {
+        return response
+      }
+      
+      const truncated = response.substring(0, maxLength)
+      const lastSentence = truncated.lastIndexOf('.')
+      
+      if (lastSentence > maxLength * 0.5) {
+        return truncated.substring(0, lastSentence + 1)
+      }
+      
+      return truncated + '...'
+    }
+  }
+  
+  const response = yield* ai.generate({
+    model: 'gpt-4',
+    maxTokens: 500,
+    messages: [
+      { role: 'user', content: 'Write a detailed explanation of quantum computing' }
+    ]
+  })
+  
+  console.log('Original response:', response.text)
+  console.log('Original length:', response.text.length)
+  
+  const truncated = responseTruncator.truncate(response.text, 200)
+  console.log('\nTruncated response:', truncated)
+  console.log('Truncated length:', truncated.length)
+  
+  return { original: response.text, truncated }
+})
+
+Effect.runSync(program)
+```
+
+### Token 计数
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// Token 计数
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // Token 计数器
+  const tokenCounter = {
+    estimateTokens: (text) => {
+      // 简单估算：大约 4 个字符 = 1 个 token
+      return Math.ceil(text.length / 4)
+    },
+    
+    estimateCost: (tokens, model) => {
+      const costs = {
+        'gpt-3.5-turbo': 0.000002,
+        'gpt-4': 0.00003,
+        'gpt-4-turbo': 0.00001
+      }
+      
+      return tokens * (costs[model] || 0.000002)
+    }
+  }
+  
+  const prompt = 'What is the meaning of life?'
+  const model = 'gpt-4'
+  
+  const estimatedTokens = tokenCounter.estimateTokens(prompt)
+  const estimatedCost = tokenCounter.estimateCost(estimatedTokens, model)
+  
+  console.log('Prompt:', prompt)
+  console.log('Estimated tokens:', estimatedTokens)
+  console.log('Estimated cost:', estimatedCost.toFixed(6))
+  
+  // 实际调用
+  const response = yield* ai.generate({
+    model: model,
+    messages: [
+      { role: 'user', content: prompt }
+    ]
+  })
+  
+  console.log('\nActual tokens:', response.usage.totalTokens)
+  console.log('Actual cost:', (response.usage.totalTokens * 0.00003).toFixed(6))
+  
+  return { estimated: { tokens: estimatedTokens, cost: estimatedCost }, actual: response.usage }
+})
+
+Effect.runSync(program)
+```
+
+## 💡 缓存策略
+
+### 基本缓存
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本缓存
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 缓存
+  const cache = new Map()
+  
+  const cachedGenerate = (prompt, model) => Effect.gen(function* () {
+    const cacheKey = `${model}:${prompt}`
+    
+    // 检查缓存
+    if (cache.has(cacheKey)) {
+      console.log('Cache hit!')
+      return cache.get(cacheKey)
+    }
+    
+    console.log('Cache miss, generating...')
+    
+    // 生成响应
+    const response = yield* ai.generate({
+      model: model,
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    })
+    
+    // 缓存响应
+    cache.set(cacheKey, response)
+    
+    return response
+  })
+  
+  // 第一次调用
+  const response1 = yield* cachedGenerate('What is Effect?', 'gpt-4')
+  console.log('Response 1:', response1.text)
+  
+  // 第二次调用 - 从缓存获取
+  const response2 = yield* cachedGenerate('What is Effect?', 'gpt-4')
+  console.log('Response 2:', response2.text)
+  
+  return { response1, response2 }
+})
+
+Effect.runSync(program)
+```
+
+### LRU 缓存
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// LRU 缓存
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // LRU 缓存
+  const lruCache = {
+    maxSize: 3,
+    cache: new Map(),
+    
+    get: (key) => {
+      if (lruCache.cache.has(key)) {
+        const value = lruCache.cache.get(key)
+        lruCache.cache.delete(key)
+        lruCache.cache.set(key, value)
+        return value
+      }
+      return null
+    },
+    
+    set: (key, value) => {
+      if (lruCache.cache.has(key)) {
+        lruCache.cache.delete(key)
+      } else if (lruCache.cache.size >= lruCache.maxSize) {
+        const firstKey = lruCache.cache.keys().next().value
+        lruCache.cache.delete(firstKey)
+        console.log(`Evicted ${firstKey} from cache`)
+      }
+      
+      lruCache.cache.set(key, value)
+    }
+  }
+  
+  const cachedGenerate = (prompt, model) => Effect.gen(function* () {
+    const cacheKey = `${model}:${prompt}`
+    
+    const cached = lruCache.get(cacheKey)
+    if (cached) {
+      console.log('Cache hit!')
+      return cached
+    }
+    
+    console.log('Cache miss, generating...')
+    
+    const response = yield* ai.generate({
+      model: model,
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    })
+    
+    lruCache.set(cacheKey, response)
+    
+    return response
+  })
+  
+  // 填充缓存
+  yield* cachedGenerate('Prompt 1', 'gpt-4')
+  yield* cachedGenerate('Prompt 2', 'gpt-4')
+  yield* cachedGenerate('Prompt 3', 'gpt-4')
+  
+  // 访问 Prompt 1（使其成为最近使用）
+  yield* cachedGenerate('Prompt 1', 'gpt-4')
+  
+  // 添加新项目 - 应该淘汰 Prompt 2
+  yield* cachedGenerate('Prompt 4', 'gpt-4')
+  
+  console.log('Cache size:', lruCache.cache.size)
+  
+  return lruCache.cache
+})
+
+Effect.runSync(program)
+```
+
+### 带过期时间的缓存
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 带过期时间的缓存
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 带过期时间的缓存
+  const timedCache = {
+    cache: new Map(),
+    ttl: 60000, // 60秒
+    
+    get: (key) => {
+      const item = timedCache.cache.get(key)
+      
+      if (!item) {
+        return null
+      }
+      
+      if (Date.now() > item.expiry) {
+        timedCache.cache.delete(key)
+        console.log('Cache expired')
+        return null
+      }
+      
+      console.log('Cache hit!')
+      return item.value
+    },
+    
+    set: (key, value, ttl) => {
+      const expiry = Date.now() + (ttl || timedCache.ttl)
+      timedCache.cache.set(key, { value, expiry })
+    }
+  }
+  
+  const cachedGenerate = (prompt, model) => Effect.gen(function* () {
+    const cacheKey = `${model}:${prompt}`
+    
+    const cached = timedCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
+    
+    console.log('Cache miss, generating...')
+    
+    const response = yield* ai.generate({
+      model: model,
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    })
+    
+    timedCache.set(cacheKey, response, 10000) // 10秒过期
+    
+    return response
+  })
+  
+  // 第一次调用
+  const response1 = yield* cachedGenerate('What is Effect?', 'gpt-4')
+  console.log('Response 1:', response1.text)
+  
+  // 立即再次调用 - 从缓存获取
+  const response2 = yield* cachedGenerate('What is Effect?', 'gpt-4')
+  console.log('Response 2:', response2.text)
+  
+  // 等待缓存过期
+  yield* Effect.sleep(11000)
+  
+  // 缓存已过期
+  const response3 = yield* cachedGenerate('What is Effect?', 'gpt-4')
+  console.log('Response 3:', response3.text)
+  
+  return { response1, response2, response3 }
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 批处理
+
+### 基本批处理
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本批处理
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  const prompts = [
+    'What is Effect?',
+    'How do I use Effect?',
+    'What are the benefits of Effect?'
+  ]
+  
+  // 串行处理
+  const serialStart = Date.now()
+  const serialResults = []
+  
+  for (const prompt of prompts) {
+    const response = yield* ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    })
+    serialResults.push(response)
+  }
+  
+  const serialEnd = Date.now()
+  console.log('Serial processing:', serialEnd - serialStart, 'ms')
+  
+  // 并行处理
+  const parallelStart = Date.now()
+  const parallelResults = yield* Effect.all(
+    prompts.map(prompt => ai.generate({
+      model: 'gpt-4',
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    })),
+    { concurrency: 'unbounded' }
+  )
+  const parallelEnd = Date.now()
+  console.log('Parallel processing:', parallelEnd - parallelStart, 'ms')
+  
+  console.log('Speedup:', ((serialEnd - serialStart) / (parallelEnd - parallelStart)).toFixed(2) + 'x')
+  
+  return { serialResults, parallelResults }
+})
+
+Effect.runSync(program)
+```
+
+### 批处理窗口
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 批处理窗口
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  const prompts = Array.from({ length: 20 }, (_, i) => `Prompt ${i + 1}`)
+  const batchSize = 5
+  
+  // 批处理
+  const batchProcess = (items, size) => Effect.gen(function* () {
+    const results = []
+    
+    for (let i = 0; i < items.length; i += size) {
+      const batch = items.slice(i, i + size)
+      console.log(`Processing batch ${Math.floor(i / size) + 1} of ${Math.ceil(items.length / size)}`)
+      
+      const batchResults = yield* Effect.all(
+        batch.map(prompt => ai.generate({
+          model: 'gpt-4',
+          messages: [
+            { role: 'user', content: prompt }
+          ]
+        })),
+        { concurrency: 'unbounded' }
+      )
+      
+      results.push(...batchResults)
+    }
+    
+    return results
+  })
+  
+  const start = Date.now()
+  const results = yield* batchProcess(prompts, batchSize)
+  const end = Date.now()
+  
+  console.log('Total time:', end - start, 'ms')
+  console.log('Processed:', results.length, 'items')
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 速率限制
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 速率限制
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 速率限制器
+  const rateLimiter = {
+    maxRequests: 5,
+    windowMs: 1000,
+    requests: [],
+    
+    wait: () => Effect.gen(function* () {
+      const now = Date.now()
+      
+      // 清理过期请求
+      rateLimiter.requests = rateLimiter.requests.filter(
+        time => now - time < rateLimiter.windowMs
+      )
+      
+      // 检查是否超过限制
+      if (rateLimiter.requests.length >= rateLimiter.maxRequests) {
+        const oldestRequest = rateLimiter.requests[0]
+        const waitTime = rateLimiter.windowMs - (now - oldestRequest)
+        console.log(`Rate limit reached, waiting ${waitTime}ms`)
+        yield* Effect.sleep(waitTime)
+      }
+      
+      rateLimiter.requests.push(now)
+    })
+  }
+  
+  const prompts = Array.from({ length: 15 }, (_, i) => `Prompt ${i + 1}`)
+  
+  // 带速率限制的处理
+  const results = yield* Effect.all(
+    prompts.map(prompt => Effect.gen(function* () {
+      yield* rateLimiter.wait()
+      
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      })
+      
+      return response
+    })),
+    { concurrency: 1 }
+  )
+  
+  console.log('Processed:', results.length, 'prompts')
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 模型切换
+
+### 基于成本的切换
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基于成本的切换
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 模型切换器
+  const modelSwitcher = {
+    models: {
+      cheap: 'gpt-3.5-turbo',
+      expensive: 'gpt-4'
+    },
+    
+    costs: {
+      'gpt-3.5-turbo': 0.000002,
+      'gpt-4': 0.00003
+    },
+    
+    selectModel: (budget, estimatedTokens) => {
+      const expensiveCost = modelSwitcher.costs[modelSwitcher.models.expensive] * estimatedTokens
+      
+      if (expensiveCost <= budget) {
+        return modelSwitcher.models.expensive
+      }
+      
+      return modelSwitcher.models.cheap
+    }
+  }
+  
+  const prompt = 'What is the meaning of life?'
+  const budget = 0.01
+  const estimatedTokens = 100
+  
+  const selectedModel = modelSwitcher.selectModel(budget, estimatedTokens)
+  console.log('Selected model:', selectedModel)
+  
+  const response = yield* ai.generate({
+    model: selectedModel,
+    messages: [
+      { role: 'user', content: prompt }
+    ]
+  })
+  
+  console.log('Response:', response.text)
+  console.log('Actual cost:', (response.usage.totalTokens * modelSwitcher.costs[selectedModel]).toFixed(6))
+  
+  return response
+})
+
+Effect.runSync(program)
+```
+
+### 基于复杂度的切换
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基于复杂度的切换
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 复杂度评估器
+  const complexityEvaluator = {
+    evaluate: (prompt) => {
+      const indicators = [
+        prompt.length,
+        (prompt.match(/\?/g) || []).length,
+        (prompt.match(/explain|describe|analyze/i) || []).length
+      ]
+      
+      const score = indicators.reduce((sum, val) => sum + val, 0)
+      
+      if (score > 100) {
+        return 'high'
+      } else if (score > 50) {
+        return 'medium'
+      }
+      return 'low'
+    },
+    
+    selectModel: (complexity) => {
+      const models = {
+        low: 'gpt-3.5-turbo',
+        medium: 'gpt-3.5-turbo-16k',
+        high: 'gpt-4'
+      }
+      
+      return models[complexity] || models.low
+    }
+  }
+  
+  const prompts = [
+    'What is 2 + 2?',
+    'Explain the concept of functional programming',
+    'Analyze the impact of artificial intelligence on modern society and discuss its implications for the future of work, education, and human relationships'
+  ]
+  
+  const results = yield* Effect.all(
+    prompts.map(prompt => Effect.gen(function* () {
+      const complexity = complexityEvaluator.evaluate(prompt)
+      const model = complexityEvaluator.selectModel(complexity)
+      
+      console.log(`Prompt complexity: ${complexity}, Model: ${model}`)
+      
+      const response = yield* ai.generate({
+        model: model,
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      })
+      
+      return { prompt, complexity, model, response: response.text }
+    })),
+    { concurrency: 1 }
+  )
+  
+  console.log('Results:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 自适应切换
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 自适应切换
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 自适应模型选择器
+  const adaptiveSelector = {
+    history: [],
+    
+    record: (model, quality, cost) => {
+      adaptiveSelector.history.push({ model, quality, cost })
+    },
+    
+    evaluate: () => {
+      if (adaptiveSelector.history.length < 3) {
+        return 'gpt-3.5-turbo'
+      }
+      
+      const recent = adaptiveSelector.history.slice(-3)
+      const avgQuality = recent.reduce((sum, h) => sum + h.quality, 0) / recent.length
+      const avgCost = recent.reduce((sum, h) => sum + h.cost, 0) / recent.length
+      
+      if (avgQuality < 0.5 && avgCost < 0.01) {
+        return 'gpt-4'
+      }
+      
+      return 'gpt-3.5-turbo'
+    }
+  }
+  
+  const prompt = 'What is the meaning of life?'
+  
+  // 多次调用，自适应选择
+  for (let i = 0; i < 5; i++) {
+    const model = adaptiveSelector.evaluate()
+    console.log(`Iteration ${i + 1}: Using model ${model}`)
+    
+    const response = yield* ai.generate({
+      model: model,
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    })
+    
+    const quality = response.text.length / 1000 // 简单质量指标
+    const cost = response.usage.totalTokens * 0.00002
+    
+    adaptiveSelector.record(model, quality, cost)
+  }
+  
+  console.log('History:', adaptiveSelector.history)
+  
+  return adaptiveSelector.history
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 成本监控系统
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 成本监控系统
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 成本监控
+  const costMonitor = {
+    costs: {
+      'gpt-3.5-turbo': 0.000002,
+      'gpt-4': 0.00003
+    },
+    
+    usage: [],
+    
+    track: (model, tokens) => {
+      const cost = costMonitor.costs[model] * tokens
+      costMonitor.usage.push({
+        model,
+        tokens,
+        cost,
+        timestamp: Date.now()
+      })
+    },
+    
+    getTotal: () => {
+      return costMonitor.usage.reduce((sum, u) => sum + u.cost, 0)
+    },
+    
+    getByModel: () => {
+      const byModel = {}
+      
+      for (const usage of costMonitor.usage) {
+        if (!byModel[usage.model]) {
+          byModel[usage.model] = { tokens: 0, cost: 0 }
+        }
+        byModel[usage.model].tokens += usage.tokens
+        byModel[usage.model].cost += usage.cost
+      }
+      
+      return byModel
+    }
+  }
+  
+  // 使用成本监控
+  const prompts = [
+    'What is Effect?',
+    'How do I use Effect?',
+    'What are the benefits of Effect?'
+  ]
+  
+  yield* Effect.all(
+    prompts.map(prompt => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      })
+      
+      costMonitor.track('gpt-4', response.usage.totalTokens)
+      
+      return response.text
+    })),
+    { concurrency: 1 }
+  )
+  
+  console.log('Total cost:', costMonitor.getTotal().toFixed(6))
+  console.log('Cost by model:', costMonitor.getByModel())
+  
+  return costMonitor.usage
+})
+
+Effect.runSync(program)
+```
+
+### 智能批处理系统
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 智能批处理系统
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 智能批处理器
+  const smartBatcher = {
+    maxConcurrency: 3,
+    maxTokens: 3000,
+    
+    estimateTokens: (prompt) => {
+      return Math.ceil(prompt.length / 4)
+    },
+    
+    batch: (prompts) => {
+      const batches = []
+      let currentBatch = []
+      let currentTokens = 0
+      
+      for (const prompt of prompts) {
+        const estimatedTokens = smartBatcher.estimateTokens(prompt)
+        
+        if (currentBatch.length >= smartBatcher.maxConcurrency ||
+            currentTokens + estimatedTokens > smartBatcher.maxTokens) {
+          batches.push(currentBatch)
+          currentBatch = []
+          currentTokens = 0
+        }
+        
+        currentBatch.push(prompt)
+        currentTokens += estimatedTokens
+      }
+      
+      if (currentBatch.length > 0) {
+        batches.push(currentBatch)
+      }
+      
+      return batches
+    }
+  }
+  
+  const prompts = Array.from({ length: 20 }, (_, i) => 
+    `This is prompt number ${i + 1} with some additional text to increase token count.`
+  )
+  
+  const batches = smartBatcher.batch(prompts)
+  console.log('Created', batches.length, 'batches')
+  
+  // 处理批次
+  const results = []
+  
+  for (let i = 0; i < batches.length; i++) {
+    console.log(`Processing batch ${i + 1}/${batches.length}`)
+    
+    const batchResults = yield* Effect.all(
+      batches[i].map(prompt => ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      })),
+      { concurrency: 'unbounded' }
+    )
+    
+    results.push(...batchResults)
+  }
+  
+  console.log('Processed', results.length, 'prompts')
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **模型管理**：模型选择、参数调优、版本控制
+- **安全与合规**：内容过滤、数据隐私、访问控制
+- **AI 抽象**：@effect/ai、AI 模型接口
+
+## 📚 学习检查点
+
+- [ ] 掌握 Token 优化
+- [ ] 理解缓存策略
+- [ ] 了解批处理
+- [ ] 掌握模型切换
+- [ ] 能够实现完整的成本优化系统
+
+## 🚀 下一步
+
+→ [安全与合规](./03-security-compliance.mdx)

@@ -1,0 +1,1035 @@
+# 安全与合规
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了全面的 AI 安全与合规能力，包括内容过滤、数据隐私、访问控制和审计日志，帮助开发者构建安全、合规的 AI 应用。
+
+## 🎯 内容过滤
+
+### 基本内容过滤
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本内容过滤
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 内容过滤器
+  const contentFilter = {
+    blockedWords: ['password', 'secret', 'confidential'],
+    
+    check: (text) => {
+      const lowerText = text.toLowerCase()
+      return contentFilter.blockedWords.some(word => lowerText.includes(word))
+    },
+    
+    filter: (text) => {
+      let filtered = text
+      
+      for (const word of contentFilter.blockedWords) {
+        const regex = new RegExp(word, 'gi')
+        filtered = filtered.replace(regex, '***')
+      }
+      
+      return filtered
+    }
+  }
+  
+  const userInputs = [
+    'What is the password?',
+    'Tell me about Effect',
+    'This is confidential information'
+  ]
+  
+  for (const input of userInputs) {
+    const isBlocked = contentFilter.check(input)
+    
+    if (isBlocked) {
+      console.log(`Blocked: ${input}`)
+      console.log(`Filtered: ${contentFilter.filter(input)}`)
+    } else {
+      console.log(`Allowed: ${input}`)
+      
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'user', content: input }
+        ]
+      })
+      
+      console.log(`Response: ${response.text}`)
+    }
+  }
+  
+  return contentFilter
+})
+
+Effect.runSync(program)
+```
+
+### AI 内容审核
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// AI 内容审核
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // AI 内容审核器
+  const aiModerator = {
+    moderate: (content) => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a content moderator. Analyze the content and determine if it violates any policies. Respond with either "ALLOWED" or "BLOCKED" followed by a brief explanation.'
+          },
+          {
+            role: 'user',
+            content: content
+          }
+        ]
+      })
+      
+      const decision = response.text.startsWith('BLOCKED')
+      const explanation = response.text.substring(response.text.indexOf(' ') + 1)
+      
+      return { blocked: decision, explanation }
+    })
+  }
+  
+  const contents = [
+    'What is the weather today?',
+    'How do I hack into a system?',
+    'Tell me a joke'
+  ]
+  
+  for (const content of contents) {
+    const moderation = yield* aiModerator.moderate(content)
+    
+    console.log(`Content: ${content}`)
+    console.log(`Decision: ${moderation.blocked ? 'BLOCKED' : 'ALLOWED'}`)
+    console.log(`Explanation: ${moderation.explanation}\n`)
+  }
+  
+  return aiModerator
+})
+
+Effect.runSync(program)
+```
+
+### 多层内容过滤
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 多层内容过滤
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 多层内容过滤器
+  const multiLayerFilter = {
+    // 第一层：关键词过滤
+    keywordFilter: {
+      blockedWords: ['hack', 'steal', 'illegal'],
+      check: (text) => {
+        const lowerText = text.toLowerCase()
+        return multiLayerFilter.keywordFilter.blockedWords.some(word => lowerText.includes(word))
+      }
+    },
+    
+    // 第二层：AI 审核
+    aiFilter: {
+      moderate: (content) => Effect.gen(function* () {
+        const response = yield* ai.generate({
+          model: 'gpt-4',
+          messages: [
+            {
+              role: 'system',
+              content: 'Moderate this content. Respond with "ALLOWED" or "BLOCKED".'
+            },
+            { role: 'user', content: content }
+          ]
+        })
+        
+        return response.text.startsWith('BLOCKED')
+      })
+    },
+    
+    // 综合过滤
+    filter: (content) => Effect.gen(function* () {
+      // 第一层检查
+      if (multiLayerFilter.keywordFilter.check(content)) {
+        return { allowed: false, reason: 'Keyword blocked', layer: 1 }
+      }
+      
+      // 第二层检查
+      const aiBlocked = yield* multiLayerFilter.aiFilter.moderate(content)
+      if (aiBlocked) {
+        return { allowed: false, reason: 'AI moderation blocked', layer: 2 }
+      }
+      
+      return { allowed: true, reason: 'Content passed all filters', layer: 0 }
+    })
+  }
+  
+  const contents = [
+    'How do I learn programming?',
+    'How do I hack a password?',
+    'What is the meaning of life?'
+  ]
+  
+  for (const content of contents) {
+    const result = yield* multiLayerFilter.filter(content)
+    
+    console.log(`Content: ${content}`)
+    console.log(`Allowed: ${result.allowed}`)
+    console.log(`Reason: ${result.reason}`)
+    console.log(`Layer: ${result.layer}\n`)
+  }
+  
+  return multiLayerFilter
+})
+
+Effect.runSync(program)
+```
+
+## 💡 数据隐私
+
+### 数据脱敏
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 数据脱敏
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 数据脱敏器
+  const dataSanitizer = {
+    patterns: {
+      email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
+      phone: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g,
+      ssn: /\b\d{3}-\d{2}-\d{4}\b/g
+    },
+    
+    sanitize: (text) => {
+      let sanitized = text
+      
+      // 脱敏邮箱
+      sanitized = sanitized.replace(dataSanitizer.patterns.email, '***@***.***')
+      
+      // 脱敏电话
+      sanitized = sanitized.replace(dataSanitizer.patterns.phone, '***-***-****')
+      
+      // 脱敏 SSN
+      sanitized = sanitized.replace(dataSanitizer.patterns.ssn, '***-**-****')
+      
+      return sanitized
+    }
+  }
+  
+  const userInputs = [
+    'My email is john@example.com',
+    'Call me at 555-123-4567',
+    'My SSN is 123-45-6789'
+  ]
+  
+  for (const input of userInputs) {
+    const sanitized = dataSanitizer.sanitize(input)
+    console.log(`Original: ${input}`)
+    console.log(`Sanitized: ${sanitized}\n`)
+  }
+  
+  return dataSanitizer
+})
+
+Effect.runSync(program)
+```
+
+### 数据加密
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 数据加密
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 简单加密（实际应用中应使用专业加密库）
+  const dataEncryptor = {
+    key: 'secret-key-123',
+    
+    encrypt: (text) => {
+      let encrypted = ''
+      for (let i = 0; i < text.length; i++) {
+        encrypted += String.fromCharCode(text.charCodeAt(i) ^ dataEncryptor.key.charCodeAt(i % dataEncryptor.key.length))
+      }
+      return Buffer.from(encrypted).toString('base64')
+    },
+    
+    decrypt: (encrypted) => {
+      const decoded = Buffer.from(encrypted, 'base64').toString()
+      let decrypted = ''
+      for (let i = 0; i < decoded.length; i++) {
+        decrypted += String.fromCharCode(decoded.charCodeAt(i) ^ dataEncryptor.key.charCodeAt(i % dataEncryptor.key.length))
+      }
+      return decrypted
+    }
+  }
+  
+  const sensitiveData = 'This is sensitive information'
+  
+  const encrypted = dataEncryptor.encrypt(sensitiveData)
+  console.log('Encrypted:', encrypted)
+  
+  const decrypted = dataEncryptor.decrypt(encrypted)
+  console.log('Decrypted:', decrypted)
+  
+  return { encrypted, decrypted }
+})
+
+Effect.runSync(program)
+```
+
+### 数据最小化
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai`
+
+// 数据最小化
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 数据最小化器
+  const dataMinimizer = {
+    minimize: (data, fields) => {
+      const minimized = { ...data }
+      
+      for (const field of fields) {
+        if (minimized[field]) {
+          delete minimized[field]
+        }
+      }
+      
+      return minimized
+    },
+    
+    anonymize: (data, fields) => {
+      const anonymized = { ...data }
+      
+      for (const field of fields) {
+        if (anonymized[field]) {
+          anonymized[field] = '***'
+        }
+      }
+      
+      return anonymized
+    }
+  }
+  
+  const userData = {
+    name: 'John Doe',
+    email: 'john@example.com',
+    age: 30,
+    city: 'New York'
+  }
+  
+  const minimized = dataMinimizer.minimize(userData, ['email', 'age'])
+  console.log('Minimized:', minimized)
+  
+  const anonymized = dataMinimizer.anonymize(userData, ['name', 'email'])
+  console.log('Anonymized:', anonymized)
+  
+  return { minimized, anonymized }
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 访问控制
+
+### 基本访问控制
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本访问控制
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 访问控制器
+  const accessController = {
+    users: {
+      'user1': { role: 'admin', permissions: ['read', 'write', 'delete'] },
+      'user2': { role: 'user', permissions: ['read'] },
+      'user3': { role: 'guest', permissions: [] }
+    },
+    
+    checkPermission: (userId, permission) => {
+      const user = accessController.users[userId]
+      
+      if (!user) {
+        return false
+      }
+      
+      return user.permissions.includes(permission)
+    },
+    
+    requirePermission: (userId, permission) => Effect.gen(function* () {
+      if (!accessController.checkPermission(userId, permission)) {
+        return Effect.fail(new Error(`Permission denied: ${permission}`))
+      }
+      return Effect.succeed(true)
+    })
+  }
+  
+  const users = ['user1', 'user2', 'user3']
+  const permissions = ['read', 'write', 'delete']
+  
+  for (const userId of users) {
+    console.log(`\nUser ${userId}:`)
+    
+    for (const permission of permissions) {
+      const hasPermission = accessController.checkPermission(userId, permission)
+      console.log(`  ${permission}: ${hasPermission ? '✓' : '✗'}`)
+    }
+  }
+  
+  return accessController
+})
+
+Effect.runSync(program)
+```
+
+### 基于角色的访问控制
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai`
+
+// 基于角色的访问控制
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // RBAC 系统
+  const rbac = {
+    roles: {
+      admin: { permissions: ['read', 'write', 'delete', 'manage'] },
+      editor: { permissions: ['read', 'write'] },
+      viewer: { permissions: ['read'] }
+    },
+    
+    users: {
+      'alice': 'admin',
+      'bob': 'editor',
+      'charlie': 'viewer'
+    },
+    
+    hasPermission: (userId, permission) => {
+      const roleName = rbac.users[userId]
+      
+      if (!roleName) {
+        return false
+      }
+      
+      const role = rbac.roles[roleName]
+      return role.permissions.includes(permission)
+    },
+    
+    grantRole: (userId, roleName) => {
+      if (rbac.roles[roleName]) {
+        rbac.users[userId] = roleName
+        return true
+      }
+      return false
+    }
+  }
+  
+  // 检查权限
+  const users = ['alice', 'bob', 'charlie']
+  const permissions = ['read', 'write', 'delete', 'manage']
+  
+  for (const userId of users) {
+    console.log(`\nUser ${userId} (${rbac.users[userId]}):`)
+    
+    for (const permission of permissions) {
+      const hasPermission = rbac.hasPermission(userId, permission)
+      console.log(`  ${permission}: ${hasPermission ? '✓' : '✗'}`)
+    }
+  }
+  
+  // 授予角色
+  rbac.grantRole('charlie', 'editor')
+  console.log('\nAfter granting editor role to charlie:')
+  console.log(`charlie can write: ${rbac.hasPermission('charlie', 'write')}`)
+  
+  return rbac
+})
+
+Effect.runSync(program)
+```
+
+### API 密钥管理
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// API 密钥管理
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // API 密钥管理器
+  const apiKeyManager = {
+    keys: new Map(),
+    
+    generate: () => {
+      const key = `sk-${Math.random().toString(36).substring(2, 15)}${Math.random().toString(36).substring(2, 15)}`
+      return key
+    },
+    
+    register: (key, userId, permissions) => {
+      apiKeyManager.keys.set(key, {
+        userId,
+        permissions,
+        createdAt: Date.now()
+      })
+    },
+    
+    validate: (key) => {
+      const keyData = apiKeyManager.keys.get(key)
+      return keyData || null
+    },
+    
+    revoke: (key) => {
+      return apiKeyManager.keys.delete(key)
+    }
+  }
+  
+  // 生成并注册密钥
+  const key1 = apiKeyManager.generate()
+  apiKeyManager.register(key1, 'user1', ['read', 'write'])
+  
+  const key2 = apiKeyManager.generate()
+  apiKeyManager.register(key2, 'user2', ['read'])
+  
+  console.log('Generated keys:', { key1, key2 })
+  
+  // 验证密钥
+  const validation1 = apiKeyManager.validate(key1)
+  console.log('\nKey 1 validation:', validation1)
+  
+  const validation2 = apiKeyManager.validate(key2)
+  console.log('Key 2 validation:', validation2)
+  
+  // 撤销密钥
+  apiKeyManager.revoke(key1)
+  console.log('\nAfter revoking key 1:')
+  console.log('Key 1 validation:', apiKeyManager.validate(key1))
+  
+  return apiKeyManager
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 审计日志
+
+### 基本审计日志
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本审计日志
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 审计日志器
+  const auditor = {
+    logs: [],
+    
+    log: (event) => {
+      const logEntry = {
+        timestamp: new Date().toISOString(),
+        ...event
+      }
+      
+      auditor.logs.push(logEntry)
+      console.log('Audit log:', logEntry)
+    },
+    
+    getLogs: (filter) => {
+      return auditor.logs.filter(log => {
+        if (filter.userId && log.userId !== filter.userId) {
+          return false
+        }
+        if (filter.action && log.action !== filter.action) {
+          return false
+        }
+        return true
+      })
+    }
+  }
+  
+  // 记录事件
+  auditor.log({
+    userId: 'user1',
+    action: 'login',
+    resource: 'system',
+    success: true
+  })
+  
+  auditor.log({
+    userId: 'user1',
+    action: 'generate',
+    resource: 'ai',
+    success: true,
+    details: { model: 'gpt-4', tokens: 100 }
+  })
+  
+  auditor.log({
+    userId: 'user2',
+    action: 'login',
+    resource: 'system',
+    success: false,
+    error: 'Invalid credentials'
+  })
+  
+  // 查询日志
+  const user1Logs = auditor.getLogs({ userId: 'user1' })
+  console.log('\nUser 1 logs:', user1Logs)
+  
+  const generateLogs = auditor.getLogs({ action: 'generate' })
+  console.log('Generate logs:', generateLogs)
+  
+  return auditor.logs
+})
+
+Effect.runSync(program)
+```
+
+### 安全事件监控
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai`
+
+// 安全事件监控
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 安全事件监控器
+  const securityMonitor = {
+    events: [],
+    thresholds: {
+      failedLogins: 5,
+      suspiciousActivity: 10
+    },
+    
+    record: (event) => {
+      securityMonitor.events.push({
+        timestamp: Date.now(),
+        ...event
+      })
+      
+      securityMonitor.analyze(event)
+    },
+    
+    analyze: (event) => {
+      // 检查失败登录
+      if (event.type === 'failed_login') {
+        const recentFailures = securityMonitor.events.filter(e =>
+          e.type === 'failed_login' &&
+          e.userId === event.userId &&
+          Date.now() - e.timestamp < 60000
+        )
+        
+        if (recentFailures.length >= securityMonitor.thresholds.failedLogins) {
+          console.log(`ALERT: Multiple failed logins for user ${event.userId}`)
+        }
+      }
+      
+      // 检查可疑活动
+      const recentEvents = securityMonitor.events.filter(e =>
+        Date.now() - e.timestamp < 60000
+      )
+      
+      if (recentEvents.length >= securityMonitor.thresholds.suspiciousActivity) {
+        console.log('ALERT: High volume of events detected')
+      }
+    },
+    
+    getAlerts: () => {
+      return securityMonitor.events.filter(e => e.alert)
+    }
+  }
+  
+  // 记录事件
+  for (let i = 0; i < 6; i++) {
+    securityMonitor.record({
+      type: 'failed_login',
+      userId: 'user1',
+      ip: '192.168.1.1'
+    })
+  }
+  
+  console.log('\nTotal events:', securityMonitor.events.length)
+  
+  return securityMonitor.events
+})
+
+Effect.runSync(program)
+```
+
+### 合规报告
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai`
+
+// 合规报告
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 合规报告生成器
+  const complianceReporter = {
+    data: {
+      dataProcessing: [],
+      accessLogs: [],
+      consentRecords: []
+    },
+    
+    recordDataProcessing: (userId, dataType, purpose) => {
+      complianceReporter.data.dataProcessing.push({
+        timestamp: Date.now(),
+        userId,
+        dataType,
+        purpose
+      })
+    },
+    
+    recordAccess: (userId, resource, action) => {
+      complianceReporter.data.accessLogs.push({
+        timestamp: Date.now(),
+        userId,
+        resource,
+        action
+      })
+    },
+    
+    recordConsent: (userId, consentType, granted) => {
+      complianceReporter.data.consentRecords.push({
+        timestamp: Date.now(),
+        userId,
+        consentType,
+        granted
+      })
+    },
+    
+    generateReport: (startDate, endDate) => {
+      const report = {
+        period: { startDate, endDate },
+        summary: {
+          totalDataProcessing: 0,
+          totalAccess: 0,
+          totalConsent: 0
+        },
+        details: {}
+      }
+      
+      // 数据处理统计
+      const dataProcessingInRange = complianceReporter.data.dataProcessing.filter(
+        d => d.timestamp >= startDate && d.timestamp <= endDate
+      )
+      
+      report.summary.totalDataProcessing = dataProcessingInRange.length
+      report.details.dataProcessing = dataProcessingInRange
+      
+      // 访问统计
+      const accessInRange = complianceReporter.data.accessLogs.filter(
+        d => d.timestamp >= startDate && d.timestamp <= endDate
+      )
+      
+      report.summary.totalAccess = accessInRange.length
+      report.details.accessLogs = accessInRange
+      
+      // 同意统计
+      const consentInRange = complianceReporter.data.consentRecords.filter(
+        d => d.timestamp >= startDate && d.timestamp <= endDate
+      )
+      
+      report.summary.totalConsent = consentInRange.length
+      report.details.consentRecords = consentInRange
+      
+      return report
+    }
+  }
+  
+  // 记录数据
+  complianceReporter.recordDataProcessing('user1', 'email', 'marketing')
+  complianceReporter.recordDataProcessing('user2', 'name', 'service')
+  complianceReporter.recordAccess('user1', 'profile', 'read')
+  complianceReporter.recordAccess('user2', 'settings', 'write')
+  complianceReporter.recordConsent('user1', 'marketing', true)
+  complianceReporter.recordConsent('user2', 'analytics', false)
+  
+  // 生成报告
+  const now = Date.now()
+  const oneHourAgo = now - 3600000
+  
+  const report = complianceReporter.generateReport(oneHourAgo, now)
+  console.log('Compliance report:', JSON.stringify(report, null, 2))
+  
+  return report
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 综合安全系统
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 综合安全系统
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 综合安全系统
+  const securitySystem = {
+    // 内容过滤
+    contentFilter: {
+      check: (content) => {
+        const blockedWords = ['hack', 'steal', 'illegal']
+        const lowerContent = content.toLowerCase()
+        return blockedWords.some(word => lowerContent.includes(word))
+      }
+    },
+    
+    // 访问控制
+    accessControl: {
+      users: {
+        'admin': { role: 'admin', permissions: ['read', 'write', 'delete'] },
+        'user': { role: 'user', permissions: ['read'] }
+      },
+      
+      check: (userId, permission) => {
+        const user = securitySystem.accessControl.users[userId]
+        return user && user.permissions.includes(permission)
+      }
+    },
+    
+    // 审计日志
+    auditor: {
+      logs: [],
+      
+      log: (event) => {
+        securitySystem.auditor.logs.push({
+          timestamp: Date.now(),
+          ...event
+        })
+      }
+    },
+    
+    // 处理请求
+    processRequest: (userId, permission, content) => Effect.gen(function* () {
+      // 检查权限
+      if (!securitySystem.accessControl.check(userId, permission)) {
+        securitySystem.auditor.log({
+          userId,
+          action: 'access_denied',
+          permission,
+          success: false
+        })
+        
+        return { success: false, error: 'Access denied' }
+      }
+      
+      // 检查内容
+      if (securitySystem.contentFilter.check(content)) {
+        securitySystem.auditor.log({
+          userId,
+          action: 'content_blocked',
+          content,
+          success: false
+        })
+        
+        return { success: false, error: 'Content blocked' }
+      }
+      
+      // 处理请求
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'user', content: content }
+        ]
+      })
+      
+      // 记录成功
+      securitySystem.auditor.log({
+        userId,
+        action: 'generate',
+        content,
+        success: true,
+        tokens: response.usage.totalTokens
+      })
+      
+      return { success: true, response: response.text }
+    })
+  }
+  
+  // 处理请求
+  const requests = [
+    { userId: 'admin', permission: 'write', content: 'What is Effect?' },
+    { userId: 'user', permission: 'write', content: 'How do I hack?' },
+    { userId: 'user', permission: 'read', content: 'Tell me a joke' }
+  ]
+  
+  const results = yield* Effect.all(
+    requests.map(req => securitySystem.processRequest(req.userId, req.permission, req.content)),
+    { concurrency: 1 }
+  )
+  
+  console.log('Results:', results)
+  console.log('\nAudit logs:', securitySystem.auditor.logs)
+  
+  return { results, logs: securitySystem.auditor.logs }
+})
+
+Effect.runSync(program)
+```
+
+### 隐私保护系统
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 隐私保护系统
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 隐私保护系统
+  const privacySystem = {
+    // 数据脱敏
+    sanitizer: {
+      patterns: {
+        email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
+        phone: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g
+      },
+      
+      sanitize: (text) => {
+        let sanitized = text
+        sanitized = sanitized.replace(privacySystem.sanitizer.patterns.email, '***@***.***')
+        sanitized = sanitized.replace(privacySystem.sanitizer.patterns.phone, '***-***-****')
+        return sanitized
+      }
+    },
+    
+    // 同意管理
+    consentManager: {
+      consents: new Map(),
+      
+      grant: (userId, consentType) => {
+        if (!privacySystem.consentManager.consents.has(userId)) {
+          privacySystem.consentManager.consents.set(userId, new Set())
+        }
+        privacySystem.consentManager.consents.get(userId).add(consentType)
+      },
+      
+      check: (userId, consentType) => {
+        return privacySystem.consentManager.consents.get(userId)?.has(consentType) || false
+      }
+    },
+    
+    // 处理请求
+    processRequest: (userId, consentType, content) => Effect.gen(function* () {
+      // 检查同意
+      if (!privacySystem.consentManager.check(userId, consentType)) {
+        return { success: false, error: 'Consent not granted' }
+      }
+      
+      // 脱敏内容
+      const sanitized = privacySystem.sanitizer.sanitize(content)
+      
+      // 处理请求
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        messages: [
+          { role: 'user', content: sanitized }
+        ]
+      })
+      
+      return { success: true, response: response.text, sanitized }
+    })
+  }
+  
+  // 授予同意
+  privacySystem.consentManager.grant('user1', 'data_processing')
+  privacySystem.consentManager.grant('user2', 'analytics')
+  
+  // 处理请求
+  const requests = [
+    { userId: 'user1', consentType: 'data_processing', content: 'My email is john@example.com' },
+    { userId: 'user2', consentType: 'analytics', content: 'Call me at 555-123-4567' },
+    { userId: 'user1', consentType: 'marketing', content: 'What is Effect?' }
+  ]
+  
+  const results = yield* Effect.all(
+    requests.map(req => privacySystem.processRequest(req.userId, req.consentType, req.content)),
+    { concurrency: 1 }
+  )
+  
+  console.log('Results:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **模型管理**：模型选择、参数调优、版本控制
+- **成本优化**：Token 优化、缓存策略、批处理
+- **AI 抽象**：@effect/ai、AI 模型接口
+
+## 📚 学习检查点
+
+- [ ] 掌握内容过滤
+- [ ] 理解数据隐私
+- [ ] 了解访问控制
+- [ ] 掌握审计日志
+- [ ] 能够实现完整的安全合规系统
+
+## 🚀 完成学习
+
+恭喜你完成了 Effect 学习路线图的所有内容！🎉
+
+你现在已经掌握了：
+- ✅ Effect 基础概念
+- ✅ Effect 核心功能
+- ✅ Effect 生态系统
+- ✅ Effect 实际应用
+- ✅ Effect 高级模式
+- ✅ Effect AI 集成
+
+继续探索和实践，构建更强大的应用吧！

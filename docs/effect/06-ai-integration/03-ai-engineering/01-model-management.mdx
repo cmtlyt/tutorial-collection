@@ -1,0 +1,815 @@
+# 模型管理
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了全面的 AI 模型管理能力，包括模型选择、参数调优、版本控制和 A/B 测试，帮助开发者构建可维护、可扩展的 AI 应用。
+
+## 🎯 模型选择
+
+### 基本模型选择
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本模型选择
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 根据任务类型选择模型
+  const selectModel = (taskType) => {
+    const models = {
+      simple: 'gpt-3.5-turbo',
+      complex: 'gpt-4',
+      creative: 'gpt-4-turbo',
+      fast: 'gpt-3.5-turbo-16k'
+    }
+    return models[taskType] || 'gpt-3.5-turbo'
+  }
+  
+  // 使用选择的模型
+  const model = selectModel('complex')
+  const response = yield* ai.generate({
+    model: model,
+    messages: [
+      { role: 'user', content: 'Explain quantum computing' }
+    ]
+  })
+  
+  console.log('Model used:', model)
+  console.log('Response:', response.text)
+  
+  return response
+})
+
+Effect.runSync(program)
+```
+
+### 动态模型选择
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 动态模型选择
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 模型选择策略
+  const modelSelector = {
+    models: [
+      { name: 'gpt-4', cost: 0.03, quality: 'high' },
+      { name: 'gpt-3.5-turbo', cost: 0.002, quality: 'medium' },
+      { name: 'gpt-3.5-turbo-16k', cost: 0.004, quality: 'medium' }
+    ],
+    
+    selectByBudget: (budget) => {
+      return modelSelector.models
+        .filter(m => m.cost <= budget)
+        .sort((a, b) => b.cost - a.cost)[0]?.name || 'gpt-3.5-turbo'
+    },
+    
+    selectByQuality: (quality) => {
+      return modelSelector.models
+        .filter(m => m.quality === quality)
+        .sort((a, b) => a.cost - b.cost)[0]?.name || 'gpt-3.5-turbo'
+    }
+  }
+  
+  // 根据预算选择
+  const model1 = modelSelector.selectByBudget(0.01)
+  console.log('Model by budget:', model1)
+  
+  // 根据质量选择
+  const model2 = modelSelector.selectByQuality('high')
+  console.log('Model by quality:', model2)
+  
+  return { model1, model2 }
+})
+
+Effect.runSync(program)
+```
+
+### 模型性能评估
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 模型性能评估
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  const models = ['gpt-4', 'gpt-3.5-turbo']
+  const prompt = 'What is 2 + 2?'
+  
+  // 评估模型性能
+  const evaluateModel = (model) => Effect.gen(function* () {
+    const start = Date.now()
+    
+    const response = yield* ai.generate({
+      model: model,
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    })
+    
+    const end = Date.now()
+    
+    return {
+      model,
+      latency: end - start,
+      cost: response.usage.totalTokens * 0.00002,
+      tokens: response.usage.totalTokens,
+      quality: response.text.length
+    }
+  })
+  
+  // 并行评估
+  const results = yield* Effect.all(
+    models.map(model => evaluateModel(model)),
+    { concurrency: 'unbounded' }
+  )
+  
+  console.log('Model evaluation results:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 💡 参数调优
+
+### 基本参数配置
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本参数配置
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 参数配置
+  const parameters = {
+    temperature: 0.7,
+    maxTokens: 500,
+    topP: 0.9,
+    frequencyPenalty: 0,
+    presencePenalty: 0
+  }
+  
+  const response = yield* ai.generate({
+    model: 'gpt-4',
+    ...parameters,
+    messages: [
+      { role: 'user', content: 'Write a short story' }
+    ]
+  })
+  
+  console.log('Response:', response.text)
+  console.log('Usage:', response.usage)
+  
+  return response
+})
+
+Effect.runSync(program)
+```
+
+### 温度调优
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 温度调优
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  const temperatures = [0.1, 0.5, 0.7, 1.0]
+  const prompt = 'Generate a random word'
+  
+  // 测试不同温度
+  const results = yield* Effect.all(
+    temperatures.map(temp => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        temperature: temp,
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      })
+      
+      return {
+        temperature: temp,
+        response: response.text
+      }
+    })),
+    { concurrency: 1 }
+  )
+  
+  console.log('Temperature effects:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 参数网格搜索
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 参数网格搜索
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 参数网格
+  const parameterGrid = {
+    temperatures: [0.5, 0.7, 0.9],
+    maxTokens: [100, 200, 300]
+  }
+  
+  const prompt = 'Summarize the benefits of exercise'
+  
+  // 网格搜索
+  const search = Effect.gen(function* () {
+    const results = []
+    
+    for (const temp of parameterGrid.temperatures) {
+      for (const maxTokens of parameterGrid.maxTokens) {
+        const response = yield* ai.generate({
+          model: 'gpt-4',
+          temperature: temp,
+          maxTokens: maxTokens,
+          messages: [
+            { role: 'user', content: prompt }
+          ]
+        })
+        
+        results.push({
+          temperature: temp,
+          maxTokens,
+          tokens: response.usage.totalTokens,
+          quality: response.text.length
+        })
+      }
+    }
+    
+    return results
+  })
+  
+  const results = yield* search
+  console.log('Grid search results:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 版本控制
+
+### 模型版本管理
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 模型版本管理
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 模型版本管理
+  const modelVersionManager = {
+    versions: {
+      'v1.0': 'gpt-3.5-turbo',
+      'v1.1': 'gpt-3.5-turbo-16k',
+      'v2.0': 'gpt-4',
+      'v2.1': 'gpt-4-turbo'
+    },
+    
+    current: 'v2.0',
+    
+    getModel: (version) => {
+      return modelVersionManager.versions[version] || modelVersionManager.versions[modelVersionManager.current]
+    },
+    
+    setCurrent: (version) => {
+      if (modelVersionManager.versions[version]) {
+        modelVersionManager.current = version
+        return true
+      }
+      return false
+    }
+  }
+  
+  // 使用特定版本
+  const model1 = modelVersionManager.getModel('v1.0')
+  console.log('Model v1.0:', model1)
+  
+  const model2 = modelVersionManager.getModel('v2.0')
+  console.log('Model v2.0:', model2)
+  
+  // 切换版本
+  modelVersionManager.setCurrent('v2.1')
+  const currentModel = modelVersionManager.getModel()
+  console.log('Current model:', currentModel)
+  
+  return { model1, model2, currentModel }
+})
+
+Effect.runSync(program)
+```
+
+### 配置版本控制
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 配置版本控制
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 配置版本管理
+  const configManager = {
+    configs: {
+      'v1': {
+        model: 'gpt-3.5-turbo',
+        temperature: 0.7,
+        maxTokens: 500
+      },
+      'v2': {
+        model: 'gpt-4',
+        temperature: 0.5,
+        maxTokens: 1000
+      },
+      'v3': {
+        model: 'gpt-4-turbo',
+        temperature: 0.6,
+        maxTokens: 800
+      }
+    },
+    
+    current: 'v2',
+    
+    getConfig: (version) => {
+      return configManager.configs[version] || configManager.configs[configManager.current]
+    },
+    
+    setConfig: (version) => {
+      if (configManager.configs[version]) {
+        configManager.current = version
+        return true
+      }
+      return false
+    }
+  }
+  
+  // 使用配置
+  const config1 = configManager.getConfig('v1')
+  console.log('Config v1:', config1)
+  
+  const config2 = configManager.getConfig('v2')
+  console.log('Config v2:', config2)
+  
+  // 使用配置生成
+  const response = yield* ai.generate({
+    ...config2,
+    messages: [
+      { role: 'user', content: 'Hello!' }
+    ]
+  })
+  
+  console.log('Response:', response.text)
+  
+  return response
+})
+
+Effect.runSync(program)
+```
+
+### 回滚机制
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 回滚机制
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 回滚管理
+  const rollbackManager = {
+    history: [],
+    current: null,
+    
+    save: (config) => Effect.gen(function* () {
+      rollbackManager.history.push(rollbackManager.current)
+      rollbackManager.current = config
+      console.log('Saved config:', config)
+    }),
+    
+    rollback: () => Effect.gen(function* () {
+      if (rollbackManager.history.length > 0) {
+        rollbackManager.current = rollbackManager.history.pop()
+        console.log('Rolled back to:', rollbackManager.current)
+        return rollbackManager.current
+      }
+      console.log('No history to rollback')
+      return null
+    })
+  }
+  
+  // 保存配置
+  yield* rollbackManager.save({ model: 'gpt-3.5-turbo', temperature: 0.7 })
+  yield* rollbackManager.save({ model: 'gpt-4', temperature: 0.5 })
+  yield* rollbackManager.save({ model: 'gpt-4-turbo', temperature: 0.6 })
+  
+  console.log('Current:', rollbackManager.current)
+  
+  // 回滚
+  yield* rollbackManager.rollback()
+  console.log('After rollback:', rollbackManager.current)
+  
+  yield* rollbackManager.rollback()
+  console.log('After second rollback:', rollbackManager.current)
+  
+  return rollbackManager.current
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 A/B 测试
+
+### 基本 A/B 测试
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 基本 A/B 测试
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // A/B 测试配置
+  const abTest = {
+    variants: [
+      { id: 'A', model: 'gpt-3.5-turbo', temperature: 0.7 },
+      { id: 'B', model: 'gpt-4', temperature: 0.5 }
+    ],
+    
+    assign: () => {
+      const random = Math.random()
+      return abTest.variants[random < 0.5 ? 0 : 1]
+    }
+  }
+  
+  const prompt = 'What is the meaning of life?'
+  const testCount = 10
+  
+  // 运行测试
+  const results = yield* Effect.all(
+    Array.from({ length: testCount }, () => Effect.gen(function* () {
+      const variant = abTest.assign()
+      
+      const response = yield* ai.generate({
+        model: variant.model,
+        temperature: variant.temperature,
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      })
+      
+      return {
+        variant: variant.id,
+        model: variant.model,
+        response: response.text,
+        tokens: response.usage.totalTokens
+      }
+    })),
+    { concurrency: 1 }
+  )
+  
+  // 分析结果
+  const analysis = abTest.variants.map(variant => {
+    const variantResults = results.filter(r => r.variant === variant.id)
+    const avgTokens = variantResults.reduce((sum, r) => sum + r.tokens, 0) / variantResults.length
+    
+    return {
+      variant: variant.id,
+      count: variantResults.length,
+      avgTokens
+    }
+  })
+  
+  console.log('A/B Test Results:', analysis)
+  
+  return analysis
+})
+
+Effect.runSync(program)
+```
+
+### 多变量测试
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 多变量测试
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 多变量测试配置
+  const multiVariateTest = {
+    factors: {
+      model: ['gpt-3.5-turbo', 'gpt-4'],
+      temperature: [0.5, 0.7, 0.9],
+      maxTokens: [100, 200, 300]
+    },
+    
+    generateCombinations: () => {
+      const combinations = []
+      
+      for (const model of multiVariateTest.factors.model) {
+        for (const temperature of multiVariateTest.factors.temperature) {
+          for (const maxTokens of multiVariateTest.factors.maxTokens) {
+            combinations.push({ model, temperature, maxTokens })
+          }
+        }
+      }
+      
+      return combinations
+    }
+  }
+  
+  const combinations = multiVariateTest.generateCombinations()
+  console.log('Total combinations:', combinations.length)
+  
+  const prompt = 'Summarize the benefits of exercise'
+  
+  // 运行测试
+  const results = yield* Effect.all(
+    combinations.slice(0, 6).map(config => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        ...config,
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      })
+      
+      return {
+        ...config,
+        tokens: response.usage.totalTokens,
+        quality: response.text.length
+      }
+    })),
+    { concurrency: 1 }
+  )
+  
+  console.log('Multi-variate test results:', results)
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 统计分析
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 统计分析
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 运行测试
+  const runTest = (config, iterations) => Effect.gen(function* () {
+    const results = []
+    
+    for (let i = 0; i < iterations; i++) {
+      const response = yield* ai.generate({
+        ...config,
+        messages: [
+          { role: 'user', content: 'What is 2 + 2?' }
+        ]
+      })
+      
+      results.push({
+        tokens: response.usage.totalTokens,
+        latency: response.usage.totalTokens * 10 // 模拟延迟
+      })
+    }
+    
+    return {
+      config,
+      results,
+      stats: {
+        avgTokens: results.reduce((sum, r) => sum + r.tokens, 0) / results.length,
+        avgLatency: results.reduce((sum, r) => sum + r.latency, 0) / results.length,
+        minLatency: Math.min(...results.map(r => r.latency)),
+        maxLatency: Math.max(...results.map(r => r.latency))
+      }
+    }
+  })
+  
+  // 比较配置
+  const configA = { model: 'gpt-3.5-turbo', temperature: 0.7 }
+  const configB = { model: 'gpt-4', temperature: 0.5 }
+  
+  const [statsA, statsB] = yield* Effect.all([
+    runTest(configA, 5),
+    runTest(configB, 5)
+  ], { concurrency: 'unbounded' })
+  
+  console.log('Config A stats:', statsA.stats)
+  console.log('Config B stats:', statsB.stats)
+  
+  return { statsA, statsB }
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 模型管理系统
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 模型管理系统
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 模型管理系统
+  const modelSystem = {
+    registry: {
+      'gpt-3.5-turbo': {
+        costPerToken: 0.000002,
+        quality: 'medium',
+        speed: 'fast'
+      },
+      'gpt-4': {
+        costPerToken: 0.00003,
+        quality: 'high',
+        speed: 'medium'
+      },
+      'gpt-4-turbo': {
+        costPerToken: 0.00001,
+        quality: 'high',
+        speed: 'fast'
+      }
+    },
+    
+    selectModel: (requirements) => {
+      const models = Object.entries(modelSystem.registry)
+      
+      // 根据需求筛选
+      let candidates = models
+      
+      if (requirements.quality) {
+        candidates = candidates.filter(([_, config]) => config.quality === requirements.quality)
+      }
+      
+      if (requirements.speed) {
+        candidates = candidates.filter(([_, config]) => config.speed === requirements.speed)
+      }
+      
+      if (requirements.maxCost) {
+        candidates = candidates.filter(([_, config]) => config.costPerToken <= requirements.maxCost)
+      }
+      
+      // 选择最优
+      return candidates.sort((a, b) => a[1].costPerToken - b[1].costPerToken)[0]?.[0] || 'gpt-3.5-turbo'
+    },
+    
+    estimateCost: (model, tokens) => {
+      const config = modelSystem.registry[model]
+      return config ? config.costPerToken * tokens : 0
+    }
+  }
+  
+  // 使用模型系统
+  const model1 = modelSystem.selectModel({ quality: 'high', speed: 'fast' })
+  console.log('Selected model 1:', model1)
+  
+  const model2 = modelSystem.selectModel({ maxCost: 0.000005 })
+  console.log('Selected model 2:', model2)
+  
+  const cost1 = modelSystem.estimateCost(model1, 1000)
+  console.log('Estimated cost 1:', cost1)
+  
+  const cost2 = modelSystem.estimateCost(model2, 1000)
+  console.log('Estimated cost 2:', cost2)
+  
+  return { model1, model2, cost1, cost2 }
+})
+
+Effect.runSync(program)
+```
+
+### 配置优化系统
+
+```js
+import { Effect } from 'effect'
+import { AI } from '@effect/ai'
+
+// 配置优化系统
+const program = Effect.gen(function* () {
+  const ai = yield* AI.AI
+  
+  // 配置优化系统
+  const configOptimizer = {
+    searchSpace: {
+      temperature: [0.3, 0.5, 0.7, 0.9],
+      maxTokens: [100, 200, 300, 400]
+    },
+    
+    evaluate: (config, prompt) => Effect.gen(function* () {
+      const response = yield* ai.generate({
+        model: 'gpt-4',
+        ...config,
+        messages: [
+          { role: 'user', content: prompt }
+        ]
+      })
+      
+      return {
+        ...config,
+        tokens: response.usage.totalTokens,
+        quality: response.text.length
+      }
+    }),
+    
+    optimize: (prompt, objective) => Effect.gen(function* () {
+      const results = []
+      
+      for (const temperature of configOptimizer.searchSpace.temperature) {
+        for (const maxTokens of configOptimizer.searchSpace.maxTokens) {
+          const result = yield* configOptimizer.evaluate(
+            { temperature, maxTokens },
+            prompt
+          )
+          results.push(result)
+        }
+      }
+      
+      // 根据目标选择最优配置
+      const optimized = results.sort((a, b) => {
+        if (objective === 'quality') {
+          return b.quality - a.quality
+        } else if (objective === 'cost') {
+          return a.tokens - b.tokens
+        }
+        return 0
+      })[0]
+      
+      return optimized
+    })
+  }
+  
+  // 优化配置
+  const prompt = 'Summarize the benefits of exercise'
+  
+  const qualityOptimized = yield* configOptimizer.optimize(prompt, 'quality')
+  console.log('Quality optimized:', qualityOptimized)
+  
+  const costOptimized = yield* configOptimizer.optimize(prompt, 'cost')
+  console.log('Cost optimized:', costOptimized)
+  
+  return { qualityOptimized, costOptimized }
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **成本优化**：Token 优化、缓存策略、批处理
+- **安全与合规**：内容过滤、数据隐私、访问控制
+- **AI 抽象**：@effect/ai、AI 模型接口
+
+## 📚 学习检查点
+
+- [ ] 掌握模型选择
+- [ ] 理解参数调优
+- [ ] 了解版本控制
+- [ ] 掌握 A/B 测试
+- [ ] 能够实现完整的模型管理系统
+
+## 🚀 下一步
+
+→ [成本优化](./02-cost-optimization.mdx)
