@@ -1,0 +1,426 @@
+# SSR 原理
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+服务端渲染（Server-Side Rendering，SSR）是一种在服务器上生成完整 HTML 的技术，然后将 HTML 发送到客户端。客户端接收后，React 会"激活"（hydrate）这些 HTML，使其具有交互性。本章节将深入介绍 SSR 的工作原理、流程和最佳实践。
+
+## 🎯 SSR 工作原理
+
+### 传统 CSR vs SSR
+
+```js
+// 客户端渲染（CSR）流程
+// 1. 浏览器请求页面
+// 2. 服务器返回空 HTML + JavaScript bundle
+// 3. 浏览器下载并执行 JavaScript
+// 4. React 在浏览器中渲染组件
+// 5. 用户看到内容
+
+// 服务端渲染（SSR）流程
+// 1. 浏览器请求页面
+// 2. 服务器在服务器上运行 React
+// 3. 生成完整的 HTML
+// 4. 服务器返回 HTML + JavaScript bundle
+// 5. 浏览器立即显示内容
+// 6. React hydrate 使页面可交互
+```
+
+### SSR 渲染流程
+
+```js
+// SSR 完整流程示例
+
+// 1. 服务器端渲染
+import { renderToString } from 'react-dom/server';
+
+function App({ data }) {
+  return (
+    <div>
+      <h1>{data.title}</h1>
+      <p>{data.content}</p>
+    </div>
+  );
+}
+
+// 在服务器上渲染
+const data = await fetchData();
+const html = renderToString(<App data={data} />);
+
+// 2. 生成完整 HTML
+const fullHtml = `
+  <!DOCTYPE html>
+  <html>
+    <head>
+      <title>SSR Example</title>
+    </head>
+    <body>
+      <div id="root">${html}</div>
+      <script src="/bundle.js"></script>
+    </body>
+  </html>
+`;
+
+// 3. 发送到客户端
+res.send(fullHtml);
+
+// 4. 客户端 hydrate
+// bundle.js
+import { hydrateRoot } from 'react-dom/client';
+import App from './App';
+
+const rootElement = document.getElementById('root');
+
+// 从服务器获取的数据（通常通过 window.__DATA__ 传递）
+const data = window.__DATA__;
+
+hydrateRoot(rootElement, <App data={data} />);
+```
+
+## 🎯 服务端渲染流程
+
+### 数据获取与渲染
+
+```js
+// Next.js 中的 SSR 实现
+// app/products/page.js
+
+async function getProducts() {
+  const res = await fetch('https://api.example.com/products', {
+    cache: 'no-store', // 禁用缓存，每次请求都重新获取
+  });
+  
+  if (!res.ok) {
+    throw new Error('Failed to fetch products');
+  }
+  
+  return res.json();
+}
+
+export default async function ProductsPage() {
+  // 在服务器上获取数据
+  const products = await getProducts();
+  
+  // 在服务器上渲染组件
+  return (
+    <main>
+      <h1>产品列表</h1>
+      <ul>
+        {products.map((product) => (
+          <li key={product.id}>
+            <h2>{product.name}</h2>
+            <p>¥{product.price}</p>
+          </li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+```
+
+### 流式渲染
+
+```js
+// 使用流式渲染提高性能
+import { renderToPipeableStream } from 'react-dom/server';
+
+function App() {
+  return (
+    <div>
+      <Header />
+      <Suspense fallback={<Loading />}>
+        <AsyncContent />
+      </Suspense>
+      <Footer />
+    </div>
+  );
+}
+
+// 在 Express 服务器中
+app.get('/', (req, res) => {
+  const stream = renderToPipeableStream(<App />, {
+    onShellReady() {
+      // 当 shell 准备好时发送 HTML
+      res.statusCode = 200;
+      res.setHeader('Content-type', 'text/html');
+      stream.pipe(res);
+    },
+    onShellError(error) {
+      // 处理错误
+      res.statusCode = 500;
+      res.send('<!doctype html><p>Loading error...</p>');
+    },
+  });
+});
+```
+
+## 🎯 客户端激活（Hydration）
+
+### Hydration 过程
+
+```js
+// 客户端 hydration 示例
+import { hydrateRoot } from 'react-dom/client';
+
+function App({ initialData }) {
+  const [data, setData] = useState(initialData);
+  
+  return (
+    <div>
+      <h1>{data.title}</h1>
+      <p>{data.content}</p>
+    </div>
+  );
+}
+
+// 从服务器渲染的 HTML 中获取初始数据
+const rootElement = document.getElementById('root');
+const initialData = JSON.parse(rootElement.getAttribute('data-initial'));
+
+// Hydrate 应用
+hydrateRoot(rootElement, <App initialData={initialData} />);
+
+// Hydration 过程：
+// 1. React 检查服务器渲染的 HTML 结构
+// 2. 在相同位置重建组件树
+// 3. 附加事件处理器
+// 4. 使应用具有交互性
+```
+
+### Hydration 错误处理
+
+```js
+// 处理 hydration 不匹配错误
+'use client';
+
+import { useEffect, useState } from 'react';
+
+export default function SafeComponent({ serverData }) {
+  const [isClient, setIsClient] = useState(false);
+  const [data, setData] = useState(serverData);
+  
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+  
+  // 避免在服务端和客户端渲染不同内容
+  if (!isClient) {
+    return <div>{serverData.title}</div>;
+  }
+  
+  return (
+    <div>
+      <h1>{data.title}</h1>
+      <p>{data.content}</p>
+    </div>
+  );
+}
+```
+
+## 🎯 SEO 优化
+
+### 元数据管理
+
+```js
+// Next.js 中的 SEO 优化
+// app/products/[id]/page.js
+
+export async function generateMetadata({ params }) {
+  const product = await getProduct(params.id);
+  
+  return {
+    title: product.name,
+    description: product.description,
+    openGraph: {
+      title: product.name,
+      description: product.description,
+      images: [product.image],
+    },
+  };
+}
+
+async function getProduct(id) {
+  const res = await fetch(`https://api.example.com/products/${id}`, {
+    cache: 'no-store',
+  });
+  return res.json();
+}
+
+export default async function ProductPage({ params }) {
+  const product = await getProduct(params.id);
+  
+  return (
+    <main>
+      <h1>{product.name}</h1>
+      <p>{product.description}</p>
+      <img src={product.image} alt={product.name} />
+    </main>
+  );
+}
+```
+
+### 结构化数据
+
+```js
+// 添加 JSON-LD 结构化数据
+export default function ProductPage({ product }) {
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Product',
+    name: product.name,
+    description: product.description,
+    image: product.image,
+    offers: {
+      '@type': 'Offer',
+      price: product.price,
+      priceCurrency: 'CNY',
+    },
+  };
+  
+  return (
+    <main>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
+      <h1>{product.name}</h1>
+      <p>{product.description}</p>
+    </main>
+  );
+}
+```
+
+## 🎯 性能优化
+
+### 代码分割
+
+```js
+// 使用动态导入进行代码分割
+import dynamic from 'next/dynamic';
+
+// 动态导入重型组件
+const HeavyChart = dynamic(() => import('../components/HeavyChart'), {
+  loading: () => <div>加载图表...</div>,
+  ssr: false, // 禁用 SSR（如果需要）
+});
+
+export default function DashboardPage() {
+  return (
+    <main>
+      <h1>仪表板</h1>
+      <HeavyChart />
+    </main>
+  );
+}
+```
+
+### 缓存策略
+
+```js
+// 实现智能缓存
+async function getCachedData(key, fetcher, options = {}) {
+  const { revalidate = 60 } = options;
+  
+  const res = await fetch(`https://api.example.com/${key}`, {
+    next: { revalidate },
+  });
+  
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ${key}`);
+  }
+  
+  return res.json();
+}
+
+// 使用缓存
+async function getProducts() {
+  return getCachedData('products', async () => {
+    const res = await fetch('https://api.example.com/products');
+    return res.json();
+  }, { revalidate: 3600 });
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的 SSR 应用
+
+```js
+// app/layout.js
+export default function RootLayout({ children }) {
+  return (
+    <html lang="zh-CN">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+      </head>
+      <body>
+        <Header />
+        {children}
+        <Footer />
+      </body>
+    </html>
+  );
+}
+
+// app/page.js
+async function getFeaturedProducts() {
+  const res = await fetch('https://api.example.com/products/featured', {
+    next: { revalidate: 3600 },
+  });
+  return res.json();
+}
+
+export default async function HomePage() {
+  const products = await getFeaturedProducts();
+  
+  return (
+    <main>
+      <h1>欢迎来到我们的商店</h1>
+      <div>
+        {products.map((product) => (
+          <ProductCard key={product.id} product={product} />
+        ))}
+      </div>
+    </main>
+  );
+}
+
+// app/components/ProductCard.js
+import Link from 'next/link';
+
+export default function ProductCard({ product }) {
+  return (
+    <div>
+      <img src={product.image} alt={product.name} />
+      <h2>{product.name}</h2>
+      <p>¥{product.price}</p>
+      <Link href={`/products/${product.id}`}>
+        查看详情
+      </Link>
+    </div>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **SSR vs CSR**: 服务端渲染与客户端渲染的区别
+- **Hydration**: 客户端激活过程
+- **SEO**: 搜索引擎优化
+- **流式渲染**: 提高性能的渲染技术
+- **代码分割**: 优化加载性能
+
+## 📚 学习检查点
+
+- [ ] 理解 SSR 的工作原理
+- [ ] 掌握服务端渲染流程
+- [ ] 理解客户端激活（Hydration）
+- [ ] 掌握 SEO 优化技巧
+- [ ] 理解性能优化策略
+
+## 🚀 下一步
+
+→ [其他 SSR 方案](./02-other-ssr-solutions.mdx)

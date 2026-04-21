@@ -1,0 +1,444 @@
+# React 19 RSC 稳定版
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+React 19 将 Server Components (RSC) 正式稳定化，提供了完整的 RSC 支持。本章节将介绍 React 19 RSC 的稳定特性，包括 react-server 导出条件、Server Actions 深入、"use server" 指令以及缓存机制。
+
+## 🎯 react-server 导出条件
+
+### 导出条件配置
+
+```js
+// package.json - 配置 react-server 导出条件
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "exports": {
+    ".": {
+      "react-server": "./src/server.js",
+      "default": "./src/client.js"
+    }
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
+
+// src/server.js - Server Component 导出
+export default function ServerComponent() {
+  return <div>Server Component</div>;
+}
+
+// src/client.js - Client Component 导出
+'use client';
+
+export default function ClientComponent() {
+  return <div>Client Component</div>;
+}
+```
+
+### 条件导出使用
+
+```js
+// 使用条件导出
+import Component from 'my-app';
+
+// 在服务器环境中，会导入 Server Component
+// 在客户端环境中，会导入 Client Component
+
+// app/page.js
+export default async function Page() {
+  const Component = (await import('my-app')).default;
+  
+  return (
+    <div>
+      <Component />
+    </div>
+  );
+}
+```
+
+## 🎯 Server Actions 深入
+
+### Server Actions 定义
+
+```js
+// app/actions.js
+'use server';
+
+import { revalidatePath, revalidateTag } from 'next/cache';
+import { redirect } from 'next/navigation';
+
+// 创建文章
+export async function createPost(formData) {
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  // 验证输入
+  if (!title || !content) {
+    return {
+      success: false,
+      error: 'Title and content are required',
+    };
+  }
+  
+  // 创建文章
+  const post = await db.posts.create({
+    title,
+    content,
+  });
+  
+  // 重新验证页面
+  revalidatePath('/blog');
+  revalidateTag('posts');
+  
+  return {
+    success: true,
+    post,
+  };
+}
+
+// 更新文章
+export async function updatePost(postId, formData) {
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  const post = await db.posts.update({
+    where: { id: postId },
+    data: { title, content },
+  });
+  
+  revalidatePath(`/blog/${postId}`);
+  revalidateTag(`post-${postId}`);
+  
+  return { success: true, post };
+}
+
+// 删除文章
+export async function deletePost(postId) {
+  await db.posts.delete({
+    where: { id: postId },
+  });
+  
+  revalidatePath('/blog');
+  revalidateTag('posts');
+  
+  redirect('/blog');
+}
+```
+
+### Server Actions 类型安全
+
+```js
+// app/actions.ts
+'use server';
+
+import { z } from 'zod';
+
+// 定义输入验证 schema
+const CreatePostSchema = z.object({
+  title: z.string().min(1).max(200),
+  content: z.string().min(1),
+  categoryId: z.string().optional(),
+});
+
+export async function createPost(formData: FormData) {
+  // 验证输入
+  const data = CreatePostSchema.parse({
+    title: formData.get('title'),
+    content: formData.get('content'),
+    categoryId: formData.get('categoryId'),
+  });
+  
+  // 创建文章
+  const post = await db.posts.create({
+    data,
+  });
+  
+  revalidatePath('/blog');
+  
+  return { success: true, post };
+}
+```
+
+## 🎯 "use server" 指令
+
+### 文件级别指令
+
+```js
+// app/actions/create-post.js
+'use server';
+
+import { revalidatePath } from 'next/cache';
+
+export async function createPost(formData) {
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  const post = await db.posts.create({
+    title,
+    content,
+  });
+  
+  revalidatePath('/blog');
+  
+  return post;
+}
+
+// 这个文件中的所有函数都是 Server Actions
+export async function updatePost(id, formData) {
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  const post = await db.posts.update({
+    where: { id },
+    data: { title, content },
+  });
+  
+  revalidatePath(`/blog/${id}`);
+  
+  return post;
+}
+```
+
+### 函数级别指令
+
+```js
+// app/components/PostForm.js
+'use client';
+
+import { createPost } from '../actions/create-post';
+
+export default function PostForm() {
+  return (
+    <form action={createPost}>
+      <input name="title" type="text" required />
+      <textarea name="content" required />
+      <button type="submit">创建文章</button>
+    </form>
+  );
+}
+
+// app/actions/create-post.js
+export async function createPost(formData) {
+  'use server';
+  
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  const post = await db.posts.create({
+    title,
+    content,
+  });
+  
+  revalidatePath('/blog');
+  
+  return post;
+}
+```
+
+## 🎯 缓存机制
+
+### cache 函数
+
+```js
+// 使用 cache 函数缓存数据
+import { cache } from 'react';
+
+async function fetchUser(id) {
+  const res = await fetch(`https://api.example.com/users/${id}`);
+  return res.json();
+}
+
+// 缓存函数调用
+const getCachedUser = cache(fetchUser);
+
+export default async function UserPage({ params }) {
+  const user = await getCachedUser(params.id);
+  
+  return (
+    <div>
+      <h1>{user.name}</h1>
+      <p>{user.email}</p>
+    </div>
+  );
+}
+```
+
+### cacheSignal 函数
+
+```js
+// 使用 cacheSignal 控制缓存
+import { cache, cacheSignal } from 'react';
+
+async function fetchProducts() {
+  const signal = cacheSignal();
+  
+  const res = await fetch('https://api.example.com/products', {
+    signal,
+  });
+  
+  return res.json();
+}
+
+const getCachedProducts = cache(fetchProducts);
+
+export default async function ProductsPage() {
+  const products = await getCachedProducts();
+  
+  return (
+    <div>
+      <h1>产品列表</h1>
+      {products.map((product) => (
+        <div key={product.id}>{product.name}</div>
+      ))}
+    </div>
+  );
+}
+```
+
+### 缓存失效
+
+```js
+// 使用 revalidatePath 和 revalidateTag
+import { revalidatePath, revalidateTag } from 'next/cache';
+
+export async function updateProduct(productId, formData) {
+  const name = formData.get('name');
+  const price = formData.get('price');
+  
+  await db.products.update({
+    where: { id: productId },
+    data: { name, price },
+  });
+  
+  // 重新验证特定路径
+  revalidatePath('/products');
+  revalidatePath(`/products/${productId}`);
+  
+  // 重新验证特定标签
+  revalidateTag('products');
+  revalidateTag(`product-${productId}`);
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的 CRUD 应用
+
+```js
+// app/actions.ts
+'use server';
+
+import { revalidatePath, revalidateTag } from 'next/cache';
+import { redirect } from 'next/navigation';
+import { z } from 'zod';
+
+const PostSchema = z.object({
+  title: z.string().min(1).max(200),
+  content: z.string().min(1),
+});
+
+export async function createPost(formData: FormData) {
+  const data = PostSchema.parse({
+    title: formData.get('title'),
+    content: formData.get('content'),
+  });
+  
+  const post = await db.posts.create({ data });
+  
+  revalidatePath('/blog');
+  revalidateTag('posts');
+  
+  return { success: true, post };
+}
+
+export async function updatePost(postId: string, formData: FormData) {
+  const data = PostSchema.parse({
+    title: formData.get('title'),
+    content: formData.get('content'),
+  });
+  
+  const post = await db.posts.update({
+    where: { id: postId },
+    data,
+  });
+  
+  revalidatePath('/blog');
+  revalidatePath(`/blog/${postId}`);
+  revalidateTag('posts');
+  revalidateTag(`post-${postId}`);
+  
+  return { success: true, post };
+}
+
+export async function deletePost(postId: string) {
+  await db.posts.delete({ where: { id: postId } });
+  
+  revalidatePath('/blog');
+  revalidateTag('posts');
+  
+  redirect('/blog');
+}
+
+// app/blog/page.tsx
+async function getPosts() {
+  const posts = await db.posts.findMany({
+    orderBy: { createdAt: 'desc' },
+  });
+  
+  return posts;
+}
+
+export default async function BlogPage() {
+  const posts = await getPosts();
+  
+  return (
+    <div>
+      <h1>博客文章</h1>
+      <PostList posts={posts} />
+    </div>
+  );
+}
+
+// app/blog/new/page.tsx
+import { createPost } from '../../actions';
+
+export default function NewPostPage() {
+  return (
+    <div>
+      <h1>创建新文章</h1>
+      <form action={createPost}>
+        <input name="title" type="text" required />
+        <textarea name="content" required />
+        <button type="submit">创建</button>
+      </form>
+    </div>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **react-server 导出条件**: 条件导出 Server/Client Components
+- **Server Actions**: 服务端操作
+- **"use server" 指令**: 标记 Server Actions
+- **cache 函数**: 缓存数据
+- **cacheSignal 函数**: 控制缓存
+- **缓存失效**: revalidatePath 和 revalidateTag
+
+## 📚 学习检查点
+
+- [ ] 理解 react-server 导出条件
+- [ ] 掌握 Server Actions 的深入使用
+- [ ] 理解 "use server" 指令
+- [ ] 掌握缓存机制
+- [ ] 能够应用缓存失效策略
+
+## 🚀 下一步
+
+→ [加载性能优化](../04-performance/01-loading-performance.mdx)

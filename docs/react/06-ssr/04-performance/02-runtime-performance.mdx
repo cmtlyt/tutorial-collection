@@ -1,0 +1,560 @@
+# 运行时性能
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+运行时性能关注应用在运行时的表现，包括内存管理、渲染性能监控、Web Worker 使用和离屏渲染等。本章节将介绍如何优化 SSR 应用的运行时性能。
+
+## 🎯 内存管理
+
+### 内存泄漏预防
+
+```js
+// 避免内存泄漏的最佳实践
+'use client';
+
+import { useEffect, useState } from 'react';
+
+// 模拟数据获取函数
+async function fetchData() {
+  const res = await fetch('https://api.example.com/data');
+  return res.json();
+}
+
+export default function MemoryOptimizedComponent() {
+  const [data, setData] = useState(null);
+  
+  useEffect(() => {
+    // 创建定时器
+    const intervalId = setInterval(() => {
+      fetchData().then(setData);
+    }, 5000);
+    
+    // 清理函数 - 防止内存泄漏
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, []);
+  
+  return <div>{data ? JSON.stringify(data) : 'Loading...'}</div>;
+}
+
+// 正确的事件监听器清理
+export default function EventListenerComponent() {
+  useEffect(() => {
+    const handleResize = () => {
+      console.log('Window resized');
+    };
+    
+    window.addEventListener('resize', handleResize);
+    
+    // 清理事件监听器
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
+  
+  return <div>Resize me</div>;
+}
+```
+
+### 大数据集处理
+
+```js
+// 使用虚拟化处理大数据集
+'use client';
+
+import { useMemo, useState } from 'react';
+
+export default function LargeDataComponent({ items }) {
+  // 使用 useMemo 缓存计算结果
+  const processedData = useMemo(() => {
+    return items.map(item => ({
+      ...item,
+      processed: true,
+    }));
+  }, [items]);
+  
+  // 分页或虚拟滚动
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+  
+  const visibleItems = processedData.slice(
+    page * pageSize,
+    (page + 1) * pageSize
+  );
+  
+  return (
+    <div>
+      <ul>
+        {visibleItems.map((item) => (
+          <li key={item.id}>{item.name}</li>
+        ))}
+      </ul>
+      
+      <button onClick={() => setPage(page - 1)} disabled={page === 0}>
+        上一页
+      </button>
+      <button onClick={() => setPage(page + 1)}>
+        下一页
+      </button>
+    </div>
+  );
+}
+```
+
+### 对象池模式
+
+```js
+// 使用对象池减少垃圾回收
+class ObjectPool {
+  constructor(createFn, resetFn, initialSize = 10) {
+    this.createFn = createFn;
+    this.resetFn = resetFn;
+    this.pool = [];
+    
+    // 预创建对象
+    for (let i = 0; i < initialSize; i++) {
+      this.pool.push(this.createFn());
+    }
+  }
+  
+  acquire() {
+    if (this.pool.length > 0) {
+      return this.pool.pop();
+    }
+    return this.createFn();
+  }
+  
+  release(obj) {
+    this.resetFn(obj);
+    this.pool.push(obj);
+  }
+}
+
+// 使用示例
+const pool = new ObjectPool(
+  () => ({ data: null, timestamp: 0 }),
+  (obj) => {
+    obj.data = null;
+    obj.timestamp = 0;
+  }
+);
+
+export default function PooledComponent() {
+  const obj = pool.acquire();
+  
+  // 使用对象
+  obj.data = 'some data';
+  obj.timestamp = Date.now();
+  
+  // 使用完成后释放
+  useEffect(() => {
+    return () => pool.release(obj);
+  }, [obj]);
+  
+  return <div>Using pooled object</div>;
+}
+```
+
+## 🎯 渲染性能监控
+
+### 性能监控工具
+
+```js
+// 使用 React DevTools Profiler
+'use client';
+
+import { Profiler } from 'react';
+
+function onRenderCallback(
+  id,
+  phase,
+  actualDuration,
+  baseDuration,
+  startTime,
+  commitTime
+) {
+  console.log({
+    id,
+    phase,
+    actualDuration,
+    baseDuration,
+    startTime,
+    commitTime,
+  });
+}
+
+export default function MonitoredComponent({ children }) {
+  return (
+    <Profiler id="MonitoredComponent" onRender={onRenderCallback}>
+      {children}
+    </Profiler>
+  );
+}
+
+// 使用示例
+export default function App() {
+  return (
+    <MonitoredComponent>
+      <ExpensiveComponent />
+    </MonitoredComponent>
+  );
+}
+```
+
+### 自定义性能监控
+
+```js
+// 自定义性能监控
+'use client';
+
+import { useEffect, useRef } from 'react';
+
+export function usePerformanceMonitor(componentName) {
+  const renderCount = useRef(0);
+  const lastRenderTime = useRef(Date.now());
+  
+  useEffect(() => {
+    renderCount.current += 1;
+    const now = Date.now();
+    const renderTime = now - lastRenderTime.current;
+    lastRenderTime.current = now;
+    
+    if (renderTime > 100) {
+      console.warn(`${componentName} slow render: ${renderTime}ms`);
+    }
+    
+    console.log(`${componentName} render #${renderCount.current}`);
+  });
+  
+  return { renderCount: renderCount.current };
+}
+
+// 使用示例
+export default function PerformanceMonitoredComponent() {
+  usePerformanceMonitor('PerformanceMonitoredComponent');
+  
+  return <div>Component with performance monitoring</div>;
+}
+```
+
+### Web Vitals 监控
+
+```js
+// 监控 Web Vitals
+'use client';
+
+import { useEffect } from 'react';
+
+export function reportWebVitals(metric) {
+  console.log(metric);
+  
+  // 发送到分析服务
+  if (window.gtag) {
+    window.gtag('event', metric.name, {
+      value: metric.value,
+      event_label: metric.id,
+      non_interaction: true,
+    });
+  }
+}
+
+export default function WebVitalsMonitor() {
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      import('web-vitals').then(({ getCLS, getFID, getFCP, getLCP, getTTFB }) => {
+        getCLS(reportWebVitals);
+        getFID(reportWebVitals);
+        getFCP(reportWebVitals);
+        getLCP(reportWebVitals);
+        getTTFB(reportWebVitals);
+      });
+    }
+  }, []);
+  
+  return null;
+}
+```
+
+## 🎯 Web Worker 使用
+
+### Web Worker 基础
+
+```js
+// workers/data-processor.js
+self.onmessage = function(e) {
+  const data = e.data;
+  
+  // 执行密集计算
+  const result = processData(data);
+  
+  // 发送结果回主线程
+  self.postMessage(result);
+};
+
+function processData(data) {
+  // 模拟密集计算
+  return data.map(item => ({
+    ...item,
+    processed: item.value * 2,
+  }));
+}
+
+// app/components/DataProcessor.js
+'use client';
+
+import { useEffect, useState } from 'react';
+
+export default function DataProcessor({ data }) {
+  const [processedData, setProcessedData] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  
+  useEffect(() => {
+    if (!data) return;
+    
+    setProcessing(true);
+    
+    // 创建 Web Worker
+    const worker = new Worker('/workers/data-processor.js');
+    
+    // 发送数据到 Worker
+    worker.postMessage(data);
+    
+    // 接收处理结果
+    worker.onmessage = (e) => {
+      setProcessedData(e.data);
+      setProcessing(false);
+      worker.terminate();
+    };
+    
+    // 清理 Worker
+    return () => {
+      worker.terminate();
+    };
+  }, [data]);
+  
+  if (processing) {
+    return <div>处理中...</div>;
+  }
+  
+  return (
+    <div>
+      {processedData && (
+        <pre>{JSON.stringify(processedData, null, 2)}</pre>
+      )}
+    </div>
+  );
+}
+```
+
+### Web Worker 池
+
+```js
+// workers/worker-pool.js
+class WorkerPool {
+  constructor(workerScript, poolSize = 4) {
+    this.workerScript = workerScript;
+    this.poolSize = poolSize;
+    this.workers = [];
+    this.taskQueue = [];
+    this.activeWorkers = 0;
+    
+    this.initialize();
+  }
+  
+  initialize() {
+    for (let i = 0; i < this.poolSize; i++) {
+      const worker = new Worker(this.workerScript);
+      
+      worker.onmessage = (e) => {
+        this.activeWorkers--;
+        this.processNextTask();
+        return e.data;
+      };
+      
+      this.workers.push(worker);
+    }
+  }
+  
+  execute(task) {
+    return new Promise((resolve) => {
+      this.taskQueue.push({ task, resolve });
+      this.processNextTask();
+    });
+  }
+  
+  processNextTask() {
+    if (this.taskQueue.length === 0 || this.activeWorkers >= this.poolSize) {
+      return;
+    }
+    
+    const { task, resolve } = this.taskQueue.shift();
+    const worker = this.workers[this.activeWorkers];
+    
+    this.activeWorkers++;
+    
+    const originalOnMessage = worker.onmessage;
+    worker.onmessage = (e) => {
+      originalOnMessage(e);
+      resolve(e.data);
+    };
+    
+    worker.postMessage(task);
+  }
+}
+
+// 使用示例
+const pool = new WorkerPool('/workers/data-processor.js', 4);
+
+export async function processLargeDataset(data) {
+  const chunks = chunkArray(data, 1000);
+  
+  const results = await Promise.all(
+    chunks.map(chunk => pool.execute(chunk))
+  );
+  
+  return results.flat();
+}
+```
+
+## 🎯 离屏渲染
+
+### Canvas 离屏渲染
+
+```js
+// 使用 OffscreenCanvas 进行离屏渲染
+'use client';
+
+import { useEffect, useRef } from 'react';
+
+export default function OffscreenCanvasComponent() {
+  const canvasRef = useRef(null);
+  const workerRef = useRef(null);
+  
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    
+    // 检查浏览器支持
+    if (!canvas.transferControlToOffscreen) {
+      console.warn('OffscreenCanvas not supported');
+      return;
+    }
+    
+    // 转移 canvas 控制权
+    const offscreen = canvas.transferControlToOffscreen();
+    
+    // 创建 Worker
+    workerRef.current = new Worker('/workers/canvas-renderer.js');
+    
+    // 发送 offscreen canvas 到 Worker
+    workerRef.current.postMessage({ canvas: offscreen }, [offscreen]);
+    
+    return () => {
+      workerRef.current?.terminate();
+    };
+  }, []);
+  
+  return <canvas ref={canvasRef} width={800} height={600} />;
+}
+
+// workers/canvas-renderer.js
+self.onmessage = function(e) {
+  const canvas = e.data.canvas;
+  const ctx = canvas.getContext('2d');
+  
+  function render() {
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    ctx.fillStyle = 'blue';
+    ctx.beginPath();
+    ctx.arc(400, 300, 50, 0, Math.PI * 2);
+    ctx.fill();
+    
+    requestAnimationFrame(render);
+  }
+  
+  render();
+};
+```
+
+## 📝 实际应用示例
+
+### 完整的性能优化应用
+
+```js
+// app/components/PerformanceOptimizedApp.js
+'use client';
+
+import { useState, useEffect, useMemo, Profiler } from 'react';
+import { usePerformanceMonitor } from './performance-monitor';
+
+function onRenderCallback(id, phase, actualDuration) {
+  if (actualDuration > 16) {
+    console.warn(`${id} slow render: ${actualDuration}ms`);
+  }
+}
+
+export default function PerformanceOptimizedApp() {
+  usePerformanceMonitor('PerformanceOptimizedApp');
+  
+  const [data, setData] = useState([]);
+  const [filter, setFilter] = useState('');
+  
+  // 使用 useMemo 缓存过滤结果
+  const filteredData = useMemo(() => {
+    return data.filter(item =>
+      item.name.toLowerCase().includes(filter.toLowerCase())
+    );
+  }, [data, filter]);
+  
+  useEffect(() => {
+    // 模拟数据加载
+    const mockData = Array.from({ length: 10000 }, (_, i) => ({
+      id: i,
+      name: `Item ${i}`,
+      value: Math.random() * 100,
+    }));
+    
+    setData(mockData);
+  }, []);
+  
+  return (
+    <Profiler id="PerformanceOptimizedApp" onRender={onRenderCallback}>
+      <div>
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="搜索..."
+        />
+        
+        <VirtualizedList items={filteredData} />
+      </div>
+    </Profiler>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **内存管理**: 预防内存泄漏
+- **性能监控**: 监控渲染性能
+- **Web Worker**: 后台处理密集任务
+- **离屏渲染**: 优化渲染性能
+- **Web Vitals**: 核心性能指标
+
+## 📚 学习检查点
+
+- [ ] 理解内存管理的重要性
+- [ ] 掌握性能监控方法
+- [ ] 理解 Web Worker 的使用
+- [ ] 掌握离屏渲染技术
+- [ ] 能够应用运行时性能优化
+
+## 🚀 下一步
+
+→ [React 19 资源优化](./03-react-19-resource-optimization.mdx)

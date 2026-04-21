@@ -1,0 +1,500 @@
+# React 19 SSR 增强
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+React 19 带来了许多 SSR 增强功能，包括新的静态 API、部分预渲染、resume 和 resumeAndPrerender API、Web Streams 支持等。这些功能极大地提升了 SSR 的性能和开发体验。本章节将详细介绍这些新特性。
+
+## 🎯 新的静态 API
+
+### prerender API
+
+```js
+// 使用 prerender 进行静态渲染
+import { prerender } from 'react-dom/server';
+
+async function generateStaticSite() {
+  const result = await prerender(
+    <html>
+      <head>
+        <title>静态站点</title>
+      </head>
+      <body>
+        <App />
+      </body>
+    </html>,
+    {
+      // 配置选项
+      bootstrapModules: ['/main.js'],
+    }
+  );
+  
+  // result 包含渲染后的 HTML
+  return result;
+}
+
+// 使用示例
+const staticHtml = await generateStaticSite();
+console.log(staticHtml);
+```
+
+### prerenderToNodeStream API
+
+```js
+// 使用流式预渲染
+import { prerenderToNodeStream } from 'react-dom/server';
+import { createReadStream } from 'fs';
+
+async function generateStreamingSite() {
+  const stream = await prerenderToNodeStream(
+    <html>
+      <head>
+        <title>流式静态站点</title>
+      </head>
+      <body>
+        <App />
+      </body>
+    </html>
+  );
+  
+  // 将流写入文件
+  const writeStream = createWriteStream('output.html');
+  stream.pipe(writeStream);
+  
+  return new Promise((resolve, reject) => {
+    writeStream.on('finish', resolve);
+    writeStream.on('error', reject);
+  });
+}
+```
+
+## 🎯 部分预渲染（Partial Pre-rendering）
+
+### 基础部分预渲染
+
+```js
+// 使用部分预渲染
+import { Suspense } from 'react';
+
+function HomePage() {
+  return (
+    <html>
+      <head>
+        <title>部分预渲染示例</title>
+      </head>
+      <body>
+        {/* 静态部分 - 立即渲染 */}
+        <Header />
+        <HeroSection />
+        
+        {/* 动态部分 - 延迟加载 */}
+        <Suspense fallback={<LoadingSkeleton />}>
+          <DynamicContent />
+        </Suspense>
+        
+        <Footer />
+      </body>
+    </html>
+  );
+}
+
+// 动态内容组件
+async function DynamicContent() {
+  const data = await fetchDynamicData();
+  
+  return (
+    <div>
+      <h2>动态内容</h2>
+      {data.map((item) => (
+        <div key={item.id}>{item.title}</div>
+      ))}
+    </div>
+  );
+}
+
+function LoadingSkeleton() {
+  return (
+    <div>
+      <div className="skeleton" />
+      <div className="skeleton" />
+      <div className="skeleton" />
+    </div>
+  );
+}
+```
+
+### 部分预渲染配置
+
+```js
+// next.config.js - 启用部分预渲染
+const nextConfig = {
+  experimental: {
+    ppr: 'incremental', // 增量部分预渲染
+  },
+};
+
+// app/products/page.js - 标记部分预渲染
+export const experimental_ppr = true;
+
+export default async function ProductsPage() {
+  const products = await getProducts();
+  
+  return (
+    <main>
+      <h1>产品列表</h1>
+      <Suspense fallback={<ProductListSkeleton />}>
+        <ProductList />
+      </Suspense>
+    </main>
+  );
+}
+```
+
+## 🎯 resume 和 resumeAndPrerender API
+
+### resume API
+
+```js
+// 使用 resume API 恢复渲染
+import { resume } from 'react-dom/server';
+
+async function resumeRendering(html) {
+  const result = await resume(html, {
+    // 配置选项
+    clientReferenceManifest: clientManifest,
+  });
+  
+  return result;
+}
+
+// 使用场景：从缓存恢复渲染
+async function handleRequest(req, res) {
+  const cachedHtml = await getFromCache(req.url);
+  
+  if (cachedHtml) {
+    // 恢复渲染
+    const result = await resumeRendering(cachedHtml);
+    return res.send(result);
+  }
+  
+  // 正常渲染
+  const freshHtml = await renderPage();
+  await cachePage(req.url, freshHtml);
+  return res.send(freshHtml);
+}
+```
+
+### resumeAndPrerender API
+
+```js
+// 使用 resumeAndPrerender API
+import { resumeAndPrerender } from 'react-dom/server';
+
+async function hybridRendering(html) {
+  const result = await resumeAndPrerender(html, {
+    // 恢复现有渲染
+    resume: true,
+    // 预渲染新内容
+    prerender: true,
+    // 配置选项
+    bootstrapModules: ['/main.js'],
+  });
+  
+  return result;
+}
+
+// 使用场景：混合静态和动态内容
+async function handlePageRequest(req, res) {
+  const baseHtml = await getBaseTemplate();
+  
+  // 恢复并预渲染
+  const result = await hybridRendering(baseHtml);
+  
+  return res.send(result);
+}
+```
+
+## 🎯 Web Streams 支持
+
+### 流式渲染
+
+```js
+// 使用 Web Streams 进行流式渲染
+import { renderToReadableStream } from 'react-dom/server';
+
+async function streamRender(req, res) {
+  const stream = await renderToReadableStream(
+    <html>
+      <head>
+        <title>流式渲染</title>
+      </head>
+      <body>
+        <App />
+      </body>
+    </html>,
+    {
+      // 配置选项
+      bootstrapModules: ['/main.js'],
+    }
+  );
+  
+  // 设置响应头
+  res.setHeader('Content-Type', 'text/html');
+  
+  // 流式传输
+  const reader = stream.getReader();
+  const encoder = new TextEncoder();
+  
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        res.end();
+        break;
+      }
+      
+      res.write(encoder.encode(value));
+    }
+  } catch (error) {
+    console.error('Stream error:', error);
+    res.end();
+  }
+}
+```
+
+### 增量流式渲染
+
+```js
+// 增量流式渲染示例
+import { renderToReadableStream } from 'react-dom/server';
+import { Suspense } from 'react';
+
+function StreamingPage() {
+  return (
+    <html>
+      <head>
+        <title>增量流式渲染</title>
+      </head>
+      <body>
+        {/* 立即发送 */}
+        <Header />
+        
+        {/* 延迟发送 */}
+        <Suspense fallback={<Loading />}>
+          <AsyncSection />
+        </Suspense>
+        
+        {/* 更延迟发送 */}
+        <Suspense fallback={<Loading />}>
+          <MoreAsyncSection />
+        </Suspense>
+      </body>
+    </html>
+  );
+}
+
+async function AsyncSection() {
+  const data = await fetchData();
+  return <div>{data.content}</div>;
+}
+
+async function MoreAsyncSection() {
+  const data = await fetchMoreData();
+  return <div>{data.content}</div>;
+}
+```
+
+## 🎯 性能优化
+
+### 智能预渲染
+
+```js
+// 智能预渲染策略
+async function smartPrerender(url) {
+  // 检查缓存
+  const cached = await cache.get(url);
+  
+  if (cached && !isStale(cached)) {
+    return cached;
+  }
+  
+  // 检查是否需要预渲染
+  const shouldPrerender = await shouldPreRender(url);
+  
+  if (shouldPrerender) {
+    // 预渲染页面
+    const html = await prerender(<App url={url} />);
+    await cache.set(url, html);
+    return html;
+  }
+  
+  // 正常渲染
+  return await renderPage(url);
+}
+
+async function shouldPreRender(url) {
+  // 预渲染策略
+  const rules = [
+    // 高流量页面
+    (u) => isHighTraffic(u),
+    // 首页
+    (u) => u === '/',
+    // 产品页面
+    (u) => u.startsWith('/products/'),
+  ];
+  
+  return rules.some(rule => rule(url));
+}
+```
+
+### 缓存优化
+
+```js
+// 优化的缓存策略
+const cacheConfig = {
+  // 静态内容：长时间缓存
+  static: {
+    ttl: 86400, // 24 小时
+    strategy: 'prerender',
+  },
+  
+  // 动态内容：短时间缓存
+  dynamic: {
+    ttl: 60, // 1 分钟
+    strategy: 'stream',
+  },
+  
+  // 实时内容：不缓存
+  realtime: {
+    ttl: 0,
+    strategy: 'stream',
+  },
+};
+
+async function getCachedContent(url) {
+  const contentType = getContentType(url);
+  const config = cacheConfig[contentType];
+  
+  if (config.ttl === 0) {
+    return renderStream(url);
+  }
+  
+  const cached = await cache.get(url);
+  
+  if (cached && !isExpired(cached, config.ttl)) {
+    return cached;
+  }
+  
+  if (config.strategy === 'prerender') {
+    const html = await prerender(<App url={url} />);
+    await cache.set(url, html, { ttl: config.ttl });
+    return html;
+  }
+  
+  return renderStream(url);
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的 React 19 SSR 应用
+
+```js
+// app/layout.js
+import { Suspense } from 'react';
+
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <head>
+        <title>React 19 SSR App</title>
+      </head>
+      <body>
+        <Suspense fallback={<HeaderSkeleton />}>
+          <Header />
+        </Suspense>
+        
+        <main>
+          {children}
+        </main>
+        
+        <Suspense fallback={<FooterSkeleton />}>
+          <Footer />
+        </Suspense>
+      </body>
+    </html>
+  );
+}
+
+// app/page.js
+import { Suspense } from 'react';
+
+export default async function HomePage() {
+  return (
+    <div>
+      <h1>欢迎</h1>
+      
+      <Suspense fallback={<FeaturedSkeleton />}>
+        <FeaturedProducts />
+      </Suspense>
+      
+      <Suspense fallback={<NewsSkeleton />}>
+        <LatestNews />
+      </Suspense>
+    </div>
+  );
+}
+
+async function FeaturedProducts() {
+  const products = await fetch('https://api.example.com/featured').then(r => r.json());
+  
+  return (
+    <section>
+      <h2>精选产品</h2>
+      <div>
+        {products.map(product => (
+          <ProductCard key={product.id} product={product} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+async function LatestNews() {
+  const news = await fetch('https://api.example.com/news').then(r => r.json());
+  
+  return (
+    <section>
+      <h2>最新消息</h2>
+      <ul>
+        {news.map(item => (
+          <li key={item.id}>{item.title}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **静态 API**: prerender 和 prerenderToNodeStream
+- **部分预渲染**: 混合静态和动态渲染
+- **resume API**: 恢复渲染
+- **Web Streams**: 流式渲染支持
+- **性能优化**: 缓存和预渲染策略
+
+## 📚 学习检查点
+
+- [ ] 理解新的静态 API
+- [ ] 掌握部分预渲染技术
+- [ ] 理解 resume 和 resumeAndPrerender API
+- [ ] 掌握 Web Streams 流式渲染
+- [ ] 能够应用性能优化策略
+
+## 🚀 下一步
+
+→ [服务端组件基础](../03-server-components/01-server-components-basics.mdx)

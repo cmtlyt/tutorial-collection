@@ -1,0 +1,436 @@
+# 服务端组件基础
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+React Server Components (RSC) 是 React 19 中稳定的核心特性。Server Components 在服务器上渲染，可以访问服务器资源（如数据库、文件系统），但不会发送 JavaScript 到客户端。本章节将介绍 Server Components 的基础概念和使用方法。
+
+## 🎯 Server Components 原理
+
+### Server Components 工作方式
+
+```js
+// Server Component 在服务器上渲染
+// app/components/ProductList.js
+async function getProducts() {
+  const res = await fetch('https://api.example.com/products');
+  return res.json();
+}
+
+export default async function ProductList() {
+  const products = await getProducts();
+  
+  return (
+    <div>
+      <h1>产品列表</h1>
+      <ul>
+        {products.map((product) => (
+          <li key={product.id}>
+            <h2>{product.name}</h2>
+            <p>¥{product.price}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// 工作流程：
+// 1. 服务器接收请求
+// 2. 服务器执行 Server Component
+// 3. 组件访问数据库/API 获取数据
+// 4. 生成 HTML
+// 5. 发送 HTML 到客户端
+// 6. 客户端显示内容（无 JavaScript）
+```
+
+### Server Components 优势
+
+```js
+// Server Components 的优势：
+
+// 1. 直接访问服务器资源
+async function ServerComponent() {
+  // 直接访问数据库
+  const users = await db.users.findMany();
+  
+  // 直接读取文件
+  const content = await fs.readFile('data.txt', 'utf-8');
+  
+  // 直接调用 API
+  const data = await fetch('https://api.example.com/data');
+  
+  return (
+    <div>
+      <h2>{content}</h2>
+      <ul>
+        {users.map(user => <li key={user.id}>{user.name}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+// 2. 减少客户端 JavaScript 包大小
+// Server Components 不会发送到客户端，只有 HTML
+
+// 3. 更好的 SEO
+// 搜索引擎可以直接索引渲染后的 HTML
+
+// 4. 更快的首屏加载
+// 无需等待 JavaScript 下载和执行
+```
+
+## 🎯 Client Components 区分
+
+### Server vs Client Components
+
+```js
+// Server Component（默认）
+// app/components/ProductCard.js
+export default function ProductCard({ product }) {
+  return (
+    <div>
+      <h2>{product.name}</h2>
+      <p>¥{product.price}</p>
+    </div>
+  );
+}
+
+// Client Component（需要交互）
+// app/components/LikeButton.js
+'use client';
+
+import { useState } from 'react';
+
+export default function LikeButton({ initialLikes }) {
+  const [likes, setLikes] = useState(initialLikes);
+  
+  return (
+    <button onClick={() => setLikes(likes + 1)}>
+      ❤️ {likes}
+    </button>
+  );
+}
+```
+
+### 何时使用 Client Components
+
+```js
+// 需要使用 Client Components 的场景：
+
+// 1. 使用 React Hooks（useState, useEffect 等）
+'use client';
+
+import { useState, useEffect } from 'react';
+
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  
+  useEffect(() => {
+    document.title = `Count: ${count}`;
+  }, [count]);
+  
+  return (
+    <button onClick={() => setCount(count + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+
+// 2. 处理浏览器事件
+'use client';
+
+export default function Form() {
+  function handleSubmit(e) {
+    e.preventDefault();
+    // 处理表单提交
+  }
+  
+  return (
+    <form onSubmit={handleSubmit}>
+      <button type="submit">提交</button>
+    </form>
+  );
+}
+
+// 3. 使用浏览器 API
+'use client';
+
+export default function Geolocation() {
+  const [location, setLocation] = useState(null);
+  
+  useEffect(() => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => setLocation(position.coords)
+    );
+  }, []);
+  
+  return <div>{location ? `${location.lat}, ${location.lng}` : 'Loading...'}</div>;
+}
+```
+
+## 🎯 数据流优化
+
+### Server Components 数据获取
+
+```js
+// Server Components 直接获取数据
+// app/components/UserProfile.js
+async function getUser(id) {
+  const res = await fetch(`https://api.example.com/users/${id}`);
+  return res.json();
+}
+
+async function getUserPosts(userId) {
+  const res = await fetch(`https://api.example.com/users/${userId}/posts`);
+  return res.json();
+}
+
+export default async function UserProfile({ userId }) {
+  // 并行获取数据
+  const [user, posts] = await Promise.all([
+    getUser(userId),
+    getUserPosts(userId),
+  ]);
+  
+  return (
+    <div>
+      <h1>{user.name}</h1>
+      <p>{user.bio}</p>
+      
+      <h2>文章列表</h2>
+      <ul>
+        {posts.map((post) => (
+          <li key={post.id}>{post.title}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+### 数据传递到 Client Components
+
+```js
+// Server Component 传递数据到 Client Component
+// app/components/ProductPage.js
+async function getProduct(id) {
+  const res = await fetch(`https://api.example.com/products/${id}`);
+  return res.json();
+}
+
+export default async function ProductPage({ productId }) {
+  const product = await getProduct(productId);
+  
+  return (
+    <div>
+      <h1>{product.name}</h1>
+      <p>{product.description}</p>
+      
+      {/* 传递数据到 Client Component */}
+      <AddToCartButton product={product} />
+    </div>
+  );
+}
+
+// app/components/AddToCartButton.js
+'use client';
+
+import { useState } from 'react';
+
+export default function AddToCartButton({ product }) {
+  const [inCart, setInCart] = useState(false);
+  
+  function handleAddToCart() {
+    // 添加到购物车逻辑
+    setInCart(true);
+  }
+  
+  return (
+    <button onClick={handleAddToCart} disabled={inCart}>
+      {inCart ? '已添加' : '添加到购物车'}
+    </button>
+  );
+}
+```
+
+## 🎯 性能提升
+
+### 减少客户端包大小
+
+```js
+// Server Components 不发送到客户端
+// app/components/HeavyComponent.js
+import { heavyLibrary } from 'heavy-library';
+
+export default function HeavyComponent() {
+  // 这个库不会发送到客户端
+  const result = heavyLibrary.process(data);
+  
+  return (
+    <div>
+      {result}
+    </div>
+  );
+}
+
+// 只有 Client Components 的代码会发送到客户端
+// app/components/InteractiveComponent.js
+'use client';
+
+import { useState } from 'react';
+
+export default function InteractiveComponent() {
+  const [state, setState] = useState(null);
+  
+  return (
+    <div>
+      {/* 只有这部分代码会发送到客户端 */}
+    </div>
+  );
+}
+```
+
+### 代码分割优化
+
+```js
+// 智能代码分割
+// app/components/Dashboard.js
+import dynamic from 'next/dynamic';
+
+// 动态导入 Client Component
+const ChartComponent = dynamic(() => import('./ChartComponent'), {
+  loading: () => <div>加载图表...</div>,
+  ssr: false,
+});
+
+export default function Dashboard() {
+  return (
+    <div>
+      <h1>仪表板</h1>
+      {/* ChartComponent 只在需要时加载 */}
+      <ChartComponent />
+    </div>
+  );
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的 Server Components 应用
+
+```js
+// app/layout.js
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <head>
+        <title>Server Components App</title>
+      </head>
+      <body>
+        <Header />
+        {children}
+        <Footer />
+      </body>
+    </html>
+  );
+}
+
+// app/components/Header.js
+export default function Header() {
+  return (
+    <header>
+      <nav>
+        <a href="/">首页</a>
+        <a href="/products">产品</a>
+        <a href="/about">关于</a>
+      </nav>
+    </header>
+  );
+}
+
+// app/page.js
+async function getFeaturedProducts() {
+  const res = await fetch('https://api.example.com/products/featured', {
+    next: { revalidate: 3600 },
+  });
+  return res.json();
+}
+
+export default async function HomePage() {
+  const products = await getFeaturedProducts();
+  
+  return (
+    <main>
+      <h1>欢迎</h1>
+      <ProductList products={products} />
+    </main>
+  );
+}
+
+// app/components/ProductList.js
+export default function ProductList({ products }) {
+  return (
+    <div>
+      {products.map((product) => (
+        <ProductCard key={product.id} product={product} />
+      ))}
+    </div>
+  );
+}
+
+// app/components/ProductCard.js
+import LikeButton from './LikeButton';
+
+export default function ProductCard({ product }) {
+  return (
+    <div>
+      <h2>{product.name}</h2>
+      <p>¥{product.price}</p>
+      <LikeButton productId={product.id} initialLikes={product.likes} />
+    </div>
+  );
+}
+
+// app/components/LikeButton.js
+'use client';
+
+import { useState } from 'react';
+
+export default function LikeButton({ productId, initialLikes }) {
+  const [likes, setLikes] = useState(initialLikes);
+  
+  async function handleLike() {
+    setLikes(likes + 1);
+    // 调用 API 更新点赞
+  }
+  
+  return (
+    <button onClick={handleLike}>
+      ❤️ {likes}
+    </button>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **Server Components**: 在服务器上渲染的组件
+- **Client Components**: 在客户端渲染的组件
+- **数据获取**: Server Components 直接获取数据
+- **性能优化**: 减少客户端包大小
+- **代码分割**: 优化加载性能
+
+## 📚 学习检查点
+
+- [ ] 理解 Server Components 的工作原理
+- [ ] 掌握 Server vs Client Components 的区别
+- [ ] 理解何时使用 Client Components
+- [ ] 掌握数据流优化
+- [ ] 理解性能提升策略
+
+## 🚀 下一步
+
+→ [Server Components 实践](./02-server-components-practice.mdx)

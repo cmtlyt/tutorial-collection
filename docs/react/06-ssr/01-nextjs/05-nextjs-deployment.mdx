@@ -1,0 +1,493 @@
+# Next.js 部署
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+Next.js 16 应用可以部署到多种平台，包括 Vercel、自托管服务器、容器化环境等。本章节将介绍 Next.js 应用的构建、优化和部署最佳实践。
+
+## 🎯 构建配置
+
+### 基础构建配置
+
+```js
+// next.config.js
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  // 输出目录
+  distDir: '.next',
+  
+  // 环境变量
+  env: {
+    CUSTOM_KEY: process.env.CUSTOM_KEY,
+  },
+  
+  // 图片优化
+  images: {
+    domains: ['example.com'],
+    formats: ['image/avif', 'image/webp'],
+  },
+  
+  // 实验性功能
+  experimental: {
+    // 启用 Turbopack（开发模式）
+    turbo: {
+      rules: {
+        '*.svg': {
+          loaders: ['@svgr/webpack'],
+          as: '*.js',
+        },
+      },
+    },
+  },
+  
+  // 压缩
+  compress: true,
+  
+  // 生产环境源码映射
+  productionBrowserSourceMaps: false,
+  
+  // React 严格模式
+  reactStrictMode: true,
+  
+  // SWC 压缩器
+  swcMinify: true,
+};
+
+module.exports = nextConfig;
+```
+
+### 环境特定配置
+
+```js
+// next.config.js
+const isProduction = process.env.NODE_ENV === 'production';
+const isDevelopment = process.env.NODE_ENV === 'development';
+
+const nextConfig = {
+  // 生产环境优化
+  ...(isProduction && {
+    compress: true,
+    productionBrowserSourceMaps: false,
+    poweredByHeader: false,
+  }),
+  
+  // 开发环境配置
+  ...(isDevelopment && {
+    productionBrowserSourceMaps: true,
+  }),
+  
+  // 图片域名
+  images: {
+    domains: isProduction 
+      ? ['cdn.example.com'] 
+      : ['localhost', 'example.com'],
+  },
+};
+
+module.exports = nextConfig;
+```
+
+## 🎯 构建优化
+
+### 代码分割优化
+
+```js
+// next.config.js
+const nextConfig = {
+  // Webpack 配置
+  webpack: (config, { isServer }) => {
+    // 客户端代码分割
+    if (!isServer) {
+      config.optimization.splitChunks = {
+        chunks: 'all',
+        cacheGroups: {
+          default: false,
+          vendors: false,
+          commons: {
+            name: 'commons',
+            chunks: 'all',
+            minChunks: 2,
+          },
+          // React 相关
+          react: {
+            name: 'react',
+            chunks: 'all',
+            test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+          },
+          // UI 库
+          ui: {
+            name: 'ui',
+            chunks: 'all',
+            test: /[\\/]node_modules[\\/](@mui|@ant-design|@chakra-ui)[\\/]/,
+          },
+        },
+      };
+    }
+    
+    return config;
+  },
+};
+```
+
+### 资源优化
+
+```js
+// next.config.js
+const withBundleAnalyzer = require('@next/bundle-analyzer')({
+  enabled: process.env.ANALYZE === 'true',
+});
+
+const nextConfig = {
+  // 图片优化
+  images: {
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
+    imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
+    formats: ['image/avif', 'image/webp'],
+    minimumCacheTTL: 60,
+  },
+  
+  // 字体优化
+  optimizeFonts: true,
+  
+  // 压缩
+  compress: true,
+};
+
+module.exports = withBundleAnalyzer(nextConfig);
+```
+
+## 🎯 部署到 Vercel
+
+### Vercel 配置
+
+```js
+// vercel.json
+{
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "regions": ["hkg1"],
+  "env": {
+    "DATABASE_URL": "@database-url",
+    "API_SECRET": "@api-secret"
+  },
+  "build": {
+    "env": {
+      "NEXT_PUBLIC_SITE_URL": "https://your-site.vercel.app"
+    }
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-XSS-Protection",
+          "value": "1; mode=block"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://api.example.com/:path*"
+    }
+  ]
+}
+```
+
+### 环境变量配置
+
+```bash
+# .env.production
+DATABASE_URL=postgresql://user:password@host:5432/dbname
+API_SECRET_KEY=your-production-secret
+NEXT_PUBLIC_SITE_URL=https://your-site.vercel.app
+NEXT_PUBLIC_API_URL=https://api.example.com
+
+# .env.development
+DATABASE_URL=postgresql://user:password@localhost:5432/dbname
+API_SECRET_KEY=your-development-secret
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
+NEXT_PUBLIC_API_URL=http://localhost:4000
+```
+
+### 部署脚本
+
+```js
+// scripts/deploy.js
+const { execSync } = require('child_process');
+const dotenv = require('dotenv');
+
+// 加载环境变量
+dotenv.config({ path: '.env.production' });
+
+// 构建命令
+function build() {
+  console.log('Building Next.js application...');
+  execSync('npm run build', { stdio: 'inherit' });
+  console.log('Build completed!');
+}
+
+// 部署到 Vercel
+function deploy() {
+  console.log('Deploying to Vercel...');
+  execSync('vercel --prod', { stdio: 'inherit' });
+  console.log('Deployment completed!');
+}
+
+// 主函数
+async function main() {
+  try {
+    build();
+    deploy();
+  } catch (error) {
+    console.error('Deployment failed:', error);
+    process.exit(1);
+  }
+}
+
+main();
+```
+
+## 🎯 Docker 部署
+
+### Dockerfile
+
+```dockerfile
+# Dockerfile
+FROM node:20-alpine AS base
+
+# 安装依赖
+FROM base AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# 构建
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+ENV NEXT_TELEMETRY_DISABLED 1
+
+RUN npm run build
+
+# 运行
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+COPY --from=builder /app/public ./public
+
+# 自动利用输出跟踪来减少镜像大小
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+
+ENV PORT 3000
+ENV HOSTNAME "0.0.0.0"
+
+CMD ["node", "server.js"]
+```
+
+### docker-compose.yml
+
+```yaml
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://user:password@db:5432/mydb
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=mydb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+```
+
+## 🎯 性能监控
+
+### 性能分析
+
+```js
+// next.config.js
+const withBundleAnalyzer = require('@next/bundle-analyzer')({
+  enabled: process.env.ANALYZE === 'true',
+});
+
+const nextConfig = {
+  // ...其他配置
+};
+
+module.exports = withBundleAnalyzer(nextConfig);
+
+// package.json
+{
+  "scripts": {
+    "analyze": "ANALYZE=true npm run build"
+  }
+}
+```
+
+### 错误追踪
+
+```js
+// app/lib/sentry.js
+import * as Sentry from '@sentry/nextjs';
+
+Sentry.init({
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  tracesSampleRate: 1.0,
+  environment: process.env.NODE_ENV,
+});
+
+// app/error.js
+'use client';
+
+export default function Error({ error, reset }) {
+  return (
+    <div>
+      <h2>出错了！</h2>
+      <p>{error.message}</p>
+      <button onClick={reset}>重试</button>
+    </div>
+  );
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的部署配置
+
+```js
+// next.config.js
+const withBundleAnalyzer = require('@next/bundle-analyzer')({
+  enabled: process.env.ANALYZE === 'true',
+});
+
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  distDir: '.next',
+  
+  compress: true,
+  
+  productionBrowserSourceMaps: false,
+  
+  reactStrictMode: true,
+  
+  swcMinify: true,
+  
+  images: {
+    domains: ['cdn.example.com'],
+    formats: ['image/avif', 'image/webp'],
+  },
+  
+  env: {
+    NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
+  },
+  
+  headers: async () => {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          {
+            key: 'X-DNS-Prefetch-Control',
+            value: 'on'
+          },
+          {
+            key: 'Strict-Transport-Security',
+            value: 'max-age=63072000; includeSubDomains; preload'
+          },
+        ],
+      },
+    ];
+  },
+};
+
+module.exports = withBundleAnalyzer(nextConfig);
+
+// package.json
+{
+  "name": "my-nextjs-app",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "analyze": "ANALYZE=true npm run build",
+    "deploy": "node scripts/deploy.js"
+  },
+  "dependencies": {
+    "next": "16.0.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@next/bundle-analyzer": "^16.0.0",
+    "typescript": "^5.0.0"
+  }
+}
+```
+
+## 🔗 相关概念
+
+- **构建配置**: Next.js 构建选项
+- **代码分割**: 优化包大小
+- **Vercel 部署**: Vercel 平台部署
+- **Docker 部署**: 容器化部署
+- **性能监控**: 分析和监控
+
+## 📚 学习检查点
+
+- [ ] 理解 Next.js 构建配置
+- [ ] 掌握代码分割优化
+- [ ] 了解 Vercel 部署流程
+- [ ] 掌握 Docker 部署
+- [ ] 理解性能监控的重要性
+
+## 🚀 下一步
+
+→ [SSR 技术原理](../02-ssr-techniques/01-ssr-principles.mdx)

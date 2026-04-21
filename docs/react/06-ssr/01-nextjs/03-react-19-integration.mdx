@@ -1,0 +1,646 @@
+# React 19 集成
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+Next.js 16 完全支持 React 19 的新特性，包括 Server Components、Server Actions、新的 Hooks 等。这些特性极大地简化了全栈 React 应用的开发。本章节将详细介绍如何在 Next.js 中使用 React 19 的新特性。
+
+## 🎯 Server Components 支持
+
+### 默认 Server Components
+
+在 Next.js 16 的 App Router 中，所有组件默认都是 Server Components：
+
+```js
+// app/components/ProductCard.js - Server Component
+async function getProductDetails(productId) {
+  const res = await fetch(`https://api.example.com/products/${productId}`);
+  return res.json();
+}
+
+export default async function ProductCard({ productId }) {
+  const product = await getProductDetails(productId);
+  
+  return (
+    <div>
+      <h2>{product.name}</h2>
+      <p>¥{product.price}</p>
+      <p>{product.description}</p>
+    </div>
+  );
+}
+
+// 在页面中使用
+// app/products/page.js
+import ProductCard from '../components/ProductCard';
+
+export default function ProductsPage() {
+  const productIds = ['1', '2', '3'];
+  
+  return (
+    <main>
+      <h1>产品列表</h1>
+      <div>
+        {productIds.map((id) => (
+          <ProductCard key={id} productId={id} />
+        ))}
+      </div>
+    </main>
+  );
+}
+```
+
+### Server Components 优势
+
+```js
+// app/components/BlogList.js - Server Component
+async function getBlogPosts() {
+  const res = await fetch('https://api.example.com/posts', {
+    next: { revalidate: 3600 },
+  });
+  return res.json();
+}
+
+export default async function BlogList() {
+  const posts = await getBlogPosts();
+  
+  return (
+    <div>
+      <h1>博客文章</h1>
+      <ul>
+        {posts.map((post) => (
+          <li key={post.id}>
+            <h2>{post.title}</h2>
+            <p>{post.excerpt}</p>
+            <time>{post.publishedAt}</time>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// 优势：
+// 1. 直接访问数据库和 API
+// 2. 减少客户端 JavaScript 包大小
+// 3. 更好的 SEO
+// 4. 更快的首屏加载
+```
+
+### Client Components 交互
+
+```js
+// app/components/LikeButton.js - Client Component
+'use client';
+
+import { useState } from 'react';
+
+export default function LikeButton({ initialLikes = 0 }) {
+  const [likes, setLikes] = useState(initialLikes);
+  const [isLiked, setIsLiked] = useState(false);
+  
+  function handleLike() {
+    setLikes(prev => isLiked ? prev - 1 : prev + 1);
+    setIsLiked(!isLiked);
+  }
+  
+  return (
+    <button onClick={handleLike}>
+      {isLiked ? '❤️' : '🤍'} {likes}
+    </button>
+  );
+}
+
+// 在 Server Component 中使用
+// app/components/BlogPost.js
+import LikeButton from './LikeButton';
+
+export default function BlogPost({ post }) {
+  return (
+    <article>
+      <h1>{post.title}</h1>
+      <p>{post.content}</p>
+      <LikeButton initialLikes={post.likes} />
+    </article>
+  );
+}
+```
+
+## 🎯 Server Actions 深入
+
+### 定义 Server Actions
+
+```js
+// app/actions.js
+'use server';
+
+import { revalidatePath, revalidateTag } from 'next/cache';
+import { redirect } from 'next/navigation';
+
+// 创建文章
+export async function createPost(formData) {
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  // 模拟数据库操作
+  const newPost = {
+    id: Math.random().toString(36).substr(2, 9),
+    title,
+    content,
+    createdAt: new Date().toISOString(),
+  };
+  
+  // 重新验证文章列表
+  revalidatePath('/blog');
+  
+  return newPost;
+}
+
+// 更新文章
+export async function updatePost(postId, formData) {
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  // 更新逻辑
+  const updatedPost = {
+    id: postId,
+    title,
+    content,
+    updatedAt: new Date().toISOString(),
+  };
+  
+  // 重新验证特定文章
+  revalidatePath(`/blog/${postId}`);
+  
+  return updatedPost;
+}
+
+// 删除文章
+export async function deletePost(postId) {
+  // 删除逻辑
+  console.log(`Deleting post: ${postId}`);
+  
+  // 重新验证文章列表
+  revalidatePath('/blog');
+  
+  // 重定向到文章列表
+  redirect('/blog');
+}
+
+// 使用标签重新验证
+export async function createComment(formData) {
+  const postId = formData.get('postId');
+  const content = formData.get('content');
+  
+  // 创建评论逻辑
+  const newComment = {
+    id: Math.random().toString(36).substr(2, 9),
+    postId,
+    content,
+    createdAt: new Date().toISOString(),
+  };
+  
+  // 重新验证带有特定标签的页面
+  revalidateTag(`comments-${postId}`);
+  
+  return newComment;
+}
+```
+
+### 在表单中使用 Server Actions
+
+```js
+// app/blog/new/page.js
+import { createPost } from '../../actions';
+
+export default function NewPostPage() {
+  return (
+    <main>
+      <h1>创建新文章</h1>
+      <form action={createPost}>
+        <div>
+          <label htmlFor="title">标题</label>
+          <input
+            id="title"
+            name="title"
+            type="text"
+            required
+          />
+        </div>
+        
+        <div>
+          <label htmlFor="content">内容</label>
+          <textarea
+            id="content"
+            name="content"
+            required
+            rows={10}
+          />
+        </div>
+        
+        <button type="submit">发布文章</button>
+      </form>
+    </main>
+  );
+}
+```
+
+### 在 Client Component 中使用 Server Actions
+
+```js
+// app/components/DeleteButton.js
+'use client';
+
+import { deletePost } from '../actions';
+
+export default function DeleteButton({ postId }) {
+  async function handleDelete() {
+    if (confirm('确定要删除这篇文章吗？')) {
+      await deletePost(postId);
+    }
+  }
+  
+  return (
+    <button onClick={handleDelete}>
+      删除文章
+    </button>
+  );
+}
+
+// 在 Server Component 中使用
+// app/blog/[slug]/page.js
+import DeleteButton from '../../components/DeleteButton';
+
+export default async function BlogPostPage({ params }) {
+  const post = await getPost(params.slug);
+  
+  return (
+    <article>
+      <h1>{post.title}</h1>
+      <p>{post.content}</p>
+      <DeleteButton postId={post.id} />
+    </article>
+  );
+}
+```
+
+## 🎯 Actions 与 Next.js 集成
+
+### useActionState 集成
+
+```js
+// app/components/ContactForm.js
+'use client';
+
+import { useActionState } from 'react';
+import { submitContactForm } from '../actions';
+
+const initialState = {
+  message: '',
+  success: false,
+};
+
+export default function ContactForm() {
+  const [state, formAction, isPending] = useActionState(
+    submitContactForm,
+    initialState
+  );
+  
+  return (
+    <form action={formAction}>
+      <div>
+        <label htmlFor="name">姓名</label>
+        <input id="name" name="name" type="text" required />
+      </div>
+      
+      <div>
+        <label htmlFor="email">邮箱</label>
+        <input id="email" name="email" type="email" required />
+      </div>
+      
+      <div>
+        <label htmlFor="message">消息</label>
+        <textarea id="message" name="message" required rows={5} />
+      </div>
+      
+      <button type="submit" disabled={isPending}>
+        {isPending ? '提交中...' : '提交'}
+      </button>
+      
+      {state.message && (
+        <p style={{ color: state.success ? 'green' : 'red' }}>
+          {state.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
+// app/actions.js
+'use server';
+
+export async function submitContactForm(prevState, formData) {
+  const name = formData.get('name');
+  const email = formData.get('email');
+  const message = formData.get('message');
+  
+  // 模拟表单提交
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  return {
+    message: '感谢您的留言！我们会尽快回复。',
+    success: true,
+  };
+}
+```
+
+### useOptimistic 集成
+
+```js
+// app/components/LikeButton.js
+'use client';
+
+import { useOptimistic } from 'react';
+import { toggleLike } from '../actions';
+
+export default function LikeButton({ postId, initialLiked, initialLikes }) {
+  const [optimisticLiked, addOptimisticLike] = useOptimistic(
+    initialLiked,
+    (state, newLikedState) => newLikedState
+  );
+  
+  const [optimisticLikes, addOptimisticLikes] = useOptimistic(
+    initialLikes,
+    (state, newLikesState) => newLikesState
+  );
+  
+  async function handleToggleLike() {
+    addOptimisticLike(!optimisticLiked);
+    addOptimisticLikes(optimisticLiked ? optimisticLikes - 1 : optimisticLikes + 1);
+    
+    await toggleLike(postId);
+  }
+  
+  return (
+    <button onClick={handleToggleLike}>
+      {optimisticLiked ? '❤️' : '🤍'} {optimisticLikes}
+    </button>
+  );
+}
+
+// app/actions.js
+'use server';
+
+import { revalidatePath } from 'next/cache';
+
+export async function toggleLike(postId) {
+  // 模拟点赞操作
+  await new Promise(resolve => setTimeout(resolve, 500));
+  
+  // 重新验证页面
+  revalidatePath(`/blog/${postId}`);
+}
+```
+
+### useFormStatus 集成
+
+```js
+// app/components/SubmitButton.js
+'use client';
+
+import { useFormStatus } from 'react';
+
+export default function SubmitButton() {
+  const { pending } = useFormStatus();
+  
+  return (
+    <button type="submit" disabled={pending}>
+      {pending ? '提交中...' : '提交'}
+    </button>
+  );
+}
+
+// app/components/CommentForm.js
+'use client';
+
+import SubmitButton from './SubmitButton';
+
+export default function CommentForm({ postId }) {
+  return (
+    <form action={createComment}>
+      <input type="hidden" name="postId" value={postId} />
+      
+      <textarea
+        name="content"
+        placeholder="写下你的评论..."
+        required
+        rows={3}
+      />
+      
+      <SubmitButton />
+    </form>
+  );
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的博客应用
+
+```js
+// app/actions.js
+'use server';
+
+import { revalidatePath, revalidateTag } from 'next/cache';
+import { redirect } from 'next/navigation';
+
+// 模拟数据库存储
+let posts = [
+  {
+    id: '1',
+    title: '第一篇文章',
+    content: '这是第一篇文章的内容',
+    likes: 10,
+    liked: false,
+    createdAt: new Date().toISOString(),
+  },
+  {
+    id: '2',
+    title: '第二篇文章',
+    content: '这是第二篇文章的内容',
+    likes: 5,
+    liked: false,
+    createdAt: new Date().toISOString(),
+  },
+];
+
+export async function createPost(formData) {
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  const newPost = {
+    id: Math.random().toString(36).substr(2, 9),
+    title,
+    content,
+    likes: 0,
+    liked: false,
+    createdAt: new Date().toISOString(),
+  };
+  
+  posts.push(newPost);
+  
+  revalidatePath('/blog');
+  revalidateTag('posts');
+  
+  return newPost;
+}
+
+export async function deletePost(postId) {
+  posts = posts.filter(post => post.id !== postId);
+  
+  revalidatePath('/blog');
+  revalidateTag('posts');
+  redirect('/blog');
+}
+
+export async function toggleLike(postId) {
+  const post = posts.find(p => p.id === postId);
+  if (post) {
+    post.liked = !post.liked;
+    post.likes = post.liked ? post.likes + 1 : post.likes - 1;
+  }
+  
+  await new Promise(resolve => setTimeout(resolve, 300));
+  
+  revalidatePath(`/blog/${postId}`);
+  revalidateTag(`post-${postId}`);
+}
+
+// app/components/BlogList.js
+import { notFound } from 'next/navigation';
+
+async function getPosts() {
+  const res = await fetch('https://api.example.com/posts', {
+    next: { tags: ['posts'], revalidate: 3600 },
+  });
+  
+  if (!res.ok) {
+    notFound();
+  }
+  
+  return res.json();
+}
+
+export default async function BlogList() {
+  const posts = await getPosts();
+  
+  return (
+    <div>
+      <h1>博客文章</h1>
+      <div>
+        {posts.map((post) => (
+          <article key={post.id}>
+            <h2>
+              <a href={`/blog/${post.id}`}>{post.title}</a>
+            </h2>
+            <p>{post.content.substring(0, 100)}...</p>
+            <time>{post.createdAt}</time>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// app/components/LikeButton.js
+'use client';
+
+import { useOptimistic } from 'react';
+import { toggleLike } from '../actions';
+
+export default function LikeButton({ postId, initialLiked, initialLikes }) {
+  const [optimisticLiked, addOptimisticLike] = useOptimistic(
+    initialLiked,
+    (state, newLikedState) => newLikedState
+  );
+  
+  const [optimisticLikes, addOptimisticLikes] = useOptimistic(
+    initialLikes,
+    (state, newLikesState) => newLikesState
+  );
+  
+  async function handleToggleLike() {
+    addOptimisticLike(!optimisticLiked);
+    addOptimisticLikes(optimisticLiked ? optimisticLikes - 1 : optimisticLikes + 1);
+    
+    await toggleLike(postId);
+  }
+  
+  return (
+    <button onClick={handleToggleLike}>
+      {optimisticLiked ? '❤️' : '🤍'} {optimisticLikes}
+    </button>
+  );
+}
+
+// app/blog/[id]/page.js
+import { notFound } from 'next/navigation';
+import LikeButton from '../../components/LikeButton';
+import { deletePost } from '../../actions';
+
+async function getPost(id) {
+  const res = await fetch(`https://api.example.com/posts/${id}`, {
+    next: { tags: [`post-${id}`], revalidate: 3600 },
+  });
+  
+  if (!res.ok) {
+    notFound();
+  }
+  
+  return res.json();
+}
+
+export default async function BlogPostPage({ params }) {
+  const post = await getPost(params.id);
+  
+  return (
+    <main>
+      <article>
+        <h1>{post.title}</h1>
+        <p>{post.content}</p>
+        <LikeButton
+          postId={post.id}
+          initialLiked={post.liked}
+          initialLikes={post.likes}
+        />
+        <form action={deletePost.bind(null, post.id)}>
+          <button type="submit">删除文章</button>
+        </form>
+      </article>
+    </main>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **Server Components**: React 19 服务端组件
+- **Server Actions**: React 19 服务端操作
+- **useActionState**: 管理 Actions 状态
+- **useOptimistic**: 乐观更新
+- **useFormStatus**: 表单状态访问
+- **缓存重新验证**: revalidatePath 和 revalidateTag
+
+## 📚 学习检查点
+
+- [ ] 理解 Server Components 的工作原理
+- [ ] 掌握 Server Actions 的定义和使用
+- [ ] 理解如何在不同组件类型间传递 Actions
+- [ ] 掌握 useActionState、useOptimistic、useFormStatus 的使用
+- [ ] 理解缓存重新验证机制
+
+## 🚀 下一步
+
+→ [SSR 技术原理](../02-ssr-techniques/01-ssr-principles.mdx)

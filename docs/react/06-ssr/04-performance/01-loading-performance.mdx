@@ -1,0 +1,448 @@
+# 加载性能优化
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+加载性能是 SSR 应用的关键指标。本章节将介绍如何通过代码分割、懒加载、预加载与预连接、资源压缩等技术来优化 SSR 应用的加载性能。
+
+## 🎯 代码分割
+
+### 路由级代码分割
+
+```js
+// Next.js 自动进行路由级代码分割
+// app/page.js - 自动分割
+export default function HomePage() {
+  return <div>首页</div>;
+}
+
+// app/about/page.js - 自动分割
+export default function AboutPage() {
+  return <div>关于</div>;
+}
+
+// app/products/page.js - 自动分割
+export default function ProductsPage() {
+  return <div>产品</div>;
+}
+
+// 每个路由会自动生成独立的 JavaScript bundle
+```
+
+### 组件级代码分割
+
+```js
+// 使用 dynamic 进行动态导入
+import dynamic from 'next/dynamic';
+
+// 动态导入重型组件
+const HeavyChart = dynamic(() => import('../components/HeavyChart'), {
+  loading: () => <div>加载图表...</div>,
+  ssr: false, // 禁用 SSR（如果需要）
+});
+
+const RichTextEditor = dynamic(() => import('../components/RichTextEditor'), {
+  loading: () => <div>加载编辑器...</div>,
+});
+
+export default function DashboardPage() {
+  return (
+    <div>
+      <h1>仪表板</h1>
+      <HeavyChart />
+      <RichTextEditor />
+    </div>
+  );
+}
+```
+
+### 条件代码分割
+
+```js
+// 基于条件的动态导入
+'use client';
+
+import { useState } from 'react';
+
+export default function ConditionalComponent() {
+  const [showChart, setShowChart] = useState(false);
+  
+  // 只在需要时导入
+  const Chart = showChart ? dynamic(() => import('./Chart'), {
+    loading: () => <div>加载图表...</div>,
+  }) : null;
+  
+  return (
+    <div>
+      <button onClick={() => setShowChart(true)}>
+        显示图表
+      </button>
+      {showChart && <Chart />}
+    </div>
+  );
+}
+```
+
+## 🎯 懒加载
+
+### 图片懒加载
+
+```js
+// 使用 Next.js Image 组件自动懒加载
+import Image from 'next/image';
+
+export default function ProductGallery({ products }) {
+  return (
+    <div>
+      {products.map((product) => (
+        <div key={product.id}>
+          <Image
+            src={product.image}
+            alt={product.name}
+            width={400}
+            height={300}
+            loading="lazy" // 懒加载
+          />
+          <h2>{product.name}</h2>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// 首屏图片使用 priority
+export default function HeroSection({ heroImage }) {
+  return (
+    <div>
+      <Image
+        src={heroImage}
+        alt="Hero"
+        width={1920}
+        height={1080}
+        priority // 立即加载
+      />
+    </div>
+  );
+}
+```
+
+### 组件懒加载
+
+```js
+// 使用 Suspense 进行组件懒加载
+import { Suspense } from 'react';
+import dynamic from 'next/dynamic';
+
+const LazyComponent = dynamic(() => import('./LazyComponent'), {
+  loading: () => <div>加载中...</div>,
+});
+
+export default function Page() {
+  return (
+    <div>
+      <h1>页面标题</h1>
+      
+      <Suspense fallback={<div>加载组件中...</div>}>
+        <LazyComponent />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+### 数据懒加载
+
+```js
+// 使用 Suspense 进行数据懒加载
+import { Suspense } from 'react';
+
+async function getProducts() {
+  const res = await fetch('https://api.example.com/products');
+  return res.json();
+}
+
+async function ProductsList() {
+  const products = await getProducts();
+  
+  return (
+    <ul>
+      {products.map((product) => (
+        <li key={product.id}>{product.name}</li>
+      ))}
+    </ul>
+  );
+}
+
+export default function ProductsPage() {
+  return (
+    <div>
+      <h1>产品列表</h1>
+      
+      <Suspense fallback={<div>加载产品中...</div>}>
+        <ProductsList />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+## 🎯 预加载与预连接
+
+### DNS 预解析
+
+```js
+// app/layout.js
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <head>
+        {/* DNS 预解析 */}
+        <link rel="dns-prefetch" href="https://api.example.com" />
+        <link rel="dns-prefetch" href="https://cdn.example.com" />
+        
+        {/* 预连接 */}
+        <link rel="preconnect" href="https://api.example.com" />
+        <link rel="preconnect" href="https://cdn.example.com" crossorigin />
+      </head>
+      <body>
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+### 资源预加载
+
+```js
+// 预加载关键资源
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <head>
+        {/* 预加载字体 */}
+        <link
+          rel="preload"
+          href="/fonts/inter.woff2"
+          as="font"
+          type="font/woff2"
+          crossOrigin="anonymous"
+        />
+        
+        {/* 预加载关键 CSS */}
+        <link
+          rel="preload"
+          href="/styles/critical.css"
+          as="style"
+        />
+        
+        {/* 预加载关键图片 */}
+        <link
+          rel="preload"
+          href="/images/hero.jpg"
+          as="image"
+        />
+      </head>
+      <body>
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+### 路由预加载
+
+```js
+// 预加载路由
+'use client';
+
+import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
+
+export default function Navigation() {
+  const router = useRouter();
+  
+  useEffect(() => {
+    // 预加载可能访问的路由
+    router.prefetch('/about');
+    router.prefetch('/products');
+  }, [router]);
+  
+  return (
+    <nav>
+      <a href="/about">关于</a>
+      <a href="/products">产品</a>
+    </nav>
+  );
+}
+```
+
+## 🎯 资源压缩
+
+### 图片压缩
+
+```js
+// next.config.js - 图片优化配置
+const nextConfig = {
+  images: {
+    formats: ['image/avif', 'image/webp'],
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920],
+    imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
+  },
+};
+
+// 使用 Image 组件自动压缩
+import Image from 'next/image';
+
+export default function ProductImage({ product }) {
+  return (
+    <Image
+      src={product.image}
+      alt={product.name}
+      width={800}
+      height={600}
+      // Next.js 自动生成多种格式和尺寸
+    />
+  );
+}
+```
+
+### JavaScript 压缩
+
+```js
+// next.config.js - 启用压缩
+const nextConfig = {
+  compress: true, // 启用 gzip 压缩
+  swcMinify: true, // 使用 SWC 压缩器
+  
+  // 自定义压缩配置
+  productionBrowserSourceMaps: false,
+};
+
+// package.json - 使用 terser 进一步压缩
+{
+  "scripts": {
+    "build": "next build && terser dist/**/*.js -c -m -o dist/"
+  }
+}
+```
+
+### CSS 压缩
+
+```js
+// next.config.js - CSS 优化
+const nextConfig = {
+  // 自动 CSS 优化
+  optimizeFonts: true,
+  
+  // CSS 模块
+  cssLoaderOptions: {
+    importLoaders: 1,
+    modules: {
+      localIdentName: '[local]__[hash:base64:5]',
+    },
+  },
+};
+```
+
+## 📝 实际应用示例
+
+### 完整的性能优化页面
+
+```js
+// app/layout.js
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <head>
+        {/* DNS 预解析 */}
+        <link rel="dns-prefetch" href="https://api.example.com" />
+        <link rel="dns-prefetch" href="https://cdn.example.com" />
+        
+        {/* 预连接 */}
+        <link rel="preconnect" href="https://api.example.com" />
+        
+        {/* 预加载关键资源 */}
+        <link
+          rel="preload"
+          href="/fonts/inter.woff2"
+          as="font"
+          type="font/woff2"
+          crossOrigin="anonymous"
+        />
+      </head>
+      <body>
+        {children}
+      </body>
+    </html>
+  );
+}
+
+// app/page.js
+import { Suspense } from 'react';
+import dynamic from 'next/dynamic';
+
+// 动态导入重型组件
+const InteractiveMap = dynamic(() => import('../components/InteractiveMap'), {
+  loading: () => <div>加载地图...</div>,
+  ssr: false,
+});
+
+async function getFeaturedProducts() {
+  const res = await fetch('https://api.example.com/products/featured', {
+    next: { revalidate: 3600 },
+  });
+  return res.json();
+}
+
+async function FeaturedProducts() {
+  const products = await getFeaturedProducts();
+  
+  return (
+    <div>
+      {products.map((product) => (
+        <ProductCard key={product.id} product={product} />
+      ))}
+    </div>
+  );
+}
+
+export default function HomePage() {
+  return (
+    <div>
+      <HeroSection />
+      
+      <Suspense fallback={<ProductListSkeleton />}>
+        <FeaturedProducts />
+      </Suspense>
+      
+      <Suspense fallback={<div>加载地图...</div>}>
+        <InteractiveMap />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **代码分割**: 减少初始加载大小
+- **懒加载**: 延迟加载非关键资源
+- **预加载**: 提前加载关键资源
+- **资源压缩**: 减少文件大小
+- **性能监控**: 监控加载性能
+
+## 📚 学习检查点
+
+- [ ] 理解代码分割的重要性
+- [ ] 掌握懒加载技术
+- [ ] 理解预加载与预连接
+- [ ] 掌握资源压缩方法
+- [ ] 能够应用性能优化策略
+
+## 🚀 下一步
+
+→ [运行时性能](./02-runtime-performance.mdx)

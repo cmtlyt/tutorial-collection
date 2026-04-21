@@ -1,0 +1,692 @@
+# Next.js 进阶
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+Next.js 16 提供了许多高级特性，包括 API Routes、中间件、图片优化、字体优化以及与 React 19 Server Components 和 Server Actions 的深度集成。本章节将深入介绍这些高级功能。
+
+## 🎯 API Routes
+
+### 基础 API Routes
+
+```js
+// app/api/hello/route.js
+import { NextResponse } from 'next/server';
+
+export async function GET(request) {
+  return NextResponse.json({
+    message: 'Hello from Next.js API!',
+    timestamp: new Date().toISOString(),
+  });
+}
+
+export async function POST(request) {
+  const body = await request.json();
+  
+  return NextResponse.json({
+    message: 'Data received',
+    data: body,
+  });
+}
+
+// 使用示例：
+// GET: fetch('/api/hello')
+// POST: fetch('/api/hello', { method: 'POST', body: JSON.stringify({ name: 'Alice' }) })
+```
+
+### 动态 API Routes
+
+```js
+// app/api/users/[id]/route.js
+import { NextResponse } from 'next/server';
+
+async function getUser(id) {
+  const res = await fetch(`https://api.example.com/users/${id}`);
+  if (!res.ok) {
+    throw new Error('User not found');
+  }
+  return res.json();
+}
+
+export async function GET(request, { params }) {
+  try {
+    const user = await getUser(params.id);
+    return NextResponse.json(user);
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'User not found' },
+      { status: 404 }
+    );
+  }
+}
+
+export async function PUT(request, { params }) {
+  const body = await request.json();
+  
+  // 更新用户逻辑
+  const updatedUser = {
+    id: params.id,
+    ...body,
+    updatedAt: new Date().toISOString(),
+  };
+  
+  return NextResponse.json(updatedUser);
+}
+
+export async function DELETE(request, { params }) {
+  // 删除用户逻辑
+  return NextResponse.json({
+    message: `User ${params.id} deleted`,
+  });
+}
+```
+
+### Server Actions 集成
+
+```js
+// app/api/actions/route.js
+import { NextResponse } from 'next/server';
+
+// Server Action
+async function createUser(formData) {
+  'use server';
+  
+  const name = formData.get('name');
+  const email = formData.get('email');
+  
+  // 模拟数据库操作
+  const newUser = {
+    id: Math.random().toString(36).substr(2, 9),
+    name,
+    email,
+    createdAt: new Date().toISOString(),
+  };
+  
+  return newUser;
+}
+
+export async function POST(request) {
+  const formData = await request.formData();
+  const user = await createUser(formData);
+  
+  return NextResponse.json(user);
+}
+```
+
+## 🎯 中间件
+
+### 基础中间件
+
+```js
+// middleware.js
+import { NextResponse } from 'next/server';
+
+// 简单的 token 验证函数（实际项目中应该使用更安全的验证方式）
+function verifyToken(token) {
+  // 这里应该实现真实的 token 验证逻辑
+  // 例如：使用 JWT 验证
+  if (!token) {
+    return false;
+  }
+  
+  // 简单示例：检查 token 是否符合预期格式
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) {
+      return false;
+    }
+    
+    // 在实际应用中，这里应该验证 JWT 的签名和有效期
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+export function middleware(request) {
+  // 检查认证
+  const token = request.cookies.get('token')?.value;
+  
+  if (!token || !verifyToken(token)) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+  
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    '/dashboard/:path*',
+    '/api/protected/:path*',
+  ],
+};
+```
+
+### 路由保护中间件
+
+```js
+// middleware.js
+import { NextResponse } from 'next/server';
+
+export function middleware(request) {
+  const { pathname } = request.nextUrl;
+  
+  // 公开路由
+  const publicPaths = ['/', '/login', '/register', '/about'];
+  
+  if (publicPaths.includes(pathname)) {
+    return NextResponse.next();
+  }
+  
+  // 检查认证
+  const token = request.cookies.get('auth_token');
+  
+  if (!token) {
+    const loginUrl = new URL('/login', request.url);
+    loginUrl.searchParams.set('redirect', pathname);
+    return NextResponse.redirect(loginUrl);
+  }
+  
+  // 角色检查
+  if (pathname.startsWith('/admin')) {
+    const userRole = request.cookies.get('user_role')?.value;
+    
+    if (userRole !== 'admin') {
+      return NextResponse.redirect(new URL('/unauthorized', request.url));
+    }
+  }
+  
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    '/((?!api|_next/static|_next/image|favicon.ico).*)',
+  ],
+};
+```
+
+### 国际化中间件
+
+```js
+// middleware.js
+import { NextResponse } from 'next/server';
+
+const locales = ['en', 'zh', 'ja'];
+const defaultLocale = 'en';
+
+export function middleware(request) {
+  const pathname = request.nextUrl.pathname;
+  
+  // 检查路径中是否已包含语言
+  const pathnameIsMissingLocale = locales.every(
+    (locale) => !pathname.startsWith(`/${locale}/`) && pathname !== `/${locale}`
+  );
+  
+  if (pathnameIsMissingLocale) {
+    const locale = defaultLocale;
+    return NextResponse.redirect(
+      new URL(`/${locale}${pathname}`, request.url)
+    );
+  }
+  
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    '/((?!_next|_vercel|.*\\..*).*)',
+  ],
+};
+```
+
+## 🎯 图片优化
+
+### 基础图片优化
+
+```js
+// app/images/page.js
+import Image from 'next/image';
+
+export default function ImagesPage() {
+  return (
+    <main>
+      <h1>图片优化示例</h1>
+      
+      {/* 本地图片 */}
+      <div>
+        <h2>本地图片</h2>
+        <Image
+          src="/images/hero.jpg"
+          alt="Hero image"
+          width={800}
+          height={600}
+          priority
+        />
+      </div>
+      
+      {/* 远程图片 */}
+      <div>
+        <h2>远程图片</h2>
+        <Image
+          src="https://example.com/image.jpg"
+          alt="Remote image"
+          width={400}
+          height={300}
+        />
+      </div>
+      
+      {/* 响应式图片 */}
+      <div>
+        <h2>响应式图片</h2>
+        <Image
+          src="/images/responsive.jpg"
+          alt="Responsive image"
+          fill
+          sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+          style={{ objectFit: 'cover' }}
+        />
+      </div>
+    </main>
+  );
+}
+```
+
+### 动态图片
+
+```js
+// app/gallery/[id]/page.js
+import Image from 'next/image';
+
+async function getImage(id) {
+  const res = await fetch(`https://api.example.com/images/${id}`);
+  return res.json();
+}
+
+export default async function ImagePage({ params }) {
+  const image = await getImage(params.id);
+  
+  return (
+    <main>
+      <h1>{image.title}</h1>
+      <div style={{ position: 'relative', width: '100%', height: '500px' }}>
+        <Image
+          src={image.url}
+          alt={image.title}
+          fill
+          style={{ objectFit: 'contain' }}
+          priority
+        />
+      </div>
+      <p>{image.description}</p>
+    </main>
+  );
+}
+```
+
+## 🎯 字体优化
+
+### 使用 next/font
+
+```js
+// app/layout.js
+import { Inter, Noto_Sans_SC } from 'next/font/google';
+
+const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
+  display: 'swap',
+});
+
+const notoSansSC = Noto_Sans_SC({
+  subsets: ['latin'],
+  weight: ['400', '500', '700'],
+  variable: '--font-noto-sans-sc',
+  display: 'swap',
+});
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="zh-CN" className={`${inter.variable} ${notoSansSC.variable}`}>
+      <body className={`${inter.className} ${notoSansSC.className}`}>
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+### 本地字体
+
+```js
+// app/layout.js
+import localFont from 'next/font/local';
+
+const myFont = localFont({
+  src: './fonts/MyFont.woff2',
+  display: 'swap',
+  variable: '--font-my-font',
+});
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="zh-CN" className={myFont.variable}>
+      <body className={myFont.className}>
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+## 🎯 数据获取策略
+
+### 静态数据获取
+
+```js
+// app/products/page.js
+async function getProducts() {
+  const res = await fetch('https://api.example.com/products', {
+    cache: 'force-cache',
+    next: { revalidate: 86400 }, // 24 小时重新验证
+  });
+  return res.json();
+}
+
+export default async function ProductsPage() {
+  const products = await getProducts();
+  
+  return (
+    <main>
+      <h1>产品列表</h1>
+      <div>
+        {products.map((product) => (
+          <div key={product.id}>
+            <h2>{product.name}</h2>
+            <p>¥{product.price}</p>
+          </div>
+        ))}
+      </div>
+    </main>
+  );
+}
+```
+
+### 动态数据获取
+
+```js
+// app/profile/page.js
+async function getUserProfile(userId) {
+  const res = await fetch(`https://api.example.com/users/${userId}`, {
+    cache: 'no-store',
+    headers: {
+      'Authorization': `Bearer ${process.env.API_TOKEN}`,
+    },
+  });
+  return res.json();
+}
+
+export default async function ProfilePage() {
+  const userProfile = await getUserProfile('user-123');
+  
+  return (
+    <main>
+      <h1>用户资料</h1>
+      <div>
+        <h2>{userProfile.name}</h2>
+        <p>{userProfile.email}</p>
+        <p>{userProfile.bio}</p>
+      </div>
+    </main>
+  );
+}
+```
+
+### 混合数据获取
+
+```js
+// app/dashboard/page.js
+async function getStaticData() {
+  const res = await fetch('https://api.example.com/config', {
+    cache: 'force-cache',
+    next: { revalidate: 3600 },
+  });
+  return res.json();
+}
+
+async function getDynamicData(userId) {
+  const res = await fetch(`https://api.example.com/users/${userId}/stats`, {
+    cache: 'no-store',
+  });
+  return res.json();
+}
+
+export default async function DashboardPage() {
+  const [staticData, dynamicData] = await Promise.all([
+    getStaticData(),
+    getDynamicData('user-123'),
+  ]);
+  
+  return (
+    <main>
+      <h1>仪表板</h1>
+      <div>
+        <h2>配置信息（静态）</h2>
+        <pre>{JSON.stringify(staticData, null, 2)}</pre>
+        
+        <h2>用户统计（动态）</h2>
+        <pre>{JSON.stringify(dynamicData, null, 2)}</pre>
+      </div>
+    </main>
+  );
+}
+```
+
+## 🎯 React 19 集成
+
+### Server Components 支持
+
+```js
+// app/components/ProductList.js - Server Component
+async function getProducts() {
+  const res = await fetch('https://api.example.com/products');
+  return res.json();
+}
+
+export default async function ProductList() {
+  const products = await getProducts();
+  
+  return (
+    <div>
+      <h1>产品列表</h1>
+      <div>
+        {products.map((product) => (
+          <div key={product.id}>
+            <h3>{product.name}</h3>
+            <p>¥{product.price}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+### Server Actions 集成
+
+```js
+// app/actions.js
+'use server';
+
+import { revalidatePath } from 'next/cache';
+
+export async function createProduct(formData) {
+  const name = formData.get('name');
+  const price = formData.get('price');
+  
+  // 模拟数据库操作
+  const newProduct = {
+    id: Math.random().toString(36).substr(2, 9),
+    name,
+    price: parseFloat(price),
+  };
+  
+  // 重新验证产品列表页面
+  revalidatePath('/products');
+  
+  return newProduct;
+}
+
+export async function deleteProduct(productId) {
+  // 删除产品逻辑
+  console.log(`Deleting product: ${productId}`);
+  
+  // 重新验证产品列表页面
+  revalidatePath('/products');
+  
+  return { success: true };
+}
+```
+
+### 使用 Server Actions
+
+```js
+// app/products/page.js
+'use client';
+
+import { useState } from 'react';
+import { createProduct, deleteProduct } from '../actions';
+
+export default function ProductsPage() {
+  const [products, setProducts] = useState([]);
+  
+  async function handleCreateProduct(formData) {
+    const newProduct = await createProduct(formData);
+    setProducts([...products, newProduct]);
+  }
+  
+  async function handleDeleteProduct(productId) {
+    await deleteProduct(productId);
+    setProducts(products.filter(p => p.id !== productId));
+  }
+  
+  return (
+    <main>
+      <h1>产品管理</h1>
+      
+      <form action={handleCreateProduct}>
+        <input name="name" placeholder="产品名称" required />
+        <input name="price" type="number" placeholder="价格" required />
+        <button type="submit">添加产品</button>
+      </form>
+      
+      <div>
+        {products.map((product) => (
+          <div key={product.id}>
+            <h3>{product.name}</h3>
+            <p>¥{product.price}</p>
+            <button onClick={() => handleDeleteProduct(product.id)}>
+              删除
+            </button>
+          </div>
+        ))}
+      </div>
+    </main>
+  );
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的仪表板应用
+
+```js
+// app/layout.js
+import { Inter } from 'next/font/google';
+import './globals.css';
+
+const inter = Inter({ subsets: ['latin'] });
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="zh-CN">
+      <body className={inter.className}>
+        <nav>
+          <a href="/dashboard">仪表板</a>
+          <a href="/settings">设置</a>
+        </nav>
+        {children}
+      </body>
+    </html>
+  );
+}
+
+// app/dashboard/page.js
+async function getUserData() {
+  const res = await fetch('https://api.example.com/user', {
+    cache: 'no-store',
+  });
+  return res.json();
+}
+
+async function getStats() {
+  const res = await fetch('https://api.example.com/stats', {
+    next: { revalidate: 300 },
+  });
+  return res.json();
+}
+
+export default async function DashboardPage() {
+  const [userData, stats] = await Promise.all([
+    getUserData(),
+    getStats(),
+  ]);
+  
+  return (
+    <main>
+      <h1>欢迎, {userData.name}</h1>
+      
+      <div>
+        <h2>统计信息</h2>
+        <div>
+          <div>
+            <h3>总访问量</h3>
+            <p>{stats.totalViews}</p>
+          </div>
+          <div>
+            <h3>活跃用户</h3>
+            <p>{stats.activeUsers}</p>
+          </div>
+          <div>
+            <h3>转化率</h3>
+            <p>{stats.conversionRate}%</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **API Routes**: 构建 RESTful API
+- **中间件**: 请求拦截和路由保护
+- **图片优化**: 自动图片优化和响应式图片
+- **字体优化**: 优化的字体加载
+- **Server Components**: React 19 服务端组件
+- **Server Actions**: React 19 服务端操作
+
+## 📚 学习检查点
+
+- [ ] 掌握 API Routes 的创建和使用
+- [ ] 理解中间件的工作原理和应用场景
+- [ ] 掌握图片优化和字体优化
+- [ ] 理解不同的数据获取策略
+- [ ] 掌握 React 19 Server Components 和 Server Actions 的集成
+
+## 🚀 下一步
+
+→ [SSR 技术原理](../02-ssr-techniques/01-ssr-principles.mdx)

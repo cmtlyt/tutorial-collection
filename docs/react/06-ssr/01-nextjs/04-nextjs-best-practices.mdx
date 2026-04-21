@@ -1,0 +1,632 @@
+# Next.js 最佳实践
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+Next.js 16 提供了强大的功能，但要构建高性能、可维护的应用，需要遵循最佳实践。本章节将介绍 Next.js 开发中的关键最佳实践，包括项目结构、性能优化、安全性和可维护性等方面。
+
+## 🎯 项目结构最佳实践
+
+### 推荐的目录结构
+
+```js
+// 推荐的 Next.js 项目结构
+app/
+  ├── (auth)/                 // 路由组：认证相关页面
+  │   ├── login/
+  │   │   └── page.js
+  │   ├── register/
+  │   │   └── page.js
+  │   └── layout.js
+  ├── (dashboard)/            // 路由组：仪表板相关页面
+  │   ├── layout.js
+  │   ├── page.js
+  │   └── settings/
+  │       └── page.js
+  ├── api/                    // API Routes
+  │   ├── auth/
+  │   │   └── route.js
+  │   └── users/
+  │       └── route.js
+  ├── components/             // 组件目录
+  │   ├── ui/                // UI 组件
+  │   │   ├── Button.js
+  │   │   └── Input.js
+  │   ├── features/          // 功能组件
+  │   │   ├── UserProfile.js
+  │   │   └── ProductCard.js
+  │   └── layout/            // 布局组件
+  │       ├── Header.js
+  │       └── Footer.js
+  ├── lib/                   // 工具函数
+  │   ├── auth.js
+  │   ├── db.js
+  │   └── utils.js
+  ├── styles/                // 样式文件
+  │   └── globals.css
+  ├── layout.js              // 根布局
+  └── page.js                // 首页
+public/                      // 静态资源
+components/                  // 共享组件（可选）
+lib/                         // 共享工具（可选）
+middleware.js                // 中间件
+next.config.js               // Next.js 配置
+package.json                 // 依赖管理
+tsconfig.json                // TypeScript 配置
+```
+
+### 路由组的使用
+
+```js
+// app/(auth)/layout.js - 认证路由组的布局
+export default function AuthLayout({ children }) {
+  return (
+    <div className="auth-container">
+      <div className="auth-sidebar">
+        <h1>认证中心</h1>
+      </div>
+      <div className="auth-content">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// app/(auth)/login/page.js
+export default function LoginPage() {
+  return (
+    <div>
+      <h2>登录</h2>
+      <form>
+        {/* 登录表单 */}
+      </form>
+    </div>
+  );
+}
+
+// app/(dashboard)/layout.js - 仪表板路由组的布局
+export default function DashboardLayout({ children }) {
+  return (
+    <div className="dashboard">
+      <aside>
+        <nav>
+          <a href="/dashboard">首页</a>
+          <a href="/dashboard/settings">设置</a>
+        </nav>
+      </aside>
+      <main>
+        {children}
+      </main>
+    </div>
+  );
+}
+```
+
+## 🎯 性能优化最佳实践
+
+### 图片优化
+
+```js
+// app/components/OptimizedImage.js
+import Image from 'next/image';
+
+export default function OptimizedImage({ src, alt, width, height, priority = false }) {
+  return (
+    <Image
+      src={src}
+      alt={alt}
+      width={width}
+      height={height}
+      priority={priority}
+      loading={priority ? 'eager' : 'lazy'}
+      sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+    />
+  );
+}
+
+// 使用示例
+export default function ProductPage({ product }) {
+  return (
+    <div>
+      <OptimizedImage
+        src={product.image}
+        alt={product.name}
+        width={800}
+        height={600}
+        priority
+      />
+    </div>
+  );
+}
+```
+
+### 字体优化
+
+```js
+// app/layout.js
+import { Inter, Noto_Sans_SC } from 'next/font/google';
+
+const inter = Inter({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-inter',
+});
+
+const notoSansSC = Noto_Sans_SC({
+  subsets: ['latin'],
+  weight: ['400', '500', '700'],
+  display: 'swap',
+  variable: '--font-noto-sans-sc',
+});
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="zh-CN" className={`${inter.variable} ${notoSansSC.variable}`}>
+      <body className={`${inter.className} ${notoSansSC.className}`}>
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+### 代码分割
+
+```js
+// app/components/HeavyComponent.js
+export default function HeavyComponent() {
+  return (
+    <div>
+      {/* 重量级组件内容 */}
+    </div>
+  );
+}
+
+// app/page.js - 动态导入
+import dynamic from 'next/dynamic';
+
+const HeavyComponent = dynamic(() => import('../components/HeavyComponent'), {
+  loading: () => <p>加载中...</p>,
+  ssr: false, // 禁用服务端渲染（如果需要）
+});
+
+export default function HomePage() {
+  const [showHeavy, setShowHeavy] = useState(false);
+  
+  return (
+    <main>
+      <h1>首页</h1>
+      <button onClick={() => setShowHeavy(true)}>
+        显示重量级组件
+      </button>
+      {showHeavy && <HeavyComponent />}
+    </main>
+  );
+}
+```
+
+### 缓存策略
+
+```js
+// app/lib/cache.js
+export const cacheConfig = {
+  // 静态内容：长时间缓存
+  static: {
+    revalidate: 86400, // 24 小时
+    tags: ['static'],
+  },
+  
+  // 动态内容：短时间缓存
+  dynamic: {
+    revalidate: 60, // 1 分钟
+    tags: ['dynamic'],
+  },
+  
+  // 实时内容：不缓存
+  realtime: {
+    revalidate: 0,
+    tags: ['realtime'],
+  },
+};
+
+// 使用示例
+async function getStaticData() {
+  const res = await fetch('https://api.example.com/static', {
+    next: cacheConfig.static,
+  });
+  return res.json();
+}
+
+async function getDynamicData() {
+  const res = await fetch('https://api.example.com/dynamic', {
+    next: cacheConfig.dynamic,
+  });
+  return res.json();
+}
+
+async function getRealtimeData() {
+  const res = await fetch('https://api.example.com/realtime', {
+    cache: 'no-store',
+  });
+  return res.json();
+}
+```
+
+## 🎯 安全性最佳实践
+
+### 环境变量管理
+
+```js
+// .env.local
+DATABASE_URL=postgresql://user:password@localhost:5432/mydb
+API_SECRET_KEY=your-secret-key
+NEXT_PUBLIC_API_URL=https://api.example.com
+
+// lib/env.js
+const env = {
+  databaseUrl: process.env.DATABASE_URL,
+  apiSecretKey: process.env.API_SECRET_KEY,
+  publicApiUrl: process.env.NEXT_PUBLIC_API_URL,
+};
+
+// 验证必需的环境变量
+const requiredEnvVars = ['DATABASE_URL', 'API_SECRET_KEY'];
+const missingEnvVars = requiredEnvVars.filter(key => !env[key]);
+
+if (missingEnvVars.length > 0) {
+  throw new Error(`Missing required environment variables: ${missingEnvVars.join(', ')}`);
+}
+
+export default env;
+```
+
+### API 安全
+
+```js
+// app/api/protected/route.js
+import { NextResponse } from 'next/server';
+import env from '../../lib/env';
+
+export async function GET(request) {
+  // 验证 API 密钥
+  const apiKey = request.headers.get('x-api-key');
+  
+  if (apiKey !== env.apiSecretKey) {
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401 }
+    );
+  }
+  
+  // 验证请求来源
+  const origin = request.headers.get('origin');
+  const allowedOrigins = ['https://example.com', 'https://www.example.com'];
+  
+  if (!allowedOrigins.includes(origin)) {
+    return NextResponse.json(
+      { error: 'Forbidden' },
+      { status: 403 }
+    );
+  }
+  
+  // 处理请求
+  const data = await fetchProtectedData();
+  
+  return NextResponse.json(data);
+}
+
+async function fetchProtectedData() {
+  // 获取受保护的数据
+  return { message: 'Protected data' };
+}
+```
+
+### Server Actions 安全
+
+```js
+// app/actions.js
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import { auth } from '../lib/auth';
+
+// 验证用户权限
+async function requireAuth() {
+  const user = await auth();
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+  return user;
+}
+
+export async function createPost(formData) {
+  // 验证用户身份
+  const user = await requireAuth();
+  
+  // 验证输入
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  if (!title || !content) {
+    throw new Error('Title and content are required');
+  }
+  
+  if (title.length > 200) {
+    throw new Error('Title is too long');
+  }
+  
+  // 创建文章
+  const newPost = {
+    id: Math.random().toString(36).substr(2, 9),
+    title,
+    content,
+    authorId: user.id,
+    createdAt: new Date().toISOString(),
+  };
+  
+  revalidatePath('/blog');
+  
+  return newPost;
+}
+```
+
+## 🎯 可维护性最佳实践
+
+### 组件组织
+
+```js
+// app/components/ui/Button.js - 可复用的 UI 组件
+export default function Button({ children, variant = 'primary', size = 'medium', ...props }) {
+  const baseStyles = 'rounded-md font-medium transition-colors';
+  
+  const variants = {
+    primary: 'bg-blue-600 text-white hover:bg-blue-700',
+    secondary: 'bg-gray-200 text-gray-900 hover:bg-gray-300',
+    danger: 'bg-red-600 text-white hover:bg-red-700',
+  };
+  
+  const sizes = {
+    small: 'px-3 py-1.5 text-sm',
+    medium: 'px-4 py-2 text-base',
+    large: 'px-6 py-3 text-lg',
+  };
+  
+  return (
+    <button
+      className={`${baseStyles} ${variants[variant]} ${sizes[size]}`}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+// 使用示例
+export default function FormPage() {
+  return (
+    <form>
+      <Button variant="primary" size="medium">
+        提交
+      </Button>
+      <Button variant="secondary" size="medium">
+        取消
+      </Button>
+      <Button variant="danger" size="small">
+        删除
+      </Button>
+    </form>
+  );
+}
+```
+
+### 错误处理
+
+```js
+// app/lib/errors.js
+export class AppError extends Error {
+  constructor(message, statusCode = 500) {
+    super(message);
+    this.name = 'AppError';
+    this.statusCode = statusCode;
+  }
+}
+
+export class NotFoundError extends AppError {
+  constructor(message = 'Resource not found') {
+    super(message, 404);
+    this.name = 'NotFoundError';
+  }
+}
+
+export class ValidationError extends AppError {
+  constructor(message = 'Validation failed') {
+    super(message, 400);
+    this.name = 'ValidationError';
+  }
+}
+
+// 使用示例
+// app/api/posts/route.js
+import { NextResponse } from 'next/server';
+import { ValidationError, NotFoundError } from '../../lib/errors';
+
+export async function POST(request) {
+  try {
+    const body = await request.json();
+    
+    if (!body.title || !body.content) {
+      throw new ValidationError('Title and content are required');
+    }
+    
+    const post = await createPost(body);
+    
+    return NextResponse.json(post, { status: 201 });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.statusCode }
+      );
+    }
+    
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+```
+
+### 日志记录
+
+```js
+// app/lib/logger.js
+const isDevelopment = process.env.NODE_ENV === 'development';
+
+export const logger = {
+  info(message, meta = {}) {
+    if (isDevelopment) {
+      console.log(`[INFO] ${message}`, meta);
+    }
+    // 生产环境可以集成第三方日志服务
+  },
+  
+  error(message, error = null, meta = {}) {
+    if (isDevelopment) {
+      console.error(`[ERROR] ${message}`, error, meta);
+    }
+    // 生产环境可以发送到错误追踪服务
+  },
+  
+  warn(message, meta = {}) {
+    if (isDevelopment) {
+      console.warn(`[WARN] ${message}`, meta);
+    }
+  },
+};
+
+// 使用示例
+export async function createPost(data) {
+  try {
+    logger.info('Creating post', { title: data.title });
+    
+    const post = await db.posts.create(data);
+    
+    logger.info('Post created successfully', { postId: post.id });
+    
+    return post;
+  } catch (error) {
+    logger.error('Failed to create post', error, { data });
+    throw error;
+  }
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的最佳实践应用
+
+```js
+// app/layout.js
+import { Inter } from 'next/font/google';
+import './globals.css';
+
+const inter = Inter({ subsets: ['latin'] });
+
+export const metadata = {
+  title: 'My App',
+  description: 'A Next.js application following best practices',
+};
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="zh-CN">
+      <body className={inter.className}>
+        {children}
+      </body>
+    </html>
+  );
+}
+
+// app/lib/config.js
+export const config = {
+  siteName: 'My App',
+  siteUrl: process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+  api: {
+    baseUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000',
+  },
+  cache: {
+    static: { revalidate: 86400 },
+    dynamic: { revalidate: 60 },
+  },
+};
+
+// app/components/ui/Button.js
+export default function Button({ children, variant = 'primary', ...props }) {
+  const styles = {
+    primary: 'bg-blue-600 text-white hover:bg-blue-700',
+    secondary: 'bg-gray-200 text-gray-900 hover:bg-gray-300',
+  };
+  
+  return (
+    <button
+      className={`px-4 py-2 rounded-md font-medium ${styles[variant]}`}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+// app/actions.js
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import { logger } from './lib/logger';
+import { ValidationError } from './lib/errors';
+
+export async function createPost(formData) {
+  const title = formData.get('title');
+  const content = formData.get('content');
+  
+  if (!title || !content) {
+    throw new ValidationError('Title and content are required');
+  }
+  
+  logger.info('Creating post', { title });
+  
+  const newPost = {
+    id: Math.random().toString(36).substr(2, 9),
+    title,
+    content,
+    createdAt: new Date().toISOString(),
+  };
+  
+  revalidatePath('/blog');
+  
+  logger.info('Post created', { postId: newPost.id });
+  
+  return newPost;
+}
+```
+
+## 🔗 相关概念
+
+- **项目结构**: 合理的目录组织
+- **性能优化**: 图片、字体、代码分割、缓存
+- **安全性**: 环境变量、API 安全、输入验证
+- **可维护性**: 组件组织、错误处理、日志记录
+
+## 📚 学习检查点
+
+- [ ] 理解推荐的项目结构
+- [ ] 掌握性能优化技巧
+- [ ] 理解安全性最佳实践
+- [ ] 掌握可维护性原则
+- [ ] 能够在实际项目中应用这些最佳实践
+
+## 🚀 下一步
+
+→ [SSR 技术原理](../02-ssr-techniques/01-ssr-principles.mdx)
