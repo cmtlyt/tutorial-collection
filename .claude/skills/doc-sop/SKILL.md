@@ -7,6 +7,8 @@ description: "Standard Operating Procedure for writing and editing documentation
 
 IRON LAW: **Every code example must be complete and runnable. Never leave TODOs, simplified implementations, or placeholder code.**
 
+CRITICAL PRINCIPLE: **Always prioritize obtaining the latest information through web search before writing documentation. Never rely on outdated knowledge or assumptions.**
+
 ## Workflow Checklist
 
 - [ ] Step 1: Understand Requirements ⚠️ REQUIRED
@@ -17,6 +19,8 @@ IRON LAW: **Every code example must be complete and runnable. Never leave TODOs,
   - [ ] 2.1 List core concepts to explain
   - [ ] 2.2 Design document structure
   - [ ] 2.3 Plan code examples (must be complete and runnable)
+  - [ ] 2.4 **Cross-reference with latest documentation and updates**
+  - [ ] 2.5 **Ensure all examples use current APIs and best practices**
 - [ ] Step 3: Write Content
   - [ ] 3.1 Write concept introduction
   - [ ] 3.2 Write complete code examples
@@ -29,6 +33,9 @@ IRON LAW: **Every code example must be complete and runnable. Never leave TODOs,
   - [ ] 4.3 No simplified implementations
   - [ ] 4.4 No assumed implementations
   - [ ] 4.5 All code examples runnable
+  - [ ] 4.6 **All information is current and up-to-date** ⚠️ CRITICAL
+  - [ ] 4.7 **APIs and features referenced are not deprecated**
+  - [ ] 4.8 **Latest version requirements are documented**
 - [ ] Step 5: Create/Update File
   - [ ] 5.1 Create file with kebab-case naming
   - [ ] 5.2 Update _meta.json if needed
@@ -45,6 +52,13 @@ Ask the user:
 - Which directory should it be in?
 - What are the key concepts to cover?
 
+**⚠️ CRITICAL: Before proceeding, use web_search to gather the latest information:**
+- Search for official documentation and latest releases
+- Verify current API signatures and best practices
+- Check for recent updates, deprecations, or breaking changes
+- Identify the latest version requirements
+- Gather information from authoritative sources (official docs, GitHub repos, etc.)
+
 Load references/sop-core.md for core principles.
 
 ## Step 2: Plan Content
@@ -53,6 +67,9 @@ Based on requirements:
 1. List core concepts (3-7 concepts typically)
 2. Design structure: concept → code → application → checkpoint → next
 3. Plan code examples: each concept needs at least one complete example
+4. **Cross-reference gathered information**: Ensure all planned content aligns with latest documentation
+5. **Verify API compatibility**: Check that all APIs, libraries, and features mentioned are current
+6. **Identify version-specific notes**: Document any version-specific behavior or requirements
 
 Load references/structure-guide.md for template patterns.
 
@@ -120,10 +137,14 @@ CRITICAL: Verify these before proceeding:
 3. **No simplified implementations**: No "// implementation omitted"
 4. **No assumed implementations**: All functions/variables defined
 5. **All code runnable**: Can copy-paste and run
+6. **Information currency**: All information is based on latest sources
+7. **API validity**: No deprecated APIs or features
+8. **Version accuracy**: Correct version numbers and requirements documented
+9. **Source attribution**: When applicable, cite official sources
 
 Load references/quality-checklist.md for detailed checks.
 
-**CONFIRMATION GATE**: Before creating file, ask user: "Ready to create document? All code examples are complete and runnable."
+**CONFIRMATION GATE**: Before creating file, ask user: "Ready to create document? All code examples are complete and runnable, and all information is up-to-date."
 
 ## Step 5: Create/Update File
 
@@ -181,6 +202,10 @@ When editing existing document:
 - Skip version number updates when editing
 - Create files without .mdx extension
 - Use camelCase or PascalCase in filenames
+- **Rely on outdated knowledge or assumptions** ⚠️ CRITICAL
+- **Use deprecated APIs or features without noting it**
+- **Skip web search for latest information**
+- **Write documentation based on old versions without verification**
 
 ✅ **ALWAYS**:
 - Write complete, runnable code
@@ -191,6 +216,12 @@ When editing existing document:
 - Update version number on edits
 - Update last modified date
 - Verify code runs independently
+- **Search for latest information before writing** ⚠️ CRITICAL
+- **Cross-reference official documentation**
+- **Verify API signatures and best practices**
+- **Document version-specific requirements**
+- **Check for deprecations and breaking changes**
+- **Use current APIs and features in examples**
 
 ## Pre-Delivery Checklist
 
@@ -218,6 +249,10 @@ When editing existing document:
 - [ ] All code runnable
 - [ ] Code has proper imports
 - [ ] Code has execution statements
+- [ ] Information is current and up-to-date
+- [ ] No deprecated APIs or features
+- [ ] Latest version requirements documented
+- [ ] Web search was performed before writing
 
 ### Version Control (Edit Only)
 - [ ] Version number incremented
