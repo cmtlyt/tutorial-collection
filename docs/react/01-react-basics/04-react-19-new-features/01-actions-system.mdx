@@ -1,0 +1,590 @@
+# Actions 系统
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+Actions 是 React 19 引入的新特性，它简化了异步操作的处理，特别是在表单提交和数据更新场景中。Actions 提供了自动的 pending 状态管理、错误处理和乐观更新支持。本章节将详细介绍 Actions 系统的使用。
+
+## 🎯 异步转换（Async Transitions）
+
+### 基本概念
+
+Async Transitions 允许你将异步操作标记为非紧急的，React 会优先处理更紧急的更新：
+
+```jsx
+import React, { useTransition } from 'react';
+
+function SearchComponent() {
+  const [query, setQuery] = React.useState('');
+  const [results, setResults] = React.useState([]);
+  const [isPending, startTransition] = useTransition();
+  
+  const handleSearch = (value) => {
+    setQuery(value);
+    
+    // 标记为非紧急的转换
+    startTransition(async () => {
+      // 模拟异步搜索
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // 模拟搜索结果
+      const mockResults = [
+        { id: 1, title: `Result for ${value}` },
+        { id: 2, title: `Another result for ${value}` }
+      ];
+      
+      setResults(mockResults);
+    });
+  };
+  
+  return (
+    <div>
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => handleSearch(e.target.value)}
+        placeholder="Search..."
+      />
+      
+      {isPending && <p>Searching...</p>}
+      
+      <ul>
+        {results.map(result => (
+          <li key={result.id}>{result.title}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default SearchComponent;
+```
+
+## 🎯 Pending 状态管理
+
+### 使用 useActionState
+
+`useActionState` Hook 管理异步操作的状态：
+
+```jsx
+import React, { useActionState } from 'react';
+
+// 定义 action
+async function submitForm(prevState, formData) {
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  const username = formData.get('username');
+  const email = formData.get('email');
+  
+  if (!username || !email) {
+    return {
+      success: false,
+      error: 'All fields are required'
+    };
+  }
+  
+  // 模拟 API 调用
+  console.log('Submitting:', { username, email });
+  
+  return {
+    success: true,
+    message: 'Form submitted successfully!'
+  };
+}
+
+function FormWithState() {
+  const [state, formAction, isPending] = useActionState(
+    submitForm,
+    { success: false, error: null, message: null }
+  );
+  
+  return (
+    <form action={formAction}>
+      <div>
+        <label htmlFor="username">Username:</label>
+        <input id="username" name="username" type="text" required />
+      </div>
+      
+      <div>
+        <label htmlFor="email">Email:</label>
+        <input id="email" name="email" type="email" required />
+      </div>
+      
+      <button type="submit" disabled={isPending}>
+        {isPending ? 'Submitting...' : 'Submit'}
+      </button>
+      
+      {state.success && (
+        <p style={{ color: 'green' }}>{state.message}</p>
+      )}
+      
+      {state.error && (
+        <p style={{ color: 'red' }}>{state.error}</p>
+      )}
+    </form>
+  );
+}
+
+export default FormWithState;
+```
+
+### 复杂状态管理
+
+```jsx
+import React, { useActionState } from 'react';
+
+async function updateUser(prevState, formData) {
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  
+  const userId = formData.get('userId');
+  const name = formData.get('name');
+  const email = formData.get('email');
+  
+  // 模拟 API 调用
+  console.log('Updating user:', { userId, name, email });
+  
+  return {
+    ...prevState,
+    success: true,
+    message: 'User updated successfully!',
+    data: {
+      userId,
+      name,
+      email
+    }
+  };
+}
+
+function UserUpdateForm() {
+  const [state, formAction, isPending] = useActionState(
+    updateUser,
+    { success: false, error: null, message: null, data: null }
+  );
+  
+  return (
+    <div>
+      <h2>Update User</h2>
+      
+      <form action={formAction}>
+        <input type="hidden" name="userId" value="123" />
+        
+        <div>
+          <label htmlFor="name">Name:</label>
+          <input id="name" name="name" type="text" required />
+        </div>
+        
+        <div>
+          <label htmlFor="email">Email:</label>
+          <input id="email" name="email" type="email" required />
+        </div>
+        
+        <button type="submit" disabled={isPending}>
+          {isPending ? 'Updating...' : 'Update'}
+        </button>
+      </form>
+      
+      {state.success && (
+        <div style={{ marginTop: '20px', padding: '10px', background: '#d4edda' }}>
+          <p>{state.message}</p>
+          <pre>{JSON.stringify(state.data, null, 2)}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default UserUpdateForm;
+```
+
+## 🎯 错误处理
+
+### Action 错误处理
+
+```jsx
+import React, { useActionState } from 'react';
+
+async function submitWithErrorHandling(prevState, formData) {
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  const username = formData.get('username');
+  const password = formData.get('password');
+  
+  // 模拟验证错误
+  if (!username) {
+    return {
+      success: false,
+      error: 'Username is required'
+    };
+  }
+  
+  if (!password) {
+    return {
+      success: false,
+      error: 'Password is required'
+    };
+  }
+  
+  if (password.length < 6) {
+    return {
+      success: false,
+      error: 'Password must be at least 6 characters'
+    };
+  }
+  
+  // 模拟网络错误
+  const shouldFail = Math.random() > 0.5;
+  if (shouldFail) {
+    throw new Error('Network error occurred');
+  }
+  
+  return {
+    success: true,
+    message: 'Login successful!'
+  };
+}
+
+function LoginForm() {
+  const [state, formAction, isPending] = useActionState(
+    submitWithErrorHandling,
+    { success: false, error: null, message: null }
+  );
+  
+  return (
+    <div>
+      <h2>Login</h2>
+      
+      <form action={formAction}>
+        <div>
+          <label htmlFor="username">Username:</label>
+          <input id="username" name="username" type="text" required />
+        </div>
+        
+        <div>
+          <label htmlFor="password">Password:</label>
+          <input id="password" name="password" type="password" required />
+        </div>
+        
+        <button type="submit" disabled={isPending}>
+          {isPending ? 'Logging in...' : 'Login'}
+        </button>
+      </form>
+      
+      {state.success && (
+        <p style={{ color: 'green' }}>{state.message}</p>
+      )}
+      
+      {state.error && (
+        <p style={{ color: 'red' }}>{state.error}</p>
+      )}
+    </div>
+  );
+}
+
+export default LoginForm;
+```
+
+## 🎯 乐观更新
+
+### 基本乐观更新
+
+```jsx
+import React, { useState, useOptimistic } from 'react';
+
+function TodoList() {
+  const [todos, setTodos] = useState([
+    { id: 1, text: 'Learn React', completed: false }
+  ]);
+  
+  const [optimisticTodos, addOptimisticTodo] = useOptimistic(
+    todos,
+    (state, newTodo) => [...state, newTodo]
+  );
+  
+  async function addTodo(formData) {
+    const text = formData.get('text');
+    const newTodo = {
+      id: Date.now(),
+      text,
+      completed: false,
+      sending: true
+    };
+    
+    // 乐观更新
+    addOptimisticTodo(newTodo);
+    
+    // 实际提交
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // 更新实际状态
+    setTodos(prev => [...prev, { ...newTodo, sending: false }]);
+  }
+  
+  return (
+    <div>
+      <h2>Todo List</h2>
+      
+      <form action={addTodo}>
+        <input name="text" type="text" placeholder="Add a new todo" required />
+        <button type="submit">Add</button>
+      </form>
+      
+      <ul>
+        {optimisticTodos.map(todo => (
+          <li key={todo.id}>
+            {todo.text}
+            {todo.sending && <span> (sending...)</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default TodoList;
+```
+
+### 复杂乐观更新
+
+```jsx
+import React, { useState, useOptimistic } from 'react';
+
+function CommentSection() {
+  const [comments, setComments] = useState([
+    { id: 1, text: 'First comment', author: 'Alice' }
+  ]);
+  
+  const [optimisticComments, addOptimisticComment] = useOptimistic(
+    comments,
+    (state, newComment) => [...state, newComment]
+  );
+  
+  async function addComment(formData) {
+    const text = formData.get('text');
+    const author = formData.get('author');
+    
+    const newComment = {
+      id: Date.now(),
+      text,
+      author,
+      timestamp: new Date().toISOString(),
+      pending: true
+    };
+    
+    // 乐观更新
+    addOptimisticComment(newComment);
+    
+    // 实际提交
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // 更新实际状态
+    setComments(prev => [...prev, { ...newComment, pending: false }]);
+  }
+  
+  async function deleteComment(commentId) {
+    // 乐观删除
+    setComments(prev => prev.filter(comment => comment.id !== commentId));
+    
+    // 实际删除
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  
+  return (
+    <div>
+      <h2>Comments</h2>
+      
+      <form action={addComment}>
+        <div>
+          <label htmlFor="author">Author:</label>
+          <input id="author" name="author" type="text" required />
+        </div>
+        
+        <div>
+          <label htmlFor="text">Comment:</label>
+          <textarea id="text" name="text" required />
+        </div>
+        
+        <button type="submit">Post Comment</button>
+      </form>
+      
+      <ul>
+        {optimisticComments.map(comment => (
+          <li key={comment.id}>
+            <strong>{comment.author}</strong>
+            <p>{comment.text}</p>
+            <small>{new Date(comment.timestamp).toLocaleString()}</small>
+            {comment.pending && <span style={{ color: 'orange' }}> (pending)</span>}
+            <button onClick={() => deleteComment(comment.id)}>Delete</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default CommentSection;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：博客文章评论系统
+
+```jsx
+import React, { useState, useActionState, useOptimistic } from 'react';
+
+async function submitComment(prevState, formData) {
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  const postId = formData.get('postId');
+  const author = formData.get('author');
+  const content = formData.get('content');
+  
+  // 模拟 API 调用
+  console.log('Submitting comment:', { postId, author, content });
+  
+  return {
+    success: true,
+    message: 'Comment posted successfully!',
+    comment: {
+      id: Date.now(),
+      postId: parseInt(postId),
+      author,
+      content,
+      timestamp: new Date().toISOString()
+    }
+  };
+}
+
+function BlogPost() {
+  const [comments, setComments] = useState([
+    { id: 1, author: 'Alice', content: 'Great post!', timestamp: '2026-04-20T10:00:00Z' },
+    { id: 2, author: 'Bob', content: 'Very helpful, thanks!', timestamp: '2026-04-20T11:00:00Z' }
+  ]);
+  
+  const [optimisticComments, addOptimisticComment] = useOptimistic(
+    comments,
+    (state, newComment) => [...state, newComment]
+  );
+  
+  const [state, formAction, isPending] = useActionState(
+    submitComment,
+    { success: false, error: null, message: null, comment: null }
+  );
+  
+  async function handleCommentSubmit(formData) {
+    const author = formData.get('author');
+    const content = formData.get('content');
+    
+    const newComment = {
+      id: Date.now(),
+      author,
+      content,
+      timestamp: new Date().toISOString(),
+      pending: true
+    };
+    
+    // 乐观更新
+    addOptimisticComment(newComment);
+    
+    // 提交 action
+    return await submitComment(state, formData);
+  }
+  
+  return (
+    <div className="blog-post">
+      <article>
+        <h1>Understanding React 19 Actions</h1>
+        <p>
+          Actions are a new feature in React 19 that simplify handling asynchronous operations,
+          especially in form submission and data update scenarios. They provide automatic
+          pending state management, error handling, and optimistic updates.
+        </p>
+      </article>
+      
+      <section className="comments">
+        <h2>Comments ({comments.length})</h2>
+        
+        <form action={formAction}>
+          <input type="hidden" name="postId" value="123" />
+          
+          <div>
+            <label htmlFor="author">Your Name:</label>
+            <input
+              id="author"
+              name="author"
+              type="text"
+              placeholder="Enter your name"
+              required
+            />
+          </div>
+          
+          <div>
+            <label htmlFor="content">Your Comment:</label>
+            <textarea
+              id="content"
+              name="content"
+              rows="4"
+              placeholder="Write your comment..."
+              required
+            />
+          </div>
+          
+          <button type="submit" disabled={isPending}>
+            {isPending ? 'Posting...' : 'Post Comment'}
+          </button>
+        </form>
+        
+        {state.success && (
+          <div className="success-message">
+            {state.message}
+          </div>
+        )}
+        
+        {state.error && (
+          <div className="error-message">
+            {state.error}
+          </div>
+        )}
+        
+        <ul className="comment-list">
+          {optimisticComments.map(comment => (
+            <li key={comment.id} className="comment">
+              <div className="comment-header">
+                <strong>{comment.author}</strong>
+                <small>{new Date(comment.timestamp).toLocaleString()}</small>
+              </div>
+              <p>{comment.content}</p>
+              {comment.pending && (
+                <span className="pending-indicator">Posting...</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+export default BlogPost;
+```
+
+## 🔗 相关概念
+
+- **useActionState**：管理 Actions 的状态
+- **useOptimistic**：乐观更新
+- **useTransition**：异步转换
+- **表单处理**：React 19 的表单增强
+
+## 📚 学习检查点
+
+- [ ] 理解 Async Transitions 的概念
+- [ ] 掌握 useActionState 的使用
+- [ ] 理解 Pending 状态管理
+- [ ] 掌握 Actions 的错误处理
+- [ ] 理解乐观更新的实现
+- [ ] 能够在实际项目中应用 Actions
+
+## 🚀 下一步
+
+→ [新的 Hooks](./02-new-hooks) - 学习 React 19 的新 Hooks 详解

@@ -1,0 +1,892 @@
+# 新的 Hooks
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+React 19 引入了多个新的 Hooks，这些 Hooks 简化了常见模式，提供了更好的开发体验。本章节将详细介绍这些新 Hooks 的使用方法和最佳实践。
+
+## 🎯 use API（资源读取）
+
+### 读取 Promise
+
+`use` Hook 允许在渲染中读取 Promise，自动处理 Suspense：
+
+```jsx
+import React, { use, Suspense } from 'react';
+
+// 模拟异步数据获取
+function fetchUser(userId) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({
+        id: userId,
+        name: `User ${userId}`,
+        email: `user${userId}@example.com`
+      });
+    }, 1000);
+  });
+}
+
+// 使用 use 读取 Promise
+function UserComponent({ userId }) {
+  const user = use(fetchUser(userId));
+  
+  return (
+    <div>
+      <h2>{user.name}</h2>
+      <p>Email: {user.email}</p>
+    </div>
+  );
+}
+
+// 使用 Suspense 处理加载状态
+function App() {
+  return (
+    <Suspense fallback={<div>Loading user...</div>}>
+      <UserComponent userId={1} />
+    </Suspense>
+  );
+}
+
+export default App;
+```
+
+### 读取 Context
+
+`use` Hook 可以条件性地读取 Context，解决了早期返回后无法读取 Context 的问题：
+
+```jsx
+import React, { use, createContext, useContext } from 'react';
+
+const ThemeContext = createContext('light');
+const UserContext = createContext(null);
+
+function Profile() {
+  const user = use(UserContext);
+  
+  // 早期返回
+  if (!user) {
+    return <div>Please log in</div>;
+  }
+  
+  // 早期返回后仍然可以读取 Context
+  const theme = use(ThemeContext);
+  
+  return (
+    <div style={{ background: theme === 'dark' ? '#333' : '#fff', color: theme === 'dark' ? '#fff' : '#000' }}>
+      <h2>Welcome, {user.name}</h2>
+    </div>
+  );
+}
+
+function App() {
+  const user = { name: 'Alice' };
+  
+  return (
+    <UserContext.Provider value={user}>
+      <ThemeContext.Provider value="dark">
+        <Profile />
+      </ThemeContext.Provider>
+    </UserContext.Provider>
+  );
+}
+
+export default App;
+```
+
+### 使用限制
+
+```jsx
+import React, { use, useState } from 'react';
+
+function BadExample() {
+  const [userId, setUserId] = useState(1);
+  
+  // ❌ 错误：不能在渲染中创建 Promise
+  // const user = use(fetchUser(userId));
+  
+  // ❌ 错误：use 必须在渲染中调用
+  // setTimeout(() => {
+  //   const user = use(fetchUser(userId));
+  // }, 1000);
+  
+  // ✅ 正确：使用缓存或从外部获取 Promise
+  const userPromise = React.useMemo(() => fetchUser(userId), [userId]);
+  const user = use(userPromise);
+  
+  return (
+    <div>
+      <h2>{user.name}</h2>
+      <button onClick={() => setUserId(userId + 1)}>Next User</button>
+    </div>
+  );
+}
+
+export default BadExample;
+```
+
+## 🎯 useActionState（Actions 状态管理）
+
+### 基本用法
+
+```jsx
+import React, { useActionState } from 'react';
+
+// 定义 action
+async function incrementAction(prevState, formData) {
+  const step = parseInt(formData.get('step')) || 1;
+  return prevState + step;
+}
+
+function CounterForm() {
+  const [state, formAction, isPending] = useActionState(
+    incrementAction,
+    0
+  );
+  
+  return (
+    <div>
+      <h2>Count: {state}</h2>
+      <form action={formAction}>
+        <input type="hidden" name="step" value="1" />
+        <button type="submit" disabled={isPending}>
+          {isPending ? 'Incrementing...' : '+1'}
+        </button>
+      </form>
+      
+      <form action={formAction}>
+        <input type="hidden" name="step" value="5" />
+        <button type="submit" disabled={isPending}>
+          {isPending ? 'Incrementing...' : '+5'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+export default CounterForm;
+```
+
+### 表单提交场景
+
+```jsx
+import React, { useActionState } from 'react';
+
+async function submitForm(prevState, formData) {
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  const username = formData.get('username');
+  const email = formData.get('email');
+  
+  if (!username || !email) {
+    return {
+      success: false,
+      error: 'All fields are required'
+    };
+  }
+  
+  return {
+    success: true,
+    message: 'Form submitted successfully!'
+  };
+}
+
+function FormComponent() {
+  const [state, formAction, isPending] = useActionState(
+    submitForm,
+    { success: false, error: null, message: null }
+  );
+  
+  return (
+    <form action={formAction}>
+      <div>
+        <label htmlFor="username">Username:</label>
+        <input id="username" name="username" type="text" required />
+      </div>
+      
+      <div>
+        <label htmlFor="email">Email:</label>
+        <input id="email" name="email" type="email" required />
+      </div>
+      
+      <button type="submit" disabled={isPending}>
+        {isPending ? 'Submitting...' : 'Submit'}
+      </button>
+      
+      {state.success && (
+        <p style={{ color: 'green' }}>{state.message}</p>
+      )}
+      
+      {state.error && (
+        <p style={{ color: 'red' }}>{state.error}</p>
+      )}
+    </form>
+  );
+}
+
+export default FormComponent;
+```
+
+### 多类型 Actions
+
+```jsx
+import React, { useActionState } from 'react';
+
+async function handleActions(prevState, formData) {
+  const action = formData.get('action');
+  const value = parseInt(formData.get('value')) || 0;
+  
+  switch (action) {
+    case 'add':
+      return prevState + value;
+    case 'subtract':
+      return prevState - value;
+    case 'multiply':
+      return prevState * value;
+    case 'divide':
+      return prevState / value;
+    default:
+      return prevState;
+  }
+}
+
+function Calculator() {
+  const [result, formAction, isPending] = useActionState(
+    handleActions,
+    0
+  );
+  
+  return (
+    <div>
+      <h2>Result: {result}</h2>
+      <input type="number" name="value" defaultValue="5" />
+      
+      <form action={formAction}>
+        <input type="hidden" name="action" value="add" />
+        <button type="submit" disabled={isPending}>Add</button>
+      </form>
+      
+      <form action={formAction}>
+        <input type="hidden" name="action" value="subtract" />
+        <button type="submit" disabled={isPending}>Subtract</button>
+      </form>
+      
+      <form action={formAction}>
+        <input type="hidden" name="action" value="multiply" />
+        <button type="submit" disabled={isPending}>Multiply</button>
+      </form>
+      
+      <form action={formAction}>
+        <input type="hidden" name="action" value="divide" />
+        <button type="submit" disabled={isPending}>Divide</button>
+      </form>
+    </div>
+  );
+}
+
+export default Calculator;
+```
+
+## 🎯 useOptimistic（乐观更新）
+
+### 基本用法
+
+```jsx
+import React, { useState, useOptimistic } from 'react';
+
+function TodoList() {
+  const [todos, setTodos] = useState([
+    { id: 1, text: 'Learn React', completed: false }
+  ]);
+  
+  const [optimisticTodos, addOptimisticTodo] = useOptimistic(
+    todos,
+    (state, newTodo) => [...state, newTodo]
+  );
+  
+  async function addTodo(formData) {
+    const text = formData.get('text');
+    const newTodo = {
+      id: Date.now(),
+      text,
+      completed: false,
+      sending: true
+    };
+    
+    // 乐观更新
+    addOptimisticTodo(newTodo);
+    
+    // 实际提交
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // 更新实际状态
+    setTodos(prev => [...prev, { ...newTodo, sending: false }]);
+  }
+  
+  return (
+    <div>
+      <h2>Todo List</h2>
+      
+      <form action={addTodo}>
+        <input name="text" type="text" placeholder="Add a new todo" required />
+        <button type="submit">Add</button>
+      </form>
+      
+      <ul>
+        {optimisticTodos.map(todo => (
+          <li key={todo.id}>
+            {todo.text}
+            {todo.sending && <span> (sending...)</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default TodoList;
+```
+
+### 点赞功能
+
+```jsx
+import React, { useState, useOptimistic } from 'react';
+
+function LikeButton({ postId, initialLikes }) {
+  const [likes, setLikes] = useState(initialLikes);
+  const [optimisticLikes, setOptimisticLikes] = useOptimistic(
+    likes,
+    (state, action) => action.type === 'like' ? state + 1 : state - 1
+  );
+  
+  async function toggleLike() {
+    const isLiked = optimisticLikes > likes;
+    const action = isLiked ? { type: 'unlike' } : { type: 'like' };
+    
+    // 乐观更新
+    setOptimisticLikes(action);
+    
+    // 实际提交
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // 更新实际状态
+    setLikes(prev => isLiked ? prev - 1 : prev + 1);
+  }
+  
+  return (
+    <div>
+      <button onClick={toggleLike}>
+        {optimisticLikes > likes ? '❤️' : '🤍'} {optimisticLikes}
+      </button>
+    </div>
+  );
+}
+
+export default LikeButton;
+```
+
+### 评论发布
+
+```jsx
+import React, { useState, useOptimistic } from 'react';
+
+function CommentSection({ postId }) {
+  const [comments, setComments] = useState([]);
+  
+  const [optimisticComments, addOptimisticComment] = useOptimistic(
+    comments,
+    (state, newComment) => [...state, newComment]
+  );
+  
+  async function addComment(formData) {
+    const text = formData.get('text');
+    const author = formData.get('author');
+    
+    const newComment = {
+      id: Date.now(),
+      text,
+      author,
+      timestamp: new Date().toISOString(),
+      pending: true
+    };
+    
+    // 乐观更新
+    addOptimisticComment(newComment);
+    
+    // 实际提交
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // 更新实际状态
+    setComments(prev => [...prev, { ...newComment, pending: false }]);
+  }
+  
+  return (
+    <div>
+      <h2>Comments</h2>
+      
+      <form action={addComment}>
+        <div>
+          <label htmlFor="author">Author:</label>
+          <input id="author" name="author" type="text" required />
+        </div>
+        
+        <div>
+          <label htmlFor="text">Comment:</label>
+          <textarea id="text" name="text" required />
+        </div>
+        
+        <button type="submit">Post Comment</button>
+      </form>
+      
+      <ul>
+        {optimisticComments.map(comment => (
+          <li key={comment.id}>
+            <strong>{comment.author}</strong>
+            <p>{comment.text}</p>
+            {comment.pending && <span> (pending)</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default CommentSection;
+```
+
+## 🎯 useFormStatus（表单状态访问）
+
+### 基本用法
+
+```jsx
+import React, { useFormStatus } from 'react';
+
+function SubmitButton() {
+  const { pending, data, method, action } = useFormStatus();
+  
+  return (
+    <button type="submit" disabled={pending}>
+      {pending ? 'Submitting...' : 'Submit'}
+    </button>
+  );
+}
+
+function ContactForm() {
+  async function handleSubmit(formData) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log('Form submitted:', formData);
+  }
+  
+  return (
+    <form action={handleSubmit}>
+      <input name="name" type="text" placeholder="Name" required />
+      <input name="email" type="email" placeholder="Email" required />
+      <textarea name="message" placeholder="Message" required />
+      <SubmitButton />
+    </form>
+  );
+}
+
+export default ContactForm;
+```
+
+### 设计系统组件
+
+```jsx
+import React, { useFormStatus } from 'react';
+
+function PrimaryButton({ children }) {
+  const { pending } = useFormStatus();
+  
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="btn btn-primary"
+    >
+      {pending ? 'Processing...' : children}
+    </button>
+  );
+}
+
+function SecondaryButton({ children }) {
+  const { pending } = useFormStatus();
+  
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      className="btn btn-secondary"
+    >
+      {children}
+    </button>
+  );
+}
+
+function FormActions() {
+  const { pending } = useFormStatus();
+  
+  return (
+    <div className="form-actions">
+      <PrimaryButton>Submit</PrimaryButton>
+      <SecondaryButton>Cancel</SecondaryButton>
+    </div>
+  );
+}
+
+function UserForm() {
+  async function handleSubmit(formData) {
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    console.log('Form submitted:', formData);
+  }
+  
+  return (
+    <form action={handleSubmit}>
+      <input name="username" type="text" placeholder="Username" required />
+      <input name="email" type="email" placeholder="Email" required />
+      <FormActions />
+    </form>
+  );
+}
+
+export default UserForm;
+```
+
+### 加载指示器
+
+```jsx
+import React, { useFormStatus } from 'react';
+
+function LoadingIndicator() {
+  const { pending } = useFormStatus();
+  
+  if (!pending) return null;
+  
+  return (
+    <div className="loading-indicator">
+      <div className="spinner"></div>
+      <p>Processing...</p>
+    </div>
+  );
+}
+
+function AsyncForm() {
+  async function handleSubmit(formData) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log('Form submitted:', formData);
+  }
+  
+  return (
+    <div>
+      <form action={handleSubmit}>
+        <input name="data" type="text" placeholder="Enter data" required />
+        <button type="submit">Submit</button>
+        <LoadingIndicator />
+      </form>
+    </div>
+  );
+}
+
+export default AsyncForm;
+```
+
+## 🎯 React 19.2 新 Hooks：useEffectEvent
+
+### 基本用法
+
+```jsx
+import React, { useState, useEffect, useEffectEvent } from 'react';
+
+function ChatRoom({ roomId }) {
+  const [messages, setMessages] = useState([]);
+  const [isConnected, setIsConnected] = useState(false);
+  
+  // 定义 Effect Event
+  const onConnected = useEffectEvent(() => {
+    // 这个函数不会因为依赖变化而重新运行
+    console.log(`Connected to room ${roomId}`);
+  });
+  
+  useEffect(() => {
+    const connection = createConnection(roomId);
+    
+    connection.connect();
+    setIsConnected(true);
+    
+    // 使用 Effect Event
+    onConnected();
+    
+    connection.on('message', (message) => {
+      setMessages(prev => [...prev, message]);
+    });
+    
+    return () => {
+      connection.disconnect();
+      setIsConnected(false);
+    };
+  }, [roomId, onConnected]);
+  
+  return (
+    <div>
+      <h2>Room: {roomId}</h2>
+      <p>Status: {isConnected ? 'Connected' : 'Disconnected'}</p>
+      <ul>
+        {messages.map((msg, index) => (
+          <li key={index}>{msg}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// 模拟连接对象
+function createConnection(roomId) {
+  let connected = false;
+  
+  return {
+    connect() {
+      connected = true;
+      console.log(`Connecting to room ${roomId}...`);
+    },
+    disconnect() {
+      connected = false;
+      console.log(`Disconnecting from room ${roomId}...`);
+    },
+    on(event, callback) {
+      // 模拟消息监听
+      setTimeout(() => {
+        if (connected) {
+          callback(`Message from room ${roomId}`);
+        }
+      }, 1000);
+    }
+  };
+}
+
+export default ChatRoom;
+```
+
+### 日志记录
+
+```jsx
+import React, { useState, useEffect, useEffectEvent } from 'react';
+
+function Logger({ userId }) {
+  const [actions, setActions] = useState([]);
+  
+  // Effect Event - 不作为依赖
+  const logAction = useEffectEvent((action) => {
+    console.log(`User ${userId} performed: ${action}`);
+  });
+  
+  useEffect(() => {
+    // 依赖数组中不包含 logAction
+    const interval = setInterval(() => {
+      const action = `Action at ${new Date().toISOString()}`;
+      setActions(prev => [...prev, action]);
+      logAction(action);
+    }, 2000);
+    
+    return () => clearInterval(interval);
+  }, [userId, logAction]);
+  
+  return (
+    <div>
+      <h2>User: {userId}</h2>
+      <h3>Actions:</h3>
+      <ul>
+        {actions.map((action, index) => (
+          <li key={index}>{action}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default Logger;
+```
+
+### 分析事件
+
+```jsx
+import React, { useState, useEffect, useEffectEvent } from 'react';
+
+function Analytics({ page }) {
+  const [views, setViews] = useState(0);
+  
+  // Effect Event - 发送分析数据
+  const trackPageView = useEffectEvent(() => {
+    console.log(`Page view: ${page}`);
+    // 发送到分析服务
+    sendAnalyticsEvent('page_view', { page });
+  });
+  
+  useEffect(() => {
+    trackPageView();
+    setViews(prev => prev + 1);
+  }, [page, trackPageView]);
+  
+  return (
+    <div>
+      <h2>Page: {page}</h2>
+      <p>Views: {views}</p>
+    </div>
+  );
+}
+
+function sendAnalyticsEvent(eventName, data) {
+  // 模拟发送分析事件
+  console.log(`Analytics: ${eventName}`, data);
+}
+
+export default Analytics;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：社交媒体帖子
+
+```jsx
+import React, { useState, useOptimistic, useActionState, useFormStatus, useEffectEvent } from 'react';
+
+async function submitPost(prevState, formData) {
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  const content = formData.get('content');
+  const author = formData.get('author');
+  
+  if (!content || !author) {
+    return {
+      success: false,
+      error: 'All fields are required'
+    };
+  }
+  
+  return {
+    success: true,
+    message: 'Post published successfully!'
+  };
+}
+
+function PostForm({ onPublish }) {
+  const [state, formAction, isPending] = useActionState(
+    submitPost,
+    { success: false, error: null, message: null }
+  );
+  
+  const [posts, setPosts] = useState([]);
+  const [optimisticPosts, addOptimisticPost] = useOptimistic(
+    posts,
+    (state, newPost) => [...state, newPost]
+  );
+  
+  const onPublishPost = useEffectEvent((newPost) => {
+    // 发送分析事件
+    console.log('Post published:', newPost);
+  });
+  
+  async function handlePublish(formData) {
+    const content = formData.get('content');
+    const author = formData.get('author');
+    
+    const newPost = {
+      id: Date.now(),
+      content,
+      author,
+      timestamp: new Date().toISOString(),
+      pending: true
+    };
+    
+    // 乐观更新
+    addOptimisticPost(newPost);
+    
+    // 提交 action
+    const result = await submitPost(state, formData);
+    
+    if (result.success) {
+      // 更新实际状态
+      setPosts(prev => [...prev, { ...newPost, pending: false }]);
+      // 触发分析事件
+      onPublishPost(newPost);
+    }
+    
+    return result;
+  }
+  
+  return (
+    <div className="post-form">
+      <h2>Create Post</h2>
+      
+      <form action={formAction}>
+        <div>
+          <label htmlFor="author">Author:</label>
+          <input id="author" name="author" type="text" required />
+        </div>
+        
+        <div>
+          <label htmlFor="content">Content:</label>
+          <textarea id="content" name="content" rows="4" required />
+        </div>
+        
+        <SubmitButton />
+      </form>
+      
+      {state.success && (
+        <p style={{ color: 'green' }}>{state.message}</p>
+      )}
+      
+      {state.error && (
+        <p style={{ color: 'red' }}>{state.error}</p>
+      )}
+      
+      <div className="posts">
+        <h3>Posts ({optimisticPosts.length})</h3>
+        {optimisticPosts.map(post => (
+          <div key={post.id} className="post">
+            <div className="post-header">
+              <strong>{post.author}</strong>
+              <small>{new Date(post.timestamp).toLocaleString()}</small>
+            </div>
+            <p>{post.content}</p>
+            {post.pending && <span className="pending">Publishing...</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SubmitButton() {
+  const { pending } = useFormStatus();
+  
+  return (
+    <button type="submit" disabled={pending}>
+      {pending ? 'Publishing...' : 'Publish'}
+    </button>
+  );
+}
+
+export default PostForm;
+```
+
+## 🔗 相关概念
+
+- **Actions 系统**：React 19 的 Actions 系统
+- **乐观更新**：useOptimistic Hook
+- **表单状态**：useFormStatus Hook
+- **Effect Events**：useEffectEvent Hook
+
+## 📚 学习检查点
+
+- [ ] 掌握 use API 读取 Promise 和 Context
+- [ ] 理解 useActionState 的使用场景
+- [ ] 掌握 useOptimistic 乐观更新
+- [ ] 理解 useFormStatus 访问表单状态
+- [ ] 掌握 useEffectEvent 分离事件逻辑
+- [ ] 了解 React 19.2 新 Hooks 的最佳实践
+
+## 🚀 下一步
+
+→ [简化的 API](./03-simplified-apis) - 学习 React 19 简化的 API
