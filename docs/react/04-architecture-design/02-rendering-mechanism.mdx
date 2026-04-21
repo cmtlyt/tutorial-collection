@@ -1,0 +1,1594 @@
+# React 渲染机制
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+React 的渲染机制是 React 核心架构的重要组成部分，它决定了组件如何从状态变化到最终 DOM 更新的完整流程。理解渲染机制对于编写高性能的 React 应用至关重要。
+
+本章节将深入探讨 React 的渲染流程、调度与执行机制，以及 React 19 在渲染方面的重大改进。
+
+## 🎯 渲染流程
+
+### 初始渲染（Mount）
+
+初始渲染是组件第一次被创建并插入 DOM 的过程。
+
+```js
+// 演示初始渲染流程
+function demonstrateMounting() {
+  console.log('=== 初始渲染流程演示 ===\n');
+  
+  // 模拟 React 的初始渲染过程
+  class ReactLikeRenderer {
+    constructor() {
+      this.rootFiber = null;
+      this.workInProgressRoot = null;
+    }
+    
+    // 初始渲染
+    mount(vNode, container) {
+      console.log('1. 创建根 Fiber 节点');
+      this.rootFiber = this.createRootFiber(vNode, container);
+      
+      console.log('2. 开始工作阶段（Render Phase）');
+      this.beginWork(this.rootFiber);
+      
+      console.log('3. 提交阶段（Commit Phase）');
+      this.commitWork();
+      
+      console.log('4. 初始渲染完成\n');
+      return this.rootFiber;
+    }
+    
+    // 创建根 Fiber
+    createRootFiber(vNode, container) {
+      const rootFiber = {
+        type: vNode.type,
+        props: vNode.props,
+        stateNode: container,
+        child: null,
+        sibling: null,
+        return: null,
+        effectTag: 'PLACEMENT',
+        alternate: null
+      };
+      
+      console.log(`   创建 Fiber: ${vNode.type}`);
+      return rootFiber;
+    }
+    
+    // 开始工作阶段
+    beginWork(fiber) {
+      console.log(`   处理组件: ${fiber.type}`);
+      
+      if (fiber.props && fiber.props.children) {
+        const children = Array.isArray(fiber.props.children) 
+          ? fiber.props.children 
+          : [fiber.props.children];
+        
+        let prevChild = null;
+        children.forEach((child, index) => {
+          const childFiber = {
+            type: child.type,
+            props: child.props,
+            stateNode: null,
+            child: null,
+            sibling: null,
+            return: fiber,
+            effectTag: 'PLACEMENT',
+            alternate: null
+          };
+          
+          if (index === 0) {
+            fiber.child = childFiber;
+          } else {
+            prevChild.sibling = childFiber;
+          }
+          
+          prevChild = childFiber;
+          this.beginWork(childFiber);
+        });
+      }
+    }
+    
+    // 提交工作阶段
+    commitWork() {
+      console.log('   提交 DOM 更新');
+      console.log('   执行副作用');
+    }
+  }
+  
+  // 使用示例
+  const renderer = new ReactLikeRenderer();
+  
+  const vNode = {
+    type: 'div',
+    props: {
+      className: 'app',
+      children: [
+        { type: 'h1', props: { children: 'Hello React' } },
+        { type: 'p', props: { children: 'Rendering Mechanism' } }
+      ]
+    }
+  };
+  
+  const container = document.createElement('div');
+  renderer.mount(vNode, container);
+}
+
+demonstrateMounting();
+```
+
+### 更新渲染（Update）
+
+更新渲染是组件状态或 props 变化时触发的重新渲染过程。
+
+```js
+// 演示更新渲染流程
+function demonstrateUpdating() {
+  console.log('=== 更新渲染流程演示 ===\n');
+  
+  class ReactLikeRenderer {
+    constructor() {
+      this.currentRoot = null;
+      this.workInProgressRoot = null;
+      this.updateQueue = [];
+    }
+    
+    // 初始渲染
+    mount(vNode, container) {
+      this.currentRoot = this.createFiber(vNode, container);
+      this.beginWork(this.currentRoot);
+      this.commitWork();
+      console.log('初始渲染完成\n');
+    }
+    
+    // 创建 Fiber
+    createFiber(vNode, container) {
+      return {
+        type: vNode.type,
+        props: vNode.props,
+        stateNode: container,
+        child: null,
+        sibling: null,
+        return: null,
+        effectTag: 'PLACEMENT',
+        alternate: null
+      };
+    }
+    
+    // 调度更新
+    scheduleUpdate(updater) {
+      console.log('1. 调度更新');
+      this.updateQueue.push(updater);
+      
+      console.log('2. 创建工作树');
+      this.workInProgressRoot = this.cloneFiber(this.currentRoot);
+      
+      console.log('3. 执行更新');
+      updater(this.workInProgressRoot);
+      
+      console.log('4. 协调差异');
+      this.reconcile();
+      
+      console.log('5. 提交更新');
+      this.commitWork();
+      
+      console.log('更新渲染完成\n');
+    }
+    
+    // 克隆 Fiber
+    cloneFiber(fiber) {
+      if (!fiber) return null;
+      
+      const clone = {
+        ...fiber,
+        alternate: fiber,
+        child: null,
+        sibling: null,
+        effectTag: null
+      };
+      
+      clone.child = this.cloneFiber(fiber.child);
+      clone.sibling = this.cloneFiber(fiber.sibling);
+      
+      return clone;
+    }
+    
+    // 协调差异
+    reconcile() {
+      console.log('   比较新旧 Fiber 树');
+      console.log('   标记需要更新的节点');
+    }
+    
+    // 开始工作
+    beginWork(fiber) {
+      if (fiber.props && fiber.props.children) {
+        const children = Array.isArray(fiber.props.children) 
+          ? fiber.props.children 
+          : [fiber.props.children];
+        
+        let prevChild = null;
+        children.forEach((child, index) => {
+          const childFiber = {
+            type: child.type,
+            props: child.props,
+            stateNode: null,
+            child: null,
+            sibling: null,
+            return: fiber,
+            effectTag: 'PLACEMENT',
+            alternate: null
+          };
+          
+          if (index === 0) {
+            fiber.child = childFiber;
+          } else {
+            prevChild.sibling = childFiber;
+          }
+          
+          prevChild = childFiber;
+        });
+      }
+    }
+    
+    // 提交工作
+    commitWork() {
+      this.currentRoot = this.workInProgressRoot;
+      this.workInProgressRoot = null;
+      this.updateQueue = [];
+      console.log('   交换 Fiber 树');
+      console.log('   应用 DOM 更新');
+    }
+  }
+  
+  // 使用示例
+  const renderer = new ReactLikeRenderer();
+  
+  const vNode = {
+    type: 'div',
+    props: {
+      className: 'app',
+      children: [
+        { type: 'h1', props: { children: 'Hello React' } },
+        { type: 'p', props: { children: 'Count: 0' } }
+      ]
+    }
+  };
+  
+  const container = document.createElement('div');
+  renderer.mount(vNode, container);
+  
+  // 触发更新
+  renderer.scheduleUpdate((fiber) => {
+    if (fiber.type === 'p') {
+      fiber.props = { children: 'Count: 1' };
+      fiber.effectTag = 'UPDATE';
+    }
+  });
+}
+
+demonstrateUpdating();
+```
+
+### 卸载（Unmount）
+
+卸载是组件从 DOM 中移除并清理资源的过程。
+
+```js
+// 演示卸载流程
+function demonstrateUnmounting() {
+  console.log('=== 卸载流程演示 ===\n');
+  
+  class ReactLikeRenderer {
+    constructor() {
+      this.rootFiber = null;
+      this.effects = [];
+    }
+    
+    // 挂载组件
+    mount(vNode, container) {
+      console.log('1. 挂载组件');
+      this.rootFiber = this.createFiber(vNode, container);
+      this.beginWork(this.rootFiber);
+      this.commitWork();
+      console.log('组件已挂载\n');
+    }
+    
+    // 卸载组件
+    unmount() {
+      console.log('1. 开始卸载流程');
+      console.log('2. 执行清理函数');
+      this.runCleanupEffects();
+      
+      console.log('3. 移除 DOM 节点');
+      this.removeDOM();
+      
+      console.log('4. 清空 Fiber 树');
+      this.rootFiber = null;
+      
+      console.log('组件已卸载\n');
+    }
+    
+    // 创建 Fiber
+    createFiber(vNode, container) {
+      return {
+        type: vNode.type,
+        props: vNode.props,
+        stateNode: container,
+        child: null,
+        sibling: null,
+        return: null,
+        effectTag: 'PLACEMENT',
+        alternate: null,
+        cleanup: null
+      };
+    }
+    
+    // 开始工作
+    beginWork(fiber) {
+      if (fiber.props && fiber.props.children) {
+        const children = Array.isArray(fiber.props.children) 
+          ? fiber.props.children 
+          : [fiber.props.children];
+        
+        let prevChild = null;
+        children.forEach((child, index) => {
+          const childFiber = {
+            type: child.type,
+            props: child.props,
+            stateNode: null,
+            child: null,
+            sibling: null,
+            return: fiber,
+            effectTag: 'PLACEMENT',
+            alternate: null,
+            cleanup: null
+          };
+          
+          // 模拟注册清理函数
+          if (child.type === 'p') {
+            childFiber.cleanup = () => {
+              console.log('   清理订阅: 计时器已清除');
+            };
+          }
+          
+          if (index === 0) {
+            fiber.child = childFiber;
+          } else {
+            prevChild.sibling = childFiber;
+          }
+          
+          prevChild = childFiber;
+          this.beginWork(childFiber);
+        });
+      }
+    }
+    
+    // 提交工作
+    commitWork() {
+      console.log('   提交 DOM 更新');
+    }
+    
+    // 运行清理函数
+    runCleanupEffects() {
+      const cleanupQueue = [];
+      
+      const collectCleanup = (fiber) => {
+        if (!fiber) return;
+        
+        if (fiber.cleanup) {
+          cleanupQueue.push(fiber.cleanup);
+        }
+        
+        collectCleanup(fiber.child);
+        collectCleanup(fiber.sibling);
+      };
+      
+      collectCleanup(this.rootFiber);
+      
+      cleanupQueue.forEach(cleanup => cleanup());
+    }
+    
+    // 移除 DOM
+    removeDOM() {
+      console.log('   移除所有子节点');
+      console.log('   清空容器');
+    }
+  }
+  
+  // 使用示例
+  const renderer = new ReactLikeRenderer();
+  
+  const vNode = {
+    type: 'div',
+    props: {
+      className: 'app',
+      children: [
+        { type: 'h1', props: { children: 'Hello React' } },
+        { type: 'p', props: { children: 'This will be unmounted' } }
+      ]
+    }
+  };
+  
+  const container = document.createElement('div');
+  renderer.mount(vNode, container);
+  
+  // 卸载组件
+  renderer.unmount();
+}
+
+demonstrateUnmounting();
+```
+
+### 错误边界处理
+
+错误边界是 React 组件，可以捕获子组件树中任何位置的 JavaScript 错误。
+
+```js
+// 演示错误边界处理
+function demonstrateErrorBoundary() {
+  console.log('=== 错误边界处理演示 ===\n');
+  
+  // 模拟错误边界组件
+  class ErrorBoundary {
+    constructor() {
+      this.hasError = false;
+      this.error = null;
+      this.errorInfo = null;
+    }
+    
+    // 捕获错误
+    componentDidCatch(error, errorInfo) {
+      console.log('1. 捕获到错误');
+      console.log(`   错误信息: ${error.message}`);
+      console.log(`   错误堆栈: ${errorInfo.componentStack}`);
+      
+      this.hasError = true;
+      this.error = error;
+      this.errorInfo = errorInfo;
+    }
+    
+    // 获取错误状态
+    getDerivedStateFromError(error) {
+      console.log('2. 从错误派生状态');
+      return { hasError: true, error };
+    }
+    
+    // 渲染错误 UI
+    renderErrorUI() {
+      console.log('3. 渲染错误 UI');
+      return {
+        type: 'div',
+        props: {
+          className: 'error-boundary',
+          children: [
+            { type: 'h2', props: { children: 'Something went wrong' } },
+            { type: 'p', props: { children: this.error.message } }
+          ]
+        }
+      };
+    }
+    
+    // 重置错误状态
+    reset() {
+      console.log('4. 重置错误状态');
+      this.hasError = false;
+      this.error = null;
+      this.errorInfo = null;
+    }
+  }
+  
+  // 模拟会抛出错误的组件
+  function BuggyComponent() {
+    throw new Error('模拟组件错误');
+  }
+  
+  // 使用示例
+  const errorBoundary = new ErrorBoundary();
+  
+  try {
+    console.log('尝试渲染有错误的组件');
+    BuggyComponent();
+  } catch (error) {
+    errorBoundary.componentDidCatch(error, { componentStack: 'at BuggyComponent' });
+    errorBoundary.getDerivedStateFromError(error);
+    errorBoundary.renderErrorUI();
+  }
+  
+  console.log('\n错误已捕获，应用继续运行');
+}
+
+demonstrateErrorBoundary();
+```
+
+## ⚡ 调度与执行
+
+### Scheduler 调度器
+
+Scheduler 是 React 的调度器，负责管理任务的执行顺序和时机。
+
+```js
+// 演示 Scheduler 调度器
+function demonstrateScheduler() {
+  console.log('=== Scheduler 调度器演示 ===\n');
+  
+  class Scheduler {
+    constructor() {
+      this.taskQueue = [];
+      this.currentTask = null;
+      this.isPerformingWork = false;
+    }
+    
+    // 调度任务
+    scheduleTask(callback, priority) {
+      console.log(`1. 调度任务，优先级: ${priority}`);
+      
+      const task = {
+        id: Date.now(),
+        callback,
+        priority,
+        expirationTime: this.getExpirationTime(priority)
+      };
+      
+      this.taskQueue.push(task);
+      
+      // 按优先级排序
+      this.taskQueue.sort((a, b) => {
+        const priorityA = this.getPriorityValue(a.priority);
+        const priorityB = this.getPriorityValue(b.priority);
+        return priorityB - priorityA;
+      });
+      
+      console.log('   任务已加入队列');
+      
+      if (!this.isPerformingWork) {
+        this.performWorkUntilDeadline();
+      }
+    }
+    
+    // 获取过期时间
+    getExpirationTime(priority) {
+      const now = Date.now();
+      const timeouts = {
+        'Immediate': -1,
+        'UserBlocking': 250,
+        'Normal': 5000,
+        'Low': 10000,
+        'Idle': 1073741823
+      };
+      return now + (timeouts[priority] || 5000);
+    }
+    
+    // 获取优先级数值
+    getPriorityValue(priority) {
+      const priorities = {
+        'Immediate': 100,
+        'UserBlocking': 90,
+        'Normal': 80,
+        'Low': 70,
+        'Idle': 10
+      };
+      return priorities[priority] || 50;
+    }
+    
+    // 执行任务直到截止时间
+    performWorkUntilDeadline() {
+      this.isPerformingWork = true;
+      console.log('2. 开始执行任务');
+      
+      const startTime = performance.now();
+      const frameDeadline = startTime + 5; // 5ms 时间片
+      
+      while (this.taskQueue.length > 0 && performance.now() < frameDeadline) {
+        this.currentTask = this.taskQueue.shift();
+        console.log(`   执行任务 ${this.currentTask.id}`);
+        
+        try {
+          this.currentTask.callback();
+        } catch (error) {
+          console.error(`   任务执行失败: ${error.message}`);
+        }
+      }
+      
+      if (this.taskQueue.length > 0) {
+        console.log('3. 时间片用完，继续调度剩余任务');
+        requestIdleCallback(() => this.performWorkUntilDeadline());
+      } else {
+        console.log('4. 所有任务已完成');
+        this.isPerformingWork = false;
+      }
+    }
+  }
+  
+  // 使用示例
+  const scheduler = new Scheduler();
+  
+  // 调度不同优先级的任务
+  scheduler.scheduleTask(() => {
+    console.log('   执行用户输入处理');
+  }, 'UserBlocking');
+  
+  scheduler.scheduleTask(() => {
+    console.log('   执行数据获取');
+  }, 'Normal');
+  
+  scheduler.scheduleTask(() => {
+    console.log('   执行日志记录');
+  }, 'Idle');
+  
+  scheduler.scheduleTask(() => {
+    console.log('   执行紧急更新');
+  }, 'Immediate');
+}
+
+demonstrateScheduler();
+```
+
+### 调度优先级
+
+React 使用 Lane 模型来管理不同优先级的更新。
+
+```js
+// 演示调度优先级
+function demonstratePriority() {
+  console.log('=== 调度优先级演示 ===\n');
+  
+  // Lane 优先级常量
+  const Lanes = {
+    NoLanes: 0b0000000000000000000000000000000,
+    SyncLane: 0b0000000000000000000000000000001,
+    InputContinuousLane: 0b0000000000000000000000000000100,
+    DefaultLane: 0b0000000000000000000000000010000,
+    TransitionLane1: 0b0000000000000000000000001000000,
+    TransitionLane2: 0b0000000000000000000000010000000,
+    RetryLane1: 0b0000000000000000000010000000000,
+    IdleLane: 0b0100000000000000000000000000000
+  };
+  
+  class LaneManager {
+    constructor() {
+      this.pendingLanes = Lanes.NoLanes;
+      this.finishedLanes = Lanes.NoLanes;
+    }
+    
+    // 添加 lane
+    addLane(lane) {
+      console.log(`添加 Lane: ${this.getLaneName(lane)}`);
+      this.pendingLanes |= lane;
+      console.log(`   当前 pendingLanes: ${this.pendingLanes.toString(2)}`);
+    }
+    
+    // 移除 lane
+    removeLane(lane) {
+      console.log(`移除 Lane: ${this.getLaneName(lane)}`);
+      this.pendingLanes &= ~lane;
+      console.log(`   当前 pendingLanes: ${this.pendingLanes.toString(2)}`);
+    }
+    
+    // 获取最高优先级 lane
+    getHighestPriorityLane() {
+      const lane = this.pendingLanes & -this.pendingLanes;
+      console.log(`最高优先级 Lane: ${this.getLaneName(lane)}`);
+      return lane;
+    }
+    
+    // 检查是否有 lane
+    hasLane(lane) {
+      return (this.pendingLanes & lane) !== Lanes.NoLanes;
+    }
+    
+    // 获取 lane 名称
+    getLaneName(lane) {
+      const names = {
+        [Lanes.SyncLane]: 'SyncLane',
+        [Lanes.InputContinuousLane]: 'InputContinuousLane',
+        [Lanes.DefaultLane]: 'DefaultLane',
+        [Lanes.TransitionLane1]: 'TransitionLane1',
+        [Lanes.TransitionLane2]: 'TransitionLane2',
+        [Lanes.IdleLane]: 'IdleLane'
+      };
+      return names[lane] || 'Unknown';
+    }
+  }
+  
+  // 使用示例
+  const laneManager = new LaneManager();
+  
+  console.log('添加不同优先级的 lanes:');
+  laneManager.addLane(Lanes.DefaultLane);
+  laneManager.addLane(Lanes.TransitionLane1);
+  laneManager.addLane(Lanes.SyncLane);
+  
+  console.log('\n获取最高优先级 lane:');
+  laneManager.getHighestPriorityLane();
+  
+  console.log('\n移除已完成的 lane:');
+  laneManager.removeLane(Lanes.SyncLane);
+  
+  console.log('\n检查是否还有 pending lanes:');
+  console.log(`   有 DefaultLane: ${laneManager.hasLane(Lanes.DefaultLane)}`);
+  console.log(`   有 SyncLane: ${laneManager.hasLane(Lanes.SyncLane)}`);
+}
+
+demonstratePriority();
+```
+
+### 任务队列管理
+
+React 使用任务队列来管理待执行的更新任务。
+
+```js
+// 演示任务队列管理
+function demonstrateTaskQueue() {
+  console.log('=== 任务队列管理演示 ===\n');
+  
+  class TaskQueue {
+    constructor() {
+      this.queue = [];
+      this.isProcessing = false;
+    }
+    
+    // 入队
+    enqueue(task) {
+      console.log(`1. 任务入队: ${task.id}`);
+      this.queue.push(task);
+      this.sortQueue();
+      console.log(`   队列长度: ${this.queue.length}`);
+    }
+    
+    // 出队
+    dequeue() {
+      if (this.queue.length === 0) {
+        console.log('队列为空');
+        return null;
+      }
+      
+      const task = this.queue.shift();
+      console.log(`2. 任务出队: ${task.id}`);
+      return task;
+    }
+    
+    // 排序队列
+    sortQueue() {
+      this.queue.sort((a, b) => {
+        const priorityA = this.getPriorityValue(a.priority);
+        const priorityB = this.getPriorityValue(b.priority);
+        
+        // 优先级高的在前
+        if (priorityA !== priorityB) {
+          return priorityB - priorityA;
+        }
+        
+        // 相同优先级按时间排序
+        return a.timestamp - b.timestamp;
+      });
+    }
+    
+    // 获取优先级数值
+    getPriorityValue(priority) {
+      const priorities = {
+        'high': 100,
+        'normal': 80,
+        'low': 60
+      };
+      return priorities[priority] || 50;
+    }
+    
+    // 处理队列
+    processQueue() {
+      if (this.isProcessing) {
+        console.log('队列正在处理中');
+        return;
+      }
+      
+      this.isProcessing = true;
+      console.log('3. 开始处理队列');
+      
+      while (this.queue.length > 0) {
+        const task = this.dequeue();
+        if (task) {
+          console.log(`   执行任务: ${task.id}`);
+          task.callback();
+        }
+      }
+      
+      console.log('4. 队列处理完成');
+      this.isProcessing = false;
+    }
+    
+    // 清空队列
+    clear() {
+      console.log('5. 清空队列');
+      this.queue = [];
+    }
+    
+    // 获取队列大小
+    size() {
+      return this.queue.length;
+    }
+  }
+  
+  // 使用示例
+  const taskQueue = new TaskQueue();
+  
+  // 添加任务
+  taskQueue.enqueue({
+    id: 'task1',
+    priority: 'normal',
+    timestamp: Date.now(),
+    callback: () => console.log('      执行 task1')
+  });
+  
+  taskQueue.enqueue({
+    id: 'task2',
+    priority: 'high',
+    timestamp: Date.now() + 10,
+    callback: () => console.log('      执行 task2')
+  });
+  
+  taskQueue.enqueue({
+    id: 'task3',
+    priority: 'low',
+    timestamp: Date.now() + 20,
+    callback: () => console.log('      执行 task3')
+  });
+  
+  console.log('\n处理队列:');
+  taskQueue.processQueue();
+  
+  console.log(`\n队列大小: ${taskQueue.size()}`);
+}
+
+demonstrateTaskQueue();
+```
+
+### 中断与恢复机制
+
+React 可以中断渲染过程，并在稍后恢复。
+
+```js
+// 演示中断与恢复机制
+function demonstrateInterruptResume() {
+  console.log('=== 中断与恢复机制演示 ===\n');
+  
+  class InterruptibleRenderer {
+    constructor() {
+      this.workQueue = [];
+      this.currentFiber = null;
+      this.isPaused = false;
+      this.pausedFiber = null;
+    }
+    
+    // 开始渲染
+    startRender(fiber) {
+      console.log('1. 开始渲染');
+      this.currentFiber = fiber;
+      this.workQueue.push(fiber);
+      this.processWork();
+    }
+    
+    // 处理工作
+    processWork() {
+      const startTime = performance.now();
+      const timeSlice = 5; // 5ms 时间片
+      
+      console.log('2. 处理工作单元');
+      
+      while (this.workQueue.length > 0 && !this.isPaused) {
+        const elapsed = performance.now() - startTime;
+        
+        if (elapsed >= timeSlice) {
+          console.log(`3. 时间片用完 (${elapsed.toFixed(2)}ms)，中断渲染`);
+          this.pausedFiber = this.workQueue[0];
+          this.scheduleResume();
+          break;
+        }
+        
+        const fiber = this.workQueue.shift();
+        console.log(`   处理 Fiber: ${fiber.type}`);
+        
+        // 模拟处理时间
+        const workStart = performance.now();
+        while (performance.now() - workStart < 1) {
+          // 模拟工作
+        }
+      }
+      
+      if (this.workQueue.length === 0) {
+        console.log('4. 渲染完成');
+      }
+    }
+    
+    // 调度恢复
+    scheduleResume() {
+      console.log('5. 调度恢复渲染');
+      setTimeout(() => {
+        this.resume();
+      }, 10);
+    }
+    
+    // 恢复渲染
+    resume() {
+      console.log('6. 恢复渲染');
+      this.isPaused = false;
+      this.processWork();
+    }
+    
+    // 手动暂停
+    pause() {
+      console.log('手动暂停渲染');
+      this.isPaused = true;
+    }
+  }
+  
+  // 使用示例
+  const renderer = new InterruptibleRenderer();
+  
+  // 创建 Fiber 树
+  const rootFiber = {
+    type: 'div',
+    props: { className: 'app' },
+    child: {
+      type: 'header',
+      props: { className: 'header' },
+      child: {
+        type: 'h1',
+        props: { children: 'Hello' }
+      }
+    }
+  };
+  
+  // 收集所有 Fiber
+  const collectFibers = (fiber, queue) => {
+    if (!fiber) return;
+    queue.push(fiber);
+    collectFibers(fiber.child, queue);
+  };
+  
+  collectFibers(rootFiber, renderer.workQueue);
+  
+  // 开始渲染
+  renderer.startRender(rootFiber);
+}
+
+demonstrateInterruptResume();
+```
+
+## 🚀 React 19 渲染改进
+
+### 改进的 Suspense 行为
+
+React 19 改进了 Suspense 的行为，使其在并发渲染中更加稳定和可预测。
+
+```js
+// 演示改进的 Suspense 行为
+function demonstrateSuspense() {
+  console.log('=== 改进的 Suspense 行为演示 ===\n');
+  
+  class SuspenseManager {
+    constructor() {
+      this.pendingPromises = new Map();
+      this.fallbackMap = new Map();
+    }
+    
+    // 创建 Suspense 边界
+    createSuspenseBoundary(children, fallback) {
+      console.log('1. 创建 Suspense 边界');
+      const boundaryId = `boundary_${Date.now()}`;
+      
+      this.fallbackMap.set(boundaryId, {
+        fallback,
+        isPending: false,
+        error: null
+      });
+      
+      console.log(`   边界 ID: ${boundaryId}`);
+      return boundaryId;
+    }
+    
+    // 捕获 Promise
+    suspend(promise, boundaryId) {
+      console.log('2. 捕获 Promise，触发 Suspense');
+      
+      const boundary = this.fallbackMap.get(boundaryId);
+      if (!boundary) {
+        throw new Error('Suspense boundary not found');
+      }
+      
+      boundary.isPending = true;
+      this.pendingPromises.set(boundaryId, promise);
+      
+      // 返回 fallback
+      return boundary.fallback;
+    }
+    
+    // 处理 Promise 完成
+    handlePromiseResolve(boundaryId) {
+      console.log('3. Promise 完成，恢复渲染');
+      
+      const boundary = this.fallbackMap.get(boundaryId);
+      if (boundary) {
+        boundary.isPending = false;
+        this.pendingPromises.delete(boundaryId);
+        
+        console.log('   触发重新渲染');
+        this.rerender(boundaryId);
+      }
+    }
+    
+    // 处理 Promise 拒绝
+    handlePromiseReject(boundaryId, error) {
+      console.log('4. Promise 拒绝，处理错误');
+      
+      const boundary = this.fallbackMap.get(boundaryId);
+      if (boundary) {
+        boundary.isPending = false;
+        boundary.error = error;
+        this.pendingPromises.delete(boundaryId);
+        
+        console.log(`   错误: ${error.message}`);
+      }
+    }
+    
+    // 重新渲染
+    rerender(boundaryId) {
+      console.log('   重新渲染 Suspense 边界内容');
+      // 在实际 React 中，这会触发组件重新渲染
+    }
+    
+    // 检查是否在 Suspense 中
+    isInSuspense(boundaryId) {
+      const boundary = this.fallbackMap.get(boundaryId);
+      return boundary ? boundary.isPending : false;
+    }
+  }
+  
+  // 使用示例
+  const suspenseManager = new SuspenseManager();
+  
+  // 创建 Suspense 边界
+  const boundaryId = suspenseManager.createSuspenseBoundary(
+    { type: 'div', props: { children: 'Content' } },
+    { type: 'div', props: { children: 'Loading...' } }
+  );
+  
+  // 模拟数据加载
+  const fetchData = () => {
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        resolve({ data: 'Loaded data' });
+      }, 100);
+    });
+  };
+  
+  // 触发 Suspense
+  console.log('\n触发 Suspense:');
+  const promise = fetchData();
+  const fallback = suspenseManager.suspend(promise, boundaryId);
+  console.log(`   显示 fallback: ${fallback.props.children}`);
+  
+  // Promise 完成
+  promise.then(() => {
+    suspenseManager.handlePromiseResolve(boundaryId);
+    console.log(`   是否仍在 Suspense: ${suspenseManager.isInSuspense(boundaryId)}`);
+  });
+}
+
+demonstrateSuspense();
+```
+
+### 并发渲染优化
+
+React 19 进一步优化了并发渲染，提供了更好的性能和用户体验。
+
+```js
+// 演示并发渲染优化
+function demonstrateConcurrentRendering() {
+  console.log('=== 并发渲染优化演示 ===\n');
+  
+  class ConcurrentRenderer {
+    constructor() {
+      this.renderQueue = [];
+      this.isRendering = false;
+      this.highPriorityUpdates = [];
+    }
+    
+    // 调度并发渲染
+    scheduleConcurrentRender(update, priority) {
+      console.log(`1. 调度并发渲染，优先级: ${priority}`);
+      
+      const renderTask = {
+        id: Date.now(),
+        update,
+        priority,
+        timestamp: Date.now()
+      };
+      
+      if (priority === 'high') {
+        console.log('   高优先级更新，中断当前渲染');
+        this.highPriorityUpdates.push(renderTask);
+        this.interruptCurrentRender();
+      } else {
+        this.renderQueue.push(renderTask);
+      }
+      
+      if (!this.isRendering) {
+        this.processRenderQueue();
+      }
+    }
+    
+    // 处理渲染队列
+    processRenderQueue() {
+      this.isRendering = true;
+      console.log('2. 处理渲染队列');
+      
+      const startTime = performance.now();
+      const timeSlice = 5;
+      
+      while (this.renderQueue.length > 0) {
+        // 检查是否有高优先级更新
+        if (this.highPriorityUpdates.length > 0) {
+          console.log('3. 检测到高优先级更新');
+          this.processHighPriorityUpdates();
+          continue;
+        }
+        
+        const elapsed = performance.now() - startTime;
+        if (elapsed >= timeSlice) {
+          console.log('4. 时间片用完，让出主线程');
+          this.scheduleNextFrame();
+          break;
+        }
+        
+        const task = this.renderQueue.shift();
+        console.log(`   渲染任务: ${task.id}`);
+        task.update();
+      }
+      
+      if (this.renderQueue.length === 0 && this.highPriorityUpdates.length === 0) {
+        console.log('5. 所有渲染完成');
+        this.isRendering = false;
+      }
+    }
+    
+    // 处理高优先级更新
+    processHighPriorityUpdates() {
+      console.log('   处理高优先级更新');
+      
+      while (this.highPriorityUpdates.length > 0) {
+        const task = this.highPriorityUpdates.shift();
+        console.log(`      执行高优先级任务: ${task.id}`);
+        task.update();
+      }
+    }
+    
+    // 中断当前渲染
+    interruptCurrentRender() {
+      console.log('   中断当前渲染');
+      // 保存当前渲染状态
+    }
+    
+    // 调度下一帧
+    scheduleNextFrame() {
+      console.log('   调度下一帧');
+      requestAnimationFrame(() => {
+        this.processRenderQueue();
+      });
+    }
+  }
+  
+  // 使用示例
+  const renderer = new ConcurrentRenderer();
+  
+  // 调度多个并发渲染
+  renderer.scheduleConcurrentRender(() => {
+    console.log('      渲染列表数据');
+  }, 'normal');
+  
+  renderer.scheduleConcurrentRender(() => {
+    console.log('      渲染图表数据');
+  }, 'normal');
+  
+  // 模拟高优先级更新
+  setTimeout(() => {
+    console.log('\n用户触发高优先级更新:');
+    renderer.scheduleConcurrentRender(() => {
+      console.log('      处理用户点击');
+    }, 'high');
+  }, 10);
+}
+
+demonstrateConcurrentRendering();
+```
+
+### Activity 组件渲染
+
+React 19.2 引入了 Activity 组件，提供了更高效的状态保存和恢复机制。
+
+```js
+// 演示 Activity 组件渲染
+function demonstrateActivityComponent() {
+  console.log('=== Activity 组件渲染演示 ===\n');
+  
+  class ActivityManager {
+    constructor() {
+      this.activities = new Map();
+      this.hiddenActivities = new Set();
+    }
+    
+    // 创建 Activity
+    createActivity(id, children) {
+      console.log(`1. 创建 Activity: ${id}`);
+      
+      const activity = {
+        id,
+        children,
+        isVisible: true,
+        state: null,
+        dom: null,
+        effects: []
+      };
+      
+      this.activities.set(id, activity);
+      return activity;
+    }
+    
+    // 隐藏 Activity
+    hideActivity(id) {
+      console.log(`2. 隐藏 Activity: ${id}`);
+      
+      const activity = this.activities.get(id);
+      if (!activity) {
+        throw new Error(`Activity ${id} not found`);
+      }
+      
+      // 保存状态
+      activity.state = this.captureState(activity);
+      
+      // 清理 effects
+      this.cleanupEffects(activity);
+      
+      // 隐藏 DOM
+      if (activity.dom) {
+        activity.dom.style.display = 'none';
+      }
+      
+      activity.isVisible = false;
+      this.hiddenActivities.add(id);
+      
+      console.log('   状态已保存');
+      console.log('   Effects 已清理');
+      console.log('   DOM 已隐藏');
+    }
+    
+    // 显示 Activity
+    showActivity(id) {
+      console.log(`3. 显示 Activity: ${id}`);
+      
+      const activity = this.activities.get(id);
+      if (!activity) {
+        throw new Error(`Activity ${id} not found`);
+      }
+      
+      // 恢复状态
+      if (activity.state) {
+        this.restoreState(activity, activity.state);
+        console.log('   状态已恢复');
+      }
+      
+      // 重新创建 effects
+      this.recreateEffects(activity);
+      console.log('   Effects 已重建');
+      
+      // 显示 DOM
+      if (activity.dom) {
+        activity.dom.style.display = '';
+      }
+      
+      activity.isVisible = true;
+      this.hiddenActivities.delete(id);
+    }
+    
+    // 捕获状态
+    captureState(activity) {
+      console.log('   捕获状态...');
+      // 在实际 React 中，这会保存组件的状态
+      return {
+        timestamp: Date.now(),
+        data: 'captured state'
+      };
+    }
+    
+    // 恢复状态
+    restoreState(activity, state) {
+      console.log('   恢复状态...');
+      // 在实际 React 中，这会恢复组件的状态
+      activity.state = state;
+    }
+    
+    // 清理 effects
+    cleanupEffects(activity) {
+      console.log('   清理 effects...');
+      activity.effects.forEach(effect => {
+        if (effect.cleanup) {
+          effect.cleanup();
+        }
+      });
+      activity.effects = [];
+    }
+    
+    // 重建 effects
+    recreateEffects(activity) {
+      console.log('   重建 effects...');
+      // 在实际 React 中，这会重新运行组件的 effects
+    }
+    
+    // 检查 Activity 是否可见
+    isVisible(id) {
+      const activity = this.activities.get(id);
+      return activity ? activity.isVisible : false;
+    }
+    
+    // 预渲染隐藏的 Activity
+    prerenderHiddenActivity(id) {
+      console.log(`4. 预渲染隐藏的 Activity: ${id}`);
+      
+      const activity = this.activities.get(id);
+      if (!activity || !this.hiddenActivities.has(id)) {
+        console.log('   Activity 不存在或未隐藏');
+        return;
+      }
+      
+      console.log('   在后台预渲染内容');
+      console.log('   预加载资源');
+      console.log('   预渲染完成');
+    }
+  }
+  
+  // 使用示例
+  const activityManager = new ActivityManager();
+  
+  // 创建 Activity
+  const sidebarActivity = activityManager.createActivity('sidebar', {
+    type: 'aside',
+    props: { className: 'sidebar' }
+  });
+  
+  const mainActivity = activityManager.createActivity('main', {
+    type: 'main',
+    props: { className: 'content' }
+  });
+  
+  console.log('\n初始状态:');
+  console.log(`   Sidebar 可见: ${activityManager.isVisible('sidebar')}`);
+  console.log(`   Main 可见: ${activityManager.isVisible('main')}`);
+  
+  // 隐藏 sidebar
+  console.log('\n隐藏 sidebar:');
+  activityManager.hideActivity('sidebar');
+  console.log(`   Sidebar 可见: ${activityManager.isVisible('sidebar')}`);
+  
+  // 预渲染 sidebar
+  console.log('\n预渲染隐藏的 sidebar:');
+  activityManager.prerenderHiddenActivity('sidebar');
+  
+  // 显示 sidebar
+  console.log('\n显示 sidebar:');
+  activityManager.showActivity('sidebar');
+  console.log(`   Sidebar 可见: ${activityManager.isVisible('sidebar')}`);
+}
+
+demonstrateActivityComponent();
+```
+
+## 📝 实际应用示例
+
+### 完整的渲染流程演示
+
+```js
+// 完整的渲染流程演示
+class CompleteRenderer {
+  constructor() {
+    this.currentRoot = null;
+    this.workInProgressRoot = null;
+    this.scheduler = new Scheduler();
+    this.pendingUpdates = [];
+  }
+  
+  // 初始渲染
+  mount(vNode, container) {
+    console.log('=== 初始渲染 ===');
+    console.log('1. 创建 Fiber 树');
+    this.currentRoot = this.createFiberTree(vNode, container);
+    
+    console.log('2. 调度渲染任务');
+    this.scheduler.schedule(() => {
+      this.renderRoot(this.currentRoot);
+    }, 'high');
+  }
+  
+  // 更新
+  update(updater) {
+    console.log('=== 更新渲染 ===');
+    console.log('1. 创建工作树');
+    this.workInProgressRoot = this.cloneFiberTree(this.currentRoot);
+    
+    console.log('2. 应用更新');
+    updater(this.workInProgressRoot);
+    
+    console.log('3. 调度更新任务');
+    this.scheduler.schedule(() => {
+      this.renderRoot(this.workInProgressRoot);
+    }, 'normal');
+  }
+  
+  // 创建 Fiber 树
+  createFiberTree(vNode, container) {
+    const createFiber = (vNode, returnFiber) => {
+      const fiber = {
+        type: vNode.type,
+        props: vNode.props,
+        stateNode: returnFiber === null ? container : null,
+        child: null,
+        sibling: null,
+        return: returnFiber,
+        effectTag: 'PLACEMENT',
+        alternate: null
+      };
+      
+      if (vNode.props && vNode.props.children) {
+        const children = Array.isArray(vNode.props.children) 
+          ? vNode.props.children 
+          : [vNode.props.children];
+        
+        let prevChild = null;
+        children.forEach((child, index) => {
+          const childFiber = createFiber(child, fiber);
+          if (index === 0) {
+            fiber.child = childFiber;
+          } else {
+            prevChild.sibling = childFiber;
+          }
+          prevChild = childFiber;
+        });
+      }
+      
+      return fiber;
+    };
+    
+    return createFiber(vNode, null);
+  }
+  
+  // 克隆 Fiber 树
+  cloneFiberTree(fiber) {
+    if (!fiber) return null;
+    
+    const clone = {
+      ...fiber,
+      alternate: fiber,
+      child: null,
+      sibling: null,
+      effectTag: null
+    };
+    
+    clone.child = this.cloneFiberTree(fiber.child);
+    clone.sibling = this.cloneFiberTree(fiber.sibling);
+    
+    return clone;
+  }
+  
+  // 渲染根节点
+  renderRoot(root) {
+    console.log('4. 开始渲染阶段');
+    this.beginWork(root);
+    
+    console.log('5. 提交阶段');
+    this.commitWork(root);
+  }
+  
+  // 开始工作
+  beginWork(fiber) {
+    if (!fiber) return;
+    
+    console.log(`   处理: ${fiber.type}`);
+    this.beginWork(fiber.child);
+    this.beginWork(fiber.sibling);
+  }
+  
+  // 提交工作
+  commitWork(root) {
+    console.log('   提交 DOM 更新');
+    this.currentRoot = root;
+    this.workInProgressRoot = null;
+    console.log('6. 渲染完成\n');
+  }
+}
+
+// Scheduler 类
+class Scheduler {
+  constructor() {
+    this.taskQueue = [];
+    this.isProcessing = false;
+  }
+  
+  schedule(callback, priority) {
+    this.taskQueue.push({ callback, priority });
+    this.taskQueue.sort((a, b) => {
+      const priorities = { high: 100, normal: 80, low: 60 };
+      return priorities[b.priority] - priorities[a.priority];
+    });
+    
+    if (!this.isProcessing) {
+      this.processQueue();
+    }
+  }
+  
+  processQueue() {
+    this.isProcessing = true;
+    
+    while (this.taskQueue.length > 0) {
+      const task = this.taskQueue.shift();
+      task.callback();
+    }
+    
+    this.isProcessing = false;
+  }
+}
+
+// 使用示例
+const renderer = new CompleteRenderer();
+
+const vNode = {
+  type: 'div',
+  props: {
+    className: 'app',
+    children: [
+      { type: 'h1', props: { children: 'Hello React' } },
+      { type: 'p', props: { children: 'Rendering Mechanism' } }
+    ]
+  }
+};
+
+const container = document.createElement('div');
+renderer.mount(vNode, container);
+
+// 更新
+setTimeout(() => {
+  renderer.update((fiber) => {
+    if (fiber.type === 'p') {
+      fiber.props = { children: 'Updated Content' };
+      fiber.effectTag = 'UPDATE';
+    }
+  });
+}, 100);
+```
+
+## 🔗 相关概念
+
+- **Fiber 架构**: React 的核心渲染架构，支持可中断渲染
+- **Virtual DOM**: 真实 DOM 的内存表示，用于高效的 UI 更新
+- **协调算法**: 比较新旧 Virtual DOM 的算法
+- **时间切片**: 将长时间任务分解为小块，避免阻塞主线程
+- **优先级调度**: 根据任务重要性决定执行顺序
+- **并发渲染**: React 18+ 的并发特性，支持更好的性能
+
+## 📚 学习检查点
+
+- [ ] 理解初始渲染、更新渲染和卸载的流程
+- [ ] 掌握 Scheduler 调度器的工作原理
+- [ ] 理解 Lane 优先级模型
+- [ ] 掌握任务队列管理机制
+- [ ] 理解中断与恢复机制
+- [ ] 了解 React 19 的 Suspense 改进
+- [ ] 掌握并发渲染优化
+- [ ] 理解 Activity 组件的作用
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **[4.3 组件生命周期](./03-component-lifecycle)** - 深入理解组件的生命周期方法
+- **[4.4 Hooks 原理](./04-hooks-internals)** - 探索 Hooks 的内部实现机制
+- **[4.5 状态管理](./05-state-management)** - 学习 React 状态管理的最佳实践

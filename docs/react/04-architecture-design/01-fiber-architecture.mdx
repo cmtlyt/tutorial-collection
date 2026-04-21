@@ -1,0 +1,784 @@
+# React Fiber 架构与协调算法
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+React Fiber 是 React 16 中引入的全新协调算法实现，它彻底改变了 React 的渲染机制。Fiber 架构的核心目标是实现可中断的渲染过程，支持优先级调度和时间切片，从而提升应用的性能和用户体验。
+
+本章节将深入探讨 Fiber 架构的设计原理、协调算法的工作机制，以及 Virtual DOM 和 Diff 算法的优化策略。
+
+## 🎯 Fiber 架构
+
+### 什么是 Fiber？
+
+Fiber 是 React 内部的一种数据结构，用于表示组件树中的每个节点。每个 Fiber 节点对应一个组件实例，包含了组件的状态、props、以及需要执行的工作信息。
+
+```js
+// Fiber 节点的简化结构示意
+const fiberNode = {
+  // 组件类型
+  type: 'div',
+  key: null,
+  
+  // 当前状态
+  props: { className: 'container' },
+  stateNode: null, // DOM 节点或组件实例
+  
+  // 指向其他 Fiber 节点的指针
+  return: null,    // 父节点
+  child: null,     // 第一个子节点
+  sibling: null,   // 下一个兄弟节点
+  
+  // 工作相关
+  effectTag: 'UPDATE', // 副作用标记
+  nextEffect: null,    // 下一个有副作用的节点
+  alternate: null,     // 备用 Fiber 节点
+  
+  // 优先级
+  lanes: 1,
+  
+  // 其他元数据
+  index: 0,
+  ref: null
+};
+
+console.log('Fiber 节点结构示例:', fiberNode);
+```
+
+### Fiber 树结构
+
+Fiber 使用链表结构来表示组件树，这种结构支持高效的遍历和中断恢复。
+
+```js
+// 演示 Fiber 树的构建过程
+function createFiberTree() {
+  // 创建根节点
+  const rootFiber = {
+    type: 'div',
+    key: 'root',
+    props: { id: 'app' },
+    child: null,
+    sibling: null,
+    return: null
+  };
+  
+  // 创建子节点
+  const headerFiber = {
+    type: 'header',
+    key: 'header',
+    props: { className: 'header' },
+    child: null,
+    sibling: null,
+    return: rootFiber
+  };
+  
+  const mainFiber = {
+    type: 'main',
+    key: 'main',
+    props: { className: 'content' },
+    child: null,
+    sibling: headerFiber,
+    return: rootFiber
+  };
+  
+  // 建立父子关系
+  rootFiber.child = mainFiber;
+  
+  return rootFiber;
+}
+
+const fiberTree = createFiberTree();
+console.log('Fiber 树结构:', fiberTree);
+console.log('根节点的第一个子节点:', fiberTree.child);
+console.log('根节点的第二个子节点:', fiberTree.child.sibling);
+```
+
+### 双缓冲技术
+
+React 使用双缓冲技术来维护两棵 Fiber 树：当前树和工作树。
+
+```js
+// 演示双缓冲机制
+class DoubleBufferedFiber {
+  constructor() {
+    this.current = null; // 当前渲染的树
+    this.workInProgress = null; // 正在工作的树
+  }
+  
+  // 开始新的渲染周期
+  beginWork() {
+    // 复制当前树作为工作树
+    this.workInProgress = this.cloneFiberTree(this.current);
+    console.log('开始新的渲染周期，创建工作树');
+  }
+  
+  // 克隆 Fiber 树
+  cloneFiberTree(fiber) {
+    if (!fiber) return null;
+    
+    const clone = {
+      ...fiber,
+      alternate: fiber, // 建立双缓冲链接
+      child: null,
+      sibling: null,
+      nextEffect: null
+    };
+    
+    // 递归克隆子节点
+    clone.child = this.cloneFiberTree(fiber.child);
+    clone.sibling = this.cloneFiberTree(fiber.sibling);
+    
+    return clone;
+  }
+  
+  // 提交工作，交换树
+  commitWork() {
+    this.current = this.workInProgress;
+    this.workInProgress = null;
+    console.log('提交工作，交换当前树和工作树');
+  }
+}
+
+const doubleBuffer = new DoubleBufferedFiber();
+doubleBuffer.beginWork();
+doubleBuffer.commitWork();
+```
+
+## ⚡ 调度算法
+
+### 优先级机制
+
+React 使用优先级机制来决定更新任务的执行顺序。
+
+```js
+// 优先级常量定义
+const LanePriority = {
+  NoLanes: 0b0000000000000000000000000000000,
+  SyncLane: 0b0000000000000000000000000000001,
+  InputContinuousLane: 0b0000000000000000000000000000100,
+  DefaultLane: 0b0000000000000000000000000010000,
+  TransitionLane1: 0b0000000000000000000000001000000,
+  TransitionLane2: 0b0000000000000000000000010000000,
+  RetryLane1: 0b0000000000000000000010000000000,
+  IdleLane: 0b0100000000000000000000000000000
+};
+
+// 优先级调度器示例
+class PriorityScheduler {
+  constructor() {
+    this.taskQueue = [];
+  }
+  
+  // 添加任务到队列
+  schedule(task, priority) {
+    this.taskQueue.push({ task, priority });
+    // 按优先级排序
+    this.taskQueue.sort((a, b) => {
+      const priorityA = this.getPriorityValue(a.priority);
+      const priorityB = this.getPriorityValue(b.priority);
+      return priorityB - priorityA; // 高优先级在前
+    });
+    console.log(`任务已添加，优先级: ${priority}`);
+  }
+  
+  // 获取优先级数值
+  getPriorityValue(priority) {
+    const priorities = {
+      'sync': 100,
+      'input': 90,
+      'default': 80,
+      'transition': 70,
+      'idle': 10
+    };
+    return priorities[priority] || 50;
+  }
+  
+  // 执行下一个任务
+  executeNext() {
+    if (this.taskQueue.length === 0) {
+      console.log('任务队列为空');
+      return;
+    }
+    
+    const { task, priority } = this.taskQueue.shift();
+    console.log(`执行任务，优先级: ${priority}`);
+    task();
+  }
+}
+
+// 使用示例
+const scheduler = new PriorityScheduler();
+
+// 添加不同优先级的任务
+scheduler.schedule(
+  () => console.log('处理用户输入'),
+  'input'
+);
+
+scheduler.schedule(
+  () => console.log('处理数据转换'),
+  'transition'
+);
+
+scheduler.schedule(
+  () => console.log('更新 UI'),
+  'default'
+);
+
+// 按优先级执行
+scheduler.executeNext();
+scheduler.executeNext();
+scheduler.executeNext();
+```
+
+### 时间切片
+
+时间切片允许 React 将渲染工作分解为多个小块，避免长时间阻塞主线程。
+
+```js
+// 时间切片实现示例
+class TimeSlicer {
+  constructor(timeSlice = 5) {
+    this.timeSlice = timeSlice; // 每个时间片的毫秒数
+    this.workQueue = [];
+  }
+  
+  // 添加工作单元
+  addWorkUnit(workUnit) {
+    this.workQueue.push(workUnit);
+  }
+  
+  // 执行时间切片
+  performWork() {
+    const startTime = performance.now();
+    
+    while (this.workQueue.length > 0) {
+      // 检查是否超时
+      const elapsed = performance.now() - startTime;
+      if (elapsed >= this.timeSlice) {
+        console.log(`时间片已用完: ${elapsed.toFixed(2)}ms，暂停工作`);
+        // 将剩余工作留给下一个时间片
+        break;
+      }
+      
+      // 执行工作单元
+      const workUnit = this.workQueue.shift();
+      workUnit();
+    }
+    
+    if (this.workQueue.length > 0) {
+      console.log(`剩余 ${this.workQueue.length} 个工作单元等待下一个时间片`);
+      // 在实际 React 中，这里会使用 requestIdleCallback 或 MessageChannel
+      // 来安排下一个时间片
+    } else {
+      console.log('所有工作单元已完成');
+    }
+  }
+}
+
+// 使用示例
+const slicer = new TimeSlicer(5);
+
+// 添加多个工作单元
+for (let i = 1; i <= 10; i++) {
+  slicer.addWorkUnit(() => {
+    console.log(`执行工作单元 ${i}`);
+    // 模拟工作耗时
+    const start = performance.now();
+    while (performance.now() - start < 1) {
+      // 模拟 1ms 的工作
+    }
+  });
+}
+
+slicer.performWork();
+```
+
+## 🔄 协调算法（Reconciliation）
+
+### Virtual DOM 原理
+
+Virtual DOM 是真实 DOM 的内存表示，React 通过比较新旧 Virtual DOM 来确定最小化的 DOM 更新。
+
+```js
+// Virtual DOM 节点结构
+function createVNode(type, props, children) {
+  return {
+    type,
+    props,
+    children: Array.isArray(children) ? children : [children]
+  };
+}
+
+// 创建 Virtual DOM 树
+const oldVNode = createVNode('div', { className: 'container' }, [
+  createVNode('h1', {}, 'Hello'),
+  createVNode('p', {}, 'World')
+]);
+
+const newVNode = createVNode('div', { className: 'container updated' }, [
+  createVNode('h1', {}, 'Hello'),
+  createVNode('p', {}, 'React')
+]);
+
+console.log('旧的 Virtual DOM:', oldVNode);
+console.log('新的 Virtual DOM:', newVNode);
+```
+
+### Diff 算法详解
+
+React 的 Diff 算法采用启发式策略，将 O(n³) 的复杂度降低到 O(n)。
+
+```js
+// 简化的 Diff 算法实现
+class SimpleDiff {
+  // 比较 Virtual DOM 节点
+  diff(oldVNode, newVNode) {
+    if (!oldVNode) {
+      // 新节点：创建
+      return { type: 'CREATE', vNode: newVNode };
+    }
+    
+    if (!newVNode) {
+      // 旧节点：删除
+      return { type: 'REMOVE', vNode: oldVNode };
+    }
+    
+    if (this.isDifferentType(oldVNode, newVNode)) {
+      // 类型不同：替换
+      return { type: 'REPLACE', oldVNode, newVNode };
+    }
+    
+    // 类型相同：比较 props 和 children
+    const propsPatches = this.diffProps(oldVNode.props, newVNode.props);
+    const childrenPatches = this.diffChildren(oldVNode.children, newVNode.children);
+    
+    return {
+      type: 'UPDATE',
+      propsPatches,
+      childrenPatches
+    };
+  }
+  
+  // 检查节点类型是否不同
+  isDifferentType(oldVNode, newVNode) {
+    return oldVNode.type !== newVNode.type;
+  }
+  
+  // 比较 props
+  diffProps(oldProps, newProps) {
+    const patches = {};
+    
+    // 检查新增和修改的 props
+    for (const key in newProps) {
+      if (oldProps[key] !== newProps[key]) {
+        patches[key] = newProps[key];
+      }
+    }
+    
+    // 检查删除的 props
+    for (const key in oldProps) {
+      if (!(key in newProps)) {
+        patches[key] = null;
+      }
+    }
+    
+    return Object.keys(patches).length > 0 ? patches : null;
+  }
+  
+  // 比较 children
+  diffChildren(oldChildren, newChildren) {
+    const patches = [];
+    const maxLength = Math.max(oldChildren.length, newChildren.length);
+    
+    for (let i = 0; i < maxLength; i++) {
+      const oldChild = oldChildren[i];
+      const newChild = newChildren[i];
+      patches[i] = this.diff(oldChild, newChild);
+    }
+    
+    return patches;
+  }
+}
+
+// 使用示例
+const differ = new SimpleDiff();
+
+const oldVNode = createVNode('div', { id: 'app' }, [
+  createVNode('p', {}, 'Hello')
+]);
+
+const newVNode = createVNode('div', { id: 'app', className: 'container' }, [
+  createVNode('p', {}, 'Hello World')
+]);
+
+const patches = differ.diff(oldVNode, newVNode);
+console.log('Diff 结果:', patches);
+```
+
+### Key 的作用机制
+
+Key 帮助 React 识别哪些元素改变了、添加了或删除了。
+
+```js
+// 演示 Key 的重要性
+function renderListWithKeys() {
+  const oldList = [
+    { id: 1, name: 'Alice' },
+    { id: 2, name: 'Bob' },
+    { id: 3, name: 'Charlie' }
+  ];
+  
+  const newList = [
+    { id: 1, name: 'Alice' },
+    { id: 3, name: 'Charlie' },
+    { id: 4, name: 'David' }
+  ];
+  
+  console.log('旧列表:', oldList);
+  console.log('新列表:', newList);
+  
+  // 使用 Key 进行比较
+  const oldMap = new Map(oldList.map(item => [item.id, item]));
+  const operations = [];
+  
+  // 检查新增和修改
+  for (const newItem of newList) {
+    const oldItem = oldMap.get(newItem.id);
+    if (!oldItem) {
+      operations.push({ type: 'ADD', item: newItem });
+      console.log(`新增: ${newItem.name}`);
+    } else if (oldItem.name !== newItem.name) {
+      operations.push({ type: 'UPDATE', id: newItem.id, newItem });
+      console.log(`更新: ${oldItem.name} -> ${newItem.name}`);
+    }
+  }
+  
+  // 检查删除
+  const newMap = new Map(newList.map(item => [item.id, item]));
+  for (const oldItem of oldList) {
+    if (!newMap.has(oldItem.id)) {
+      operations.push({ type: 'REMOVE', id: oldItem.id });
+      console.log(`删除: ${oldItem.name}`);
+    }
+  }
+  
+  return operations;
+}
+
+const operations = renderListWithKeys();
+console.log('操作列表:', operations);
+```
+
+### 列表渲染优化
+
+使用正确的 Key 可以显著提升列表渲染性能。
+
+```js
+// 演示正确和错误的 Key 使用
+function demonstrateKeyUsage() {
+  const items = [
+    { id: 1, text: 'Item 1' },
+    { id: 2, text: 'Item 2' },
+    { id: 3, text: 'Item 3' }
+  ];
+  
+  // ❌ 错误：使用索引作为 Key
+  function renderWithIndexKey(items) {
+    console.log('❌ 使用索引作为 Key（不推荐）:');
+    return items.map((item, index) => ({
+      ...item,
+      key: index
+    }));
+  }
+  
+  // ✅ 正确：使用唯一 ID 作为 Key
+  function renderWithIdKey(items) {
+    console.log('✅ 使用唯一 ID 作为 Key（推荐）:');
+    return items.map(item => ({
+      ...item,
+      key: item.id
+    }));
+  }
+  
+  const withIndex = renderWithIndexKey(items);
+  const withId = renderWithIdKey(items);
+  
+  console.log('索引 Key:', withIndex);
+  console.log('ID Key:', withId);
+  
+  // 演示为什么索引 Key 不好
+  const reorderedItems = [
+    { id: 2, text: 'Item 2' },
+    { id: 1, text: 'Item 1' },
+    { id: 3, text: 'Item 3' }
+  ];
+  
+  console.log('\n重新排序后的列表:');
+  console.log('使用索引 Key 会导致不必要的重新渲染');
+  console.log('使用 ID Key 可以正确识别节点');
+  
+  return { withIndex, withId };
+}
+
+demonstrateKeyUsage();
+```
+
+## 📝 实际应用示例
+
+### 完整的协调流程演示
+
+```js
+// 模拟完整的协调流程
+class ReactLikeRenderer {
+  constructor() {
+    this.currentFiber = null;
+    this.workInProgressFiber = null;
+    this.effects = [];
+  }
+  
+  // 渲染组件
+  render(vNode) {
+    console.log('开始渲染...');
+    this.workInProgressFiber = this.createFiberFromVNode(vNode);
+    this.beginWork(this.workInProgressFiber);
+    this.commitWork();
+  }
+  
+  // 从 Virtual DOM 创建 Fiber
+  createFiberFromVNode(vNode) {
+    return {
+      type: vNode.type,
+      props: vNode.props,
+      key: vNode.key || null,
+      child: null,
+      sibling: null,
+      return: null,
+      effectTag: 'PLACEMENT',
+      nextEffect: null
+    };
+  }
+  
+  // 开始工作阶段
+  beginWork(fiber) {
+    console.log(`处理组件: ${fiber.type}`);
+    
+    // 处理子节点
+    if (fiber.props && fiber.props.children) {
+      const children = Array.isArray(fiber.props.children) 
+        ? fiber.props.children 
+        : [fiber.props.children];
+      
+      let prevChild = null;
+      children.forEach((child, index) => {
+        const childFiber = this.createFiberFromVNode(child);
+        childFiber.return = fiber;
+        childFiber.key = child.key || index;
+        
+        if (index === 0) {
+          fiber.child = childFiber;
+        } else {
+          prevChild.sibling = childFiber;
+        }
+        
+        prevChild = childFiber;
+        this.beginWork(childFiber);
+      });
+    }
+  }
+  
+  // 提交工作阶段
+  commitWork() {
+    console.log('提交工作到 DOM...');
+    this.currentFiber = this.workInProgressFiber;
+    this.workInProgressFiber = null;
+    console.log('渲染完成');
+  }
+  
+  // 更新组件
+  update(newVNode) {
+    console.log('开始更新...');
+    const newFiber = this.createFiberFromVNode(newVNode);
+    newFiber.alternate = this.currentFiber;
+    this.workInProgressFiber = newFiber;
+    
+    // 执行协调
+    this.reconcileChildren(this.currentFiber, newFiber);
+    
+    this.commitWork();
+  }
+  
+  // 协调子节点
+  reconcileChildren(oldFiber, newFiber) {
+    const oldChildren = this.getChildFibers(oldFiber);
+    const newChildren = newFiber.props.children;
+    
+    console.log('协调子节点...');
+    
+    // 实现简化的协调逻辑
+    const newChildrenArray = Array.isArray(newChildren) ? newChildren : [newChildren];
+    
+    let oldChild = oldChildren.length > 0 ? oldChildren[0] : null;
+    let newChildIndex = 0;
+    let prevSibling = null;
+    
+    while (newChildIndex < newChildrenArray.length) {
+      const newChild = newChildrenArray[newChildIndex];
+      
+      if (oldChild) {
+        // 尝试复用旧的 Fiber
+        if (this.canReuseFiber(oldChild, newChild)) {
+          // 复用：标记为更新
+          const reusedFiber = {
+            ...oldChild,
+            props: newChild.props,
+            effectTag: 'UPDATE',
+            alternate: oldChild,
+            return: newFiber
+          };
+          
+          if (newChildIndex === 0) {
+            newFiber.child = reusedFiber;
+          } else {
+            prevSibling.sibling = reusedFiber;
+          }
+          
+          prevSibling = reusedFiber;
+          oldChild = oldChild.sibling;
+        } else {
+          // 不能复用：创建新的 Fiber
+          const newFiberChild = this.createFiberFromVNode(newChild);
+          newFiberChild.return = newFiber;
+          newFiberChild.effectTag = 'PLACEMENT';
+          
+          if (newChildIndex === 0) {
+            newFiber.child = newFiberChild;
+          } else {
+            prevSibling.sibling = newFiberChild;
+          }
+          
+          prevSibling = newFiberChild;
+        }
+      } else {
+        // 没有旧 Fiber：创建新的
+        const newFiberChild = this.createFiberFromVNode(newChild);
+        newFiberChild.return = newFiber;
+        newFiberChild.effectTag = 'PLACEMENT';
+        
+        if (newChildIndex === 0) {
+          newFiber.child = newFiberChild;
+        } else {
+          prevSibling.sibling = newFiberChild;
+        }
+        
+        prevSibling = newFiberChild;
+      }
+      
+      newChildIndex++;
+    }
+    
+    // 标记剩余的旧 Fiber 为删除
+    while (oldChild) {
+      oldChild.effectTag = 'DELETION';
+      this.effects.push(oldChild);
+      oldChild = oldChild.sibling;
+    }
+  }
+  
+  // 检查是否可以复用 Fiber
+  canReuseFiber(oldFiber, newVNode) {
+    if (!oldFiber || !newVNode) return false;
+    
+    // 检查类型和 key
+    if (oldFiber.type !== newVNode.type) return false;
+    if (oldFiber.key !== (newVNode.key || null)) return false;
+    
+    return true;
+  }
+  
+  // 获取子 Fiber
+  getChildFibers(fiber) {
+    const children = [];
+    let current = fiber.child;
+    while (current) {
+      children.push(current);
+      current = current.sibling;
+    }
+    return children;
+  }
+}
+
+// 使用示例
+const renderer = new ReactLikeRenderer();
+
+// 初始渲染
+const initialVNode = {
+  type: 'div',
+  props: {
+    className: 'app',
+    children: [
+      { type: 'h1', props: { children: 'Hello React' } },
+      { type: 'p', props: { children: 'Fiber Architecture' } }
+    ]
+  }
+};
+
+renderer.render(initialVNode);
+
+// 更新
+const updatedVNode = {
+  type: 'div',
+  props: {
+    className: 'app updated',
+    children: [
+      { type: 'h1', props: { children: 'Hello React' } },
+      { type: 'p', props: { children: 'Updated Content' } }
+    ]
+  }
+};
+
+renderer.update(updatedVNode);
+```
+
+## 🔗 相关概念
+
+- **Virtual DOM**: 真实 DOM 的内存表示，用于高效的 UI 更新
+- **时间切片**: 将长时间任务分解为小块，避免阻塞主线程
+- **优先级调度**: 根据任务重要性决定执行顺序
+- **双缓冲**: 维护两棵树（当前树和工作树）以支持增量更新
+- **Key**: 帮助 React 识别列表项的变化，提升渲染效率
+
+## 📚 学习检查点
+
+- [ ] 理解 Fiber 节点的结构和作用
+- [ ] 掌握双缓冲技术的工作原理
+- [ ] 理解优先级调度机制
+- [ ] 掌握时间切片的实现方式
+- [ ] 理解 Virtual DOM 的概念
+- [ ] 掌握 Diff 算法的基本原理
+- [ ] 理解 Key 在列表渲染中的重要性
+- [ ] 了解协调算法的工作流程
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **[4.2 组件生命周期](./02-component-lifecycle)** - 深入理解组件的生命周期方法
+- **[4.3 Hooks 原理](./03-hooks-internals)** - 探索 Hooks 的内部实现机制
+- **[4.4 状态管理](./04-state-management)** - 学习 React 状态管理的最佳实践
+
+## 📖 React 19 架构更新
+
+React 19 在 Fiber 架构基础上进行了多项优化：
+
+### 编译器优化
+React Compiler 可以在编译时自动优化组件渲染，减少不必要的重新渲染。
+
+### 性能追踪
+React 19.2 引入了 Performance Tracks，提供更详细的性能分析能力。
+
+### Activity 组件
+新的 Activity 组件提供了更高效的状态保存和恢复机制，优化了隐藏/显示场景的性能。
+
+这些更新都建立在 Fiber 架构的基础上，充分利用了可中断渲染和优先级调度的能力。

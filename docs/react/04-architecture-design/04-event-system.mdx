@@ -1,0 +1,1085 @@
+# React 事件系统源码
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+React 事件系统是一个合成事件系统（Synthetic Event System），它封装了原生浏览器事件，提供了一致的跨浏览器事件处理接口。React 使用事件委托机制，将事件监听器注册到文档根节点，通过事件冒泡和捕获阶段来处理事件。
+
+本章节将深入探讨 React 事件系统的实现原理，包括事件注册机制、事件冒泡与捕获、事件对象构造、批量更新机制，以及事件优先级系统。
+
+## 🎯 合成事件系统
+
+### 事件注册机制
+
+React 使用事件委托机制，将所有事件监听器注册到文档根节点，而不是每个元素上。
+
+```js
+// 演示事件注册机制
+function demonstrateEventRegistration() {
+  console.log('=== 事件注册机制演示 ===\n');
+  
+  // 事件注册器
+  class EventRegistry {
+    constructor() {
+      this.listeners = new Map();
+      this.rootListener = null;
+    }
+    
+    // 注册事件监听器
+    addEventListener(target, eventType, handler, options = {}) {
+      console.log(`注册事件监听器:`);
+      console.log(`   目标: ${target}`);
+      console.log(`   事件类型: ${eventType}`);
+      console.log(`   捕获阶段: ${options.capture || false}`);
+      
+      // 存储监听器信息
+      const key = `${target}-${eventType}-${options.capture ? 'capture' : 'bubble'}`;
+      
+      if (!this.listeners.has(key)) {
+        this.listeners.set(key, []);
+      }
+      
+      this.listeners.get(key).push({
+        target,
+        handler,
+        options
+      });
+      
+      console.log(`   监听器已注册，key: ${key}`);
+    }
+    
+    // 移除事件监听器
+    removeEventListener(target, eventType, handler, options = {}) {
+      console.log(`移除事件监听器:`);
+      console.log(`   目标: ${target}`);
+      console.log(`   事件类型: ${eventType}`);
+      
+      const key = `${target}-${eventType}-${options.capture ? 'capture' : 'bubble'}`;
+      
+      if (this.listeners.has(key)) {
+        const listeners = this.listeners.get(key);
+        const index = listeners.findIndex(l => l.handler === handler);
+        
+        if (index !== -1) {
+          listeners.splice(index, 1);
+          console.log(`   监听器已移除`);
+        }
+      }
+    }
+    
+    // 获取所有监听器
+    getListeners(target, eventType, capture) {
+      const key = `${target}-${eventType}-${capture ? 'capture' : 'bubble'}`;
+      return this.listeners.get(key) || [];
+    }
+  }
+  
+  // 使用示例
+  const registry = new EventRegistry();
+  
+  console.log('1. 注册点击事件监听器:');
+  const handleClick = () => console.log('      点击事件触发');
+  registry.addEventListener('button', 'click', handleClick);
+  
+  console.log('\n2. 注册捕获阶段监听器:');
+  const handleCapture = () => console.log('      捕获阶段触发');
+  registry.addEventListener('button', 'click', handleCapture, { capture: true });
+  
+  console.log('\n3. 获取监听器:');
+  const bubbleListeners = registry.getListeners('button', 'click', false);
+  const captureListeners = registry.getListeners('button', 'click', true);
+  console.log(`   冒泡阶段监听器数量: ${bubbleListeners.length}`);
+  console.log(`   捕获阶段监听器数量: ${captureListeners.length}`);
+  
+  console.log('\n4. 移除监听器:');
+  registry.removeEventListener('button', 'click', handleClick);
+}
+
+demonstrateEventRegistration();
+```
+
+### 事件冒泡与捕获
+
+React 支持事件冒泡和捕获两个阶段，通过事件委托机制统一处理。
+
+```js
+// 演示事件冒泡与捕获
+function demonstrateEventBubblingCapturing() {
+  console.log('=== 事件冒泡与捕获演示 ===\n');
+  
+  // 合成事件系统
+  class SyntheticEventSystem {
+    constructor() {
+      this.rootElement = null;
+      this.eventHandlers = new Map();
+    }
+    
+    // 初始化事件系统
+    initialize(rootElement) {
+      console.log('初始化事件系统');
+      this.rootElement = rootElement;
+      
+      // 在根节点注册事件监听器
+      this.registerRootListeners();
+    }
+    
+    // 注册根节点监听器
+    registerRootListeners() {
+      console.log('在根节点注册事件监听器');
+      
+      // 注册冒泡阶段监听器
+      this.rootElement.addEventListener('click', (nativeEvent) => {
+        this.dispatchEvent(nativeEvent, false);
+      }, false);
+      
+      // 注册捕获阶段监听器
+      this.rootElement.addEventListener('click', (nativeEvent) => {
+        this.dispatchEvent(nativeEvent, true);
+      }, true);
+    }
+    
+    // 分发事件
+    dispatchEvent(nativeEvent, isCapturePhase) {
+      console.log(`\n${isCapturePhase ? '捕获' : '冒泡'}阶段:`);
+      
+      // 获取事件路径
+      const eventPath = this.getEventPath(nativeEvent.target);
+      
+      if (isCapturePhase) {
+        // 捕获阶段：从根到目标
+        console.log('   事件路径（从根到目标）:');
+        for (let i = 0; i < eventPath.length; i++) {
+          const element = eventPath[i];
+          console.log(`      ${element}`);
+          this.triggerHandler(element, nativeEvent, true);
+        }
+      } else {
+        // 冒泡阶段：从目标到根
+        console.log('   事件路径（从目标到根）:');
+        for (let i = eventPath.length - 1; i >= 0; i--) {
+          const element = eventPath[i];
+          console.log(`      ${element}`);
+          this.triggerHandler(element, nativeEvent, false);
+        }
+      }
+    }
+    
+    // 获取事件路径
+    getEventPath(target) {
+      const path = [];
+      let current = target;
+      
+      while (current && current !== this.rootElement) {
+        path.push(current.tagName || current.nodeName);
+        current = current.parentNode;
+      }
+      
+      path.push('ROOT');
+      return path;
+    }
+    
+    // 触发事件处理器
+    triggerHandler(element, nativeEvent, isCapturePhase) {
+      const key = `${element}-click-${isCapturePhase ? 'capture' : 'bubble'}`;
+      const handlers = this.eventHandlers.get(key);
+      
+      if (handlers) {
+        handlers.forEach(handler => {
+          console.log(`         执行处理器`);
+          handler(nativeEvent);
+        });
+      }
+    }
+    
+    // 注册事件处理器
+    addEventHandler(element, handler, isCapturePhase) {
+      const key = `${element}-click-${isCapturePhase ? 'capture' : 'bubble'}`;
+      
+      if (!this.eventHandlers.has(key)) {
+        this.eventHandlers.set(key, []);
+      }
+      
+      this.eventHandlers.get(key).push(handler);
+    }
+  }
+  
+  // 使用示例
+  const eventSystem = new SyntheticEventSystem();
+  
+  // 模拟 DOM 结构
+  const rootElement = {
+    tagName: 'DIV',
+    addEventListener: () => {},
+    parentNode: null
+  };
+  
+  const buttonElement = {
+    tagName: 'BUTTON',
+    parentNode: rootElement
+  };
+  
+  rootElement.parentNode = rootElement;
+  
+  eventSystem.initialize(rootElement);
+  
+  console.log('\n注册事件处理器:');
+  eventSystem.addEventHandler('BUTTON', () => {
+    console.log('         BUTTON 处理器执行');
+  }, false);
+  
+  eventSystem.addEventHandler('DIV', () => {
+    console.log('         DIV 处理器执行');
+  }, false);
+  
+  eventSystem.addEventHandler('DIV', () => {
+    console.log('         DIV 捕获处理器执行');
+  }, true);
+  
+  // 模拟事件触发
+  console.log('\n触发点击事件:');
+  const nativeEvent = {
+    target: buttonElement,
+    type: 'click'
+  };
+  
+  eventSystem.dispatchEvent(nativeEvent, true);
+  eventSystem.dispatchEvent(nativeEvent, false);
+}
+
+demonstrateEventBubblingCapturing();
+```
+
+### 事件对象构造
+
+React 创建合成事件对象，封装原生事件并提供一致的接口。
+
+```js
+// 演示事件对象构造
+function demonstrateEventObjectConstruction() {
+  console.log('=== 事件对象构造演示 ===\n');
+  
+  // 合成事件类
+  class SyntheticEvent {
+    constructor(nativeEvent) {
+      this.nativeEvent = nativeEvent;
+      this.type = nativeEvent.type;
+      this.target = nativeEvent.target;
+      this.currentTarget = nativeEvent.currentTarget;
+      this.bubbles = nativeEvent.bubbles;
+      this.cancelable = nativeEvent.cancelable;
+      this.defaultPrevented = false;
+      this.isPropagationStopped = false;
+      this.isPersistent = false;
+      this.timeStamp = nativeEvent.timeStamp || Date.now();
+    }
+    
+    // 阻止默认行为
+    preventDefault() {
+      if (this.nativeEvent.cancelable) {
+        this.nativeEvent.preventDefault();
+        this.defaultPrevented = true;
+      }
+    }
+    
+    // 停止传播
+    stopPropagation() {
+      this.nativeEvent.stopPropagation();
+      this.isPropagationStopped = true;
+    }
+    
+    // 持久化事件
+    persist() {
+      this.isPersistent = true;
+    }
+  }
+  
+  // 合成事件工厂
+  class SyntheticEventFactory {
+    constructor() {
+      this.eventPools = new Map();
+    }
+    
+    // 获取事件对象
+    getEvent(nativeEvent) {
+      const eventType = nativeEvent.type;
+      
+      if (!this.eventPools.has(eventType)) {
+        this.eventPools.set(eventType, []);
+      }
+      
+      const pool = this.eventPools.get(eventType);
+      
+      if (pool.length > 0) {
+        const event = pool.pop();
+        event.initialize(nativeEvent);
+        return event;
+      }
+      
+      return this.createEvent(nativeEvent);
+    }
+    
+    // 创建事件对象
+    createEvent(nativeEvent) {
+      return new SyntheticEvent(nativeEvent);
+    }
+    
+    // 释放事件对象
+    releaseEvent(event) {
+      if (!event.isPersistent) {
+        const pool = this.eventPools.get(event.type);
+        if (pool) {
+          pool.push(event);
+        }
+      }
+    }
+  }
+  
+  // 使用示例
+  const factory = new SyntheticEventFactory();
+  
+  console.log('1. 创建合成事件:');
+  const nativeEvent = {
+    type: 'click',
+    target: { tagName: 'BUTTON' },
+    currentTarget: { tagName: 'BUTTON' },
+    bubbles: true,
+    cancelable: true,
+    preventDefault: () => {},
+    stopPropagation: () => {},
+    timeStamp: Date.now()
+  };
+  
+  const syntheticEvent = factory.getEvent(nativeEvent);
+  console.log(`   事件类型: ${syntheticEvent.type}`);
+  console.log(`   目标: ${syntheticEvent.target.tagName}`);
+  console.log(`   时间戳: ${syntheticEvent.timeStamp}`);
+  
+  console.log('\n2. 阻止默认行为:');
+  console.log(`   默认阻止前: ${syntheticEvent.defaultPrevented}`);
+  syntheticEvent.preventDefault();
+  console.log(`   默认阻止后: ${syntheticEvent.defaultPrevented}`);
+  
+  console.log('\n3. 停止传播:');
+  console.log(`   传播停止前: ${syntheticEvent.isPropagationStopped}`);
+  syntheticEvent.stopPropagation();
+  console.log(`   传播停止后: ${syntheticEvent.isPropagationStopped}`);
+  
+  console.log('\n4. 持久化事件:');
+  console.log(`   持久化前: ${syntheticEvent.isPersistent}`);
+  syntheticEvent.persist();
+  console.log(`   持久化后: ${syntheticEvent.isPersistent}`);
+  
+  console.log('\n5. 释放事件对象:');
+  factory.releaseEvent(syntheticEvent);
+  console.log('   事件对象已释放到池中');
+}
+
+demonstrateEventObjectConstruction();
+```
+
+### 批量更新机制
+
+React 使用批量更新机制来优化性能，将多个状态更新合并为一次渲染。
+
+```js
+// 演示批量更新机制
+function demonstrateBatchUpdates() {
+  console.log('=== 批量更新机制演示 ===\n');
+  
+  // 批量更新器
+  class BatchedUpdates {
+    constructor() {
+      this.isBatching = false;
+      this.batchedUpdates = [];
+      this.updateQueue = [];
+    }
+    
+    // 开始批量更新
+    batchedUpdates(fn) {
+      if (this.isBatching) {
+        console.log('已在批量更新中，直接执行');
+        return fn();
+      }
+      
+      console.log('开始批量更新');
+      this.isBatching = true;
+      this.batchedUpdates = [];
+      
+      try {
+        const result = fn();
+        
+        console.log('执行批量更新');
+        this.flushBatchedUpdates();
+        
+        return result;
+      } finally {
+        this.isBatching = false;
+        this.batchedUpdates = [];
+      }
+    }
+    
+    // 添加更新
+    enqueueUpdate(update) {
+      if (this.isBatching) {
+        console.log('   添加更新到批量队列');
+        this.batchedUpdates.push(update);
+      } else {
+        console.log('   立即执行更新');
+        update();
+      }
+    }
+    
+    // 执行批量更新
+    flushBatchedUpdates() {
+      console.log(`   批量更新数量: ${this.batchedUpdates.length}`);
+      
+      this.batchedUpdates.forEach((update, index) => {
+        console.log(`   执行更新 ${index + 1}`);
+        update();
+      });
+    }
+  }
+  
+  // 使用示例
+  const batcher = new BatchedUpdates();
+  
+  console.log('1. 非批量更新:');
+  batcher.enqueueUpdate(() => console.log('      更新 1'));
+  batcher.enqueueUpdate(() => console.log('      更新 2'));
+  
+  console.log('\n2. 批量更新:');
+  batcher.batchedUpdates(() => {
+    batcher.enqueueUpdate(() => console.log('      更新 3'));
+    batcher.enqueueUpdate(() => console.log('      更新 4'));
+    batcher.enqueueUpdate(() => console.log('      更新 5'));
+  });
+  
+  console.log('\n3. 嵌套批量更新:');
+  batcher.batchedUpdates(() => {
+    console.log('   外层批量更新');
+    batcher.enqueueUpdate(() => console.log('      更新 6'));
+    
+    batcher.batchedUpdates(() => {
+      console.log('   内层批量更新（已在外层中）');
+      batcher.enqueueUpdate(() => console.log('      更新 7'));
+    });
+    
+    batcher.enqueueUpdate(() => console.log('      更新 8'));
+  });
+}
+
+demonstrateBatchUpdates();
+```
+
+## ⚡ 事件优先级
+
+### 离散事件
+
+离散事件（Discrete Events）是高优先级事件，需要立即响应，如点击、输入等。
+
+```js
+// 演示离散事件
+function demonstrateDiscreteEvents() {
+  console.log('=== 离散事件演示 ===\n');
+  
+  // 事件优先级常量
+  const EventPriority = {
+    Discrete: 1,      // 离散事件：点击、输入等
+    UserBlocking: 2,  // 用户阻塞事件：滚动、拖拽等
+    Continuous: 3     // 连续事件：鼠标移动、动画等
+  };
+  
+  // 事件优先级管理器
+  class EventPriorityManager {
+    constructor() {
+      this.currentPriority = null;
+      this.eventQueue = [];
+    }
+    
+    // 获取事件优先级
+    getEventPriority(eventType) {
+      const discreteEvents = [
+        'click', 'dblclick', 'mousedown', 'mouseup',
+        'keydown', 'keyup', 'keypress',
+        'input', 'change', 'submit', 'reset'
+      ];
+      
+      if (discreteEvents.includes(eventType)) {
+        return EventPriority.Discrete;
+      }
+      
+      return EventPriority.Continuous;
+    }
+    
+    // 调度事件
+    scheduleEvent(eventType, handler) {
+      const priority = this.getEventPriority(eventType);
+      
+      console.log(`调度事件: ${eventType}`);
+      console.log(`   优先级: ${this.getPriorityName(priority)}`);
+      
+      const eventTask = {
+        eventType,
+        handler,
+        priority,
+        timestamp: Date.now()
+      };
+      
+      // 根据优先级插入队列
+      this.insertEventByPriority(eventTask);
+    }
+    
+    // 按优先级插入事件
+    insertEventByPriority(eventTask) {
+      let inserted = false;
+      
+      for (let i = 0; i < this.eventQueue.length; i++) {
+        if (eventTask.priority < this.eventQueue[i].priority) {
+          this.eventQueue.splice(i, 0, eventTask);
+          inserted = true;
+          break;
+        }
+      }
+      
+      if (!inserted) {
+        this.eventQueue.push(eventTask);
+      }
+    }
+    
+    // 执行事件
+    executeEvents() {
+      console.log('\n执行事件队列:');
+      
+      while (this.eventQueue.length > 0) {
+        const eventTask = this.eventQueue.shift();
+        console.log(`   执行: ${eventTask.eventType}`);
+        eventTask.handler();
+      }
+    }
+    
+    // 获取优先级名称
+    getPriorityName(priority) {
+      const names = {
+        [EventPriority.Discrete]: 'Discrete (离散)',
+        [EventPriority.UserBlocking]: 'UserBlocking (用户阻塞)',
+        [EventPriority.Continuous]: 'Continuous (连续)'
+      };
+      return names[priority] || 'Unknown';
+    }
+  }
+  
+  // 使用示例
+  const priorityManager = new EventPriorityManager();
+  
+  console.log('1. 调度离散事件:');
+  priorityManager.scheduleEvent('click', () => {
+    console.log('      处理点击事件');
+  });
+  
+  priorityManager.scheduleEvent('input', () => {
+    console.log('      处理输入事件');
+  });
+  
+  console.log('\n2. 调度连续事件:');
+  priorityManager.scheduleEvent('mousemove', () => {
+    console.log('      处理鼠标移动事件');
+  });
+  
+  console.log('\n3. 执行事件:');
+  priorityManager.executeEvents();
+}
+
+demonstrateDiscreteEvents();
+```
+
+### 用户阻塞事件
+
+用户阻塞事件（User Blocking Events）是中等优先级事件，如滚动、拖拽等。
+
+```js
+// 演示用户阻塞事件
+function demonstrateUserBlockingEvents() {
+  console.log('=== 用户阻塞事件演示 ===\n');
+  
+  // 事件优先级常量
+  const EventPriority = {
+    Discrete: 1,
+    UserBlocking: 2,
+    Continuous: 3
+  };
+  
+  // 用户阻塞事件处理器
+  class UserBlockingEventHandler {
+    constructor() {
+      this.isBlocking = false;
+      this.pendingEvents = [];
+    }
+    
+    // 获取事件优先级
+    getEventPriority(eventType) {
+      const userBlockingEvents = [
+        'scroll', 'wheel', 'touchstart', 'touchmove',
+        'touchend', 'dragstart', 'drag', 'dragend'
+      ];
+      
+      if (userBlockingEvents.includes(eventType)) {
+        return EventPriority.UserBlocking;
+      }
+      
+      return EventPriority.Continuous;
+    }
+    
+    // 处理事件
+    handleEvent(eventType, handler) {
+      const priority = this.getEventPriority(eventType);
+      
+      if (priority === EventPriority.UserBlocking) {
+        console.log(`处理用户阻塞事件: ${eventType}`);
+        
+        if (this.isBlocking) {
+          console.log('   正在阻塞中，加入待处理队列');
+          this.pendingEvents.push({ eventType, handler });
+          return;
+        }
+        
+        this.isBlocking = true;
+        console.log('   开始阻塞处理');
+        
+        handler();
+        
+        console.log('   阻塞处理完成');
+        this.isBlocking = false;
+        
+        // 处理待处理事件
+        if (this.pendingEvents.length > 0) {
+          console.log('   处理待处理事件');
+          const pending = this.pendingEvents.shift();
+          this.handleEvent(pending.eventType, pending.handler);
+        }
+      } else {
+        console.log(`处理非阻塞事件: ${eventType}`);
+        handler();
+      }
+    }
+  }
+  
+  // 使用示例
+  const handler = new UserBlockingEventHandler();
+  
+  console.log('1. 处理滚动事件:');
+  handler.handleEvent('scroll', () => {
+    console.log('      执行滚动处理');
+  });
+  
+  console.log('\n2. 处理连续滚动:');
+  handler.handleEvent('scroll', () => {
+    console.log('      执行滚动处理（被阻塞）');
+  });
+  
+  handler.handleEvent('scroll', () => {
+    console.log('      执行滚动处理（被阻塞）');
+  });
+  
+  console.log('\n3. 处理其他事件:');
+  handler.handleEvent('mousemove', () => {
+    console.log('      执行鼠标移动处理');
+  });
+}
+
+demonstrateUserBlockingEvents();
+```
+
+### 连续事件
+
+连续事件（Continuous Events）是低优先级事件，如鼠标移动、动画帧等。
+
+```js
+// 演示连续事件
+function demonstrateContinuousEvents() {
+  console.log('=== 连续事件演示 ===\n');
+  
+  // 事件优先级常量
+  const EventPriority = {
+    Discrete: 1,
+    UserBlocking: 2,
+    Continuous: 3
+  };
+  
+  // 连续事件节流器
+  class ContinuousEventThrottler {
+    constructor() {
+      this.lastExecutionTime = 0;
+      this.throttleDelay = 16; // 约 60fps
+      this.pendingEvents = [];
+    }
+    
+    // 获取事件优先级
+    getEventPriority(eventType) {
+      const continuousEvents = [
+        'mousemove', 'mouseover', 'mouseout',
+        'animationframe', 'requestanimationframe'
+      ];
+      
+      if (continuousEvents.includes(eventType)) {
+        return EventPriority.Continuous;
+      }
+      
+      return EventPriority.Discrete;
+    }
+    
+    // 节流处理事件
+    throttleEvent(eventType, handler) {
+      const priority = this.getEventPriority(eventType);
+      
+      if (priority === EventPriority.Continuous) {
+        console.log(`节流处理连续事件: ${eventType}`);
+        
+        const now = Date.now();
+        const timeSinceLastExecution = now - this.lastExecutionTime;
+        
+        if (timeSinceLastExecution >= this.throttleDelay) {
+          console.log('   执行事件处理');
+          this.lastExecutionTime = now;
+          handler();
+        } else {
+          console.log('   跳过（节流中）');
+          // 可以将事件加入待处理队列
+          this.pendingEvents.push({ eventType, handler, time: now });
+        }
+      } else {
+        console.log(`立即处理非连续事件: ${eventType}`);
+        handler();
+      }
+    }
+    
+    // 处理待处理事件
+    processPendingEvents() {
+      console.log('\n处理待处理事件:');
+      
+      const now = Date.now();
+      const timeSinceLastExecution = now - this.lastExecutionTime;
+      
+      if (timeSinceLastExecution >= this.throttleDelay && this.pendingEvents.length > 0) {
+        const pending = this.pendingEvents.shift();
+        console.log(`   执行待处理事件: ${pending.eventType}`);
+        this.lastExecutionTime = now;
+        pending.handler();
+      }
+    }
+  }
+  
+  // 使用示例
+  const throttler = new ContinuousEventThrottler();
+  
+  console.log('1. 处理鼠标移动事件:');
+  throttler.throttleEvent('mousemove', () => {
+    console.log('      执行鼠标移动处理');
+  });
+  
+  console.log('\n2. 快速连续触发:');
+  for (let i = 0; i < 5; i++) {
+    throttler.throttleEvent('mousemove', () => {
+      console.log(`      执行鼠标移动处理 ${i}`);
+    });
+  }
+  
+  console.log('\n3. 处理点击事件:');
+  throttler.throttleEvent('click', () => {
+    console.log('      执行点击处理');
+  });
+  
+  console.log('\n4. 等待后处理待处理事件:');
+  setTimeout(() => {
+    throttler.processPendingEvents();
+  }, 20);
+}
+
+demonstrateContinuousEvents();
+```
+
+## 📝 实际应用示例
+
+### 完整的事件系统实现
+
+```js
+// 完整的事件系统实现
+class ReactLikeEventSystem {
+  constructor() {
+    this.rootElement = null;
+    this.eventHandlers = new Map();
+    this.eventPools = new Map();
+    this.isBatching = false;
+    this.batchedUpdates = [];
+    this.currentPriority = null;
+  }
+  
+  // 初始化事件系统
+  initialize(rootElement) {
+    console.log('初始化 ReactLike 事件系统');
+    this.rootElement = rootElement;
+    this.registerRootListeners();
+  }
+  
+  // 注册根节点监听器
+  registerRootListeners() {
+    console.log('注册根节点监听器');
+    
+    const eventTypes = ['click', 'input', 'scroll', 'mousemove'];
+    
+    eventTypes.forEach(eventType => {
+      // 冒泡阶段
+      this.rootElement.addEventListener(eventType, (nativeEvent) => {
+        this.dispatchEvent(nativeEvent, false);
+      }, false);
+      
+      // 捕获阶段
+      this.rootElement.addEventListener(eventType, (nativeEvent) => {
+        this.dispatchEvent(nativeEvent, true);
+      }, true);
+    });
+  }
+  
+  // 分发事件
+  dispatchEvent(nativeEvent, isCapturePhase) {
+    const priority = this.getEventPriority(nativeEvent.type);
+    this.currentPriority = priority;
+    
+    console.log(`\n分发事件: ${nativeEvent.type}`);
+    console.log(`   优先级: ${this.getPriorityName(priority)}`);
+    console.log(`   阶段: ${isCapturePhase ? '捕获' : '冒泡'}`);
+    
+    const syntheticEvent = this.createSyntheticEvent(nativeEvent);
+    const eventPath = this.getEventPath(nativeEvent.target);
+    
+    if (isCapturePhase) {
+      for (let i = 0; i < eventPath.length; i++) {
+        this.triggerHandler(eventPath[i], syntheticEvent, true);
+        if (syntheticEvent.isPropagationStopped) break;
+      }
+    } else {
+      for (let i = eventPath.length - 1; i >= 0; i--) {
+        this.triggerHandler(eventPath[i], syntheticEvent, false);
+        if (syntheticEvent.isPropagationStopped) break;
+      }
+    }
+    
+    this.releaseEvent(syntheticEvent);
+  }
+  
+  // 创建合成事件
+  createSyntheticEvent(nativeEvent) {
+    const pool = this.eventPools.get(nativeEvent.type);
+    
+    if (pool && pool.length > 0) {
+      const event = pool.pop();
+      event.initialize(nativeEvent);
+      return event;
+    }
+    
+    return new SyntheticEvent(nativeEvent);
+  }
+  
+  // 释放事件
+  releaseEvent(event) {
+    if (!event.isPersistent) {
+      const pool = this.eventPools.get(event.type);
+      if (!pool) {
+        this.eventPools.set(event.type, []);
+      }
+      this.eventPools.get(event.type).push(event);
+    }
+  }
+  
+  // 获取事件路径
+  getEventPath(target) {
+    const path = [];
+    let current = target;
+    
+    while (current && current !== this.rootElement) {
+      path.push(current.tagName || current.nodeName);
+      current = current.parentNode;
+    }
+    
+    path.push('ROOT');
+    return path;
+  }
+  
+  // 触发处理器
+  triggerHandler(element, event, isCapturePhase) {
+    const key = `${element}-${event.type}-${isCapturePhase ? 'capture' : 'bubble'}`;
+    const handlers = this.eventHandlers.get(key);
+    
+    if (handlers) {
+      handlers.forEach(handler => {
+        this.batchedUpdates.push(() => handler(event));
+      });
+    }
+  }
+  
+  // 获取事件优先级
+  getEventPriority(eventType) {
+    const discreteEvents = ['click', 'input', 'change'];
+    const userBlockingEvents = ['scroll', 'wheel'];
+    
+    if (discreteEvents.includes(eventType)) return 1;
+    if (userBlockingEvents.includes(eventType)) return 2;
+    return 3;
+  }
+  
+  // 获取优先级名称
+  getPriorityName(priority) {
+    const names = { 1: 'Discrete', 2: 'UserBlocking', 3: 'Continuous' };
+    return names[priority] || 'Unknown';
+  }
+  
+  // 批量更新
+  batchedUpdates(fn) {
+    if (this.isBatching) {
+      return fn();
+    }
+    
+    this.isBatching = true;
+    this.batchedUpdates = [];
+    
+    try {
+      const result = fn();
+      this.flushBatchedUpdates();
+      return result;
+    } finally {
+      this.isBatching = false;
+      this.batchedUpdates = [];
+    }
+  }
+  
+  // 执行批量更新
+  flushBatchedUpdates() {
+    console.log(`   执行 ${this.batchedUpdates.length} 个批量更新`);
+    this.batchedUpdates.forEach(update => update());
+  }
+  
+  // 添加事件处理器
+  addEventListener(element, eventType, handler, options = {}) {
+    const key = `${element}-${eventType}-${options.capture ? 'capture' : 'bubble'}`;
+    
+    if (!this.eventHandlers.has(key)) {
+      this.eventHandlers.set(key, []);
+    }
+    
+    this.eventHandlers.get(key).push(handler);
+  }
+}
+
+// 合成事件类
+class SyntheticEvent {
+  constructor(nativeEvent) {
+    this.nativeEvent = nativeEvent;
+    this.type = nativeEvent.type;
+    this.target = nativeEvent.target;
+    this.currentTarget = nativeEvent.currentTarget;
+    this.bubbles = nativeEvent.bubbles;
+    this.cancelable = nativeEvent.cancelable;
+    this.defaultPrevented = false;
+    this.isPropagationStopped = false;
+    this.isPersistent = false;
+    this.timeStamp = nativeEvent.timeStamp || Date.now();
+  }
+  
+  initialize(nativeEvent) {
+    this.nativeEvent = nativeEvent;
+    this.type = nativeEvent.type;
+    this.target = nativeEvent.target;
+    this.currentTarget = nativeEvent.currentTarget;
+    this.defaultPrevented = false;
+    this.isPropagationStopped = false;
+  }
+  
+  preventDefault() {
+    if (this.nativeEvent.cancelable) {
+      this.nativeEvent.preventDefault();
+      this.defaultPrevented = true;
+    }
+  }
+  
+  stopPropagation() {
+    this.nativeEvent.stopPropagation();
+    this.isPropagationStopped = true;
+  }
+  
+  persist() {
+    this.isPersistent = true;
+  }
+}
+
+// 使用示例
+const eventSystem = new ReactLikeEventSystem();
+
+const rootElement = {
+  tagName: 'DIV',
+  addEventListener: () => {},
+  parentNode: null
+};
+
+const buttonElement = {
+  tagName: 'BUTTON',
+  parentNode: rootElement
+};
+
+rootElement.parentNode = rootElement;
+
+eventSystem.initialize(rootElement);
+
+console.log('\n注册事件处理器:');
+eventSystem.addEventListener('BUTTON', 'click', (event) => {
+  console.log('   BUTTON 点击处理器');
+  console.log(`   事件类型: ${event.type}`);
+  console.log(`   目标: ${event.target.tagName}`);
+});
+
+eventSystem.addEventListener('DIV', 'click', (event) => {
+  console.log('   DIV 点击处理器');
+}, { capture: true });
+
+console.log('\n触发点击事件:');
+const nativeEvent = {
+  type: 'click',
+  target: buttonElement,
+  currentTarget: buttonElement,
+  bubbles: true,
+  cancelable: true,
+  preventDefault: () => {},
+  stopPropagation: () => {},
+  timeStamp: Date.now()
+};
+
+eventSystem.dispatchEvent(nativeEvent, true);
+eventSystem.dispatchEvent(nativeEvent, false);
+```
+
+## 🔗 相关概念
+
+- **事件委托**: React 将事件监听器注册到根节点的机制
+- **合成事件**: React 封装原生事件的对象
+- **事件冒泡**: 事件从目标元素向上传播到根节点
+- **事件捕获**: 事件从根节点向下传播到目标元素
+- **批量更新**: React 将多个状态更新合并为一次渲染
+- **事件优先级**: React 根据事件类型分配不同的优先级
+
+## 📚 学习检查点
+
+- [ ] 理解 React 合成事件系统的工作原理
+- [ ] 掌握事件注册机制和事件委托
+- [ ] 理解事件冒泡与捕获的流程
+- [ ] 掌握合成事件对象的构造
+- [ ] 理解批量更新机制
+- [ ] 掌握事件优先级系统
+- [ ] 了解离散事件、用户阻塞事件和连续事件的区别
+- [ ] 能够实现简单的事件系统
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **[4.5 状态管理](./05-state-management)** - 学习 React 状态管理的最佳实践
+- **[4.6 性能优化](./06-performance-optimization)** - 探索 React 性能优化策略
+- **[4.7 并发特性](./07-concurrent-features)** - 深入理解 React 并发特性

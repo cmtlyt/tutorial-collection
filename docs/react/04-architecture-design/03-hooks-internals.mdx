@@ -1,0 +1,1591 @@
+# Hooks 实现原理
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+Hooks 是 React 16.8 引入的一项革命性特性，它让函数组件能够拥有状态和其他 React 特性。Hooks 的实现基于 Fiber 架构，通过链表结构在组件内部管理状态和副作用。
+
+本章节将深入探讨 Hooks 的数据结构、常用 Hooks 的实现原理，以及 React 19 新引入的 Hooks。
+
+## 🎯 Hooks 数据结构
+
+### Hooks 链表
+
+React 使用链表结构来管理组件中的 Hooks，确保 Hooks 的调用顺序在每次渲染时保持一致。
+
+```js
+// 演示 Hooks 链表结构
+function demonstrateHooksLinkedList() {
+  console.log('=== Hooks 链表结构演示 ===\n');
+  
+  // Hook 对象结构
+  class Hook {
+    constructor(type, memoizedState, queue) {
+      this.type = type; // Hook 类型
+      this.memoizedState = memoizedState; // 记忆的状态
+      this.queue = queue; // 更新队列
+      this.next = null; // 指向下一个 Hook
+    }
+  }
+  
+  // 模拟 Hooks 链表
+  class HooksList {
+    constructor() {
+      this.firstHook = null;
+      this.currentHook = null;
+      this.hookIndex = 0;
+    }
+    
+    // 添加 Hook
+    addHook(type, memoizedState, queue) {
+      console.log(`添加 Hook: ${type}`);
+      
+      const hook = new Hook(type, memoizedState, queue);
+      
+      if (!this.firstHook) {
+        this.firstHook = hook;
+        this.currentHook = hook;
+      } else {
+        this.currentHook.next = hook;
+        this.currentHook = hook;
+      }
+      
+      console.log(`   Hook 索引: ${this.hookIndex}`);
+      console.log(`   状态: ${JSON.stringify(memoizedState)}`);
+      this.hookIndex++;
+      
+      return hook;
+    }
+    
+    // 遍历 Hooks
+    traverse() {
+      console.log('\n遍历 Hooks 链表:');
+      let current = this.firstHook;
+      let index = 0;
+      
+      while (current) {
+        console.log(`   Hook ${index}: ${current.type}`);
+        console.log(`      状态: ${JSON.stringify(current.memoizedState)}`);
+        current = current.next;
+        index++;
+      }
+    }
+    
+    // 根据索引获取 Hook
+    getHookByIndex(index) {
+      let current = this.firstHook;
+      let currentIndex = 0;
+      
+      while (current && currentIndex < index) {
+        current = current.next;
+        currentIndex++;
+      }
+      
+      return current;
+    }
+  }
+  
+  // 使用示例
+  const hooksList = new HooksList();
+  
+  // 添加多个 Hooks（模拟组件中的 useState 和 useEffect）
+  hooksList.addHook('useState', 0, {
+    pending: 0,
+    dispatch: (action) => console.log('   dispatch action:', action)
+  });
+  
+  hooksList.addHook('useEffect', null, {
+    create: () => console.log('   effect create'),
+    destroy: () => console.log('   effect destroy')
+  });
+  
+  hooksList.addHook('useRef', { current: null }, null);
+  
+  // 遍历 Hooks
+  hooksList.traverse();
+  
+  // 根据索引获取 Hook
+  console.log('\n根据索引获取 Hook:');
+  const hook = hooksList.getHookByIndex(1);
+  console.log(`   Hook 1: ${hook.type}`);
+}
+
+demonstrateHooksLinkedList();
+```
+
+### Hook 对象设计
+
+每个 Hook 对象包含类型、状态、更新队列和指向下一个 Hook 的指针。
+
+```js
+// 演示 Hook 对象设计
+function demonstrateHookObject() {
+  console.log('=== Hook 对象设计演示 ===\n');
+  
+  // Hook 类型常量
+  const HookType = {
+    useState: 'useState',
+    useEffect: 'useEffect',
+    useContext: 'useContext',
+    useRef: 'useRef',
+    useMemo: 'useMemo',
+    useCallback: 'useCallback'
+  };
+  
+  // Hook 对象工厂
+  function createHook(type, memoizedState, queue) {
+    return {
+      type,
+      memoizedState,
+      queue,
+      next: null,
+      baseState: null,
+      baseQueue: null,
+      deps: null
+    };
+  }
+  
+  // 更新队列结构
+  function createUpdateQueue(pendingState) {
+    return {
+      pending: pendingState,
+      dispatch: null,
+      lanes: 0,
+      lastRenderedReducer: null,
+      lastRenderedState: null
+    };
+  }
+  
+  // Effect 队列结构
+  function createEffectQueue(tag, create, destroy, deps) {
+    return {
+      tag,
+      create,
+      destroy,
+      deps,
+      next: null
+    };
+  }
+  
+  // 创建不同类型的 Hook
+  console.log('1. 创建 useState Hook:');
+  const useStateHook = createHook(
+    HookType.useState,
+    0,
+    createUpdateQueue(0)
+  );
+  console.log('   类型:', useStateHook.type);
+  console.log('   状态:', useStateHook.memoizedState);
+  console.log('   队列:', useStateHook.queue);
+  
+  console.log('\n2. 创建 useEffect Hook:');
+  const useEffectHook = createHook(
+    HookType.useEffect,
+    null,
+    createEffectQueue(
+      0b000001000000000000000, // 标志位
+      () => console.log('   effect run'),
+      null,
+      []
+    )
+  );
+  console.log('   类型:', useEffectHook.type);
+  console.log('   Effect 队列:', useEffectHook.queue);
+  
+  console.log('\n3. 创建 useRef Hook:');
+  const useRefHook = createHook(
+    HookType.useRef,
+    { current: null },
+    null
+  );
+  console.log('   类型:', useRefHook.type);
+  console.log('   状态:', useRefHook.memoizedState);
+  
+  console.log('\n4. 创建 useMemo Hook:');
+  const useMemoHook = createHook(
+    HookType.useMemo,
+    'cached value',
+    null
+  );
+  useMemoHook.deps = [];
+  console.log('   类型:', useMemoHook.type);
+  console.log('   缓存值:', useMemoHook.memoizedState);
+  console.log('   依赖:', useMemoHook.deps);
+}
+
+demonstrateHookObject();
+```
+
+### 状态存储机制
+
+React 在 Fiber 节点中存储 Hooks 链表，每个组件实例都有自己独立的 Hooks 链表。
+
+```js
+// 演示状态存储机制
+function demonstrateStateStorage() {
+  console.log('=== 状态存储机制演示 ===\n');
+  
+  // Fiber 节点结构
+  class FiberNode {
+    constructor(type) {
+      this.type = type;
+      this.memoizedState = null; // Hooks 链表的头部
+      this.updateQueue = null;
+      this.dependencies = null;
+    }
+  }
+  
+  // 模拟组件挂载
+  function mountComponent(fiber) {
+    console.log(`挂载组件: ${fiber.type}`);
+    
+    // 初始化 Hooks
+    fiber.memoizedState = null;
+    
+    console.log('   初始化 memoizedState 为 null');
+    console.log('   准备构建 Hooks 链表');
+  }
+  
+  // 模拟组件更新
+  function updateComponent(fiber) {
+    console.log(`更新组件: ${fiber.type}`);
+    
+    console.log('   获取现有的 Hooks 链表');
+    console.log('   遍历并更新每个 Hook');
+  }
+  
+  // 模拟组件卸载
+  function unmountComponent(fiber) {
+    console.log(`卸载组件: ${fiber.type}`);
+    
+    console.log('   清理所有 Effects');
+    console.log('   释放 Hooks 链表');
+    fiber.memoizedState = null;
+  }
+  
+  // 使用示例
+  const appFiber = new FiberNode('App');
+  const counterFiber = new FiberNode('Counter');
+  
+  console.log('1. 挂载组件:');
+  mountComponent(appFiber);
+  
+  console.log('\n2. 更新组件:');
+  updateComponent(appFiber);
+  
+  console.log('\n3. 卸载组件:');
+  unmountComponent(appFiber);
+  
+  console.log('\n4. 多个组件的独立存储:');
+  console.log('   每个组件都有自己独立的 Hooks 链表');
+  console.log('   组件之间互不干扰');
+}
+
+demonstrateStateStorage();
+```
+
+## 🔧 常用 Hooks 源码
+
+### useState 实现原理
+
+useState 是最基础的 Hook，用于在函数组件中添加状态。
+
+```js
+// 演示 useState 实现原理
+function demonstrateUseState() {
+  console.log('=== useState 实现原理演示 ===\n');
+  
+  // 模拟 useState 实现
+  class useStateImpl {
+    constructor() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+    
+    // useState 实现
+    useState(initialState) {
+      const hookIndex = this.hookIndex;
+      
+      console.log(`useState 调用，索引: ${hookIndex}`);
+      
+      // 检查是否已有 Hook
+      let hook = this.hooks[hookIndex];
+      
+      if (!hook) {
+        // 首次渲染，创建 Hook
+        console.log('   首次渲染，创建 Hook');
+        hook = {
+          memoizedState: typeof initialState === 'function' 
+            ? initialState() 
+            : initialState,
+          queue: {
+            pending: null,
+            dispatch: null
+          }
+        };
+        this.hooks[hookIndex] = hook;
+      } else {
+        // 后续渲染，复用 Hook
+        console.log('   复用 Hook');
+        console.log(`   当前状态: ${hook.memoizedState}`);
+      }
+      
+      // 创建 dispatch 函数
+      const dispatch = (action) => {
+        console.log(`   dispatch 被调用，action: ${action}`);
+        
+        // 更新状态
+        const newState = typeof action === 'function'
+          ? action(hook.memoizedState)
+          : action;
+        
+        hook.memoizedState = newState;
+        hook.queue.pending = newState;
+        
+        console.log(`   新状态: ${hook.memoizedState}`);
+        
+        // 触发重新渲染
+        this.render();
+      };
+      
+      // 绑定 dispatch 到 Hook
+      hook.queue.dispatch = dispatch;
+      
+      // 增加索引
+      this.hookIndex++;
+      
+      return [hook.memoizedState, dispatch];
+    }
+    
+    // 模拟渲染
+    render() {
+      console.log('\n触发重新渲染');
+      this.hookIndex = 0; // 重置 Hook 索引
+      
+      // 在实际 React 中，这里会调用组件函数
+      console.log('   重新执行组件函数');
+      console.log('   重新构建 Hooks 链表\n');
+    }
+    
+    // 重置（用于测试）
+    reset() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+  }
+  
+  // 使用示例
+  const useState = new useStateImpl();
+  
+  console.log('1. 首次渲染:');
+  const [count, setCount] = useState.useState(0);
+  console.log(`   count: ${count}\n`);
+  
+  console.log('2. 更新状态:');
+  setCount(1);
+  
+  console.log('3. 再次更新状态:');
+  setCount(2);
+  
+  console.log('4. 使用函数式更新:');
+  setCount(prev => prev + 1);
+  
+  console.log('\n5. 多个 useState:');
+  useState.reset();
+  const [name, setName] = useState.useState('React');
+  const [age, setAge] = useState.useState(10);
+  console.log(`   name: ${name}, age: ${age}`);
+}
+
+demonstrateUseState();
+```
+
+### useEffect 执行机制
+
+useEffect 用于处理副作用，在渲染后执行。
+
+```js
+// 演示 useEffect 执行机制
+function demonstrateUseEffect() {
+  console.log('=== useEffect 执行机制演示 ===\n');
+  
+  // Effect 标志位
+  const EffectTag = {
+    Passive: 0b000001000000000000000,
+    Layout: 0b000010000000000000000,
+    Insertion: 0b000100000000000000000
+  };
+  
+  // 模拟 useEffect 实现
+  class useEffectImpl {
+    constructor() {
+      this.hooks = [];
+      this.hookIndex = 0;
+      this.effects = [];
+    }
+    
+    // useEffect 实现
+    useEffect(create, deps) {
+      const hookIndex = this.hookIndex;
+      
+      console.log(`useEffect 调用，索引: ${hookIndex}`);
+      
+      // 检查是否已有 Hook
+      let hook = this.hooks[hookIndex];
+      
+      if (!hook) {
+        // 首次渲染，创建 Hook
+        console.log('   首次渲染，创建 Effect Hook');
+        hook = {
+          memoizedState: {
+            tag: EffectTag.Passive,
+            create,
+            destroy: null,
+            deps,
+            next: null
+          },
+          queue: null
+        };
+        this.hooks[hookIndex] = hook;
+        this.effects.push(hook.memoizedState);
+      } else {
+        // 后续渲染，检查依赖
+        console.log('   检查依赖变化');
+        const oldDeps = hook.memoizedState.deps;
+        
+        if (this.areDepsDifferent(oldDeps, deps)) {
+          console.log('   依赖变化，需要重新执行');
+          hook.memoizedState.create = create;
+          hook.memoizedState.deps = deps;
+          this.effects.push(hook.memoizedState);
+        } else {
+          console.log('   依赖未变化，跳过');
+        }
+      }
+      
+      this.hookIndex++;
+    }
+    
+    // 比较依赖
+    areDepsDifferent(oldDeps, newDeps) {
+      if (oldDeps === null || newDeps === null) {
+        return false;
+      }
+      
+      if (oldDeps.length !== newDeps.length) {
+        return true;
+      }
+      
+      for (let i = 0; i < oldDeps.length; i++) {
+        if (oldDeps[i] !== newDeps[i]) {
+          return true;
+        }
+      }
+      
+      return false;
+    }
+    
+    // 执行 Effects
+    commitEffects() {
+      console.log('\n执行 Effects:');
+      
+      this.effects.forEach((effect, index) => {
+        console.log(`   Effect ${index}:`);
+        
+        // 清理旧的 effect
+        if (effect.destroy) {
+          console.log('      执行 cleanup');
+          effect.destroy();
+        }
+        
+        // 创建新的 effect
+        console.log('      执行 create');
+        effect.destroy = effect.create();
+      });
+      
+      this.effects = [];
+    }
+    
+    // 重置
+    reset() {
+      this.hooks = [];
+      this.hookIndex = 0;
+      this.effects = [];
+    }
+  }
+  
+  // 使用示例
+  const useEffect = new useEffectImpl();
+  
+  console.log('1. 首次渲染:');
+  useEffect.useEffect(() => {
+    console.log('      Effect 执行');
+    return () => console.log('      Effect 清理');
+  }, []);
+  
+  useEffect.commitEffects();
+  
+  console.log('\n2. 更新渲染（依赖未变化）:');
+  useEffect.useEffect(() => {
+    console.log('      Effect 执行');
+  }, []);
+  
+  useEffect.commitEffects();
+  
+  console.log('\n3. 更新渲染（依赖变化）:');
+  useEffect.reset();
+  useEffect.useEffect(() => {
+    console.log('      Effect 执行（新版本）');
+  }, [1]);
+  
+  useEffect.commitEffects();
+}
+
+demonstrateUseEffect();
+```
+
+### useContext 上下文传递
+
+useContext 用于订阅 Context 的变化。
+
+```js
+// 演示 useContext 实现
+function demonstrateUseContext() {
+  console.log('=== useContext 实现演示 ===\n');
+  
+  // Context 结构
+  class ReactContext {
+    constructor(defaultValue) {
+      this._currentValue = defaultValue;
+      this._defaultValue = defaultValue;
+      this._threadCount = 0;
+    }
+    
+    // 获取当前值
+    get currentValue() {
+      return this._currentValue;
+    }
+    
+    // 设置当前值
+    set currentValue(value) {
+      this._currentValue = value;
+    }
+  }
+  
+  // Provider 组件
+  class ContextProvider {
+    constructor(context, value) {
+      this.context = context;
+      this.value = value;
+      this.oldValue = context.currentValue;
+    }
+    
+    // 提供 Context 值
+    provide() {
+      console.log(`Provider 提供值: ${JSON.stringify(this.value)}`);
+      this.context.currentValue = this.value;
+    }
+    
+    // 恢复旧值
+    restore() {
+      console.log(`Provider 恢复旧值: ${JSON.stringify(this.oldValue)}`);
+      this.context.currentValue = this.oldValue;
+    }
+  }
+  
+  // 模拟 useContext 实现
+  function useContext(context) {
+    console.log(`useContext 调用`);
+    console.log(`   读取 Context 值: ${JSON.stringify(context.currentValue)}`);
+    
+    // 在实际 React 中，这里会订阅 Context 的变化
+    // 并在 Context 值变化时触发重新渲染
+    
+    return context.currentValue;
+  }
+  
+  // 使用示例
+  console.log('1. 创建 Context:');
+  const ThemeContext = new ReactContext('light');
+  
+  console.log('\n2. 默认值:');
+  const theme = useContext(ThemeContext);
+  console.log(`   theme: ${theme}`);
+  
+  console.log('\n3. 使用 Provider:');
+  const provider = new ContextProvider(ThemeContext, 'dark');
+  provider.provide();
+  
+  console.log('\n4. 在 Provider 内部读取:');
+  const darkTheme = useContext(ThemeContext);
+  console.log(`   theme: ${darkTheme}`);
+  
+  console.log('\n5. 恢复 Provider 外部:');
+  provider.restore();
+  
+  const lightTheme = useContext(ThemeContext);
+  console.log(`   theme: ${lightTheme}`);
+}
+
+demonstrateUseContext();
+```
+
+### useRef 引用管理
+
+useRef 用于创建可变的引用对象，不会触发重新渲染。
+
+```js
+// 演示 useRef 实现
+function demonstrateUseRef() {
+  console.log('=== useRef 实现演示 ===\n');
+  
+  // 模拟 useRef 实现
+  class useRefImpl {
+    constructor() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+    
+    // useRef 实现
+    useRef(initialValue) {
+      const hookIndex = this.hookIndex;
+      
+      console.log(`useRef 调用，索引: ${hookIndex}`);
+      
+      // 检查是否已有 Hook
+      let hook = this.hooks[hookIndex];
+      
+      if (!hook) {
+        // 首次渲染，创建 Hook
+        console.log('   首次渲染，创建 Ref Hook');
+        hook = {
+          memoizedState: { current: initialValue },
+          queue: null
+        };
+        this.hooks[hookIndex] = hook;
+      } else {
+        // 后续渲染，复用 Hook
+        console.log('   复用 Hook');
+        console.log(`   当前值: ${JSON.stringify(hook.memoizedState.current)}`);
+      }
+      
+      this.hookIndex++;
+      
+      return hook.memoizedState;
+    }
+    
+    // 重置
+    reset() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+  }
+  
+  // 使用示例
+  const useRef = new useRefImpl();
+  
+  console.log('1. 创建 Ref:');
+  const timerRef = useRef.useRef(null);
+  console.log(`   timerRef.current: ${timerRef.current}`);
+  
+  console.log('\n2. 修改 Ref 值:');
+  timerRef.current = 'timer-id-123';
+  console.log(`   timerRef.current: ${timerRef.current}`);
+  
+  console.log('\n3. 重新渲染（Ref 保持不变）:');
+  const sameRef = useRef.useRef(null);
+  console.log(`   sameRef.current: ${sameRef.current}`);
+  console.log(`   sameRef === timerRef: ${sameRef === timerRef}`);
+  
+  console.log('\n4. DOM 引用示例:');
+  useRef.reset();
+  const inputRef = useRef.useRef(null);
+  console.log(`   inputRef.current: ${inputRef.current}`);
+  
+  // 模拟 DOM 挂载
+  inputRef.current = { value: 'input value', focus: () => console.log('      input focused') };
+  console.log(`   inputRef.current: ${JSON.stringify(inputRef.current)}`);
+  
+  console.log('\n5. 访问 DOM 方法:');
+  if (inputRef.current) {
+    inputRef.current.focus();
+  }
+}
+
+demonstrateUseRef();
+```
+
+### useMemo 与 useCallback 缓存
+
+useMemo 和 useCallback 用于缓存计算结果和函数。
+
+```js
+// 演示 useMemo 和 useCallback 实现
+function demonstrateMemoization() {
+  console.log('=== useMemo 与 useCallback 演示 ===\n');
+  
+  // 模拟 useMemo 实现
+  class useMemoImpl {
+    constructor() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+    
+    // useMemo 实现
+    useMemo(factory, deps) {
+      const hookIndex = this.hookIndex;
+      
+      console.log(`useMemo 调用，索引: ${hookIndex}`);
+      
+      // 检查是否已有 Hook
+      let hook = this.hooks[hookIndex];
+      
+      if (!hook) {
+        // 首次渲染，创建 Hook
+        console.log('   首次渲染，计算并缓存');
+        const value = factory();
+        hook = {
+          memoizedState: value,
+          deps
+        };
+        this.hooks[hookIndex] = hook;
+      } else {
+        // 后续渲染，检查依赖
+        console.log('   检查依赖变化');
+        const oldDeps = hook.deps;
+        
+        if (this.areDepsDifferent(oldDeps, deps)) {
+          console.log('   依赖变化，重新计算');
+          hook.memoizedState = factory();
+          hook.deps = deps;
+        } else {
+          console.log('   依赖未变化，使用缓存');
+          console.log(`   缓存值: ${JSON.stringify(hook.memoizedState)}`);
+        }
+      }
+      
+      this.hookIndex++;
+      
+      return hook.memoizedState;
+    }
+    
+    // useCallback 实现（基于 useMemo）
+    useCallback(callback, deps) {
+      console.log('useCallback 调用（基于 useMemo）');
+      return this.useMemo(() => callback, deps);
+    }
+    
+    // 比较依赖
+    areDepsDifferent(oldDeps, newDeps) {
+      if (oldDeps === null || newDeps === null) {
+        return false;
+      }
+      
+      if (oldDeps.length !== newDeps.length) {
+        return true;
+      }
+      
+      for (let i = 0; i < oldDeps.length; i++) {
+        if (oldDeps[i] !== newDeps[i]) {
+          return true;
+        }
+      }
+      
+      return false;
+    }
+    
+    // 重置
+    reset() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+  }
+  
+  // 使用示例
+  const memoization = new useMemoImpl();
+  
+  console.log('1. useMemo 首次渲染:');
+  const expensiveValue = memoization.useMemo(() => {
+    console.log('      执行昂贵计算');
+    let result = 0;
+    for (let i = 0; i < 1000000; i++) {
+      result += i;
+    }
+    return result;
+  }, []);
+  console.log(`   结果: ${expensiveValue}`);
+  
+  console.log('\n2. useMemo 依赖未变化:');
+  const cachedValue = memoization.useMemo(() => {
+    console.log('      执行昂贵计算');
+    return 42;
+  }, []);
+  console.log(`   结果: ${cachedValue}`);
+  
+  console.log('\n3. useMemo 依赖变化:');
+  const newValue = memoization.useMemo(() => {
+    console.log('      执行昂贵计算');
+    return 100;
+  }, [1]);
+  console.log(`   结果: ${newValue}`);
+  
+  console.log('\n4. useCallback 首次渲染:');
+  memoization.reset();
+  const handleClick = memoization.useCallback(() => {
+    console.log('      Button clicked');
+  }, []);
+  console.log(`   函数: ${handleClick.toString()}`);
+  
+  console.log('\n5. useCallback 依赖未变化:');
+  const cachedCallback = memoization.useCallback(() => {
+    console.log('      Button clicked');
+  }, []);
+  console.log(`   相同函数: ${cachedCallback === handleClick}`);
+  
+  console.log('\n6. useCallback 依赖变化:');
+  const newCallback = memoization.useCallback(() => {
+    console.log('      Button clicked');
+  }, [1]);
+  console.log(`   不同函数: ${newCallback !== cachedCallback}`);
+}
+
+demonstrateMemoization();
+```
+
+## 🚀 React 19 新 Hooks 源码
+
+### use API 实现
+
+use API 是 React 19 引入的新 Hook，用于在渲染期间读取资源。
+
+```js
+// 演示 use API 实现
+function demonstrateUseHook() {
+  console.log('=== use API 实现演示 ===\n');
+  
+  // 资源类型
+  const ResourceType = {
+    Promise: 'Promise',
+    Context: 'Context'
+  };
+  
+  // 资源包装器
+  class Resource {
+    constructor(type, value) {
+      this.type = type;
+      this.value = value;
+      this.status = 'pending';
+      this.result = null;
+      this.error = null;
+    }
+    
+    // 读取资源
+    read() {
+      console.log(`读取资源: ${this.type}`);
+      
+      if (this.type === ResourceType.Promise) {
+        if (this.status === 'pending') {
+          console.log('   Promise pending，抛出 Promise');
+          throw this.value;
+        }
+        
+        if (this.status === 'rejected') {
+          console.log('   Promise rejected，抛出错误');
+          throw this.error;
+        }
+        
+        console.log(`   Promise fulfilled，返回: ${JSON.stringify(this.result)}`);
+        return this.result;
+      }
+      
+      return this.value;
+    }
+    
+    // 设置结果
+    setResult(result) {
+      this.status = 'fulfilled';
+      this.result = result;
+    }
+    
+    // 设置错误
+    setError(error) {
+      this.status = 'rejected';
+      this.error = error;
+    }
+  }
+  
+  // 模拟 use 实现
+  class useImpl {
+    constructor() {
+      this.resources = new Map();
+      this.resourceIndex = 0;
+    }
+    
+    // use 实现
+    use(resource) {
+      const resourceId = this.resourceIndex;
+      
+      console.log(`use 调用，索引: ${resourceId}`);
+      
+      if (!this.resources.has(resourceId)) {
+        console.log('   首次使用，注册资源');
+        this.resources.set(resourceId, resource);
+      }
+      
+      this.resourceIndex++;
+      
+      // 读取资源
+      return resource.read();
+    }
+    
+    // 处理 Promise 完成
+    handlePromiseResolve(resourceId, result) {
+      const resource = this.resources.get(resourceId);
+      if (resource) {
+        console.log(`Promise ${resourceId} 完成`);
+        resource.setResult(result);
+      }
+    }
+    
+    // 处理 Promise 拒绝
+    handlePromiseReject(resourceId, error) {
+      const resource = this.resources.get(resourceId);
+      if (resource) {
+        console.log(`Promise ${resourceId} 拒绝`);
+        resource.setError(error);
+      }
+    }
+    
+    // 重置
+    reset() {
+      this.resources.clear();
+      this.resourceIndex = 0;
+    }
+  }
+  
+  // 使用示例
+  const useHook = new useImpl();
+  
+  console.log('1. 创建 Promise 资源:');
+  const dataPromise = new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({ data: 'fetched data' });
+    }, 100);
+  });
+  
+  const dataResource = new Resource(ResourceType.Promise, dataPromise);
+  
+  console.log('\n2. 首次读取（会抛出 Promise）:');
+  try {
+    useHook.use(dataResource);
+  } catch (promise) {
+    console.log('   捕获到 Promise，等待完成');
+    
+    // 模拟 Promise 完成
+    promise.then((result) => {
+      useHook.handlePromiseResolve(0, result);
+      
+      console.log('\n3. Promise 完成后再次读取:');
+      const data = useHook.use(dataResource);
+      console.log(`   数据: ${JSON.stringify(data)}`);
+    });
+  }
+  
+  console.log('\n4. Context 资源:');
+  const themeResource = new Resource(ResourceType.Context, 'dark');
+  const theme = useHook.use(themeResource);
+  console.log(`   主题: ${theme}`);
+}
+
+demonstrateUseHook();
+```
+
+### useActionState 实现
+
+useActionState 用于管理表单操作的状态。
+
+```js
+// 演示 useActionState 实现
+function demonstrateUseActionState() {
+  console.log('=== useActionState 实现演示 ===\n');
+  
+  // 模拟 useActionState 实现
+  class useActionStateImpl {
+    constructor() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+    
+    // useActionState 实现
+    useActionState(action, initialState, permalink) {
+      const hookIndex = this.hookIndex;
+      
+      console.log(`useActionState 调用，索引: ${hookIndex}`);
+      
+      // 检查是否已有 Hook
+      let hook = this.hooks[hookIndex];
+      
+      if (!hook) {
+        // 首次渲染，创建 Hook
+        console.log('   首次渲染，创建 Hook');
+        hook = {
+          memoizedState: initialState,
+          queue: {
+            pending: null,
+            dispatch: null
+          },
+          action,
+          permalink
+        };
+        this.hooks[hookIndex] = hook;
+      } else {
+        // 后续渲染，复用 Hook
+        console.log('   复用 Hook');
+        console.log(`   当前状态: ${JSON.stringify(hook.memoizedState)}`);
+      }
+      
+      // 创建 dispatch 函数
+      const dispatch = (formData) => {
+        console.log(`   dispatch 被调用`);
+        console.log(`   formData: ${JSON.stringify(formData)}`);
+        
+        // 执行 action
+        const result = action(hook.memoizedState, formData);
+        
+        console.log(`   action 结果: ${JSON.stringify(result)}`);
+        
+        // 更新状态
+        hook.memoizedState = result;
+        hook.queue.pending = result;
+        
+        // 触发重新渲染
+        this.render();
+      };
+      
+      // 绑定 dispatch 到 Hook
+      hook.queue.dispatch = dispatch;
+      
+      // 增加索引
+      this.hookIndex++;
+      
+      return [hook.memoizedState, dispatch, hook.memoizedState.pending === false];
+    }
+    
+    // 模拟渲染
+    render() {
+      console.log('\n触发重新渲染');
+      this.hookIndex = 0;
+      console.log('   重新执行组件函数\n');
+    }
+    
+    // 重置
+    reset() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+  }
+  
+  // 使用示例
+  const useActionState = new useActionStateImpl();
+  
+  // 定义 action
+  function formAction(state, formData) {
+    console.log('   执行 formAction');
+    const name = formData.get('name');
+    return {
+      ...state,
+      name,
+      submitted: true
+    };
+  }
+  
+  console.log('1. 初始渲染:');
+  const [state, dispatch, isPending] = useActionState.useActionState(
+    formAction,
+    { name: '', submitted: false }
+  );
+  console.log(`   状态: ${JSON.stringify(state)}`);
+  console.log(`   isPending: ${isPending}`);
+  
+  console.log('\n2. 提交表单:');
+  const formData = new FormData();
+  formData.append('name', 'John');
+  dispatch(formData);
+  
+  console.log('\n3. 提交完成后的状态:');
+  const [newState, newDispatch, newIsPending] = useActionState.useActionState(
+    formAction,
+    { name: '', submitted: false }
+  );
+  console.log(`   状态: ${JSON.stringify(newState)}`);
+  console.log(`   isPending: ${newIsPending}`);
+}
+
+demonstrateUseActionState();
+```
+
+### useOptimistic 实现
+
+useOptimistic 用于实现乐观更新。
+
+```js
+// 演示 useOptimistic 实现
+function demonstrateUseOptimistic() {
+  console.log('=== useOptimistic 实现演示 ===\n');
+  
+  // 模拟 useOptimistic 实现
+  class useOptimisticImpl {
+    constructor() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+    
+    // useOptimistic 实现
+    useOptimistic(passThroughState, updateFn) {
+      const hookIndex = this.hookIndex;
+      
+      console.log(`useOptimistic 调用，索引: ${hookIndex}`);
+      
+      // 检查是否已有 Hook
+      let hook = this.hooks[hookIndex];
+      
+      if (!hook) {
+        // 首次渲染，创建 Hook
+        console.log('   首次渲染，创建 Hook');
+        hook = {
+          memoizedState: {
+            baseState: passThroughState,
+            optimisticState: passThroughState,
+            queue: []
+          },
+          updateFn
+        };
+        this.hooks[hookIndex] = hook;
+      } else {
+        // 后续渲染，复用 Hook
+        console.log('   复用 Hook');
+        console.log(`   基础状态: ${JSON.stringify(hook.memoizedState.baseState)}`);
+        console.log(`   乐观状态: ${JSON.stringify(hook.memoizedState.optimisticState)}`);
+      }
+      
+      // 创建 addOptimistic 函数
+      const addOptimistic = (action) => {
+        console.log(`   addOptimistic 被调用`);
+        console.log(`   action: ${JSON.stringify(action)}`);
+        
+        // 更新乐观状态
+        hook.memoizedState.optimisticState = hook.updateFn(
+          hook.memoizedState.optimisticState,
+          action
+        );
+        
+        // 将操作加入队列
+        hook.memoizedState.queue.push({
+          action,
+          timestamp: Date.now()
+        });
+        
+        console.log(`   新的乐观状态: ${JSON.stringify(hook.memoizedState.optimisticState)}`);
+        
+        // 触发重新渲染
+        this.render();
+      };
+      
+      // 增加索引
+      this.hookIndex++;
+      
+      return [hook.memoizedState.optimisticState, addOptimistic];
+    }
+    
+    // 模拟渲染
+    render() {
+      console.log('\n触发重新渲染');
+      this.hookIndex = 0;
+      console.log('   重新执行组件函数\n');
+    }
+    
+    // 重置
+    reset() {
+      this.hooks = [];
+      this.hookIndex = 0;
+    }
+  }
+  
+  // 使用示例
+  const useOptimistic = new useOptimisticImpl();
+  
+  console.log('1. 初始状态:');
+  const [messages, addMessage] = useOptimistic.useOptimistic(
+    ['Hello'],
+    (state, action) => [...state, action]
+  );
+  console.log(`   消息: ${JSON.stringify(messages)}`);
+  
+  console.log('\n2. 乐观更新（添加消息）:');
+  addMessage('New message');
+  
+  console.log('\n3. 查看乐观状态:');
+  const [optimisticMessages, addOptimisticMessage] = useOptimistic.useOptimistic(
+    ['Hello'],
+    (state, action) => [...state, action]
+  );
+  console.log(`   消息: ${JSON.stringify(optimisticMessages)}`);
+  
+  console.log('\n4. 再次乐观更新:');
+  addOptimisticMessage('Another message');
+}
+
+demonstrateUseOptimistic();
+```
+
+### useEffectEvent 实现
+
+useEffectEvent 用于分离 Effect 中的事件逻辑。
+
+```js
+// 演示 useEffectEvent 实现
+function demonstrateUseEffectEvent() {
+  console.log('=== useEffectEvent 实现演示 ===\n');
+  
+  // 模拟 useEffectEvent 实现
+  class useEffectEventImpl {
+    constructor() {
+      this.hooks = [];
+      this.hookIndex = 0;
+      this.effectEvents = [];
+    }
+    
+    // useEffectEvent 实现
+    useEffectEvent(callback) {
+      const hookIndex = this.hookIndex;
+      
+      console.log(`useEffectEvent 调用，索引: ${hookIndex}`);
+      
+      // 检查是否已有 Hook
+      let hook = this.hooks[hookIndex];
+      
+      if (!hook) {
+        // 首次渲染，创建 Hook
+        console.log('   首次渲染，创建 EffectEvent Hook');
+        hook = {
+          memoizedState: {
+            callback,
+            fn: (...args) => {
+              console.log('   执行 EffectEvent 回调');
+              return callback(...args);
+            }
+          },
+          queue: null
+        };
+        this.hooks[hookIndex] = hook;
+        this.effectEvents.push(hook.memoizedState);
+      } else {
+        // 后续渲染，更新回调
+        console.log('   更新回调');
+        hook.memoizedState.callback = callback;
+      }
+      
+      this.hookIndex++;
+      
+      return hook.memoizedState.fn;
+    }
+    
+    // useEffect 实现（简化版）
+    useEffect(create, deps) {
+      console.log(`useEffect 调用`);
+      
+      // 在实际 React 中，这里会检查依赖
+      // 并在依赖变化时执行 effect
+      
+      const cleanup = create();
+      return cleanup;
+    }
+    
+    // 重置
+    reset() {
+      this.hooks = [];
+      this.hookIndex = 0;
+      this.effectEvents = [];
+    }
+  }
+  
+  // 使用示例
+  const useEffectEvent = new useEffectEventImpl();
+  
+  console.log('1. 创建 EffectEvent:');
+  const onMessage = useEffectEvent.useEffectEvent((message) => {
+    console.log(`   收到消息: ${message}`);
+  });
+  
+  console.log('\n2. 在 Effect 中使用:');
+  useEffectEvent.useEffect(() => {
+    console.log('   Effect 执行');
+    
+    // 模拟消息到达
+    setTimeout(() => {
+      onMessage('Hello from effect');
+    }, 100);
+    
+    return () => {
+      console.log('   Effect 清理');
+    };
+  }, []);
+  
+  console.log('\n3. 更新 EffectEvent 回调:');
+  const onNewMessage = useEffectEvent.useEffectEvent((message) => {
+    console.log(`   收到新消息: ${message}`);
+  });
+  
+  console.log('\n4. EffectEvent 不作为依赖:');
+  useEffectEvent.useEffect(() => {
+    console.log('   Effect 执行（onNewMessage 不是依赖）');
+    
+    setTimeout(() => {
+      onNewMessage('Another message');
+    }, 200);
+    
+    return () => {
+      console.log('   Effect 清理');
+    };
+  }, []);
+}
+
+demonstrateUseEffectEvent();
+```
+
+## 📝 实际应用示例
+
+### 完整的 Hooks 使用示例
+
+```js
+// 完整的 Hooks 使用示例
+class ReactLikeHooks {
+  constructor() {
+    this.hooks = [];
+    this.hookIndex = 0;
+    this.effects = [];
+  }
+  
+  // useState
+  useState(initialState) {
+    const hookIndex = this.hookIndex;
+    
+    let hook = this.hooks[hookIndex];
+    
+    if (!hook) {
+      const value = typeof initialState === 'function' 
+        ? initialState() 
+        : initialState;
+      hook = {
+        memoizedState: value,
+        queue: { pending: null, dispatch: null }
+      };
+      this.hooks[hookIndex] = hook;
+    }
+    
+    const dispatch = (action) => {
+      const newState = typeof action === 'function'
+        ? action(hook.memoizedState)
+        : action;
+      hook.memoizedState = newState;
+      this.render();
+    };
+    
+    hook.queue.dispatch = dispatch;
+    this.hookIndex++;
+    
+    return [hook.memoizedState, dispatch];
+  }
+  
+  // useEffect
+  useEffect(create, deps) {
+    const hookIndex = this.hookIndex;
+    
+    let hook = this.hooks[hookIndex];
+    
+    if (!hook) {
+      hook = {
+        memoizedState: { create, destroy: null, deps },
+        queue: null
+      };
+      this.hooks[hookIndex] = hook;
+      this.effects.push(hook.memoizedState);
+    } else {
+      if (this.areDepsDifferent(hook.memoizedState.deps, deps)) {
+        hook.memoizedState.create = create;
+        hook.memoizedState.deps = deps;
+        this.effects.push(hook.memoizedState);
+      }
+    }
+    
+    this.hookIndex++;
+  }
+  
+  // useRef
+  useRef(initialValue) {
+    const hookIndex = this.hookIndex;
+    
+    let hook = this.hooks[hookIndex];
+    
+    if (!hook) {
+      hook = {
+        memoizedState: { current: initialValue },
+        queue: null
+      };
+      this.hooks[hookIndex] = hook;
+    }
+    
+    this.hookIndex++;
+    
+    return hook.memoizedState;
+  }
+  
+  // useMemo
+  useMemo(factory, deps) {
+    const hookIndex = this.hookIndex;
+    
+    let hook = this.hooks[hookIndex];
+    
+    if (!hook) {
+      const value = factory();
+      hook = {
+        memoizedState: value,
+        deps
+      };
+      this.hooks[hookIndex] = hook;
+    } else {
+      if (this.areDepsDifferent(hook.deps, deps)) {
+        hook.memoizedState = factory();
+        hook.deps = deps;
+      }
+    }
+    
+    this.hookIndex++;
+    
+    return hook.memoizedState;
+  }
+  
+  // useCallback
+  useCallback(callback, deps) {
+    return this.useMemo(() => callback, deps);
+  }
+  
+  // 比较依赖
+  areDepsDifferent(oldDeps, newDeps) {
+    if (oldDeps === null || newDeps === null) {
+      return false;
+    }
+    
+    if (oldDeps.length !== newDeps.length) {
+      return true;
+    }
+    
+    for (let i = 0; i < oldDeps.length; i++) {
+      if (oldDeps[i] !== newDeps[i]) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+  
+  // 执行 Effects
+  commitEffects() {
+    this.effects.forEach((effect) => {
+      if (effect.destroy) {
+        effect.destroy();
+      }
+      effect.destroy = effect.create();
+    });
+    this.effects = [];
+  }
+  
+  // 渲染
+  render() {
+    this.hookIndex = 0;
+    console.log('\n--- 重新渲染 ---');
+  }
+  
+  // 重置
+  reset() {
+    this.hooks = [];
+    this.hookIndex = 0;
+    this.effects = [];
+  }
+}
+
+// 使用示例
+const hooks = new ReactLikeHooks();
+
+console.log('=== 完整的 Hooks 使用示例 ===\n');
+
+console.log('1. 初始渲染:');
+const [count, setCount] = hooks.useState(0);
+const [name, setName] = hooks.useState('React');
+const timerRef = hooks.useRef(null);
+
+console.log(`   count: ${count}, name: ${name}`);
+
+hooks.useEffect(() => {
+  console.log('   Effect: 设置定时器');
+  timerRef.current = 'timer-id';
+  
+  return () => {
+    console.log('   Effect: 清除定时器');
+  };
+}, []);
+
+const doubled = hooks.useMemo(() => count * 2, [count]);
+console.log(`   doubled: ${doubled}`);
+
+hooks.commitEffects();
+
+console.log('\n2. 更新状态:');
+setCount(1);
+
+console.log('\n3. 再次渲染:');
+const [newCount, newSetCount] = hooks.useState(0);
+const [newName, newSetName] = hooks.useState('React');
+const newTimerRef = hooks.useRef(null);
+
+console.log(`   count: ${newCount}, name: ${newName}`);
+console.log(`   timerRef === timerRef: ${newTimerRef === timerRef}`);
+
+hooks.useEffect(() => {
+  console.log('   Effect: 依赖未变化，跳过');
+}, []);
+
+const newDoubled = hooks.useMemo(() => newCount * 2, [newCount]);
+console.log(`   doubled: ${newDoubled}`);
+
+hooks.commitEffects();
+```
+
+## 🔗 相关概念
+
+- **Fiber 架构**: React 的核心渲染架构，Hooks 基于 Fiber 实现
+- **组件生命周期**: Hooks 提供了新的方式来处理生命周期
+- **状态管理**: useState 和 useReducer 提供状态管理能力
+- **副作用处理**: useEffect 处理副作用和生命周期
+- **性能优化**: useMemo 和 useCallback 优化组件性能
+- **Context API**: useContext 提供跨组件状态共享
+
+## 📚 学习检查点
+
+- [ ] 理解 Hooks 链表的结构和工作原理
+- [ ] 掌握 Hook 对象的设计和状态存储机制
+- [ ] 理解 useState 的实现原理
+- [ ] 掌握 useEffect 的执行机制和依赖比较
+- [ ] 理解 useContext 的上下文传递机制
+- [ ] 掌握 useRef 的引用管理
+- [ ] 理解 useMemo 和 useCallback 的缓存机制
+- [ ] 了解 React 19 新 Hooks 的实现
+
+## 🚀 下一步
+
+继续学习以下内容：
+- **[4.4 状态管理](./04-state-management)** - 学习 React 状态管理的最佳实践
+- **[4.5 性能优化](./05-performance-optimization)** - 探索 React 性能优化策略
+- **[4.6 并发特性](./06-concurrent-features)** - 深入理解 React 并发特性
