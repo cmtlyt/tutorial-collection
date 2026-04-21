@@ -1,0 +1,756 @@
+# SWR
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+SWR（Stale-While-Revalidate）是由 Vercel 开发的数据获取库，它的名字来源于 HTTP 缓存策略。SWR 提供了简单而强大的 API 来处理数据获取、缓存、重新验证等功能，非常适合 React 应用。
+
+## 🎯 基础用法
+
+### 安装和设置
+
+```jsx
+import React from 'react';
+import useSWR from 'swr';
+
+// fetcher 函数
+const fetcher = async (url) => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+};
+
+function UsersList() {
+  // 使用 useSWR 获取数据
+  const { data, error, isLoading } = useSWR(
+    'https://jsonplaceholder.typicode.com/users',
+    fetcher
+  );
+  
+  if (isLoading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>Users List</h1>
+      <ul>
+        {data.map(user => (
+          <li key={user.id}>
+            <strong>{user.name}</strong> - {user.email}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default UsersList;
+```
+
+### 条件请求
+
+```jsx
+import React, { useState } from 'react';
+import useSWR from 'swr';
+
+const fetcher = async (url) => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+};
+
+function UserProfile() {
+  const [userId, setUserId] = useState(1);
+  
+  // 条件请求：只有当 userId 存在时才执行
+  const { data, error, isLoading } = useSWR(
+    userId ? `https://jsonplaceholder.typicode.com/users/${userId}` : null,
+    fetcher
+  );
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>User Profile</h1>
+      
+      <div style={{ marginBottom: '16px' }}>
+        <label>Select User ID: </label>
+        <select
+          value={userId}
+          onChange={(e) => setUserId(parseInt(e.target.value))}
+          style={{ padding: '8px', marginLeft: '8px' }}
+        >
+          {[1, 2, 3, 4, 5].map(id => (
+            <option key={id} value={id}>User {id}</option>
+          ))}
+        </select>
+      </div>
+      
+      {isLoading ? (
+        <div>Loading...</div>
+      ) : error ? (
+        <div>Error: {error.message}</div>
+      ) : data ? (
+        <div style={{ padding: '16px', border: '1px solid #ddd', borderRadius: '4px' }}>
+          <p><strong>Name:</strong> {data.name}</p>
+          <p><strong>Email:</strong> {data.email}</p>
+          <p><strong>Phone:</strong> {data.phone}</p>
+          <p><strong>Website:</strong> {data.website}</p>
+          <p><strong>Company:</strong> {data.company.name}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export default UserProfile;
+```
+
+## 🎯 数据修改
+
+### 使用 useSWRMutation
+
+```jsx
+import React from 'react';
+import useSWR, { useSWRMutation } from 'swr';
+
+const fetcher = async (url) => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+};
+
+async function sendRequest(url, { arg }) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(arg),
+  });
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+}
+
+async function deleteRequest(url, { arg }) {
+  const response = await fetch(`${url}/${arg}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return arg;
+}
+
+function TodoApp() {
+  // 获取 todos
+  const { data: todos, error, isLoading } = useSWR(
+    'https://jsonplaceholder.typicode.com/todos?_limit=5',
+    fetcher
+  );
+  
+  // 创建 todo mutation
+  const { trigger: createTodo, isMutating: isCreating } = useSWRMutation(
+    'https://jsonplaceholder.typicode.com/todos',
+    sendRequest,
+    {
+      onSuccess: (newTodo) => {
+        // 成功后重新获取数据
+        // SWR 会自动处理缓存更新
+      },
+    }
+  );
+  
+  // 删除 todo mutation
+  const { trigger: deleteTodo, isMutating: isDeleting } = useSWRMutation(
+    'https://jsonplaceholder.typicode.com/todos',
+    deleteRequest,
+    {
+      onSuccess: (deletedId) => {
+        // 成功后重新获取数据
+      },
+    }
+  );
+  
+  const [newTodoTitle, setNewTodoTitle] = React.useState('');
+  
+  const handleAddTodo = async (e) => {
+    e.preventDefault();
+    if (!newTodoTitle.trim()) return;
+    
+    try {
+      await createTodo({
+        title: newTodoTitle,
+        completed: false,
+        userId: 1,
+      });
+      setNewTodoTitle('');
+    } catch (error) {
+      console.error('Failed to create todo:', error);
+    }
+  };
+  
+  const handleDeleteTodo = async (id) => {
+    try {
+      await deleteTodo(id);
+    } catch (error) {
+      console.error('Failed to delete todo:', error);
+    }
+  };
+  
+  if (isLoading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  
+  return (
+    <div style={{ padding: '24px', maxWidth: '600px', margin: '0 auto' }}>
+      <h1>Todo App</h1>
+      
+      {/* 添加 todo 表单 */}
+      <form onSubmit={handleAddTodo} style={{ marginBottom: '24px' }}>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <input
+            type="text"
+            value={newTodoTitle}
+            onChange={(e) => setNewTodoTitle(e.target.value)}
+            placeholder="Enter new todo"
+            disabled={isCreating}
+            style={{
+              flex: 1,
+              padding: '8px',
+              border: '1px solid #ddd',
+              borderRadius: '4px'
+            }}
+          />
+          <button
+            type="submit"
+            disabled={isCreating}
+            style={{
+              padding: '8px 16px',
+              background: '#1890ff',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: isCreating ? 'not-allowed' : 'pointer'
+            }}
+          >
+            {isCreating ? 'Adding...' : 'Add'}
+          </button>
+        </div>
+      </form>
+      
+      {/* Todo 列表 */}
+      <ul style={{ listStyle: 'none', padding: 0 }}>
+        {todos.map(todo => (
+          <li
+            key={todo.id}
+            style={{
+              padding: '12px',
+              marginBottom: '8px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}
+          >
+            <span style={{ textDecoration: todo.completed ? 'line-through' : 'none' }}>
+              {todo.title}
+            </span>
+            <button
+              onClick={() => handleDeleteTodo(todo.id)}
+              disabled={isDeleting}
+              style={{
+                padding: '4px 8px',
+                background: '#ff4d4f',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: isDeleting ? 'not-allowed' : 'pointer'
+              }}
+            >
+              Delete
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default TodoApp;
+```
+
+## 🎯 缓存管理
+
+### 缓存配置
+
+```jsx
+import React from 'react';
+import useSWR from 'swr';
+
+const fetcher = async (url) => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+};
+
+function PostsList() {
+  const { data, error, isLoading, mutate } = useSWR(
+    'https://jsonplaceholder.typicode.com/posts?_limit=10',
+    fetcher,
+    {
+      revalidateOnFocus: false, // 不在窗口聚焦时重新验证
+      revalidateOnReconnect: true, // 重新连接时重新验证
+      refreshInterval: 60000, // 每 60 秒自动刷新
+      dedupingInterval: 5000, // 5 秒内的重复请求会被去重
+      errorRetryCount: 3, // 错误重试次数
+      errorRetryInterval: 5000, // 错误重试间隔
+      shouldRetryOnError: true, // 错误时是否重试
+      onError: (error) => {
+        console.error('SWR Error:', error);
+      },
+      onSuccess: (data) => {
+        console.log('SWR Success:', data);
+      },
+    }
+  );
+  
+  const handleRefresh = () => {
+    mutate(); // 手动触发重新验证
+  };
+  
+  if (isLoading) return <div>Loading posts...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+        <h1>Posts List</h1>
+        <button
+          onClick={handleRefresh}
+          style={{
+            padding: '8px 16px',
+            background: '#1890ff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }}
+        >
+          Refresh
+        </button>
+      </div>
+      
+      <ul style={{ listStyle: 'none', padding: 0 }}>
+        {data.map(post => (
+          <li
+            key={post.id}
+            style={{
+              padding: '16px',
+              marginBottom: '12px',
+              border: '1px solid #ddd',
+              borderRadius: '4px'
+            }}
+          >
+            <h3 style={{ margin: '0 0 8px 0' }}>{post.title}</h3>
+            <p style={{ margin: 0, color: '#666' }}>{post.body}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default PostsList;
+```
+
+### 手动缓存管理
+
+```jsx
+import React from 'react';
+import useSWR, { useSWRConfig } from 'swr';
+
+const fetcher = async (url) => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+};
+
+function CommentsManager() {
+  const { cache, mutate } = useSWRConfig();
+  
+  const { data: comments } = useSWR(
+    'https://jsonplaceholder.typicode.com/comments?_limit=5',
+    fetcher
+  );
+  
+  const handleAddComment = () => {
+    const newComment = {
+      id: Date.now(),
+      name: 'New User',
+      email: 'newuser@example.com',
+      body: 'This is a new comment added manually',
+    };
+    
+    // 手动更新缓存
+    mutate(
+      'https://jsonplaceholder.typicode.com/comments?_limit=5',
+      (old) => [...old, newComment],
+      false // false 表示不触发重新验证
+    );
+  };
+  
+  const handleClearCache = () => {
+    // 清除特定 key 的缓存
+    cache.delete('https://jsonplaceholder.typicode.com/comments?_limit=5');
+  };
+  
+  const handleRevalidate = () => {
+    // 重新验证缓存
+    mutate('https://jsonplaceholder.typicode.com/comments?_limit=5');
+  };
+  
+  const handleUpdateCache = () => {
+    // 直接更新缓存数据
+    mutate(
+      'https://jsonplaceholder.typicode.com/comments?_limit=5',
+      comments.map(comment => ({
+        ...comment,
+        body: comment.body + ' [updated]'
+      })),
+      false
+    );
+  };
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>Comments Manager</h1>
+      
+      <div style={{ marginBottom: '16px' }}>
+        <button
+          onClick={handleAddComment}
+          style={{
+            padding: '8px 16px',
+            background: '#52c41a',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            marginRight: '8px'
+          }}
+        >
+          Add Comment
+        </button>
+        
+        <button
+          onClick={handleRevalidate}
+          style={{
+            padding: '8px 16px',
+            background: '#1890ff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            marginRight: '8px'
+          }}
+        >
+          Revalidate
+        </button>
+        
+        <button
+          onClick={handleUpdateCache}
+          style={{
+            padding: '8px 16px',
+            background: '#faad14',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            marginRight: '8px'
+          }}
+        >
+          Update Cache
+        </button>
+        
+        <button
+          onClick={handleClearCache}
+          style={{
+            padding: '8px 16px',
+            background: '#ff4d4f',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }}
+        >
+          Clear Cache
+        </button>
+      </div>
+      
+      <ul style={{ listStyle: 'none', padding: 0 }}>
+        {comments?.map(comment => (
+          <li
+            key={comment.id}
+            style={{
+              padding: '12px',
+              marginBottom: '8px',
+              border: '1px solid #ddd',
+              borderRadius: '4px'
+            }}
+          >
+            <strong>{comment.name}</strong> ({comment.email})
+            <p style={{ margin: '8px 0 0 0', color: '#666' }}>{comment.body}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default CommentsManager;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：博客应用
+
+```jsx
+import React from 'react';
+import useSWR, { useSWRMutation } from 'swr';
+
+const fetcher = async (url) => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+};
+
+async function createPost(url, { arg }) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(arg),
+  });
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+}
+
+function BlogApp() {
+  const [selectedPostId, setSelectedPostId] = React.useState(null);
+  
+  // 获取文章列表
+  const { data: posts, isLoading: postsLoading } = useSWR(
+    'https://jsonplaceholder.typicode.com/posts?_limit=5',
+    fetcher
+  );
+  
+  // 获取选中的文章
+  const { data: selectedPost, isLoading: postLoading } = useSWR(
+    selectedPostId ? `https://jsonplaceholder.typicode.com/posts/${selectedPostId}` : null,
+    fetcher
+  );
+  
+  // 获取评论
+  const { data: comments, isLoading: commentsLoading } = useSWR(
+    selectedPostId ? `https://jsonplaceholder.typicode.com/posts/${selectedPostId}/comments` : null,
+    fetcher
+  );
+  
+  // 创建文章 mutation
+  const { trigger: createPost, isMutating: isCreating } = useSWRMutation(
+    'https://jsonplaceholder.typicode.com/posts',
+    createPost
+  );
+  
+  const [newPostTitle, setNewPostTitle] = React.useState('');
+  const [newPostBody, setNewPostBody] = React.useState('');
+  
+  const handleCreatePost = async (e) => {
+    e.preventDefault();
+    if (!newPostTitle.trim() || !newPostBody.trim()) return;
+    
+    try {
+      await createPost({
+        title: newPostTitle,
+        body: newPostBody,
+        userId: 1,
+      });
+      setNewPostTitle('');
+      setNewPostBody('');
+    } catch (error) {
+      console.error('Failed to create post:', error);
+    }
+  };
+  
+  if (postsLoading) return <div>Loading posts...</div>;
+  
+  return (
+    <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+      <h1>Blog App</h1>
+      
+      {/* 创建文章表单 */}
+      <div style={{ marginBottom: '24px', padding: '16px', background: '#f5f5f5', borderRadius: '4px' }}>
+        <h2>Create New Post</h2>
+        <form onSubmit={handleCreatePost}>
+          <div style={{ marginBottom: '12px' }}>
+            <input
+              type="text"
+              value={newPostTitle}
+              onChange={(e) => setNewPostTitle(e.target.value)}
+              placeholder="Post title"
+              required
+              disabled={isCreating}
+              style={{
+                width: '100%',
+                padding: '8px',
+                border: '1px solid #ddd',
+                borderRadius: '4px'
+              }}
+            />
+          </div>
+          <div style={{ marginBottom: '12px' }}>
+            <textarea
+              value={newPostBody}
+              onChange={(e) => setNewPostBody(e.target.value)}
+              placeholder="Post content"
+              required
+              rows={4}
+              disabled={isCreating}
+              style={{
+                width: '100%',
+                padding: '8px',
+                border: '1px solid #ddd',
+                borderRadius: '4px'
+              }}
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={isCreating}
+            style={{
+              padding: '8px 16px',
+              background: '#1890ff',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: isCreating ? 'not-allowed' : 'pointer'
+            }}
+          >
+            {isCreating ? 'Creating...' : 'Create Post'}
+          </button>
+        </form>
+      </div>
+      
+      <div style={{ display: 'flex', gap: '24px' }}>
+        {/* 文章列表 */}
+        <div style={{ flex: 1 }}>
+          <h2>Posts ({posts.length})</h2>
+          <ul style={{ listStyle: 'none', padding: 0 }}>
+            {posts.map(post => (
+              <li
+                key={post.id}
+                onClick={() => setSelectedPostId(post.id)}
+                style={{
+                  padding: '12px',
+                  marginBottom: '8px',
+                  border: selectedPostId === post.id ? '2px solid #1890ff' : '1px solid #ddd',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  background: selectedPostId === post.id ? '#e6f7ff' : 'white'
+                }}
+              >
+                <h3 style={{ margin: '0 0 4px 0' }}>{post.title}</h3>
+                <p style={{ margin: 0, fontSize: '14px', color: '#666' }}>
+                  {post.body.substring(0, 100)}...
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+        
+        {/* 文章详情 */}
+        <div style={{ flex: 2 }}>
+          {selectedPostId ? (
+            postLoading ? (
+              <div>Loading post...</div>
+            ) : selectedPost ? (
+              <div>
+                <h2>{selectedPost.title}</h2>
+                <p style={{ lineHeight: '1.6' }}>{selectedPost.body}</p>
+                
+                {commentsLoading ? (
+                  <div>Loading comments...</div>
+                ) : (
+                  <div style={{ marginTop: '24px' }}>
+                    <h3>Comments ({comments.length})</h3>
+                    <ul style={{ listStyle: 'none', padding: 0 }}>
+                      {comments.map(comment => (
+                        <li
+                          key={comment.id}
+                          style={{
+                            padding: '12px',
+                            marginBottom: '8px',
+                            border: '1px solid #ddd',
+                            borderRadius: '4px'
+                          }}
+                        >
+                          <strong>{comment.name}</strong> ({comment.email})
+                          <p style={{ margin: '8px 0 0 0', color: '#666' }}>{comment.body}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ) : null
+          ) : (
+            <div style={{ padding: '24px', textAlign: 'center', color: '#999' }}>
+              Select a post to view details
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default BlogApp;
+```
+
+## 🔗 相关概念
+
+- **React Query**：TanStack Query 数据获取库
+- **Axios**：HTTP 客户端
+- **Fetch API**：原生数据获取
+- **状态管理**：服务器状态 vs 客户端状态
+
+## 📚 学习检查点
+
+- [ ] 理解 SWR 的基本概念
+- [ ] 掌握 useSWR 的使用
+- [ ] 掌握 useSWRMutation 的使用
+- [ ] 理解缓存管理机制
+- [ ] 能够构建完整的数据获取应用
+- [ ] 了解 SWR 的最佳实践
+
+## 🚀 下一步
+
+→ [请求库](./03-request-libraries) - 学习 HTTP 请求库

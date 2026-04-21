@@ -1,0 +1,842 @@
+# 请求库
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+在 React 应用中，HTTP 请求库是必不可少的工具。除了原生的 Fetch API，还有许多强大的第三方库，如 Axios、ky 等。本章节将详细介绍这些请求库的使用方法和最佳实践。
+
+## 🎯 Axios
+
+### 基础用法
+
+```jsx
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+function AxiosExample() {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  useEffect(() => {
+    const fetchUsers = async () => {
+      try {
+        const response = await axios.get('https://jsonplaceholder.typicode.com/users');
+        setUsers(response.data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchUsers();
+  }, []);
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error}</div>;
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>Users List (Axios)</h1>
+      <ul>
+        {users.map(user => (
+          <li key={user.id}>
+            <strong>{user.name}</strong> - {user.email}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default AxiosExample;
+```
+
+### 请求配置
+
+```jsx
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+function RequestConfigExample() {
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  useEffect(() => {
+    const fetchPosts = async () => {
+      try {
+        const response = await axios.get('https://jsonplaceholder.typicode.com/posts', {
+          params: {
+            _limit: 10,
+            _page: 1
+          },
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          timeout: 5000, // 5 秒超时
+          withCredentials: false
+        });
+        setPosts(response.data);
+      } catch (err) {
+        if (err.code === 'ECONNABORTED') {
+          setError('Request timeout');
+        } else {
+          setError(err.message);
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchPosts();
+  }, []);
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error}</div>;
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>Posts List (with Config)</h1>
+      <ul>
+        {posts.map(post => (
+          <li key={post.id} style={{ marginBottom: '12px' }}>
+            <strong>{post.title}</strong>
+            <p style={{ margin: '4px 0 0 0', color: '#666' }}>{post.body}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default RequestConfigExample;
+```
+
+### 拦截器
+
+```jsx
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+function InterceptorsExample() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  useEffect(() => {
+    // 创建 axios 实例
+    const api = axios.create({
+      baseURL: 'https://jsonplaceholder.typicode.com',
+      timeout: 5000
+    });
+    
+    // 请求拦截器
+    const requestInterceptor = api.interceptors.request.use(
+      (config) => {
+        console.log('Request:', config.method.toUpperCase(), config.url);
+        // 可以在这里添加 token
+        config.headers.Authorization = `Bearer ${localStorage.getItem('token') || 'fake-token'}`;
+        return config;
+      },
+      (error) => {
+        console.error('Request error:', error);
+        return Promise.reject(error);
+      }
+    );
+    
+    // 响应拦截器
+    const responseInterceptor = api.interceptors.response.use(
+      (response) => {
+        console.log('Response:', response.status, response.config.url);
+        return response;
+      },
+      (error) => {
+        console.error('Response error:', error);
+        if (error.response) {
+          // 服务器返回了错误状态码
+          switch (error.response.status) {
+            case 401:
+              setError('Unauthorized: Please login');
+              break;
+            case 403:
+              setError('Forbidden: You don\'t have permission');
+              break;
+            case 404:
+              setError('Not found');
+              break;
+            case 500:
+              setError('Server error');
+              break;
+            default:
+              setError(`Error: ${error.response.status}`);
+          }
+        } else if (error.request) {
+          // 请求已发送但没有收到响应
+          setError('Network error: No response received');
+        } else {
+          // 请求配置出错
+          setError('Request error: ' + error.message);
+        }
+        return Promise.reject(error);
+      }
+    );
+    
+    // 发送请求
+    const fetchData = async () => {
+      try {
+        const response = await api.get('/users?_limit=5');
+        setData(response.data);
+      } catch (err) {
+        // 错误已经在响应拦截器中处理
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchData();
+    
+    // 清理拦截器
+    return () => {
+      api.interceptors.request.eject(requestInterceptor);
+      api.interceptors.response.eject(responseInterceptor);
+    };
+  }, []);
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error}</div>;
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>Users List (with Interceptors)</h1>
+      <p style={{ marginBottom: '16px', color: '#666' }}>
+        Check the console to see request/response logs
+      </p>
+      <ul>
+        {data?.map(user => (
+          <li key={user.id}>
+            <strong>{user.name}</strong> - {user.email}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default InterceptorsExample;
+```
+
+## 🎯 ky
+
+### 基础用法
+
+```jsx
+import React, { useState, useEffect } from 'react';
+import ky from 'ky';
+
+function KyExample() {
+  const [todos, setTodos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  useEffect(() => {
+    const fetchTodos = async () => {
+      try {
+        const data = await ky.get('https://jsonplaceholder.typicode.com/todos?_limit=5').json();
+        setTodos(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchTodos();
+  }, []);
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error}</div>;
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>Todos List (ky)</h1>
+      <ul>
+        {todos.map(todo => (
+          <li key={todo.id}>
+            <input type="checkbox" checked={todo.completed} readOnly />
+            <span style={{ marginLeft: '8px', textDecoration: todo.completed ? 'line-through' : 'none' }}>
+              {todo.title}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default KyExample;
+```
+
+### 创建实例
+
+```jsx
+import React, { useState } from 'react';
+import ky from 'ky';
+
+function KyInstanceExample() {
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  
+  // 创建 ky 实例
+  const api = ky.create({
+    prefixUrl: 'https://jsonplaceholder.typicode.com',
+    timeout: 5000,
+    hooks: {
+      beforeRequest: [
+        (request) => {
+          request.headers.set('Authorization', 'Bearer fake-token');
+          console.log('Request:', request.method, request.url);
+        }
+      ],
+      afterResponse: [
+        async (request, options, response) => {
+          console.log('Response:', response.status, response.url);
+        }
+      ],
+      beforeError: [
+        (error) => {
+          console.error('Error:', error);
+          return error;
+        }
+      ]
+    }
+  });
+  
+  const fetchPosts = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const data = await api.get('posts?_limit=5').json();
+      setPosts(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  const createPost = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const newPost = await api.post('posts', {
+        json: {
+          title: 'New Post',
+          body: 'This is a new post',
+          userId: 1
+        }
+      }).json();
+      
+      setPosts([newPost, ...posts]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>Posts Management (ky)</h1>
+      
+      <div style={{ marginBottom: '16px' }}>
+        <button
+          onClick={fetchPosts}
+          disabled={loading}
+          style={{
+            padding: '8px 16px',
+            background: '#1890ff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: loading ? 'not-allowed' : 'pointer',
+            marginRight: '8px'
+          }}
+        >
+          {loading ? 'Loading...' : 'Fetch Posts'}
+        </button>
+        
+        <button
+          onClick={createPost}
+          disabled={loading}
+          style={{
+            padding: '8px 16px',
+            background: '#52c41a',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: loading ? 'not-allowed' : 'pointer'
+          }}
+        >
+          {loading ? 'Creating...' : 'Create Post'}
+        </button>
+      </div>
+      
+      {error && (
+        <div style={{ padding: '12px', marginBottom: '16px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: '4px', color: '#ff4d4f' }}>
+          {error}
+        </div>
+      )}
+      
+      <ul>
+        {posts.map(post => (
+          <li key={post.id} style={{ marginBottom: '12px', padding: '12px', border: '1px solid #ddd', borderRadius: '4px' }}>
+            <strong>{post.title}</strong>
+            <p style={{ margin: '4px 0 0 0', color: '#666' }}>{post.body}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default KyInstanceExample;
+```
+
+## 🎯 Fetch API
+
+### 基础用法
+
+```jsx
+import React, { useState, useEffect } from 'react';
+
+function FetchAPIExample() {
+  const [albums, setAlbums] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  useEffect(() => {
+    const fetchAlbums = async () => {
+      try {
+        const response = await fetch('https://jsonplaceholder.typicode.com/albums?_limit=5');
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        setAlbums(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchAlbums();
+  }, []);
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error}</div>;
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>Albums List (Fetch API)</h1>
+      <ul>
+        {albums.map(album => (
+          <li key={album.id}>
+            <strong>{album.title}</strong>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default FetchAPIExample;
+```
+
+### 高级用法
+
+```jsx
+import React, { useState } from 'react';
+
+function AdvancedFetchExample() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  
+  // 带超时的 fetch
+  const fetchWithTimeout = async (url, options = {}, timeout = 5000) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        throw new Error('Request timeout');
+      }
+      throw err;
+    }
+  };
+  
+  // POST 请求
+  const createData = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: 'New Post',
+          body: 'This is a new post',
+          userId: 1
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      setData(result);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // GET 请求（带超时）
+  const fetchData = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetchWithTimeout(
+        'https://jsonplaceholder.typicode.com/posts/1',
+        {},
+        3000
+      );
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      setData(result);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  return (
+    <div style={{ padding: '24px' }}>
+      <h1>Advanced Fetch API</h1>
+      
+      <div style={{ marginBottom: '16px' }}>
+        <button
+          onClick={fetchData}
+          disabled={loading}
+          style={{
+            padding: '8px 16px',
+            background: '#1890ff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: loading ? 'not-allowed' : 'pointer',
+            marginRight: '8px'
+          }}
+        >
+          {loading ? 'Fetching...' : 'Fetch Data'}
+        </button>
+        
+        <button
+          onClick={createData}
+          disabled={loading}
+          style={{
+            padding: '8px 16px',
+            background: '#52c41a',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: loading ? 'not-allowed' : 'pointer'
+          }}
+        >
+          {loading ? 'Creating...' : 'Create Data'}
+        </button>
+      </div>
+      
+      {error && (
+        <div style={{ padding: '12px', marginBottom: '16px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: '4px', color: '#ff4d4f' }}>
+          {error}
+        </div>
+      )}
+      
+      {data && (
+        <div style={{ padding: '16px', background: '#f5f5f5', borderRadius: '4px' }}>
+          <pre style={{ margin: 0 }}>{JSON.stringify(data, null, 2)}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default AdvancedFetchExample;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：用户管理
+
+```jsx
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+function UserManagement() {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [selectedUser, setSelectedUser] = useState(null);
+  
+  // 创建 axios 实例
+  const api = axios.create({
+    baseURL: 'https://jsonplaceholder.typicode.com',
+    timeout: 5000
+  });
+  
+  // 拦截器
+  useEffect(() => {
+    const requestInterceptor = api.interceptors.request.use(
+      (config) => {
+        console.log('Request:', config.method.toUpperCase(), config.url);
+        return config;
+      },
+      (error) => Promise.reject(error)
+    );
+    
+    const responseInterceptor = api.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        console.error('Error:', error.message);
+        setError(error.message);
+        return Promise.reject(error);
+      }
+    );
+    
+    return () => {
+      api.interceptors.request.eject(requestInterceptor);
+      api.interceptors.response.eject(responseInterceptor);
+    };
+  }, []);
+  
+  // 获取用户列表
+  const fetchUsers = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await api.get('/users?_limit=5');
+      setUsers(response.data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // 获取用户详情
+  const fetchUserDetail = async (userId) => {
+    try {
+      const response = await api.get(`/users/${userId}`);
+      setSelectedUser(response.data);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  
+  // 创建用户
+  const createUser = async () => {
+    try {
+      const newUser = await api.post('/users', {
+        name: 'New User',
+        email: 'newuser@example.com',
+        username: 'newuser'
+      });
+      setUsers([...users, newUser.data]);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  
+  // 删除用户
+  const deleteUser = async (userId) => {
+    try {
+      await api.delete(`/users/${userId}`);
+      setUsers(users.filter(user => user.id !== userId));
+      if (selectedUser?.id === userId) {
+        setSelectedUser(null);
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+  
+  return (
+    <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+      <h1>User Management</h1>
+      
+      <div style={{ marginBottom: '16px' }}>
+        <button
+          onClick={fetchUsers}
+          disabled={loading}
+          style={{
+            padding: '8px 16px',
+            background: '#1890ff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: loading ? 'not-allowed' : 'pointer',
+            marginRight: '8px'
+          }}
+        >
+          {loading ? 'Loading...' : 'Refresh'}
+        </button>
+        
+        <button
+          onClick={createUser}
+          style={{
+            padding: '8px 16px',
+            background: '#52c41a',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }}
+        >
+          Create User
+        </button>
+      </div>
+      
+      {error && (
+        <div style={{ padding: '12px', marginBottom: '16px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: '4px', color: '#ff4d4f' }}>
+          {error}
+        </div>
+      )}
+      
+      <div style={{ display: 'flex', gap: '24px' }}>
+        {/* 用户列表 */}
+        <div style={{ flex: 1 }}>
+          <h2>Users ({users.length})</h2>
+          <ul style={{ listStyle: 'none', padding: 0 }}>
+            {users.map(user => (
+              <li
+                key={user.id}
+                style={{
+                  padding: '12px',
+                  marginBottom: '8px',
+                  border: selectedUser?.id === user.id ? '2px solid #1890ff' : '1px solid #ddd',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  background: selectedUser?.id === user.id ? '#e6f7ff' : 'white',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}
+              >
+                <div onClick={() => fetchUserDetail(user.id)}>
+                  <strong>{user.name}</strong>
+                  <p style={{ margin: '4px 0 0 0', color: '#666', fontSize: '14px' }}>
+                    {user.email}
+                  </p>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteUser(user.id);
+                  }}
+                  style={{
+                    padding: '4px 8px',
+                    background: '#ff4d4f',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+        
+        {/* 用户详情 */}
+        <div style={{ flex: 2 }}>
+          {selectedUser ? (
+            <div style={{ padding: '16px', border: '1px solid #ddd', borderRadius: '4px' }}>
+              <h2>User Details</h2>
+              <p><strong>Name:</strong> {selectedUser.name}</p>
+              <p><strong>Email:</strong> {selectedUser.email}</p>
+              <p><strong>Phone:</strong> {selectedUser.phone}</p>
+              <p><strong>Website:</strong> {selectedUser.website}</p>
+              <p><strong>Company:</strong> {selectedUser.company.name}</p>
+              <p><strong>Address:</strong> {selectedUser.address.street}, {selectedUser.address.city}</p>
+            </div>
+          ) : (
+            <div style={{ padding: '24px', textAlign: 'center', color: '#999' }}>
+              Select a user to view details
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default UserManagement;
+```
+
+## 🔗 相关概念
+
+- **React Query**：数据获取和状态管理
+- **SWR**：数据获取库
+- **Fetch API**：原生数据获取
+- **状态管理**：服务器状态 vs 客户端状态
+
+## 📚 学习检查点
+
+- [ ] 理解不同请求库的特点
+- [ ] 掌握 Axios 的使用
+- [ ] 掌握 ky 的使用
+- [ ] 掌握 Fetch API 的使用
+- [ ] 理解拦截器的概念
+- [ ] 能够选择合适的请求库
+
+## 🚀 下一步
+
+→ [React 19 数据获取](./04-react-19-data-fetching) - 学习 React 19 数据获取特性
