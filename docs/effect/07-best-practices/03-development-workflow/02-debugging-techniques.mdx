@@ -1,0 +1,778 @@
+# 调试技巧
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 的函数式编程特性为调试提供了独特的优势。本节介绍日志记录、断点调试、性能分析等调试技巧。
+
+## 🎯 日志记录
+
+### 基本日志记录
+
+```js
+import { Effect } from 'effect'
+
+// 基本日志记录
+const program = Effect.gen(function* () {
+  console.log('Starting program...')
+  
+  const data = yield* Effect.gen(function* () {
+    console.log('Fetching data...')
+    yield* Effect.sleep(100)
+    return { id: 1, name: 'John' }
+  })
+  
+  console.log('Data received:', data)
+  
+  const processed = yield* Effect.gen(function* () {
+    console.log('Processing data...')
+    yield* Effect.sleep(50)
+    return { ...data, processed: true }
+  })
+  
+  console.log('Processing completed:', processed)
+  
+  return processed
+})
+
+Effect.runSync(program)
+```
+
+### 结构化日志
+
+```js
+import { Effect } from 'effect'
+
+// 结构化日志工具
+const Logger = {
+  levels: {
+    DEBUG: 0,
+    INFO: 1,
+    WARN: 2,
+    ERROR: 3
+  },
+  
+  currentLevel: 0,
+  
+  format: (level, message, context = {}) => {
+    const timestamp = new Date().toISOString()
+    return JSON.stringify({
+      timestamp,
+      level,
+      message,
+      ...context
+    })
+  },
+  
+  log: (level, message, context) => Effect.gen(function* () {
+    if (level >= Logger.currentLevel) {
+      const formatted = Logger.format(level, message, context)
+      console.log(formatted)
+    }
+  }),
+  
+  debug: (message, context) => Logger.log(Logger.levels.DEBUG, message, context),
+  
+  info: (message, context) => Logger.log(Logger.levels.INFO, message, context),
+  
+  warn: (message, context) => Logger.log(Logger.levels.WARN, message, context),
+  
+  error: (message, context) => Logger.log(Logger.levels.ERROR, message, context)
+}
+
+// 使用结构化日志
+const program = Effect.gen(function* () {
+  yield* Logger.info('Program started', { userId: 123 })
+  
+  const data = yield* Effect.gen(function* () {
+    yield* Logger.debug('Fetching user data', { userId: 123 })
+    yield* Effect.sleep(100)
+    return { id: 123, name: 'John Doe' }
+  })
+  
+  yield* Logger.info('User data fetched', { userId: data.id })
+  
+  return data
+})
+
+Effect.runSync(program)
+```
+
+### Effect 日志追踪
+
+```js
+import { Effect } from 'effect'
+
+// Effect 日志追踪
+const Tracer = {
+  trace: (name, effect) => Effect.gen(function* () {
+    const startTime = Date.now()
+    
+    console.log(`[TRACE] Starting: ${name}`)
+    console.log(`[TRACE] Time: ${new Date().toISOString()}`)
+    
+    try {
+      const result = yield* effect
+      
+      const duration = Date.now() - startTime
+      console.log(`[TRACE] Completed: ${name}`)
+      console.log(`[TRACE] Duration: ${duration}ms`)
+      
+      return result
+    } catch (error) {
+      const duration = Date.now() - startTime
+      console.log(`[TRACE] Failed: ${name}`)
+      console.log(`[TRACE] Duration: ${duration}ms`)
+      console.log(`[TRACE] Error: ${error.message}`)
+      
+      throw error
+    }
+  })
+}
+
+// 使用日志追踪
+const program = Effect.gen(function* () {
+  const user = yield* Tracer.trace('fetchUser', Effect.gen(function* () {
+    yield* Effect.sleep(100)
+    return { id: 1, name: 'John' }
+  }))
+  
+  const orders = yield* Tracer.trace('fetchOrders', Effect.gen(function* () {
+    yield* Effect.sleep(150)
+    return [{ id: 1, userId: 1, total: 100 }]
+  }))
+  
+  return { user, orders }
+})
+
+Effect.runSync(program)
+```
+
+## 💡 断点调试
+
+### 使用 Effect.tap 调试
+
+```js
+import { Effect } from 'effect'
+
+// 使用 Effect.tap 进行调试
+const program = Effect.gen(function* () {
+  const data = yield* Effect.succeed({ id: 1, name: 'John', age: 30 })
+    .pipe(
+      Effect.tap(d => Effect.sync(() => console.log('Data:', d)))
+    )
+  
+  const processed = yield* Effect.succeed(data)
+    .pipe(
+      Effect.tap(d => Effect.sync(() => console.log('Before processing:', d))),
+      Effect.map(d => ({ ...d, processed: true })),
+      Effect.tap(d => Effect.sync(() => console.log('After processing:', d)))
+    )
+  
+  return processed
+})
+
+Effect.runSync(program)
+```
+
+### 条件断点
+
+```js
+import { Effect } from 'effect'
+
+// 条件断点工具
+const Debugger = {
+  breakpoint: (condition, effect) => Effect.gen(function* () {
+    if (condition) {
+      console.log('[BREAKPOINT] Condition met')
+      console.log('[BREAKPOINT] Stack trace:', new Error().stack)
+      yield* effect
+    }
+  }),
+  
+  debugValue: (name, value, condition = true) => Effect.gen(function* () {
+    if (condition) {
+      console.log(`[DEBUG] ${name}:`, value)
+    }
+  })
+}
+
+// 使用条件断点
+const program = Effect.gen(function* () {
+  let counter = 0
+  
+  for (let i = 0; i < 5; i++) {
+    counter++
+    
+    yield* Debugger.breakpoint(
+      counter === 3,
+      Effect.sync(() => console.log('Breakpoint at iteration 3'))
+    )
+    
+    yield* Debugger.debugValue('Counter', counter, counter % 2 === 0)
+  }
+  
+  return counter
+})
+
+Effect.runSync(program)
+```
+
+### 调试 Effect 链
+
+```js
+import { Effect } from 'effect'
+
+// 调试 Effect 链
+const program = Effect.succeed(10)
+  .pipe(
+    Effect.tap(n => Effect.sync(() => console.log('Initial value:', n))),
+    Effect.map(n => n * 2),
+    Effect.tap(n => Effect.sync(() => console.log('After multiply:', n))),
+    Effect.map(n => n + 5),
+    Effect.tap(n => Effect.sync(() => console.log('After add:', n))),
+    Effect.filterOrFail(n => n > 20, () => new Error('Value too small')),
+    Effect.tap(n => Effect.sync(() => console.log('After filter:', n))),
+    Effect.catchAll(error => Effect.sync(() => {
+      console.log('Error caught:', error.message)
+      return 0
+    }))
+  )
+
+Effect.runSync(program)
+```
+
+## 🚀 性能分析
+
+### 执行时间测量
+
+```js
+import { Effect } from 'effect'
+
+// 执行时间测量工具
+const Profiler = {
+  measure: (name, effect) => Effect.gen(function* () {
+    const startTime = performance.now()
+    
+    const result = yield* effect
+    
+    const endTime = performance.now()
+    const duration = endTime - startTime
+    
+    console.log(`[PROFILER] ${name}: ${duration.toFixed(2)}ms`)
+    
+    return { result, duration }
+  }),
+  
+  compare: (name, effects) => Effect.gen(function* () {
+    console.log(`[PROFILER] Comparing: ${name}`)
+    
+    const results = yield* Effect.all(
+      effects.map((effect, index) => 
+        Profiler.measure(`Option ${index + 1}`, effect)
+      ),
+      { concurrency: 1 }
+    )
+    
+    const fastest = results.reduce((min, current) => 
+      current.duration < min.duration ? current : min
+    )
+    
+    console.log(`[PROFILER] Fastest: Option ${results.indexOf(fastest) + 1}`)
+    
+    return results
+  })
+}
+
+// 使用性能分析
+const program = Effect.gen(function* () {
+  const option1 = Effect.gen(function* () {
+    yield* Effect.sleep(100)
+    return 1
+  })
+  
+  const option2 = Effect.gen(function* () {
+    yield* Effect.sleep(50)
+    return 2
+  })
+  
+  const results = yield* Profiler.compare('Comparison', [option1, option2])
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+### 内存使用分析
+
+```js
+import { Effect } from 'effect'
+
+// 内存使用分析工具
+const MemoryProfiler = {
+  getUsage: () => {
+    const usage = process.memoryUsage()
+    return {
+      heapUsed: Math.round(usage.heapUsed / 1024 / 1024),
+      heapTotal: Math.round(usage.heapTotal / 1024 / 1024),
+      external: Math.round(usage.external / 1024 / 1024)
+    }
+  },
+  
+  snapshot: (name) => Effect.gen(function* () {
+    const usage = MemoryProfiler.getUsage()
+    console.log(`[MEMORY] ${name}:`, usage)
+    return usage
+  }),
+  
+  diff: (before, after) => ({
+    heapUsed: after.heapUsed - before.heapUsed,
+    heapTotal: after.heapTotal - before.heapTotal,
+    external: after.external - before.external
+  })
+}
+
+// 使用内存分析
+const program = Effect.gen(function* () {
+  const before = yield* MemoryProfiler.snapshot('Before')
+  
+  const data = yield* Effect.gen(function* () {
+    const array = Array.from({ length: 100000 }, (_, i) => ({
+      id: i,
+      name: `Item ${i}`,
+      data: new Array(100).fill(0)
+    }))
+    return array
+  })
+  
+  const after = yield* MemoryProfiler.snapshot('After')
+  
+  const diff = MemoryProfiler.diff(before, after)
+  console.log('[MEMORY] Difference:', diff)
+  
+  return data.length
+})
+
+Effect.runSync(program)
+```
+
+### 并发性能分析
+
+```js
+import { Effect } from 'effect'
+
+// 并发性能分析
+const program = Effect.gen(function* () {
+  const task = (id, duration) => Effect.gen(function* () {
+    console.log(`[TASK ${id}] Started`)
+    yield* Effect.sleep(duration)
+    console.log(`[TASK ${id}] Completed`)
+    return id
+  })
+  
+  console.log('\n=== Sequential Execution ===')
+  const seqStart = performance.now()
+  
+  yield* Effect.all([
+    task(1, 100),
+    task(2, 100),
+    task(3, 100)
+  ], { concurrency: 1 })
+  
+  const seqEnd = performance.now()
+  console.log(`Sequential time: ${(seqEnd - seqStart).toFixed(2)}ms`)
+  
+  console.log('\n=== Concurrent Execution ===')
+  const concStart = performance.now()
+  
+  yield* Effect.all([
+    task(1, 100),
+    task(2, 100),
+    task(3, 100)
+  ], { concurrency: 3 })
+  
+  const concEnd = performance.now()
+  console.log(`Concurrent time: ${(concEnd - concStart).toFixed(2)}ms`)
+  
+  console.log(`\nSpeedup: ${((seqEnd - seqStart) / (concEnd - concStart)).toFixed(2)}x`)
+})
+
+Effect.runSync(program)
+```
+
+## 📝 错误追踪
+
+### 错误堆栈追踪
+
+```js
+import { Effect } from 'effect'
+
+// 错误堆栈追踪工具
+const ErrorTracker = {
+  track: (effect) => Effect.gen(function* () {
+    try {
+      return yield* effect
+    } catch (error) {
+      console.log('[ERROR] Stack trace:')
+      console.log(error.stack)
+      throw error
+    }
+  }),
+  
+  withContext: (effect, context) => Effect.gen(function* () {
+    try {
+      return yield* effect
+    } catch (error) {
+      console.log('[ERROR] Context:', context)
+      console.log('[ERROR] Message:', error.message)
+      console.log('[ERROR] Stack:', error.stack)
+      throw error
+    }
+  })
+}
+
+// 使用错误追踪
+const program = Effect.gen(function* () {
+  const result = yield* ErrorTracker.track(
+    Effect.gen(function* () {
+      yield* Effect.sleep(10)
+      throw new Error('Something went wrong')
+    })
+  )
+  
+  return result
+}).pipe(
+  Effect.catchAll(error => Effect.succeed(`Error: ${error.message}`))
+)
+
+Effect.runSync(program)
+```
+
+### 错误分类
+
+```js
+import { Effect } from 'effect'
+
+// 错误分类工具
+const ErrorClassifier = {
+  types: {
+    VALIDATION: 'ValidationError',
+    NETWORK: 'NetworkError',
+    DATABASE: 'DatabaseError',
+    UNKNOWN: 'UnknownError'
+  },
+  
+  classify: (error) => {
+    const message = error.message.toLowerCase()
+    
+    if (message.includes('validation') || message.includes('invalid')) {
+      return ErrorClassifier.types.VALIDATION
+    }
+    
+    if (message.includes('network') || message.includes('fetch')) {
+      return ErrorClassifier.types.NETWORK
+    }
+    
+    if (message.includes('database') || message.includes('query')) {
+      return ErrorClassifier.types.DATABASE
+    }
+    
+    return ErrorClassifier.types.UNKNOWN
+  },
+  
+  handle: (effect) => Effect.gen(function* () {
+    try {
+      return yield* effect
+    } catch (error) {
+      const type = ErrorClassifier.classify(error)
+      console.log(`[ERROR] Type: ${type}`)
+      console.log(`[ERROR] Message: ${error.message}`)
+      
+      return Effect.fail({ type, message: error.message })
+    }
+  })
+}
+
+// 使用错误分类
+const program = Effect.gen(function* () {
+  const result = yield* ErrorClassifier.handle(
+    Effect.gen(function* () {
+      throw new Error('Validation failed: invalid email')
+    })
+  )
+  
+  return result
+}).pipe(
+  Effect.catchAll(error => Effect.succeed(error))
+)
+
+Effect.runSync(program)
+```
+
+## 🔧 调试工具集成
+
+### VS Code 调试配置
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug Effect Program",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/src/index.ts",
+      "preLaunchTask": "tsc: build - tsconfig.json",
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "sourceMaps": true
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug Tests",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "--reporter=verbose"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    }
+  ]
+}
+```
+
+### Chrome DevTools 集成
+
+```js
+import { Effect } from 'effect'
+
+// Chrome DevTools 集成
+const DevTools = {
+  log: (message, data) => Effect.gen(function* () {
+    if (typeof window !== 'undefined' && window.__REDUX_DEVTOOLS_EXTENSION__) {
+      window.__REDUX_DEVTOOLS_EXTENSION__.send({
+        type: 'EFFECT_LOG',
+        message,
+        data
+      }, new Date())
+    }
+    
+    console.log('[DevTools]', message, data)
+  }),
+  
+  measure: (name, effect) => Effect.gen(function* () {
+    if (typeof performance !== 'undefined') {
+      performance.mark(`${name}-start`)
+    }
+    
+    const result = yield* effect
+    
+    if (typeof performance !== 'undefined') {
+      performance.mark(`${name}-end`)
+      performance.measure(name, `${name}-start`, `${name}-end`)
+      
+      const measures = performance.getEntriesByName(name)
+      const duration = measures[0]?.duration || 0
+      
+      yield* DevTools.log('Performance', { name, duration })
+    }
+    
+    return result
+  })
+}
+
+// 使用 DevTools 集成
+const program = Effect.gen(function* () {
+  yield* DevTools.log('Program started', { timestamp: Date.now() })
+  
+  const data = yield* DevTools.measure('fetchData', Effect.gen(function* () {
+    yield* Effect.sleep(100)
+    return { id: 1, name: 'John' }
+  }))
+  
+  yield* DevTools.log('Data received', data)
+  
+  return data
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 综合调试工具
+
+```js
+import { Effect } from 'effect'
+
+// 综合调试工具
+const DebugToolkit = {
+  config: {
+    enabled: true,
+    logLevel: 'debug',
+    enableProfiling: true,
+    enableTracing: true
+  },
+  
+  levels: {
+    DEBUG: 0,
+    INFO: 1,
+    WARN: 2,
+    ERROR: 3
+  },
+  
+  currentLevel: 0,
+  
+  log: (level, category, message, data = {}) => Effect.gen(function* () {
+    if (!DebugToolkit.config.enabled) {
+      return
+    }
+    
+    if (level < DebugToolkit.currentLevel) {
+      return
+    }
+    
+    const timestamp = new Date().toISOString()
+    const entry = {
+      timestamp,
+      level: Object.keys(DebugToolkit.levels)[level],
+      category,
+      message,
+      ...data
+    }
+    
+    console.log(`[${entry.level}] [${category}] ${message}`, data)
+  }),
+  
+  trace: (name, effect) => Effect.gen(function* () {
+    if (!DebugToolkit.config.enableTracing) {
+      return yield* effect
+    }
+    
+    const traceId = Math.random().toString(36).substr(2, 9)
+    
+    yield* DebugToolkit.log(
+      DebugToolkit.levels.DEBUG,
+      'TRACE',
+      `Starting: ${name}`,
+      { traceId }
+    )
+    
+    const startTime = performance.now()
+    
+    try {
+      const result = yield* effect
+      
+      const duration = performance.now() - startTime
+      
+      yield* DebugToolkit.log(
+        DebugToolkit.levels.DEBUG,
+        'TRACE',
+        `Completed: ${name}`,
+        { traceId, duration: `${duration.toFixed(2)}ms` }
+      )
+      
+      return result
+    } catch (error) {
+      const duration = performance.now() - startTime
+      
+      yield* DebugToolkit.log(
+        DebugToolkit.levels.ERROR,
+        'TRACE',
+        `Failed: ${name}`,
+        { traceId, duration: `${duration.toFixed(2)}ms`, error: error.message }
+      )
+      
+      throw error
+    }
+  }),
+  
+  profile: (name, effect) => Effect.gen(function* () {
+    if (!DebugToolkit.config.enableProfiling) {
+      return yield* effect
+    }
+    
+    const startTime = performance.now()
+    const startMemory = process.memoryUsage().heapUsed
+    
+    const result = yield* effect
+    
+    const endTime = performance.now()
+    const endMemory = process.memoryUsage().heapUsed
+    
+    const metrics = {
+      duration: endTime - startTime,
+      memoryDelta: endMemory - startMemory
+    }
+    
+    yield* DebugToolkit.log(
+      DebugToolkit.levels.INFO,
+      'PROFILE',
+      `Metrics: ${name}`,
+      metrics
+    )
+    
+    return { result, metrics }
+  })
+}
+
+// 使用综合调试工具
+const program = Effect.gen(function* () {
+  yield* DebugToolkit.log(
+    DebugToolkit.levels.INFO,
+    'APP',
+    'Application started',
+    { version: '1.0.0' }
+  )
+  
+  const user = yield* DebugToolkit.trace('fetchUser', Effect.gen(function* () {
+    yield* Effect.sleep(100)
+    return { id: 1, name: 'John Doe', email: 'john@example.com' }
+  }))
+  
+  const orders = yield* DebugToolkit.trace('fetchOrders', Effect.gen(function* () {
+    yield* Effect.sleep(150)
+    return [
+      { id: 1, userId: 1, total: 100 },
+      { id: 2, userId: 1, total: 200 }
+    ]
+  }))
+  
+  const result = yield* DebugToolkit.profile('processOrders', Effect.gen(function* () {
+    const total = orders.reduce((sum, order) => sum + order.total, 0)
+    return { user, orders, total }
+  }))
+  
+  yield* DebugToolkit.log(
+    DebugToolkit.levels.INFO,
+    'APP',
+    'Application completed',
+    { totalOrders: orders.length, totalAmount: result.total }
+  )
+  
+  return result
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **开发环境**：项目配置、依赖管理、构建工具
+- **文档编写**：代码注释、API 文档、README
+- **代码风格**：命名规范、代码组织、注释文档
+
+## 📚 学习检查点
+
+- [ ] 掌握日志记录
+- [ ] 理解断点调试
+- [ ] 了解性能分析
+- [ ] 掌握错误追踪
+- [ ] 能够使用综合调试工具
+
+## 🚀 下一步
+
+→ [文档编写](./03-documentation-writing.mdx)

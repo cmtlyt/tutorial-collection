@@ -1,0 +1,1110 @@
+# 测试策略
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 提供了强大的测试支持，结合函数式编程的特性，可以编写清晰、可维护的测试代码。本节介绍单元测试、集成测试、属性测试和端到端测试的策略。
+
+## 🎯 单元测试
+
+### 基本单元测试
+
+```js
+import { Effect } from 'effect'
+
+// 基本单元测试示例
+const program = Effect.gen(function* () {
+  // 待测试的函数
+  const add = (a, b) => a + b
+  
+  const multiply = (a, b) => a * b
+  
+  // 简单的测试框架
+  const test = (name, fn) => Effect.gen(function* () {
+    console.log(`Running: ${name}`)
+    try {
+      yield* fn()
+      console.log(`✓ Passed: ${name}`)
+      return true
+    } catch (error) {
+      console.log(`✗ Failed: ${name}`)
+      console.log(`  Error: ${error.message}`)
+      return false
+    }
+  })
+  
+  const assertEquals = (actual, expected) => {
+    if (actual !== expected) {
+      throw new Error(`Expected ${expected}, but got ${actual}`)
+    }
+  }
+  
+  // 运行测试
+  const results = yield* Effect.all([
+    test('add should sum two numbers', Effect.gen(function* () {
+      const result = add(2, 3)
+      assertEquals(result, 5)
+    })),
+    
+    test('multiply should multiply two numbers', Effect.gen(function* () {
+      const result = multiply(2, 3)
+      assertEquals(result, 6)
+    })),
+    
+    test('add should handle negative numbers', Effect.gen(function* () {
+      const result = add(-2, 3)
+      assertEquals(result, 1)
+    }))
+  ], { concurrency: 1 })
+  
+  const passed = results.filter(r => r).length
+  const total = results.length
+  
+  console.log(`\nTest Results: ${passed}/${total} passed`)
+  
+  return { passed, total }
+})
+
+Effect.runSync(program)
+```
+
+### Effect 程序单元测试
+
+```js
+import { Effect } from 'effect'
+
+// Effect 程序单元测试
+const program = Effect.gen(function* () {
+  // 待测试的 Effect 程序
+  const fetchUser = (userId) => Effect.gen(function* () {
+    yield* Effect.sleep(100)
+    return { id: userId, name: 'John Doe' }
+  })
+  
+  const validateUser = (user) => Effect.gen(function* () {
+    if (!user.name || user.name.length < 2) {
+      return Effect.fail(new Error('Invalid user name'))
+    }
+    return Effect.succeed(user)
+  })
+  
+  // 测试框架
+  const test = (name, fn) => Effect.gen(function* () {
+    console.log(`Running: ${name}`)
+    const result = yield* fn.pipe(
+      Effect.catchAll(error => {
+        console.log(`✗ Failed: ${name}`)
+        console.log(`  Error: ${error.message}`)
+        return Effect.succeed(false)
+      })
+    )
+    
+    if (result !== false) {
+      console.log(`✓ Passed: ${name}`)
+      return true
+    }
+    return false
+  })
+  
+  const assertEffect = (effect, expected) => Effect.gen(function* () {
+    const result = yield* effect
+    if (JSON.stringify(result) !== JSON.stringify(expected)) {
+      throw new Error(`Expected ${JSON.stringify(expected)}, but got ${JSON.stringify(result)}`)
+    }
+  })
+  
+  // 运行测试
+  const results = yield* Effect.all([
+    test('fetchUser should return user data', Effect.gen(function* () {
+      yield* assertEffect(fetchUser(1), { id: 1, name: 'John Doe' })
+    })),
+    
+    test('validateUser should succeed with valid user', Effect.gen(function* () {
+      const user = { id: 1, name: 'John Doe' }
+      yield* assertEffect(validateUser(user), user)
+    })),
+    
+    test('validateUser should fail with invalid user', Effect.gen(function* () {
+      const user = { id: 1, name: 'J' }
+      const result = yield* validateUser(user).pipe(
+        Effect.catchAll(error => Effect.succeed(error.message))
+      )
+      if (result !== 'Invalid user name') {
+        throw new Error('Expected validation error')
+      }
+    }))
+  ], { concurrency: 1 })
+  
+  const passed = results.filter(r => r).length
+  const total = results.length
+  
+  console.log(`\nTest Results: ${passed}/${total} passed`)
+  
+  return { passed, total }
+})
+
+Effect.runSync(program)
+```
+
+## 💡 集成测试
+
+### 基本集成测试
+
+```js
+import { Effect } from 'effect'
+
+// 基本集成测试
+const program = Effect.gen(function* () {
+  // 模拟数据库
+  const Database = {
+    users: new Map(),
+    
+    save: (user) => Effect.gen(function* () {
+      console.log(`[Database] Saving user: ${user.id}`)
+      yield* Effect.sleep(50)
+      Database.users.set(user.id, user)
+      return user
+    }),
+    
+    findById: (id) => Effect.gen(function* () {
+      console.log(`[Database] Finding user: ${id}`)
+      yield* Effect.sleep(30)
+      const user = Database.users.get(id)
+      return user ? Effect.succeed(user) : Effect.fail(new Error('User not found'))
+    })
+  }
+  
+  // 用户服务
+  const UserService = {
+    create: (data) => Effect.gen(function* () {
+      console.log('[UserService] Creating user')
+      
+      const user = {
+        id: Date.now(),
+        name: data.name,
+        email: data.email
+      }
+      
+      yield* Database.save(user)
+      return user
+    }),
+    
+    get: (id) => Effect.gen(function* () {
+      console.log('[UserService] Getting user')
+      return yield* Database.findById(id)
+    })
+  }
+  
+  // 集成测试
+  const test = (name, fn) => Effect.gen(function* () {
+    console.log(`\nRunning: ${name}`)
+    
+    // 清理数据库
+    Database.users.clear()
+    
+    try {
+      yield* fn()
+      console.log(`✓ Passed: ${name}`)
+      return true
+    } catch (error) {
+      console.log(`✗ Failed: ${name}`)
+      console.log(`  Error: ${error.message}`)
+      return false
+    }
+  })
+  
+  const assertEffect = (effect, expected) => Effect.gen(function* () {
+    const result = yield* effect
+    if (JSON.stringify(result) !== JSON.stringify(expected)) {
+      throw new Error(`Expected ${JSON.stringify(expected)}, but got ${JSON.stringify(result)}`)
+    }
+  })
+  
+  // 运行集成测试
+  const results = yield* Effect.all([
+    test('create and get user integration', Effect.gen(function* () {
+      // 创建用户
+      const created = yield* UserService.create({
+        name: 'John Doe',
+        email: 'john@example.com'
+      })
+      
+      // 获取用户
+      const retrieved = yield* UserService.get(created.id)
+      
+      // 验证
+      yield* assertEffect(Effect.succeed(retrieved), created)
+    })),
+    
+    test('get non-existent user', Effect.gen(function* () {
+      const result = yield* UserService.get(999).pipe(
+        Effect.catchAll(error => Effect.succeed(error.message))
+      )
+      
+      if (result !== 'User not found') {
+        throw new Error('Expected "User not found" error')
+      }
+    }))
+  ], { concurrency: 1 })
+  
+  const passed = results.filter(r => r).length
+  const total = results.length
+  
+  console.log(`\nIntegration Test Results: ${passed}/${total} passed`)
+  
+  return { passed, total }
+})
+
+Effect.runSync(program)
+```
+
+### 多服务集成测试
+
+```js
+import { Effect } from 'effect'
+
+// 多服务集成测试
+const program = Effect.gen(function* () {
+  // 模拟服务
+  const EmailService = {
+    sent: [],
+    
+    send: (to, subject, body) => Effect.gen(function* () {
+      console.log(`[EmailService] Sending to: ${to}`)
+      yield* Effect.sleep(20)
+      EmailService.sent.push({ to, subject, body })
+      return true
+    })
+  }
+  
+  const NotificationService = {
+    notifications: [],
+    
+    send: (userId, message) => Effect.gen(function* () {
+      console.log(`[NotificationService] Sending to user: ${userId}`)
+      yield* Effect.sleep(20)
+      NotificationService.notifications.push({ userId, message })
+      return true
+    })
+  }
+  
+  const UserService = {
+    users: new Map(),
+    
+    register: (data) => Effect.gen(function* () {
+      console.log('[UserService] Registering user')
+      
+      const user = {
+        id: Date.now(),
+        name: data.name,
+        email: data.email
+      }
+      
+      UserService.users.set(user.id, user)
+      
+      // 发送欢迎邮件
+      yield* EmailService.send(user.email, 'Welcome', 'Welcome to our platform!')
+      
+      // 发送通知
+      yield* NotificationService.send(user.id, 'Account created successfully')
+      
+      return user
+    })
+  }
+  
+  // 集成测试
+  const test = (name, fn) => Effect.gen(function* () {
+    console.log(`\nRunning: ${name}`)
+    
+    // 清理状态
+    UserService.users.clear()
+    EmailService.sent = []
+    NotificationService.notifications = []
+    
+    try {
+      yield* fn()
+      console.log(`✓ Passed: ${name}`)
+      return true
+    } catch (error) {
+      console.log(`✗ Failed: ${name}`)
+      console.log(`  Error: ${error.message}`)
+      return false
+    }
+  })
+  
+  // 运行测试
+  const results = yield* Effect.all([
+    test('user registration triggers email and notification', Effect.gen(function* () {
+      const user = yield* UserService.register({
+        name: 'John Doe',
+        email: 'john@example.com'
+      })
+      
+      // 验证邮件已发送
+      if (EmailService.sent.length !== 1) {
+        throw new Error('Expected 1 email to be sent')
+      }
+      
+      if (EmailService.sent[0].to !== 'john@example.com') {
+        throw new Error('Email sent to wrong recipient')
+      }
+      
+      // 验证通知已发送
+      if (NotificationService.notifications.length !== 1) {
+        throw new Error('Expected 1 notification to be sent')
+      }
+      
+      if (NotificationService.notifications[0].userId !== user.id) {
+        throw new Error('Notification sent to wrong user')
+      }
+    }))
+  ], { concurrency: 1 })
+  
+  const passed = results.filter(r => r).length
+  const total = results.length
+  
+  console.log(`\nIntegration Test Results: ${passed}/${total} passed`)
+  
+  return { passed, total }
+})
+
+Effect.runSync(program)
+```
+
+## 🚀 属性测试
+
+### 基本属性测试
+
+```js
+import { Effect } from 'effect'
+
+// 基本属性测试
+const program = Effect.gen(function* () {
+  // 待测试的函数
+  const add = (a, b) => a + b
+  
+  const multiply = (a, b) => a * b
+  
+  // 属性测试框架
+  const property = (name, fn) => Effect.gen(function* () {
+    console.log(`Testing property: ${name}`)
+    
+    const iterations = 100
+    let passed = 0
+    
+    for (let i = 0; i < iterations; i++) {
+      try {
+        yield* fn()
+        passed++
+      } catch (error) {
+        console.log(`✗ Failed on iteration ${i + 1}: ${error.message}`)
+        return false
+      }
+    }
+    
+    console.log(`✓ Passed: ${passed}/${iterations} iterations`)
+    return passed === iterations
+  })
+  
+  const assert = (condition) => {
+    if (!condition) {
+      throw new Error('Property violation')
+    }
+  }
+  
+  // 随机数生成器
+  const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min
+  
+  // 属性测试
+  const results = yield* Effect.all([
+    property('add is commutative: a + b == b + a', Effect.gen(function* () {
+      const a = randomInt(-100, 100)
+      const b = randomInt(-100, 100)
+      assert(add(a, b) === add(b, a))
+    })),
+    
+    property('add is associative: (a + b) + c == a + (b + c)', Effect.gen(function* () {
+      const a = randomInt(-100, 100)
+      const b = randomInt(-100, 100)
+      const c = randomInt(-100, 100)
+      assert(add(add(a, b), c) === add(a, add(b, c)))
+    })),
+    
+    property('multiply is commutative: a * b == b * a', Effect.gen(function* () {
+      const a = randomInt(-100, 100)
+      const b = randomInt(-100, 100)
+      assert(multiply(a, b) === multiply(b, a))
+    })),
+    
+    property('multiply by zero is zero: a * 0 == 0', Effect.gen(function* () {
+      const a = randomInt(-100, 100)
+      assert(multiply(a, 0) === 0)
+    }))
+  ], { concurrency: 1 })
+  
+  const passed = results.filter(r => r).length
+  const total = results.length
+  
+  console.log(`\nProperty Test Results: ${passed}/${total} passed`)
+  
+  return { passed, total }
+})
+
+Effect.runSync(program)
+```
+
+### Effect 属性测试
+
+```js
+import { Effect } from 'effect'
+
+// Effect 属性测试
+const program = Effect.gen(function* () {
+  // 待测试的 Effect 程序
+  const processItem = (item) => Effect.gen(function* () {
+    yield* Effect.sleep(10)
+    return { ...item, processed: true }
+  })
+  
+  const filterItems = (items, predicate) => Effect.gen(function* () {
+    yield* Effect.sleep(10)
+    return items.filter(predicate)
+  })
+  
+  // 属性测试框架
+  const property = (name, fn) => Effect.gen(function* () {
+    console.log(`Testing property: ${name}`)
+    
+    const iterations = 50
+    let passed = 0
+    
+    for (let i = 0; i < iterations; i++) {
+      try {
+        yield* fn()
+        passed++
+      } catch (error) {
+        console.log(`✗ Failed on iteration ${i + 1}: ${error.message}`)
+        return false
+      }
+    }
+    
+    console.log(`✓ Passed: ${passed}/${iterations} iterations`)
+    return passed === iterations
+  })
+  
+  const assert = (condition) => {
+    if (!condition) {
+      throw new Error('Property violation')
+    }
+  }
+  
+  // 随机数据生成器
+  const randomString = (length) => {
+    return Array.from({ length }, () => 
+      String.fromCharCode(97 + Math.floor(Math.random() * 26))
+    ).join('')
+  }
+  
+  const randomItem = () => ({
+    id: Math.random(),
+    name: randomString(10),
+    value: Math.random() * 100
+  })
+  
+  // 属性测试
+  const results = yield* Effect.all([
+    property('processItem adds processed flag', Effect.gen(function* () {
+      const item = randomItem()
+      const result = yield* processItem(item)
+      assert(result.processed === true)
+      assert(result.id === item.id)
+    })),
+    
+    property('filterItems returns subset', Effect.gen(function* () {
+      const items = Array.from({ length: 10 }, randomItem)
+      const predicate = (item) => item.value > 50
+      const result = yield* filterItems(items, predicate)
+      assert(result.length <= items.length)
+      assert(result.every(predicate))
+    }))
+  ], { concurrency: 1 })
+  
+  const passed = results.filter(r => r).length
+  const total = results.length
+  
+  console.log(`\nProperty Test Results: ${passed}/${total} passed`)
+  
+  return { passed, total }
+})
+
+Effect.runSync(program)
+```
+
+## 🎯 端到端测试
+
+### 基本端到端测试
+
+```js
+import { Effect } from 'effect'
+
+// 基本端到端测试
+const program = Effect.gen(function* () {
+  // 模拟完整的用户注册流程
+  const API = {
+    register: (data) => Effect.gen(function* () {
+      console.log('[API] POST /users/register')
+      yield* Effect.sleep(100)
+      
+      if (!data.name || !data.email) {
+        return Effect.fail({ status: 400, error: 'Invalid input' })
+      }
+      
+      const user = {
+        id: Date.now(),
+        name: data.name,
+        email: data.email,
+        createdAt: new Date()
+      }
+      
+      return { status: 201, data: user }
+    })
+  }
+  
+  const Database = {
+    users: new Map(),
+    
+    save: (user) => Effect.gen(function* () {
+      console.log('[Database] Saving user')
+      yield* Effect.sleep(50)
+      Database.users.set(user.id, user)
+      return user
+    })
+  }
+  
+  const EmailService = {
+    sent: [],
+    
+    send: (to, subject, body) => Effect.gen(function* () {
+      console.log('[EmailService] Sending email')
+      yield* Effect.sleep(30)
+      EmailService.sent.push({ to, subject, body })
+      return true
+    })
+  }
+  
+  // 用户注册服务
+  const UserRegistrationService = {
+    register: (data) => Effect.gen(function* () {
+      console.log('[Service] Starting registration')
+      
+      // 1. 通过 API 注册
+      const response = yield* API.register(data)
+      
+      if (response.status !== 201) {
+        return Effect.fail(response.error)
+      }
+      
+      const user = response.data
+      
+      // 2. 保存到数据库
+      yield* Database.save(user)
+      
+      // 3. 发送欢迎邮件
+      yield* EmailService.send(user.email, 'Welcome', 'Welcome!')
+      
+      // 4. 返回用户信息
+      return user
+    })
+  }
+  
+  // 端到端测试
+  const e2eTest = (name, fn) => Effect.gen(function* () {
+    console.log(`\n=== E2E Test: ${name} ===`)
+    
+    // 清理状态
+    Database.users.clear()
+    EmailService.sent = []
+    
+    try {
+      yield* fn()
+      console.log(`✓ E2E Test Passed: ${name}`)
+      return true
+    } catch (error) {
+      console.log(`✗ E2E Test Failed: ${name}`)
+      console.log(`  Error: ${error.message}`)
+      return false
+    }
+  })
+  
+  // 运行端到端测试
+  const results = yield* Effect.all([
+    e2eTest('complete user registration flow', Effect.gen(function* () {
+      // 用户输入
+      const input = {
+        name: 'John Doe',
+        email: 'john@example.com'
+      }
+      
+      // 执行注册流程
+      const user = yield* UserRegistrationService.register(input)
+      
+      // 验证结果
+      if (!user.id) {
+        throw new Error('User should have an ID')
+      }
+      
+      if (user.name !== input.name) {
+        throw new Error('User name mismatch')
+      }
+      
+      if (user.email !== input.email) {
+        throw new Error('User email mismatch')
+      }
+      
+      // 验证数据库
+      if (!Database.users.has(user.id)) {
+        throw new Error('User not saved to database')
+      }
+      
+      // 验证邮件
+      if (EmailService.sent.length !== 1) {
+        throw new Error('Welcome email not sent')
+      }
+      
+      if (EmailService.sent[0].to !== input.email) {
+        throw new Error('Email sent to wrong recipient')
+      }
+    })),
+    
+    e2eTest('registration with invalid input', Effect.gen(function* () {
+      const input = {
+        name: '',
+        email: 'invalid'
+      }
+      
+      const result = yield* UserRegistrationService.register(input).pipe(
+        Effect.catchAll(error => Effect.succeed(error))
+      )
+      
+      if (!result) {
+        throw new Error('Should have failed with invalid input')
+      }
+      
+      // 验证没有数据被保存
+      if (Database.users.size > 0) {
+        throw new Error('Invalid data should not be saved')
+      }
+      
+      // 验证没有邮件发送
+      if (EmailService.sent.length > 0) {
+        throw new Error('Email should not be sent for invalid input')
+      }
+    }))
+  ], { concurrency: 1 })
+  
+  const passed = results.filter(r => r).length
+  const total = results.length
+  
+  console.log(`\nE2E Test Results: ${passed}/${total} passed`)
+  
+  return { passed, total }
+})
+
+Effect.runSync(program)
+```
+
+### 复杂端到端测试
+
+```js
+import { Effect } from 'effect'
+
+// 复杂端到端测试
+const program = Effect.gen(function* () {
+  // 模拟完整的订单处理流程
+  const API = {
+    createOrder: (data) => Effect.gen(function* () {
+      console.log('[API] POST /orders')
+      yield* Effect.sleep(100)
+      
+      if (!data.userId || !data.items || data.items.length === 0) {
+        return Effect.fail({ status: 400, error: 'Invalid order data' })
+      }
+      
+      const order = {
+        id: Date.now(),
+        userId: data.userId,
+        items: data.items,
+        total: data.items.reduce((sum, item) => sum + item.price, 0),
+        status: 'pending',
+        createdAt: new Date()
+      }
+      
+      return { status: 201, data: order }
+    }),
+    
+    processPayment: (orderId, paymentData) => Effect.gen(function* () {
+      console.log(`[API] POST /orders/${orderId}/payment`)
+      yield* Effect.sleep(150)
+      
+      if (!paymentData.cardNumber || !paymentData.amount) {
+        return Effect.fail({ status: 400, error: 'Invalid payment data' })
+      }
+      
+      return { status: 200, data: { transactionId: Date.now(), status: 'success' } }
+    })
+  }
+  
+  const Database = {
+    orders: new Map(),
+    payments: new Map(),
+    
+    saveOrder: (order) => Effect.gen(function* () {
+      console.log('[Database] Saving order')
+      yield* Effect.sleep(50)
+      Database.orders.set(order.id, order)
+      return order
+    }),
+    
+    savePayment: (payment) => Effect.gen(function* () {
+      console.log('[Database] Saving payment')
+      yield* Effect.sleep(50)
+      Database.payments.set(payment.transactionId, payment)
+      return payment
+    })
+  }
+  
+  const EmailService = {
+    sent: [],
+    
+    send: (to, subject, body) => Effect.gen(function* () {
+      console.log('[EmailService] Sending email')
+      yield* Effect.sleep(30)
+      EmailService.sent.push({ to, subject, body })
+      return true
+    })
+  }
+  
+  const NotificationService = {
+    notifications: [],
+    
+    send: (userId, message) => Effect.gen(function* () {
+      console.log('[NotificationService] Sending notification')
+      yield* Effect.sleep(30)
+      NotificationService.notifications.push({ userId, message })
+      return true
+    })
+  }
+  
+  // 订单处理服务
+  const OrderService = {
+    createOrder: (data) => Effect.gen(function* () {
+      console.log('[OrderService] Creating order')
+      
+      // 1. 创建订单
+      const response = yield* API.createOrder(data)
+      
+      if (response.status !== 201) {
+        return Effect.fail(response.error)
+      }
+      
+      const order = response.data
+      
+      // 2. 保存订单
+      yield* Database.saveOrder(order)
+      
+      // 3. 发送通知
+      yield* NotificationService.send(order.userId, `Order ${order.id} created`)
+      
+      return order
+    }),
+    
+    processOrderPayment: (orderId, paymentData) => Effect.gen(function* () {
+      console.log('[OrderService] Processing payment')
+      
+      // 1. 获取订单
+      const order = Database.orders.get(orderId)
+      if (!order) {
+        return Effect.fail('Order not found')
+      }
+      
+      // 2. 处理支付
+      const response = yield* API.processPayment(orderId, {
+        ...paymentData,
+        amount: order.total
+      })
+      
+      if (response.status !== 200) {
+        return Effect.fail(response.error)
+      }
+      
+      // 3. 保存支付
+      yield* Database.savePayment(response.data)
+      
+      // 4. 更新订单状态
+      order.status = 'paid'
+      yield* Database.saveOrder(order)
+      
+      // 5. 发送确认邮件
+      yield* EmailService.send(
+        `user-${order.userId}@example.com`,
+        'Payment Confirmed',
+        `Your order ${orderId} has been paid`
+      )
+      
+      return { order, payment: response.data }
+    })
+  }
+  
+  // 端到端测试
+  const e2eTest = (name, fn) => Effect.gen(function* () {
+    console.log(`\n=== E2E Test: ${name} ===`)
+    
+    // 清理状态
+    Database.orders.clear()
+    Database.payments.clear()
+    EmailService.sent = []
+    NotificationService.notifications = []
+    
+    try {
+      yield* fn()
+      console.log(`✓ E2E Test Passed: ${name}`)
+      return true
+    } catch (error) {
+      console.log(`✗ E2E Test Failed: ${name}`)
+      console.log(`  Error: ${error.message}`)
+      return false
+    }
+  })
+  
+  // 运行端到端测试
+  const results = yield* Effect.all([
+    e2eTest('complete order processing flow', Effect.gen(function* () {
+      // 创建订单
+      const order = yield* OrderService.createOrder({
+        userId: 1,
+        items: [
+          { name: 'Product 1', price: 100 },
+          { name: 'Product 2', price: 200 }
+        ]
+      })
+      
+      // 验证订单
+      if (order.status !== 'pending') {
+        throw new Error('Order should be pending')
+      }
+      
+      if (order.total !== 300) {
+        throw new Error('Order total should be 300')
+      }
+      
+      // 处理支付
+      const result = yield* OrderService.processOrderPayment(order.id, {
+        cardNumber: '4111111111111111',
+        cvv: '123'
+      })
+      
+      // 验证支付结果
+      if (result.order.status !== 'paid') {
+        throw new Error('Order should be paid')
+      }
+      
+      if (!result.payment.transactionId) {
+        throw new Error('Payment should have transaction ID')
+      }
+      
+      // 验证数据库
+      if (!Database.payments.has(result.payment.transactionId)) {
+        throw new Error('Payment not saved to database')
+      }
+      
+      // 验证邮件
+      if (EmailService.sent.length !== 1) {
+        throw new Error('Confirmation email not sent')
+      }
+      
+      // 验证通知
+      if (NotificationService.notifications.length !== 1) {
+        throw new Error('Order creation notification not sent')
+      }
+    }))
+  ], { concurrency: 1 })
+  
+  const passed = results.filter(r => r).length
+  const total = results.length
+  
+  console.log(`\nE2E Test Results: ${passed}/${total} passed`)
+  
+  return { passed, total }
+})
+
+Effect.runSync(program)
+```
+
+## 📝 实际应用示例
+
+### 综合测试套件
+
+```js
+import { Effect } from 'effect'
+
+// 综合测试套件
+const program = Effect.gen(function* () {
+  // 测试套件
+  const TestSuite = {
+    unitTests: [],
+    integrationTests: [],
+    e2eTests: [],
+    
+    addUnit: (name, fn) => {
+      TestSuite.unitTests.push({ name, fn })
+    },
+    
+    addIntegration: (name, fn) => {
+      TestSuite.integrationTests.push({ name, fn })
+    },
+    
+    addE2E: (name, fn) => {
+      TestSuite.e2eTests.push({ name, fn })
+    },
+    
+    run: () => Effect.gen(function* () {
+      const results = {
+        unit: { passed: 0, total: 0 },
+        integration: { passed: 0, total: 0 },
+        e2e: { passed: 0, total: 0 }
+      }
+      
+      // 运行单元测试
+      console.log('\n=== Running Unit Tests ===')
+      for (const test of TestSuite.unitTests) {
+        try {
+          yield* test.fn()
+          console.log(`✓ ${test.name}`)
+          results.unit.passed++
+        } catch (error) {
+          console.log(`✗ ${test.name}: ${error.message}`)
+        }
+        results.unit.total++
+      }
+      
+      // 运行集成测试
+      console.log('\n=== Running Integration Tests ===')
+      for (const test of TestSuite.integrationTests) {
+        try {
+          yield* test.fn()
+          console.log(`✓ ${test.name}`)
+          results.integration.passed++
+        } catch (error) {
+          console.log(`✗ ${test.name}: ${error.message}`)
+        }
+        results.integration.total++
+      }
+      
+      // 运行端到端测试
+      console.log('\n=== Running E2E Tests ===')
+      for (const test of TestSuite.e2eTests) {
+        try {
+          yield* test.fn()
+          console.log(`✓ ${test.name}`)
+          results.e2e.passed++
+        } catch (error) {
+          console.log(`✗ ${test.name}: ${error.message}`)
+        }
+        results.e2e.total++
+      }
+      
+      // 输出总结
+      console.log('\n=== Test Summary ===')
+      console.log(`Unit Tests: ${results.unit.passed}/${results.unit.total}`)
+      console.log(`Integration Tests: ${results.integration.passed}/${results.integration.total}`)
+      console.log(`E2E Tests: ${results.e2e.passed}/${results.e2e.total}`)
+      
+      const totalPassed = results.unit.passed + results.integration.passed + results.e2e.passed
+      const totalTests = results.unit.total + results.integration.total + results.e2e.total
+      
+      console.log(`\nTotal: ${totalPassed}/${totalTests} passed`)
+      
+      return results
+    })
+  }
+  
+  // 添加测试
+  TestSuite.addUnit('add should work correctly', Effect.gen(function* () {
+    const result = 2 + 3
+    if (result !== 5) {
+      throw new Error('Expected 5')
+    }
+  }))
+  
+  TestSuite.addUnit('multiply should work correctly', Effect.gen(function* () {
+    const result = 2 * 3
+    if (result !== 6) {
+      throw new Error('Expected 6')
+    }
+  }))
+  
+  TestSuite.addIntegration('service integration', Effect.gen(function* () {
+    const service = {
+      process: (data) => Effect.gen(function* () {
+        yield* Effect.sleep(10)
+        return { ...data, processed: true }
+      })
+    }
+    
+    const result = yield* service.process({ id: 1 })
+    if (!result.processed) {
+      throw new Error('Should be processed')
+    }
+  }))
+  
+  TestSuite.addE2E('complete flow', Effect.gen(function* () {
+    const api = {
+      create: (data) => Effect.gen(function* () {
+        yield* Effect.sleep(20)
+        return { id: Date.now(), ...data }
+      })
+    }
+    
+    const db = {
+      save: (data) => Effect.gen(function* () {
+        yield* Effect.sleep(10)
+        return data
+      })
+    }
+    
+    const result = yield* api.create({ name: 'Test' })
+    yield* db.save(result)
+    
+    if (!result.id) {
+      throw new Error('Should have ID')
+    }
+  }))
+  
+  // 运行测试套件
+  const results = yield* TestSuite.run()
+  
+  return results
+})
+
+Effect.runSync(program)
+```
+
+## 🔗 相关概念
+
+- **代码风格**：命名规范、代码组织、注释文档
+- **重构技巧**：提取函数、简化逻辑、减少嵌套
+- **开发环境**：项目配置、依赖管理、构建工具
+
+## 📚 学习检查点
+
+- [ ] 掌握单元测试
+- [ ] 理解集成测试
+- [ ] 了解属性测试
+- [ ] 掌握端到端测试
+- [ ] 能够编写完整的测试套件
+
+## 🚀 下一步
+
+→ [重构技巧](./03-refactoring-techniques.mdx)

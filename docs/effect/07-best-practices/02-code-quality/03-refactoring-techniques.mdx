@@ -1,0 +1,1001 @@
+# 重构技巧
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-20
+
+## 📚 概念介绍
+
+Effect 的函数式编程特性使得代码重构变得更加安全和可预测。本节介绍常用的重构技巧，包括提取函数、简化逻辑、减少嵌套等。
+
+## 🎯 提取函数
+
+### 提取纯函数
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：复杂的嵌套逻辑
+const programBefore = Effect.gen(function* () {
+  const userData = yield* fetchUserData()
+  
+  if (userData) {
+    const processedName = userData.name.trim().toLowerCase()
+    const processedEmail = userData.email.trim().toLowerCase()
+    
+    if (processedName.length > 0 && processedEmail.length > 0) {
+      const formattedUser = {
+        id: userData.id,
+        name: processedName,
+        email: processedEmail,
+        timestamp: Date.now()
+      }
+      
+      yield* saveUser(formattedUser)
+      return formattedUser
+    }
+  }
+  
+  return null
+})
+
+// 重构后：提取纯函数
+const normalizeString = (str) => str.trim().toLowerCase()
+
+const isValidString = (str) => str.length > 0
+
+const formatUser = (userData) => ({
+  id: userData.id,
+  name: normalizeString(userData.name),
+  email: normalizeString(userData.email),
+  timestamp: Date.now()
+})
+
+const validateUser = (userData) => {
+  const normalizedName = normalizeString(userData.name)
+  const normalizedEmail = normalizeString(userData.email)
+  return isValidString(normalizedName) && isValidString(normalizedEmail)
+}
+
+const programAfter = Effect.gen(function* () {
+  const userData = yield* fetchUserData()
+  
+  if (!userData || !validateUser(userData)) {
+    return null
+  }
+  
+  const formattedUser = formatUser(userData)
+  yield* saveUser(formattedUser)
+  
+  return formattedUser
+})
+```
+
+### 提取 Effect 函数
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：Effect 逻辑混在一起
+const programBefore = Effect.gen(function* () {
+  const config = yield* loadConfig()
+  
+  if (config) {
+    const apiKey = config.apiKey
+    const timeout = config.timeout || 5000
+    
+    const response = yield* fetch(`https://api.example.com/data?key=${apiKey}`, {
+      timeout
+    })
+    
+    if (response.ok) {
+      const data = yield* response.json()
+      
+      if (data && data.items) {
+        const processedItems = data.items.map(item => ({
+          id: item.id,
+          name: item.name,
+          value: item.value * 2
+        }))
+        
+        yield* saveToDatabase(processedItems)
+        return processedItems
+      }
+    }
+  }
+  
+  return []
+})
+
+// 重构后：提取 Effect 函数
+const loadApiConfig = Effect.gen(function* () {
+  const config = yield* loadConfig()
+  
+  if (!config || !config.apiKey) {
+    return Effect.fail(new Error('Invalid API config'))
+  }
+  
+  return {
+    apiKey: config.apiKey,
+    timeout: config.timeout || 5000
+  }
+})
+
+const fetchApiData = (config) => Effect.gen(function* () {
+  const response = yield* fetch(`https://api.example.com/data?key=${config.apiKey}`, {
+    timeout: config.timeout
+  })
+  
+  if (!response.ok) {
+    return Effect.fail(new Error(`API request failed: ${response.status}`))
+  }
+  
+  return yield* response.json()
+})
+
+const processApiItems = (data) => {
+  if (!data || !data.items) {
+    return []
+  }
+  
+  return data.items.map(item => ({
+    id: item.id,
+    name: item.name,
+    value: item.value * 2
+  }))
+}
+
+const saveProcessedItems = (items) => Effect.gen(function* () {
+  if (items.length === 0) {
+    return Effect.succeed()
+  }
+  
+  yield* saveToDatabase(items)
+})
+
+const programAfter = Effect.gen(function* () {
+  const config = yield* loadApiConfig
+  const data = yield* fetchApiData(config)
+  const processedItems = processApiItems(data)
+  yield* saveProcessedItems(processedItems)
+  
+  return processedItems
+})
+```
+
+## 💡 简化逻辑
+
+### 简化条件判断
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：复杂的嵌套条件
+const processUserBefore = (user) => Effect.gen(function* () {
+  if (user) {
+    if (user.isActive) {
+      if (user.hasPermission) {
+        if (user.isValid) {
+          yield* performAction(user)
+          return true
+        } else {
+          yield* logError('User is invalid')
+          return false
+        }
+      } else {
+        yield* logError('User has no permission')
+        return false
+      }
+    } else {
+      yield* logError('User is not active')
+      return false
+    }
+  } else {
+    yield* logError('User is null')
+    return false
+  }
+})
+
+// 重构后：使用守卫子句
+const validateUser = (user) => {
+  if (!user) {
+    return { valid: false, reason: 'User is null' }
+  }
+  
+  if (!user.isActive) {
+    return { valid: false, reason: 'User is not active' }
+  }
+  
+  if (!user.hasPermission) {
+    return { valid: false, reason: 'User has no permission' }
+  }
+  
+  if (!user.isValid) {
+    return { valid: false, reason: 'User is invalid' }
+  }
+  
+  return { valid: true }
+}
+
+const processUserAfter = (user) => Effect.gen(function* () {
+  const validation = validateUser(user)
+  
+  if (!validation.valid) {
+    yield* logError(validation.reason)
+    return false
+  }
+  
+  yield* performAction(user)
+  return true
+})
+```
+
+### 简化错误处理
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：重复的错误处理
+const fetchUserDataBefore = Effect.gen(function* () {
+  try {
+    const response = yield* fetch('/api/user')
+    
+    if (!response.ok) {
+      throw new Error('Failed to fetch user')
+    }
+    
+    const data = yield* response.json()
+    
+    if (!data) {
+      throw new Error('No user data')
+    }
+    
+    return data
+  } catch (error) {
+    console.error('Error:', error)
+    throw error
+  }
+})
+
+const fetchOrdersBefore = Effect.gen(function* () {
+  try {
+    const response = yield* fetch('/api/orders')
+    
+    if (!response.ok) {
+      throw new Error('Failed to fetch orders')
+    }
+    
+    const data = yield* response.json()
+    
+    if (!data) {
+      throw new Error('No orders data')
+    }
+    
+    return data
+  } catch (error) {
+    console.error('Error:', error)
+    throw error
+  }
+})
+
+// 重构后：统一的错误处理
+const safeFetch = (url) => Effect.gen(function* () {
+  const response = yield* fetch(url)
+  
+  if (!response.ok) {
+    return Effect.fail(new Error(`HTTP ${response.status}: ${url}`))
+  }
+  
+  const data = yield* response.json()
+  
+  if (!data) {
+    return Effect.fail(new Error(`No data from: ${url}`))
+  }
+  
+  return data
+})
+
+const fetchUserDataAfter = safeFetch('/api/user')
+
+const fetchOrdersAfter = safeFetch('/api/orders')
+```
+
+## 🚀 减少嵌套
+
+### 使用 Effect 组合
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：深层嵌套
+const processOrderBefore = Effect.gen(function* () {
+  const user = yield* getUser()
+  
+  if (user) {
+    const cart = yield* getCart(user.id)
+    
+    if (cart && cart.items.length > 0) {
+      const inventory = yield* checkInventory(cart.items)
+      
+      if (inventory.available) {
+        const order = yield* createOrder(user, cart)
+        
+        if (order) {
+          const payment = yield* processPayment(order)
+          
+          if (payment.success) {
+            const confirmation = yield* sendConfirmation(user, order)
+            
+            if (confirmation) {
+              return { success: true, order, payment }
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return { success: false, error: 'Order processing failed' }
+})
+
+// 重构后：使用 Effect 组合
+const processOrderAfter = Effect.gen(function* () {
+  const user = yield* getUser()
+  const cart = yield* getCart(user.id)
+  
+  const order = yield* Effect.gen(function* () {
+    const inventory = yield* checkInventory(cart.items)
+    
+    if (!inventory.available) {
+      return Effect.fail(new Error('Items not available'))
+    }
+    
+    return yield* createOrder(user, cart)
+  })
+  
+  const payment = yield* processPayment(order)
+  const confirmation = yield* sendConfirmation(user, order)
+  
+  return { success: true, order, payment, confirmation }
+}).pipe(
+  Effect.catchAll(error => Effect.succeed({ 
+    success: false, 
+    error: error.message 
+  }))
+)
+```
+
+### 使用管道操作
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：嵌套的数据处理
+const processDataBefore = Effect.gen(function* () {
+  const rawData = yield* fetchData()
+  
+  if (rawData) {
+    const cleanedData = yield* cleanData(rawData)
+    
+    if (cleanedData) {
+      const validatedData = yield* validateData(cleanedData)
+      
+      if (validatedData) {
+        const enrichedData = yield* enrichData(validatedData)
+        
+        if (enrichedData) {
+          const transformedData = yield* transformData(enrichedData)
+          
+          if (transformedData) {
+            yield* saveData(transformedData)
+            return transformedData
+          }
+        }
+      }
+    }
+  }
+  
+  return null
+})
+
+// 重构后：使用管道操作
+const fetchData = () => Effect.succeed({ items: [1, 2, 3] })
+
+const cleanData = (data) => Effect.succeed({ ...data, cleaned: true })
+
+const validateData = (data) => Effect.succeed({ ...data, valid: true })
+
+const enrichData = (data) => Effect.succeed({ ...data, enriched: true })
+
+const transformData = (data) => Effect.succeed({ ...data, transformed: true })
+
+const saveData = (data) => Effect.succeed(data)
+
+const processDataAfter = fetchData().pipe(
+  Effect.andThen(cleanData),
+  Effect.andThen(validateData),
+  Effect.andThen(enrichData),
+  Effect.andThen(transformData),
+  Effect.tap(saveData)
+)
+```
+
+## 📝 提取常量
+
+### 提取魔法数字
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：魔法数字
+const calculatePriceBefore = (quantity) => {
+  const basePrice = 100
+  const discountThreshold = 10
+  const discountRate = 0.1
+  const taxRate = 0.08
+  
+  let price = quantity * basePrice
+  
+  if (quantity >= discountThreshold) {
+    price = price * (1 - discountRate)
+  }
+  
+  price = price * (1 + taxRate)
+  
+  return price
+}
+
+// 重构后：提取常量
+const PricingConstants = {
+  BASE_PRICE: 100,
+  DISCOUNT_THRESHOLD: 10,
+  DISCOUNT_RATE: 0.1,
+  TAX_RATE: 0.08
+}
+
+const calculatePriceAfter = (quantity) => {
+  const { BASE_PRICE, DISCOUNT_THRESHOLD, DISCOUNT_RATE, TAX_RATE } = PricingConstants
+  
+  let price = quantity * BASE_PRICE
+  
+  if (quantity >= DISCOUNT_THRESHOLD) {
+    price = price * (1 - DISCOUNT_RATE)
+  }
+  
+  price = price * (1 + TAX_RATE)
+  
+  return price
+}
+```
+
+### 提取配置对象
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：分散的配置
+const fetchApiDataBefore = Effect.gen(function* () {
+  const baseUrl = 'https://api.example.com'
+  const timeout = 5000
+  const retries = 3
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer token123'
+  }
+  
+  const response = yield* fetch(`${baseUrl}/data`, {
+    timeout,
+    retries,
+    headers
+  })
+  
+  return yield* response.json()
+})
+
+// 重构后：提取配置对象
+const ApiConfig = {
+  baseUrl: 'https://api.example.com',
+  timeout: 5000,
+  retries: 3,
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer token123'
+  }
+}
+
+const fetchApiDataAfter = Effect.gen(function* () {
+  const { baseUrl, timeout, retries, headers } = ApiConfig
+  
+  const response = yield* fetch(`${baseUrl}/data`, {
+    timeout,
+    retries,
+    headers
+  })
+  
+  return yield* response.json()
+})
+```
+
+## 🔧 提取类型
+
+### 提取数据类型
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：内联类型
+const processUserBefore = Effect.gen(function* () {
+  const userData = yield* fetchUser()
+  
+  const processedUser = {
+    id: userData.id,
+    name: userData.name,
+    email: userData.email,
+    age: userData.age,
+    active: userData.active,
+    createdAt: userData.createdAt
+  }
+  
+  const userSummary = {
+    userId: processedUser.id,
+    userName: processedUser.name,
+    userEmail: processedUser.email,
+    userAge: processedUser.age,
+    isActive: processedUser.active,
+    createdDate: processedUser.createdAt
+  }
+  
+  return userSummary
+})
+
+// 重构后：提取类型
+const User = {
+  id: null,
+  name: null,
+  email: null,
+  age: null,
+  active: false,
+  createdAt: null
+}
+
+const UserSummary = {
+  userId: null,
+  userName: null,
+  userEmail: null,
+  userAge: null,
+  isActive: false,
+  createdDate: null
+}
+
+const toUserSummary = (user) => ({
+  userId: user.id,
+  userName: user.name,
+  userEmail: user.email,
+  userAge: user.age,
+  isActive: user.active,
+  createdDate: user.createdAt
+})
+
+const processUserAfter = Effect.gen(function* () {
+  const userData = yield* fetchUser()
+  return toUserSummary(userData)
+})
+```
+
+### 提取 Effect 类型
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：Effect 类型不明确
+const fetchDataBefore = Effect.gen(function* () {
+  const response = yield* fetch('/api/data')
+  return yield* response.json()
+})
+
+const processDataBefore = (data) => Effect.gen(function* () {
+  const processed = data.map(item => item * 2)
+  return processed
+})
+
+// 重构后：提取 Effect 类型
+const FetchDataEffect = {
+  success: {
+    items: [],
+    total: 0,
+    page: 1
+  },
+  error: new Error('Fetch failed')
+}
+
+const ProcessDataEffect = {
+  success: [],
+  error: new Error('Process failed')
+}
+
+const fetchDataAfter = Effect.gen(function* () {
+  const response = yield* fetch('/api/data')
+  const data = yield* response.json()
+  
+  return {
+    items: data.items || [],
+    total: data.total || 0,
+    page: data.page || 1
+  }
+})
+
+const processDataAfter = (data) => Effect.gen(function* () {
+  if (!data.items || data.items.length === 0) {
+    return []
+  }
+  
+  return data.items.map(item => item * 2)
+})
+```
+
+## 🎨 提取重复逻辑
+
+### 提取重复的验证逻辑
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：重复的验证逻辑
+const createUserBefore = (data) => Effect.gen(function* () {
+  if (!data.name || data.name.length < 2) {
+    return Effect.fail(new Error('Invalid name'))
+  }
+  
+  if (!data.email || !data.email.includes('@')) {
+    return Effect.fail(new Error('Invalid email'))
+  }
+  
+  if (!data.password || data.password.length < 8) {
+    return Effect.fail(new Error('Invalid password'))
+  }
+  
+  yield* saveUser(data)
+  return data
+})
+
+const updateUserBefore = (id, data) => Effect.gen(function* () {
+  if (data.name && data.name.length < 2) {
+    return Effect.fail(new Error('Invalid name'))
+  }
+  
+  if (data.email && !data.email.includes('@')) {
+    return Effect.fail(new Error('Invalid email'))
+  }
+  
+  if (data.password && data.password.length < 8) {
+    return Effect.fail(new Error('Invalid password'))
+  }
+  
+  yield* updateUser(id, data)
+  return data
+})
+
+// 重构后：提取验证逻辑
+const UserValidation = {
+  validateName: (name) => {
+    if (!name || name.length < 2) {
+      return Effect.fail(new Error('Invalid name'))
+    }
+    return Effect.succeed(name)
+  },
+  
+  validateEmail: (email) => {
+    if (!email || !email.includes('@')) {
+      return Effect.fail(new Error('Invalid email'))
+    }
+    return Effect.succeed(email)
+  },
+  
+  validatePassword: (password) => {
+    if (!password || password.length < 8) {
+      return Effect.fail(new Error('Invalid password'))
+    }
+    return Effect.succeed(password)
+  },
+  
+  validateAll: (data) => Effect.gen(function* () {
+    yield* UserValidation.validateName(data.name)
+    yield* UserValidation.validateEmail(data.email)
+    yield* UserValidation.validatePassword(data.password)
+    return data
+  })
+}
+
+const createUserAfter = (data) => Effect.gen(function* () {
+  yield* UserValidation.validateAll(data)
+  yield* saveUser(data)
+  return data
+})
+
+const updateUserAfter = (id, data) => Effect.gen(function* () {
+  yield* UserValidation.validateAll(data)
+  yield* updateUser(id, data)
+  return data
+})
+```
+
+### 提取重复的数据转换逻辑
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：重复的数据转换
+const fetchUsersBefore = Effect.gen(function* () {
+  const response = yield* fetch('/api/users')
+  const data = yield* response.json()
+  
+  const users = data.map(user => ({
+    id: user._id,
+    fullName: `${user.firstName} ${user.lastName}`,
+    emailAddress: user.email,
+    userAge: user.age,
+    isActive: user.active,
+    joinedAt: new Date(user.createdAt)
+  }))
+  
+  return users
+})
+
+const fetchAdminsBefore = Effect.gen(function* () {
+  const response = yield* fetch('/api/admins')
+  const data = yield* response.json()
+  
+  const admins = data.map(admin => ({
+    id: admin._id,
+    fullName: `${admin.firstName} ${admin.lastName}`,
+    emailAddress: admin.email,
+    userAge: admin.age,
+    isActive: admin.active,
+    joinedAt: new Date(admin.createdAt)
+  }))
+  
+  return admins
+})
+
+// 重构后：提取数据转换逻辑
+const transformUser = (rawUser) => ({
+  id: rawUser._id,
+  fullName: `${rawUser.firstName} ${rawUser.lastName}`,
+  emailAddress: rawUser.email,
+  userAge: rawUser.age,
+  isActive: rawUser.active,
+  joinedAt: new Date(rawUser.createdAt)
+})
+
+const fetchUsersAfter = Effect.gen(function* () {
+  const response = yield* fetch('/api/users')
+  const data = yield* response.json()
+  return data.map(transformUser)
+})
+
+const fetchAdminsAfter = Effect.gen(function* () {
+  const response = yield* fetch('/api/admins')
+  const data = yield* response.json()
+  return data.map(transformUser)
+})
+```
+
+## 📝 实际应用示例
+
+### 综合重构示例
+
+```js
+import { Effect } from 'effect'
+
+// 重构前：复杂的订单处理逻辑
+const processOrderBefore = Effect.gen(function* () {
+  const userId = 123
+  const userResponse = yield* fetch(`/api/users/${userId}`)
+  
+  if (!userResponse.ok) {
+    throw new Error('Failed to fetch user')
+  }
+  
+  const userData = yield* userResponse.json()
+  
+  if (!userData || !userData.active) {
+    throw new Error('Invalid user')
+  }
+  
+  const cartResponse = yield* fetch(`/api/users/${userId}/cart`)
+  
+  if (!cartResponse.ok) {
+    throw new Error('Failed to fetch cart')
+  }
+  
+  const cartData = yield* cartResponse.json()
+  
+  if (!cartData || cartData.items.length === 0) {
+    throw new Error('Empty cart')
+  }
+  
+  const total = cartData.items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+  
+  if (total > 10000) {
+    throw new Error('Order total exceeds limit')
+  }
+  
+  const orderResponse = yield* fetch('/api/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      userId: userData.id,
+      items: cartData.items,
+      total: total
+    })
+  })
+  
+  if (!orderResponse.ok) {
+    throw new Error('Failed to create order')
+  }
+  
+  const orderData = yield* orderResponse.json()
+  
+  const paymentResponse = yield* fetch('/api/payments', {
+    method: 'POST',
+    body: JSON.stringify({
+      orderId: orderData.id,
+      amount: total,
+      currency: 'USD'
+    })
+  })
+  
+  if (!paymentResponse.ok) {
+    throw new Error('Failed to process payment')
+  }
+  
+  const paymentData = yield* paymentResponse.json()
+  
+  const notificationResponse = yield* fetch('/api/notifications', {
+    method: 'POST',
+    body: JSON.stringify({
+      userId: userData.id,
+      type: 'order_confirmation',
+      orderId: orderData.id
+    })
+  })
+  
+  if (!notificationResponse.ok) {
+    console.warn('Failed to send notification')
+  }
+  
+  return {
+    order: orderData,
+    payment: paymentData
+  }
+})
+
+// 重构后：模块化的订单处理逻辑
+const OrderConfig = {
+  MAX_ORDER_TOTAL: 10000,
+  CURRENCY: 'USD'
+}
+
+const fetchUser = (userId) => Effect.gen(function* () {
+  const response = yield* fetch(`/api/users/${userId}`)
+  
+  if (!response.ok) {
+    return Effect.fail(new Error('Failed to fetch user'))
+  }
+  
+  const userData = yield* response.json()
+  
+  if (!userData || !userData.active) {
+    return Effect.fail(new Error('Invalid user'))
+  }
+  
+  return userData
+})
+
+const fetchCart = (userId) => Effect.gen(function* () {
+  const response = yield* fetch(`/api/users/${userId}/cart`)
+  
+  if (!response.ok) {
+    return Effect.fail(new Error('Failed to fetch cart'))
+  }
+  
+  const cartData = yield* response.json()
+  
+  if (!cartData || cartData.items.length === 0) {
+    return Effect.fail(new Error('Empty cart'))
+  }
+  
+  return cartData
+})
+
+const calculateTotal = (items) => 
+  items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+
+const validateOrderTotal = (total) => {
+  if (total > OrderConfig.MAX_ORDER_TOTAL) {
+    return Effect.fail(new Error('Order total exceeds limit'))
+  }
+  return Effect.succeed(total)
+}
+
+const createOrder = (userId, cart, total) => Effect.gen(function* () {
+  const response = yield* fetch('/api/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      userId,
+      items: cart.items,
+      total
+    })
+  })
+  
+  if (!response.ok) {
+    return Effect.fail(new Error('Failed to create order'))
+  }
+  
+  return yield* response.json()
+})
+
+const processPayment = (orderId, amount) => Effect.gen(function* () {
+  const response = yield* fetch('/api/payments', {
+    method: 'POST',
+    body: JSON.stringify({
+      orderId,
+      amount,
+      currency: OrderConfig.CURRENCY
+    })
+  })
+  
+  if (!response.ok) {
+    return Effect.fail(new Error('Failed to process payment'))
+  }
+  
+  return yield* response.json()
+})
+
+const sendNotification = (userId, orderId) => Effect.gen(function* () {
+  const response = yield* fetch('/api/notifications', {
+    method: 'POST',
+    body: JSON.stringify({
+      userId,
+      type: 'order_confirmation',
+      orderId
+    })
+  })
+  
+  if (!response.ok) {
+    console.warn('Failed to send notification')
+  }
+  
+  return Effect.succeed()
+})
+
+const processOrderAfter = (userId) => Effect.gen(function* () {
+  const user = yield* fetchUser(userId)
+  const cart = yield* fetchCart(userId)
+  
+  const total = calculateTotal(cart.items)
+  yield* validateOrderTotal(total)
+  
+  const order = yield* createOrder(user.id, cart, total)
+  const payment = yield* processPayment(order.id, total)
+  yield* sendNotification(user.id, order.id)
+  
+  return { order, payment }
+})
+```
+
+## 🔗 相关概念
+
+- **代码风格**：命名规范、代码组织、注释文档
+- **测试策略**：单元测试、集成测试、属性测试
+- **开发环境**：项目配置、依赖管理、构建工具
+
+## 📚 学习检查点
+
+- [ ] 掌握提取函数
+- [ ] 理解简化逻辑
+- [ ] 了解减少嵌套
+- [ ] 掌握提取常量
+- [ ] 能够进行综合重构
+
+## 🚀 下一步
+
+→ [开发环境](../03-development-workflow/01-development-environment.mdx)
