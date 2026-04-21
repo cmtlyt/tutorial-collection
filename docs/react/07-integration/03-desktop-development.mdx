@@ -1,0 +1,1512 @@
+# 桌面应用开发
+
+> **版本**: v1.0  
+> **最后更新**: 2025-04-21
+
+## 📚 概念介绍
+
+桌面应用开发是现代软件开发的重要组成部分。React 生态提供了多种桌面应用开发解决方案，其中 Electron 和 Tauri 是最流行的跨平台桌面应用开发框架。本节将深入探讨 Electron + React 和 Tauri 框架的集成方式、核心概念和最佳实践。
+
+## 🎯 Electron + React
+
+### Electron 基础
+
+Electron 是由 GitHub 开发的跨平台桌面应用开发框架，允许开发者使用 JavaScript、HTML 和 CSS 构建原生桌面应用。
+
+```js
+// 模拟 Electron 核心功能
+const Electron = {
+  // 主进程模块
+  app: {
+    on: function(event, callback) {
+      console.log(`App event: ${event}`);
+      if (event === 'ready') {
+        setTimeout(callback, 100);
+      }
+    },
+    quit: function() {
+      console.log('App quitting');
+    },
+    getPath: function(name) {
+      const paths = {
+        home: '/Users/username',
+        appData: '/Users/username/Library/Application Support',
+        userData: '/Users/username/Library/Application Support/myapp',
+        temp: '/tmp',
+        downloads: '/Users/username/Downloads'
+      };
+      return paths[name] || '';
+    }
+  },
+
+  // 浏览器窗口模块
+  BrowserWindow: function BrowserWindow(options) {
+    this.options = options;
+    this.id = Date.now();
+    
+    return {
+      id: this.id,
+      loadURL: function(url) {
+        console.log(`Loading URL: ${url}`);
+        return Promise.resolve();
+      },
+      on: function(event, callback) {
+        console.log(`Window event: ${event}`);
+        if (event === 'closed') {
+          setTimeout(callback, 50);
+        }
+      },
+      close: function() {
+        console.log('Window closing');
+      },
+      webContents: {
+        openDevTools: function() {
+          console.log('Opening DevTools');
+        },
+        send: function(channel, ...args) {
+          console.log(`Sending to renderer: ${channel}`, args);
+        }
+      },
+      show: function() {
+        console.log('Window shown');
+      }
+    };
+  },
+
+  // IPC 通信模块
+  ipcMain: {
+    on: function(channel, listener) {
+      console.log(`IPC main listening on: ${channel}`);
+      this.listeners = this.listeners || {};
+      this.listeners[channel] = listener;
+    },
+    handle: function(channel, listener) {
+      console.log(`IPC main handling: ${channel}`);
+      this.handlers = this.handlers || {};
+      this.handlers[channel] = listener;
+    }
+  },
+
+  // 渲染进程模块
+  ipcRenderer: {
+    on: function(channel, listener) {
+      console.log(`IPC renderer listening on: ${channel}`);
+    },
+    send: function(channel, ...args) {
+      console.log(`Sending to main: ${channel}`, args);
+    },
+    invoke: async function(channel, ...args) {
+      console.log(`Invoking main: ${channel}`, args);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return { success: true, data: args };
+    }
+  },
+
+  // 对话框模块
+  dialog: {
+    showOpenDialog: async function(options) {
+      console.log('Showing open dialog', options);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return {
+        canceled: false,
+        filePaths: ['/path/to/selected/file.txt']
+      };
+    },
+    showSaveDialog: async function(options) {
+      console.log('Showing save dialog', options);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return {
+        canceled: false,
+        filePath: '/path/to/save/file.txt'
+      };
+    },
+    showMessageBox: async function(options) {
+      console.log('Showing message box', options);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return { response: 0 };
+    }
+  },
+
+  // 菜单模块
+  Menu: {
+    buildFromTemplate: function(template) {
+      console.log('Building menu from template');
+      return {
+        items: template
+      };
+    },
+    setApplicationMenu: function(menu) {
+      console.log('Setting application menu');
+    }
+  },
+
+  MenuItem: function MenuItem(options) {
+    this.options = options;
+    return {
+      ...options
+    };
+  }
+};
+
+// Electron 主进程代码
+const createMainWindow = () => {
+  const mainWindow = new Electron.BrowserWindow({
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: '/path/to/preload.js'
+    }
+  });
+
+  mainWindow.loadURL('http://localhost:3000');
+  
+  // 开发环境打开 DevTools
+  if (process.env.NODE_ENV === 'development') {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    console.log('Main window closed');
+  });
+
+  return mainWindow;
+};
+
+// Electron 应用初始化
+const initializeElectronApp = () => {
+  let mainWindow;
+
+  Electron.app.on('ready', () => {
+    console.log('Electron app ready');
+    mainWindow = createMainWindow();
+  });
+
+  Electron.app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      Electron.app.quit();
+    }
+  });
+
+  Electron.app.on('activate', () => {
+    if (mainWindow === null) {
+      mainWindow = createMainWindow();
+    }
+  });
+
+  console.log('Electron app initialized');
+};
+
+// 测试 Electron 基础功能
+console.log('=== Testing Electron Basics ===');
+initializeElectronApp();
+
+const testWindow = new Electron.BrowserWindow({
+  width: 800,
+  height: 600
+});
+console.log('Test window created with ID:', testWindow.id);
+```
+
+### 主进程与渲染进程
+
+Electron 应用采用多进程架构，主进程负责应用生命周期和原生功能，渲染进程负责 UI 渲染。
+
+```js
+// 主进程代码
+const MainProcess = {
+  // IPC 处理器
+  setupIpcHandlers: function() {
+    // 文件操作
+    Electron.ipcMain.handle('read-file', async (event, filePath) => {
+      console.log('Reading file:', filePath);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return {
+        success: true,
+        content: `File content from ${filePath}`,
+        size: 1024
+      };
+    });
+
+    Electron.ipcMain.handle('write-file', async (event, filePath, content) => {
+      console.log('Writing file:', filePath);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return {
+        success: true,
+        bytesWritten: content.length
+      };
+    });
+
+    // 系统信息
+    Electron.ipcMain.handle('get-system-info', async () => {
+      return {
+        platform: process.platform,
+        arch: process.arch,
+        version: process.version,
+        electronVersion: '25.0.0'
+      };
+    });
+
+    // 应用路径
+    Electron.ipcMain.handle('get-app-path', async (event, pathName) => {
+      return Electron.app.getPath(pathName);
+    });
+
+    // 对话框
+    Electron.ipcMain.handle('show-open-dialog', async (event, options) => {
+      return await Electron.dialog.showOpenDialog(options);
+    });
+
+    Electron.ipcMain.handle('show-save-dialog', async (event, options) => {
+      return await Electron.dialog.showSaveDialog(options);
+    });
+
+    console.log('IPC handlers setup complete');
+  },
+
+  // 创建应用菜单
+  createApplicationMenu: function() {
+    const template = [
+      {
+        label: 'File',
+        submenu: [
+          new Electron.MenuItem({
+            label: 'New',
+            accelerator: 'CmdOrCtrl+N',
+            click: () => {
+              console.log('New file');
+            }
+          }),
+          new Electron.MenuItem({
+            label: 'Open',
+            accelerator: 'CmdOrCtrl+O',
+            click: () => {
+              console.log('Open file');
+            }
+          }),
+          { type: 'separator' },
+          new Electron.MenuItem({
+            label: 'Save',
+            accelerator: 'CmdOrCtrl+S',
+            click: () => {
+              console.log('Save file');
+            }
+          }),
+          { type: 'separator' },
+          {
+            label: 'Exit',
+            accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+            click: () => {
+              Electron.app.quit();
+            }
+          }
+        ]
+      },
+      {
+        label: 'Edit',
+        submenu: [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut' },
+          { role: 'copy' },
+          { role: 'paste' }
+        ]
+      },
+      {
+        label: 'View',
+        submenu: [
+          { role: 'reload' },
+          { role: 'forceReload' },
+          { role: 'toggleDevTools' },
+          { type: 'separator' },
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' },
+          { type: 'separator' },
+          { role: 'togglefullscreen' }
+        ]
+      },
+      {
+        label: 'Help',
+        submenu: [
+          {
+            label: 'About',
+            click: () => {
+              console.log('About');
+            }
+          }
+        ]
+      }
+    ];
+
+    const menu = Electron.Menu.buildFromTemplate(template);
+    Electron.Menu.setApplicationMenu(menu);
+    console.log('Application menu created');
+  }
+};
+
+// 渲染进程代码（模拟）
+const RendererProcess = {
+  // 与主进程通信
+  readFile: async function(filePath) {
+    return await Electron.ipcRenderer.invoke('read-file', filePath);
+  },
+
+  writeFile: async function(filePath, content) {
+    return await Electron.ipcRenderer.invoke('write-file', filePath, content);
+  },
+
+  getSystemInfo: async function() {
+    return await Electron.ipcRenderer.invoke('get-system-info');
+  },
+
+  getAppPath: async function(pathName) {
+    return await Electron.ipcRenderer.invoke('get-app-path', pathName);
+  },
+
+  showOpenDialog: async function(options) {
+    return await Electron.ipcRenderer.invoke('show-open-dialog', options);
+  },
+
+  showSaveDialog: async function(options) {
+    return await Electron.ipcRenderer.invoke('show-save-dialog', options);
+  },
+
+  // 监听主进程消息
+  listenToMain: function(channel, callback) {
+    Electron.ipcRenderer.on(channel, callback);
+  }
+};
+
+// 测试主进程和渲染进程通信
+console.log('\n=== Testing Main and Renderer Process Communication ===');
+
+// 设置主进程
+MainProcess.setupIpcHandlers();
+MainProcess.createApplicationMenu();
+
+// 模拟渲染进程调用
+(async () => {
+  const systemInfo = await RendererProcess.getSystemInfo();
+  console.log('System info:', systemInfo);
+
+  const appPath = await RendererProcess.getAppPath('userData');
+  console.log('App data path:', appPath);
+
+  const fileResult = await RendererProcess.readFile('/test/file.txt');
+  console.log('File read result:', fileResult);
+
+  const dialogResult = await RendererProcess.showOpenDialog({
+    properties: ['openFile'],
+    filters: [
+      { name: 'Text Files', extensions: ['txt'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+  console.log('Dialog result:', dialogResult);
+})();
+```
+
+### 原生功能集成
+
+Electron 提供了对原生操作系统功能的访问，包括文件系统、系统托盘、通知等。
+
+```js
+// 模拟原生功能模块
+const NativeFeatures = {
+  // 文件系统操作
+  FileSystem: {
+    readFile: async function(filePath) {
+      console.log('Reading file:', filePath);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return {
+        content: 'File content here',
+        size: 1024,
+        encoding: 'utf8'
+      };
+    },
+
+    writeFile: async function(filePath, content) {
+      console.log('Writing file:', filePath);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return {
+        success: true,
+        bytesWritten: content.length
+      };
+    },
+
+    readdir: async function(dirPath) {
+      console.log('Reading directory:', dirPath);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return [
+        'file1.txt',
+        'file2.txt',
+        'subdirectory'
+      ];
+    },
+
+    stat: async function(filePath) {
+      console.log('Getting file stats:', filePath);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      return {
+        size: 1024,
+        mtime: new Date(),
+        isFile: true,
+        isDirectory: false
+      };
+    }
+  },
+
+  // 系统托盘
+  Tray: {
+    create: function(iconPath) {
+      console.log('Creating tray with icon:', iconPath);
+      return {
+        setToolTip: function(tooltip) {
+          console.log('Setting tray tooltip:', tooltip);
+        },
+        setContextMenu: function(menu) {
+          console.log('Setting tray context menu');
+        },
+        displayBalloon: function(options) {
+          console.log('Displaying balloon:', options);
+        }
+      };
+    }
+  },
+
+  // 系统通知
+  Notification: {
+    show: function(options) {
+      console.log('Showing notification:', options);
+      return {
+        close: function() {
+          console.log('Closing notification');
+        }
+      };
+    }
+  },
+
+  // 剪贴板
+  Clipboard: {
+    readText: function() {
+      return 'Clipboard content';
+    },
+
+    writeText: function(text) {
+      console.log('Writing to clipboard:', text);
+    },
+
+    readHTML: function() {
+      return '<b>HTML content</b>';
+    },
+
+    writeHTML: function(html) {
+      console.log('Writing HTML to clipboard:', html);
+    }
+  },
+
+  // 屏幕
+  Screen: {
+    getDisplayNearestPoint: function(point) {
+      console.log('Getting display near point:', point);
+      return {
+        id: 1,
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        workArea: { x: 0, y: 23, width: 1920, height: 1057 }
+      };
+    },
+
+    getPrimaryDisplay: function() {
+      return {
+        id: 1,
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        workArea: { x: 0, y: 23, width: 1920, height: 1057 }
+      };
+    },
+
+    getAllDisplays: function() {
+      return [
+        {
+          id: 1,
+          bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+          workArea: { x: 0, y: 23, width: 1920, height: 1057 }
+        }
+      ];
+    }
+  },
+
+  // 全局快捷键
+  GlobalShortcut: {
+    register: function(accelerator, callback) {
+      console.log('Registering global shortcut:', accelerator);
+      return true;
+    },
+
+    unregister: function(accelerator) {
+      console.log('Unregistering global shortcut:', accelerator);
+    },
+
+    unregisterAll: function() {
+      console.log('Unregistering all global shortcuts');
+    }
+  }
+};
+
+// 使用原生功能
+const useNativeFeatures = async () => {
+  // 文件系统操作
+  const fileContent = await NativeFeatures.FileSystem.readFile('/test/file.txt');
+  console.log('File content:', fileContent);
+
+  await NativeFeatures.FileSystem.writeFile('/test/output.txt', 'New content');
+  console.log('File written successfully');
+
+  const dirContents = await NativeFeatures.FileSystem.readdir('/test');
+  console.log('Directory contents:', dirContents);
+
+  // 系统托盘
+  const tray = NativeFeatures.Tray.create('/path/to/icon.png');
+  tray.setToolTip('My Application');
+  console.log('Tray created');
+
+  // 系统通知
+  const notification = NativeFeatures.Notification.show({
+    title: 'Notification',
+    body: 'This is a system notification'
+  });
+  console.log('Notification shown');
+
+  // 剪贴板操作
+  const clipboardText = NativeFeatures.Clipboard.readText();
+  console.log('Clipboard text:', clipboardText);
+
+  NativeFeatures.Clipboard.writeText('New clipboard content');
+  console.log('Clipboard updated');
+
+  // 屏幕信息
+  const primaryDisplay = NativeFeatures.Screen.getPrimaryDisplay();
+  console.log('Primary display:', primaryDisplay.bounds);
+
+  // 全局快捷键
+  NativeFeatures.GlobalShortcut.register('CommandOrControl+Shift+D', () => {
+    console.log('Global shortcut triggered');
+  });
+  console.log('Global shortcut registered');
+};
+
+// 测试原生功能
+console.log('\n=== Testing Native Features ===');
+useNativeFeatures();
+```
+
+## 🎯 Tauri 框架
+
+### Tauri 基础
+
+Tauri 是一个轻量级的跨平台桌面应用开发框架，使用 Rust 作为后端，Web 技术作为前端。
+
+```js
+// 模拟 Tauri 核心功能
+const Tauri = {
+  // Tauri API
+  invoke: async function(cmd, args) {
+    console.log(`Tauri invoke: ${cmd}`, args);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return {
+      success: true,
+      data: args
+    };
+  },
+
+  // 事件系统
+  listen: function(event, callback) {
+    console.log(`Tauri listening to event: ${event}`);
+    return {
+      unlisten: function() {
+        console.log(`Unlistening from event: ${event}`);
+      }
+    };
+  },
+
+  emit: function(event, payload) {
+    console.log(`Tauri emitting event: ${event}`, payload);
+  },
+
+  // 窗口管理
+  Window: {
+    getCurrent: function() {
+      return {
+        label: 'main',
+        setTitle: function(title) {
+          console.log('Setting window title:', title);
+        },
+        maximize: function() {
+          console.log('Maximizing window');
+        },
+    minimize: function() {
+          console.log('Minimizing window');
+        },
+        close: function() {
+          console.log('Closing window');
+        },
+        hide: function() {
+          console.log('Hiding window');
+        },
+        show: function() {
+          console.log('Showing window');
+        },
+        isMaximized: async function() {
+          return false;
+        },
+        isMinimized: async function() {
+          return false;
+        },
+        isVisible: async function() {
+          return true;
+        }
+      };
+    }
+  },
+
+  // 应用信息
+  App: {
+    getName: async function() {
+      return 'My Tauri App';
+    },
+    getVersion: async function() {
+      return '1.0.0';
+    },
+    getTauriVersion: async function() {
+      return '2.0.0';
+    }
+  },
+
+  // 对话框
+  Dialog: {
+    open: async function(options) {
+      console.log('Opening dialog with options:', options);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return '/path/to/selected/file';
+    },
+    save: async function(options) {
+      console.log('Saving dialog with options:', options);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return '/path/to/save/file';
+    },
+    message: async function(message, title) {
+      console.log('Showing message dialog:', message, title);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return null;
+    },
+    ask: async function(message, title) {
+      console.log('Showing ask dialog:', message, title);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return true;
+    },
+    confirm: async function(message, title) {
+      console.log('Showing confirm dialog:', message, title);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return true;
+    }
+  },
+
+  // 文件系统
+  Fs: {
+    readTextFile: async function(path) {
+      console.log('Reading text file:', path);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return 'File content';
+    },
+    writeTextFile: async function(path, contents) {
+      console.log('Writing text file:', path);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return null;
+    },
+    readDir: async function(path) {
+      console.log('Reading directory:', path);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return [
+        { name: 'file1.txt' },
+        { name: 'file2.txt' },
+        { name: 'subdirectory' }
+      ];
+    },
+    createDir: async function(path) {
+      console.log('Creating directory:', path);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      return null;
+    },
+    removeDir: async function(path) {
+      console.log('Removing directory:', path);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      return null;
+    }
+  },
+
+  // 路径
+  Path: {
+    resolve: function(...paths) {
+      return paths.join('/');
+    },
+    join: function(...paths) {
+      return paths.join('/');
+    },
+    basename: function(path) {
+      return path.split('/').pop();
+    },
+    dirname: function(path) {
+      return path.split('/').slice(0, -1).join('/');
+    },
+    extname: function(path) {
+      const ext = path.split('.').pop();
+      return ext === path ? '' : `.${ext}`;
+    }
+  }
+};
+
+// 使用 Tauri API
+const useTauriAPI = async () => {
+  // 调用 Tauri 命令
+  const result = await Tauri.invoke('custom_command', { param: 'value' });
+  console.log('Tauri invoke result:', result);
+
+  // 监听事件
+  const unlisten = Tauri.listen('tauri://update-available', (event) => {
+    console.log('Update available:', event);
+  });
+
+  // 发送事件
+  Tauri.emit('custom-event', { data: 'test' });
+
+  // 窗口操作
+  const window = Tauri.Window.getCurrent();
+  await window.setTitle('New Title');
+  console.log('Window title set');
+
+  // 应用信息
+  const appName = await Tauri.App.getName();
+  const appVersion = await Tauri.App.getVersion();
+  console.log(`App: ${appName} v${appVersion}`);
+
+  // 对话框
+  const filePath = await Tauri.Dialog.open({
+    multiple: false,
+    filters: [
+      { name: 'Text', extensions: ['txt'] }
+    ]
+  });
+  console.log('Selected file:', filePath);
+
+  // 文件系统操作
+  const content = await Tauri.Fs.readTextFile('/test/file.txt');
+  console.log('File content:', content);
+
+  await Tauri.Fs.writeTextFile('/test/output.txt', 'New content');
+  console.log('File written');
+
+  const dirContents = await Tauri.Fs.readDir('/test');
+  console.log('Directory contents:', dirContents);
+
+  // 路径操作
+  const fullPath = Tauri.Path.resolve('/home', 'user', 'documents', 'file.txt');
+  console.log('Resolved path:', fullPath);
+
+  const basename = Tauri.Path.basename(fullPath);
+  console.log('Basename:', basename);
+
+  const dirname = Tauri.Path.dirname(fullPath);
+  console.log('Dirname:', dirname);
+
+  // 清理事件监听
+  unlisten.unlisten();
+};
+
+// 测试 Tauri 基础功能
+console.log('\n=== Testing Tauri Basics ===');
+useTauriAPI();
+```
+
+### Rust 后端集成
+
+Tauri 使用 Rust 编写后端逻辑，提供高性能和安全性。
+
+```js
+// 模拟 Rust 后端命令
+const RustBackend = {
+  // Rust 命令处理器
+  commands: {
+    // 文件操作
+    read_file: async function(path) {
+      console.log('[Rust] Reading file:', path);
+      // 模拟 Rust 文件读取
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return {
+        content: 'File content from Rust backend',
+        size: 2048,
+        modified: new Date().toISOString()
+      };
+    },
+
+    write_file: async function(path, content) {
+      console.log('[Rust] Writing file:', path);
+      // 模拟 Rust 文件写入
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return {
+        success: true,
+        bytes_written: content.length
+      };
+    },
+
+    // 系统信息
+    get_system_info: async function() {
+      console.log('[Rust] Getting system info');
+      // 模拟 Rust 系统信息获取
+      await new Promise(resolve => setTimeout(resolve, 50));
+      return {
+        os: 'Linux',
+        arch: 'x86_64',
+        kernel_version: '5.15.0',
+        memory: {
+          total: 16777216,
+          available: 8388608,
+          used: 8388608
+        },
+        cpu: {
+          cores: 8,
+          usage: 45.5
+        }
+      };
+    },
+
+    // 数据处理
+    process_data: async function(data) {
+      console.log('[Rust] Processing data:', data);
+      // 模拟 Rust 数据处理
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return {
+        processed: true,
+        result: data.map(item => ({
+          ...item,
+          processed: true,
+          timestamp: Date.now()
+        }))
+      };
+    },
+
+    // 加密操作
+    encrypt: async function(text, key) {
+      console.log('[Rust] Encrypting text');
+      // 模拟 Rust 加密
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return {
+        encrypted: true,
+        cipher_text: btoa(text + ':' + key),
+        algorithm: 'AES-256-GCM'
+      };
+    },
+
+    decrypt: async function(cipher_text, key) {
+      console.log('[Rust] Decrypting text');
+      // 模拟 Rust 解密
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const decoded = atob(cipher_text);
+      const [text, originalKey] = decoded.split(':');
+      return {
+        decrypted: originalKey === key,
+        plain_text: originalKey === key ? text : null
+      };
+    }
+  },
+
+  // 调用 Rust 命令
+  invoke: async function(commandName, args) {
+    const command = this.commands[commandName];
+    if (!command) {
+      throw new Error(`Unknown command: ${commandName}`);
+    }
+    return await command.apply(this, Object.values(args || {}));
+  }
+};
+
+// 使用 Rust 后端
+const useRustBackend = async () => {
+  // 文件操作
+  const fileContent = await RustBackend.invoke('read_file', { path: '/test/file.txt' });
+  console.log('File content from Rust:', fileContent);
+
+  const writeResult = await RustBackend.invoke('write_file', {
+    path: '/test/output.txt',
+    content: 'Content from Rust backend'
+  });
+  console.log('Write result:', writeResult);
+
+  // 系统信息
+  const systemInfo = await RustBackend.invoke('get_system_info', {});
+  console.log('System info from Rust:', systemInfo);
+
+  // 数据处理
+  const processData = await RustBackend.invoke('process_data', {
+    data: [
+      { id: 1, name: 'Item 1' },
+      { id: 2, name: 'Item 2' },
+      { id: 3, name: 'Item 3' }
+    ]
+  });
+  console.log('Processed data:', processData);
+
+  // 加密操作
+  const encryptResult = await RustBackend.invoke('encrypt', {
+    text: 'Secret message',
+    key: 'secret-key-123'
+  });
+  console.log('Encrypted:', encryptResult);
+
+  const decryptResult = await RustBackend.invoke('decrypt', {
+    cipher_text: encryptResult.cipher_text,
+    key: 'secret-key-123'
+  });
+  console.log('Decrypted:', decryptResult);
+};
+
+// 测试 Rust 后端集成
+console.log('\n=== Testing Rust Backend Integration ===');
+useRustBackend();
+```
+
+### 安全性与性能
+
+Tauri 相比 Electron 具有更好的安全性和性能表现。
+
+```js
+// 模拟 Tauri 安全和性能特性
+const TauriSecurity = {
+  // 安全特性
+  security: {
+    // 内容安全策略
+    csp: {
+      'default-src': "'self'",
+      'script-src': "'self'",
+      'style-src': "'self' 'unsafe-inline'",
+      'img-src': "'self' data:",
+      'font-src': "'self'",
+      'connect-src': "'self' http://localhost:*"
+    },
+
+    // 权限管理
+    permissions: {
+      fs: {
+        scope: ['$HOME/*'],
+        allow: ['read', 'write']
+      },
+      shell: {
+        scope: ['open', 'execute'],
+        allow: ['open']
+      },
+      dialog: {
+        scope: ['open', 'save'],
+        allow: ['open', 'save']
+      }
+    },
+
+    // 上下文隔离
+    contextIsolation: true,
+
+    // 禁用 Node.js 集成
+    nodeIntegration: false,
+
+    // 预加载脚本
+    preloadScript: '/path/to/preload.js'
+  },
+
+  // 性能特性
+  performance: {
+    // 内存使用
+    memoryUsage: function() {
+      return {
+        heapUsed: 45678901,
+        heapTotal: 67890123,
+        external: 1234567,
+        rss: 89012345
+      };
+    },
+
+    // CPU 使用
+    cpuUsage: function() {
+      return {
+        user: 123456,
+        system: 45678,
+        percent: 15.5
+      };
+    },
+
+    // 启动时间
+    startupTime: function() {
+      return {
+        appReady: 1250,
+        windowReady: 1800,
+        fullyLoaded: 2500
+      };
+    },
+
+    // 包大小
+    bundleSize: function() {
+      return {
+        windows: '15.2 MB',
+        macos: '14.8 MB',
+        linux: '13.5 MB'
+      };
+    }
+  },
+
+  // 与 Electron 对比
+  compareWithElectron: function() {
+    return {
+      security: {
+        tauri: 'Superior',
+        electron: 'Good',
+        details: 'Tauri has better sandboxing and smaller attack surface'
+      },
+      performance: {
+        tauri: 'Superior',
+        electron: 'Good',
+        details: 'Tauri uses Rust backend, lower memory footprint'
+      },
+      bundleSize: {
+        tauri: '~15 MB',
+        electron: '~120 MB',
+        improvement: '87.5% smaller'
+      },
+      startupTime: {
+        tauri: '~2.5s',
+        electron: '~5s',
+        improvement: '50% faster'
+      },
+      memoryUsage: {
+        tauri: '~80 MB',
+        electron: '~200 MB',
+        improvement: '60% less memory'
+      }
+    };
+  }
+};
+
+// 使用安全和性能特性
+const useTauriSecurity = () => {
+  console.log('=== Tauri Security and Performance ===\n');
+
+  // 安全特性
+  console.log('Security Features:');
+  console.log('CSP:', TauriSecurity.security.csp);
+  console.log('Permissions:', TauriSecurity.security.permissions);
+  console.log('Context Isolation:', TauriSecurity.security.contextIsolation);
+  console.log('Node Integration:', TauriSecurity.security.nodeIntegration);
+
+  // 性能特性
+  console.log('\nPerformance Metrics:');
+  const memory = TauriSecurity.performance.memoryUsage();
+  console.log('Memory Usage:', {
+    heapUsed: `${(memory.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+    heapTotal: `${(memory.heapTotal / 1024 / 1024).toFixed(2)} MB`,
+    rss: `${(memory.rss / 1024 / 1024).toFixed(2)} MB`
+  });
+
+  const cpu = TauriSecurity.performance.cpuUsage();
+  console.log('CPU Usage:', {
+    user: `${(cpu.user / 1000).toFixed(2)}s`,
+    system: `${(cpu.system / 1000).toFixed(2)}s`,
+    percent: `${cpu.percent}%`
+  });
+
+  const startup = TauriSecurity.performance.startupTime();
+  console.log('Startup Time:', {
+    appReady: `${startup.appReady}ms`,
+    windowReady: `${startup.windowReady}ms`,
+    fullyLoaded: `${startup.fullyLoaded}ms`
+  });
+
+  const bundle = TauriSecurity.performance.bundleSize();
+  console.log('Bundle Size:', bundle);
+
+  // 与 Electron 对比
+  console.log('\nComparison with Electron:');
+  const comparison = TauriSecurity.compareWithElectron();
+  Object.entries(comparison).forEach(([key, value]) => {
+    console.log(`${key}:`, value);
+  });
+};
+
+// 测试安全和性能特性
+useTauriSecurity();
+```
+
+## 📝 实际应用示例
+
+### 完整的桌面文本编辑器（使用 Electron）
+
+```js
+// 模拟完整的桌面文本编辑器应用
+const DesktopTextEditor = () => {
+  // 应用状态
+  const state = {
+    currentFile: null,
+    content: '',
+    isModified: false,
+    recentFiles: [],
+    window: null
+  };
+
+  // 初始化应用
+  const initializeApp = () => {
+    console.log('Initializing text editor...');
+    
+    // 创建主窗口
+    state.window = new Electron.BrowserWindow({
+      width: 1200,
+      height: 800,
+      minWidth: 800,
+      minHeight: 600,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: '/path/to/preload.js'
+      }
+    });
+
+    state.window.loadURL('http://localhost:3000');
+
+    // 设置应用菜单
+    setupMenus();
+
+    // 设置 IPC 处理器
+    setupIpcHandlers();
+
+    console.log('Text editor initialized');
+  };
+
+  // 设置菜单
+  const setupMenus = () => {
+    const template = [
+      {
+        label: 'File',
+        submenu: [
+          {
+            label: 'New',
+            accelerator: 'CmdOrCtrl+N',
+            click: () => newFile()
+          },
+          {
+            label: 'Open',
+            accelerator: 'CmdOrCtrl+O',
+            click: () => openFile()
+          },
+          { type: 'separator' },
+          {
+            label: 'Save',
+            accelerator: 'CmdOrCtrl+S',
+            click: () => saveFile()
+          },
+          {
+            label: 'Save As',
+            accelerator: 'CmdOrCtrl+Shift+S',
+            click: () => saveFileAs()
+          },
+          { type: 'separator' },
+          {
+            label: 'Recent Files',
+            submenu: state.recentFiles.map(file => ({
+              label: file,
+              click: () => openRecentFile(file)
+            }))
+          },
+          { type: 'separator' },
+          {
+            label: 'Exit',
+            accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+            click: () => Electron.app.quit()
+          }
+        ]
+      },
+      {
+        label: 'Edit',
+        submenu: [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut' },
+          { role: 'copy' },
+          { role: 'paste' },
+          { role: 'selectall' }
+        ]
+      },
+      {
+        label: 'View',
+        submenu: [
+          { role: 'reload' },
+          { role: 'toggleDevTools' },
+          { type: 'separator' },
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' },
+          { type: 'separator' },
+          { role: 'togglefullscreen' }
+        ]
+      }
+    ];
+
+    const menu = Electron.Menu.buildFromTemplate(template);
+    Electron.Menu.setApplicationMenu(menu);
+  };
+
+  // 设置 IPC 处理器
+  const setupIpcHandlers = () => {
+    // 文件操作
+    Electron.ipcMain.handle('new-file', () => {
+      newFile();
+      return { success: true };
+    });
+
+    Electron.ipcMain.handle('open-file', async () => {
+      const result = await openFile();
+      return result;
+    });
+
+    Electron.ipcMain.handle('save-file', async () => {
+      const result = await saveFile();
+      return result;
+    });
+
+    Electron.ipcMain.handle('save-file-as', async () => {
+      const result = await saveFileAs();
+      return result;
+    });
+
+    // 内容操作
+    Electron.ipcMain.handle('get-content', () => {
+      return { content: state.content, isModified: state.isModified };
+    });
+
+    Electron.ipcMain.handle('set-content', (event, content) => {
+      state.content = content;
+      state.isModified = true;
+      updateWindowTitle();
+      return { success: true };
+    });
+
+    // 文件信息
+    Electron.ipcMain.handle('get-file-info', () => {
+      return {
+        currentFile: state.currentFile,
+        isModified: state.isModified
+      };
+    });
+  };
+
+  // 新建文件
+  const newFile = () => {
+    if (state.isModified) {
+      // 提示保存
+      console.log('Prompt to save changes');
+    }
+    
+    state.currentFile = null;
+    state.content = '';
+    state.isModified = false;
+    updateWindowTitle();
+    
+    // 通知渲染进程
+    state.window.webContents.send('file-newed');
+    
+    console.log('New file created');
+  };
+
+  // 打开文件
+  const openFile = async () => {
+    const result = await Electron.dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [
+        { name: 'Text Files', extensions: ['txt', 'md', 'js', 'html', 'css'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    });
+
+    if (!result.canceled && result.filePaths.length > 0) {
+      const filePath = result.filePaths[0];
+      const fileContent = await NativeFeatures.FileSystem.readFile(filePath);
+      
+      state.currentFile = filePath;
+      state.content = fileContent.content;
+      state.isModified = false;
+      
+      // 添加到最近文件
+      addToRecentFiles(filePath);
+      
+      updateWindowTitle();
+      
+      // 通知渲染进程
+      state.window.webContents.send('file-opened', {
+        path: filePath,
+        content: state.content
+      });
+      
+      console.log('File opened:', filePath);
+    }
+    
+    return {
+      success: !result.canceled,
+      filePath: state.currentFile,
+      content: state.content
+    };
+  };
+
+  // 保存文件
+  const saveFile = async () => {
+    if (!state.currentFile) {
+      return await saveFileAs();
+    }
+    
+    await NativeFeatures.FileSystem.writeFile(state.currentFile, state.content);
+    state.isModified = false;
+    updateWindowTitle();
+    
+    // 通知渲染进程
+    state.window.webContents.send('file-saved', {
+      path: state.currentFile
+    });
+    
+    console.log('File saved:', state.currentFile);
+    
+    return { success: true, filePath: state.currentFile };
+  };
+
+  // 另存为
+  const saveFileAs = async () => {
+    const result = await Electron.dialog.showSaveDialog({
+      filters: [
+        { name: 'Text Files', extensions: ['txt'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    });
+
+    if (!result.canceled) {
+      const filePath = result.filePath;
+      await NativeFeatures.FileSystem.writeFile(filePath, state.content);
+      
+      state.currentFile = filePath;
+      state.isModified = false;
+      
+      addToRecentFiles(filePath);
+      updateWindowTitle();
+      
+      // 通知渲染进程
+      state.window.webContents.send('file-saved', {
+        path: filePath
+      });
+      
+      console.log('File saved as:', filePath);
+    }
+    
+    return {
+      success: !result.canceled,
+      filePath: state.currentFile
+    };
+  };
+
+  // 打开最近文件
+  const openRecentFile = async (filePath) => {
+    try {
+      const fileContent = await NativeFeatures.FileSystem.readFile(filePath);
+      
+      state.currentFile = filePath;
+      state.content = fileContent.content;
+      state.isModified = false;
+      
+      updateWindowTitle();
+      
+      // 通知渲染进程
+      state.window.webContents.send('file-opened', {
+        path: filePath,
+        content: state.content
+      });
+      
+      console.log('Recent file opened:', filePath);
+    } catch (error) {
+      console.error('Error opening recent file:', error);
+    }
+  };
+
+  // 添加到最近文件
+  const addToRecentFiles = (filePath) => {
+    // 移除重复项
+    state.recentFiles = state.recentFiles.filter(f => f !== filePath);
+    // 添加到开头
+    state.recentFiles.unshift(filePath);
+    // 限制数量
+    state.recentFiles = state.recentFiles.slice(0, 10);
+  };
+
+  // 更新窗口标题
+  const updateWindowTitle = () => {
+    const title = state.currentFile
+      ? `${state.isModified ? '● ' : ''}${state.currentFile.split('/').pop()} - Text Editor`
+      : `${state.isModified ? '● ' : ''}Untitled - Text Editor`;
+    
+    state.window.setTitle(title);
+  };
+
+  return {
+    initializeApp,
+    newFile,
+    openFile,
+    saveFile,
+    saveFileAs,
+    getState: () => state
+  };
+};
+
+// 测试完整的文本编辑器
+console.log('\n=== Testing Complete Desktop Text Editor ===');
+const textEditor = DesktopTextEditor();
+
+// 初始化应用
+textEditor.initializeApp();
+
+// 模拟文件操作
+(async () => {
+  // 新建文件
+  textEditor.newFile();
+  console.log('Current state:', textEditor.getState());
+
+  // 打开文件
+  await textEditor.openFile();
+  console.log('After open:', textEditor.getState());
+
+  // 保存文件
+  await textEditor.saveFile();
+  console.log('After save:', textEditor.getState());
+})();
+```
+
+## 🔗 相关概念
+
+- **多进程架构**: Electron 的主进程和渲染进程分离设计
+- **IPC 通信**: 进程间通信机制，用于主进程和渲染进程之间的数据交换
+- **原生模块**: 访问操作系统原生功能的桥梁
+- **Rust 后端**: Tauri 使用 Rust 编写高性能后端逻辑
+- **安全沙箱**: 隔离应用环境，提高安全性
+
+## 📚 学习检查点
+
+- [ ] 理解 Electron 的基础概念和架构
+- [ ] 掌握 Electron 主进程和渲染进程的通信
+- [ ] 理解 Electron 原生功能的集成
+- [ ] 掌握 Tauri 框架的基础用法
+- [ ] 理解 Tauri Rust 后端集成
+- [ ] 掌握 Tauri 的安全性和性能优势
+- [ ] 能够构建完整的桌面应用
+
+## 🚀 下一步
+
+→ [可视化与图形](./04-visualization.mdx)
