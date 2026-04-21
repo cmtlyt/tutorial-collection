@@ -1,0 +1,817 @@
+# 项目架构设计
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+良好的项目架构是构建可维护、可扩展应用的基础。本节将介绍目录结构设计、模块化设计、代码组织策略和微前端架构等核心架构设计原则，以及 React 19 中 Server Components 和 Actions 对架构设计的影响。
+
+## 🎯 目录结构设计
+
+### 基本原则
+
+清晰的目录结构可以提高代码的可读性和可维护性。
+
+```js
+// 推荐的 React 项目目录结构
+my-react-app/
+├── public/                 // 静态资源
+│   ├── index.html
+│   ├── favicon.ico
+│   └── assets/
+├── src/
+│   ├── assets/            // 资源文件
+│   │   ├── images/
+│   │   ├── fonts/
+│   │   └── styles/
+│   ├── components/        // 通用组件
+│   │   ├── ui/           // 基础 UI 组件
+│   │   │   ├── Button.jsx
+│   │   │   ├── Input.jsx
+│   │   │   └── Modal.jsx
+│   │   ├── layout/       // 布局组件
+│   │   │   ├── Header.jsx
+│   │   │   ├── Footer.jsx
+│   │   │   └── Sidebar.jsx
+│   │   └── common/       // 通用业务组件
+│   │       ├── UserCard.jsx
+│   │       └── PostList.jsx
+│   ├── pages/            // 页面组件
+│   │   ├── Home/
+│   │   │   ├── index.jsx
+│   │   │   ├── components/
+│   │   │   └── styles.css
+│   │   ├── About/
+│   │   └── Contact/
+│   ├── features/         // 功能模块
+│   │   ├── auth/
+│   │   │   ├── components/
+│   │   │   ├── hooks/
+│   │   │   ├── services/
+│   │   │   └── types/
+│   │   └── products/
+│   │       ├── components/
+│   │       ├── hooks/
+│   │       ├── services/
+│   │       └── types/
+│   ├── hooks/            // 自定义 Hooks
+│   │   ├── useAuth.js
+│   │   ├── useFetch.js
+│   │   └── useLocalStorage.js
+│   ├── services/         // API 服务
+│   │   ├── api.js
+│   │   ├── auth.js
+│   │   └── products.js
+│   ├── store/            // 状态管理
+│   │   ├── index.js
+│   │   ├── slices/
+│   │   └── selectors/
+│   ├── utils/            // 工具函数
+│   │   ├── format.js
+│   │   ├── validate.js
+│   │   └── constants.js
+│   ├── types/            // TypeScript 类型定义
+│   │   ├── index.d.ts
+│   │   └── api.d.ts
+│   ├── styles/           // 全局样式
+│   │   ├── index.css
+│   │   ├── variables.css
+│   │   └── mixins.css
+│   ├── App.jsx
+│   ├── main.jsx
+│   └── index.css
+├── tests/                // 测试文件
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+├── package.json
+├── vite.config.js
+└── tsconfig.json
+```
+
+### React 19 项目架构增强
+
+```js
+// React 19 推荐的项目结构（支持 Server Components）
+my-react-app/
+├── src/
+│   ├── app/              // Server Components
+│   │   ├── layout.js
+│   │   ├── page.js
+│   │   ├── loading.js
+│   │   ├── error.js
+│   │   └── globals.css
+│   ├── components/       // Client Components
+│   │   ├── ui/
+│   │   ├── features/
+│   │   └── providers/
+│   ├── actions/          // Server Actions
+│   │   ├── auth.js
+│   │   └── products.js
+│   ├── lib/              // 工具库
+│   │   ├── db.js
+│   │   ├── auth.js
+│   │   └── utils.js
+│   └── hooks/            // 客户端 Hooks
+└── public/
+```
+
+## 🎯 模块化设计
+
+### 功能模块划分
+
+按功能域划分模块，提高代码的内聚性。
+
+```js
+// src/features/auth/index.js
+export { default as LoginForm } from './components/LoginForm'
+export { default as RegisterForm } from './components/RegisterForm'
+export { default as AuthProvider } from './components/AuthProvider'
+export { useAuth } from './hooks/useAuth'
+export { login, logout, register } from './services/authService'
+export * from './types'
+
+// src/features/auth/components/AuthProvider.jsx
+import { createContext, useContext, useState, useEffect } from 'react'
+
+const AuthContext = createContext()
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    checkAuth()
+  }, [])
+
+  const checkAuth = async () => {
+    try {
+      const token = localStorage.getItem('token')
+      if (token) {
+        const userData = await fetchUserData(token)
+        setUser(userData)
+      }
+    } catch (error) {
+      console.error('Auth check failed:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const login = async (credentials) => {
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials)
+    })
+    const data = await response.json()
+    localStorage.setItem('token', data.token)
+    setUser(data.user)
+    return data
+  }
+
+  const logout = () => {
+    localStorage.removeItem('token')
+    setUser(null)
+  }
+
+  return (
+    <AuthContext value={{ user, loading, login, logout }}>
+      {children}
+    </AuthContext>
+  )
+}
+
+export const useAuth = () => {
+  const context = useContext(AuthContext)
+  if (!context) {
+    throw new Error('useAuth must be used within AuthProvider')
+  }
+  return context
+}
+
+// 模拟数据获取
+async function fetchUserData(token) {
+  // 模拟 API 调用
+  await new Promise(resolve => setTimeout(resolve, 500))
+  return {
+    id: 1,
+    name: '张三',
+    email: 'zhangsan@example.com'
+  }
+}
+
+// 使用示例
+import { AuthProvider, LoginForm, useAuth } from '@/features/auth'
+
+function App() {
+  return (
+    <AuthProvider>
+      <div>
+        <UserDashboard />
+        <LoginForm />
+      </div>
+    </AuthProvider>
+  )
+}
+
+function UserDashboard() {
+  const { user, logout } = useAuth()
+
+  if (!user) {
+    return <p>请先登录</p>
+  }
+
+  return (
+    <div>
+      <h1>欢迎, {user.name}</h1>
+      <button onClick={logout}>退出</button>
+    </div>
+  )
+}
+
+export default App
+```
+
+### React 19 模块化增强
+
+使用 Server Actions 和 Server Components 优化模块化设计。
+
+```js
+// src/features/auth/actions.js
+'use server'
+
+export async function loginAction(formData) {
+  const email = formData.get('email')
+  const password = formData.get('password')
+
+  // 模拟认证
+  await new Promise(resolve => setTimeout(resolve, 1000))
+
+  if (email === 'admin@example.com' && password === 'password') {
+    return { success: true, user: { id: 1, name: '管理员', email } }
+  }
+
+  return { success: false, error: '用户名或密码错误' }
+}
+
+export async function logoutAction() {
+  // 清除会话
+  return { success: true }
+}
+
+// src/features/auth/components/LoginForm.jsx
+'use client'
+
+import { useActionState } from 'react'
+import { loginAction } from '../actions'
+
+export function LoginForm() {
+  const [state, formAction, isPending] = useActionState(loginAction, null)
+
+  return (
+    <form action={formAction}>
+      <div>
+        <label htmlFor="email">邮箱:</label>
+        <input
+          type="email"
+          id="email"
+          name="email"
+          defaultValue="admin@example.com"
+        />
+      </div>
+      <div>
+        <label htmlFor="password">密码:</label>
+        <input
+          type="password"
+          id="password"
+          name="password"
+          defaultValue="password"
+        />
+      </div>
+      <button type="submit" disabled={isPending}>
+        {isPending ? '登录中...' : '登录'}
+      </button>
+      {state?.error && (
+        <p style={{ color: 'red' }}>{state.error}</p>
+      )}
+    </form>
+  )
+}
+
+// 使用示例
+import { LoginForm } from '@/features/auth'
+
+function LoginPage() {
+  return (
+    <div>
+      <h1>登录</h1>
+      <LoginForm />
+    </div>
+  )
+}
+
+export default LoginPage
+```
+
+## 🎯 代码组织策略
+
+### 组件组织
+
+按功能和类型组织组件。
+
+```js
+// src/components/index.js
+export { default as Button } from './ui/Button'
+export { default as Input } from './ui/Input'
+export { default as Modal } from './ui/Modal'
+export { default as Header } from './layout/Header'
+export { default as Footer } from './layout/Footer'
+export { default as Sidebar } from './layout/Sidebar'
+
+// src/components/ui/Button.jsx
+export default function Button({ children, variant = 'primary', onClick, disabled }) {
+  const styles = {
+    primary: { backgroundColor: '#007bff', color: 'white' },
+    secondary: { backgroundColor: '#6c757d', color: 'white' },
+    danger: { backgroundColor: '#dc3545', color: 'white' }
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        ...styles[variant],
+        padding: '8px 16px',
+        border: 'none',
+        borderRadius: 4,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.6 : 1
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+// src/components/ui/Input.jsx
+export default function Input({ label, value, onChange, type = 'text', error }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'block', marginBottom: 8 }}>{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={onChange}
+        style={{
+          width: '100%',
+          padding: '8px',
+          border: error ? '1px solid red' : '1px solid #ccc',
+          borderRadius: 4
+        }}
+      />
+      {error && <p style={{ color: 'red', fontSize: 12 }}>{error}</p>}
+    </div>
+  )
+}
+
+// 使用示例
+import { Button, Input } from '@/components'
+
+function ContactForm() {
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    message: ''
+  })
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    console.log('提交:', formData)
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <Input
+        label="姓名"
+        value={formData.name}
+        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+      />
+      <Input
+        label="邮箱"
+        type="email"
+        value={formData.email}
+        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+      />
+      <Button type="submit">提交</Button>
+    </form>
+  )
+}
+
+export default ContactForm
+```
+
+### Hooks 组织
+
+按功能组织自定义 Hooks。
+
+```js
+// src/hooks/index.js
+export { default as useAuth } from './useAuth'
+export { default as useFetch } from './useFetch'
+export { default as useLocalStorage } from './useLocalStorage'
+export { default as useDebounce } from './useDebounce'
+
+// src/hooks/useFetch.js
+import { useState, useEffect } from 'react'
+
+export default function useFetch(url, options = {}) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true)
+        const response = await fetch(url, options)
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+        const result = await response.json()
+        setData(result)
+      } catch (err) {
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchData()
+  }, [url, JSON.stringify(options)])
+
+  return { data, loading, error }
+}
+
+// src/hooks/useLocalStorage.js
+import { useState, useEffect } from 'react'
+
+export default function useLocalStorage(key, initialValue) {
+  const [storedValue, setStoredValue] = useState(() => {
+    try {
+      const item = window.localStorage.getItem(key)
+      return item ? JSON.parse(item) : initialValue
+    } catch (error) {
+      console.error('Error reading localStorage:', error)
+      return initialValue
+    }
+  })
+
+  const setValue = (value) => {
+    try {
+      setStoredValue(value)
+      window.localStorage.setItem(key, JSON.stringify(value))
+    } catch (error) {
+      console.error('Error saving to localStorage:', error)
+    }
+  }
+
+  return [storedValue, setValue]
+}
+
+// src/hooks/useDebounce.js
+import { useState, useEffect } from 'react'
+
+export default function useDebounce(value, delay) {
+  const [debouncedValue, setDebouncedValue] = useState(value)
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value)
+    }, delay)
+
+    return () => {
+      clearTimeout(handler)
+    }
+  }, [value, delay])
+
+  return debouncedValue
+}
+
+// 使用示例
+import { useFetch, useLocalStorage, useDebounce } from '@/hooks'
+
+function SearchComponent() {
+  const [searchTerm, setSearchTerm] = useState('')
+  const [history, setHistory] = useLocalStorage('searchHistory', [])
+  const debouncedSearchTerm = useDebounce(searchTerm, 500)
+
+  const { data, loading } = useFetch(
+    debouncedSearchTerm ? `/api/search?q=${debouncedSearchTerm}` : null
+  )
+
+  const handleSearch = (e) => {
+    const term = e.target.value
+    setSearchTerm(term)
+    if (term && !history.includes(term)) {
+      setHistory([term, ...history].slice(0, 10))
+    }
+  }
+
+  return (
+    <div>
+      <input
+        type="text"
+        value={searchTerm}
+        onChange={handleSearch}
+        placeholder="搜索..."
+      />
+      {loading && <p>搜索中...</p>}
+      {data && (
+        <ul>
+          {data.results.map((item) => (
+            <li key={item.id}>{item.title}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+export default SearchComponent
+```
+
+## 🎯 微前端架构
+
+### 基本概念
+
+微前端架构将大型应用拆分为多个独立的小型应用，每个应用可以独立开发、部署和维护。
+
+```js
+// 主应用配置
+// src/App.jsx
+import { useState, Suspense } from 'react'
+
+function App() {
+  const [activeModule, setActiveModule] = useState('home')
+
+  const loadModule = async (moduleName) => {
+    switch (moduleName) {
+      case 'products':
+        return import('@micro/products/App')
+      case 'orders':
+        return import('@micro/orders/App')
+      case 'users':
+        return import('@micro/users/App')
+      default:
+        return import('@micro/home/App')
+    }
+  }
+
+  const ModuleComponent = lazy(() => loadModule(activeModule))
+
+  return (
+    <div>
+      <nav>
+        <button onClick={() => setActiveModule('home')}>首页</button>
+        <button onClick={() => setActiveModule('products')}>产品</button>
+        <button onClick={() => setActiveModule('orders')}>订单</button>
+        <button onClick={() => setActiveModule('users')}>用户</button>
+      </nav>
+      <Suspense fallback={<div>加载中...</div>}>
+        <ModuleComponent />
+      </Suspense>
+    </div>
+  )
+}
+
+export default App
+```
+
+### React 19 微前端增强
+
+使用 React 19 的 Server Components 和 Actions 优化微前端通信。
+
+```js
+// 微应用 1: 产品模块
+// products/app/page.js
+import { Suspense } from 'react'
+import ProductList from './components/ProductList'
+import AddProduct from './components/AddProduct'
+
+export default function ProductsPage() {
+  return (
+    <div>
+      <h1>产品管理</h1>
+      <Suspense fallback={<div>加载产品列表...</div>}>
+        <ProductList />
+      </Suspense>
+      <AddProduct />
+    </div>
+  )
+}
+
+// 微应用 2: 订单模块
+// orders/app/page.js
+import { Suspense } from 'react'
+import OrderList from './components/OrderList'
+import CreateOrder from './components/CreateOrder'
+
+export default function OrdersPage() {
+  return (
+    <div>
+      <h1>订单管理</h1>
+      <Suspense fallback={<div>加载订单列表...</div>}>
+        <OrderList />
+      </Suspense>
+      <CreateOrder />
+    </div>
+  )
+}
+```
+
+## 📝 实际应用示例
+
+### 综合示例：电商平台架构
+
+```js
+// 项目结构
+ecommerce-platform/
+├── apps/
+│   ├── main-app/           // 主应用
+│   ├── products-app/       // 产品微应用
+│   ├── orders-app/         // 订单微应用
+│   └── users-app/          // 用户微应用
+├── packages/
+│   ├── ui-components/      // 共享 UI 组件
+│   ├── shared-hooks/       // 共享 Hooks
+│   └── shared-utils/       // 共享工具
+└── services/
+    ├── api-gateway/        // API 网关
+    └── auth-service/       // 认证服务
+
+// 主应用 - apps/main-app/src/App.jsx
+import { useState, lazy, Suspense } from 'react'
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
+
+const Home = lazy(() => import('./pages/Home'))
+const Products = lazy(() => import('@micro/products/App'))
+const Orders = lazy(() => import('@micro/orders/App'))
+const Users = lazy(() => import('@micro/users/App'))
+
+function App() {
+  const [user, setUser] = useState(null)
+
+  return (
+    <BrowserRouter>
+      <div>
+        <header>
+          <nav>
+            <Link to="/">首页</Link>
+            <Link to="/products">产品</Link>
+            <Link to="/orders">订单</Link>
+            <Link to="/users">用户</Link>
+          </nav>
+          {user ? (
+            <span>欢迎, {user.name}</span>
+          ) : (
+            <Link to="/login">登录</Link>
+          )}
+        </header>
+        <main>
+          <Suspense fallback={<div>加载中...</div>}>
+            <Routes>
+              <Route path="/" element={<Home />} />
+              <Route path="/products" element={<Products />} />
+              <Route path="/orders" element={<Orders />} />
+              <Route path="/users" element={<Users />} />
+            </Routes>
+          </Suspense>
+        </main>
+      </div>
+    </BrowserRouter>
+  )
+}
+
+export default App
+
+// 产品微应用 - apps/products-app/src/App.jsx
+import { Suspense } from 'react'
+import ProductList from './components/ProductList'
+import AddProduct from './components/AddProduct'
+
+export default function ProductsApp() {
+  return (
+    <div>
+      <h1>产品管理</h1>
+      <Suspense fallback={<div>加载产品列表...</div>}>
+        <ProductList />
+      </Suspense>
+      <AddProduct />
+    </div>
+  )
+}
+
+// 共享 UI 组件 - packages/ui-components/src/Button.jsx
+export default function Button({ children, variant = 'primary', onClick, disabled }) {
+  const styles = {
+    primary: { backgroundColor: '#007bff', color: 'white' },
+    secondary: { backgroundColor: '#6c757d', color: 'white' },
+    danger: { backgroundColor: '#dc3545', color: 'white' }
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        ...styles[variant],
+        padding: '8px 16px',
+        border: 'none',
+        borderRadius: 4,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.6 : 1
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+// 共享 Hooks - packages/shared-hooks/src/useAuth.js
+import { useState, useEffect } from 'react'
+
+export default function useAuth() {
+  const [user, setUser] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    checkAuth()
+  }, [])
+
+  const checkAuth = async () => {
+    try {
+      const token = localStorage.getItem('token')
+      if (token) {
+        const response = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        if (response.ok) {
+          const userData = await response.json()
+          setUser(userData)
+        }
+      }
+    } catch (error) {
+      console.error('Auth check failed:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const login = async (credentials) => {
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials)
+    })
+    const data = await response.json()
+    localStorage.setItem('token', data.token)
+    setUser(data.user)
+    return data
+  }
+
+  const logout = () => {
+    localStorage.removeItem('token')
+    setUser(null)
+  }
+
+  return { user, loading, login, logout }
+}
+```
+
+## 🔗 相关概念
+
+- **模块化设计**: 按功能域划分模块
+- **代码组织**: 清晰的目录结构和组件组织
+- **微前端架构**: 大型应用的拆分策略
+- **Server Components**: React 19 服务端组件
+- **Server Actions**: React 19 服务端操作
+- **代码复用**: 共享组件和 Hooks
+- **依赖管理**: 模块间依赖关系管理
+
+## 📚 学习检查点
+
+- [ ] 理解项目目录结构的设计原则
+- [ ] 掌握功能模块的划分方法
+- [ ] 熟悉组件和 Hooks 的组织策略
+- [ ] 了解微前端架构的基本概念
+- [ ] 理解 React 19 对架构设计的影响
+- [ ] 能够设计可维护的项目架构
+- [ ] 掌握模块间的通信方式
+- [ ] 理解共享代码的管理策略
+
+## 🚀 下一步
+
+→ [组件库开发](./02-component-library.mdx)

@@ -1,0 +1,844 @@
+# 组件库开发
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+组件库是构建可复用 UI 组件的集合，能够提高开发效率、保持设计一致性。本节将介绍组件设计原则、组件文档编写、单元测试和 Storybook 集成等组件库开发的核心内容，以及 React 19 对组件库开发的影响。
+
+## 🎯 组件设计原则
+
+### 基本原则
+
+良好的组件设计应该遵循单一职责、可复用性、可组合性和可测试性等原则。
+
+```js
+// 原则 1: 单一职责 - 每个组件只做一件事
+// ❌ 错误示例：组件职责过多
+function UserCard({ user, onUpdate, onDelete, onLike, onShare }) {
+  return (
+    <div>
+      <img src={user.avatar} alt={user.name} />
+      <h2>{user.name}</h2>
+      <p>{user.bio}</p>
+      <button onClick={onUpdate}>更新</button>
+      <button onClick={onDelete}>删除</button>
+      <button onClick={onLike}>点赞</button>
+      <button onClick={onShare}>分享</button>
+    </div>
+  )
+}
+
+// ✅ 正确示例：拆分为多个小组件
+function Avatar({ src, alt }) {
+  return <img src={src} alt={alt} style={{ borderRadius: '50%', width: 64, height: 64 }} />
+}
+
+function UserInfo({ name, bio }) {
+  return (
+    <div>
+      <h2>{name}</h2>
+      <p>{bio}</p>
+    </div>
+  )
+}
+
+function ActionButtons({ onUpdate, onDelete, onLike, onShare }) {
+  return (
+    <div>
+      <Button onClick={onUpdate}>更新</Button>
+      <Button onClick={onDelete}>删除</Button>
+      <Button onClick={onLike}>点赞</Button>
+      <Button onClick={onShare}>分享</Button>
+    </div>
+  )
+}
+
+function UserCard({ user, onUpdate, onDelete, onLike, onShare }) {
+  return (
+    <div style={{ border: '1px solid #ccc', borderRadius: 8, padding: 16 }}>
+      <Avatar src={user.avatar} alt={user.name} />
+      <UserInfo name={user.name} bio={user.bio} />
+      <ActionButtons 
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onLike={onLike}
+        onShare={onShare}
+      />
+    </div>
+  )
+}
+
+// 原则 2: 可复用性 - 通过 props 控制组件行为
+function Button({ 
+  children, 
+  variant = 'primary', 
+  size = 'medium', 
+  disabled = false, 
+  loading = false,
+  onClick,
+  ...props 
+}) {
+  const variants = {
+    primary: { backgroundColor: '#007bff', color: 'white' },
+    secondary: { backgroundColor: '#6c757d', color: 'white' },
+    danger: { backgroundColor: '#dc3545', color: 'white' },
+    outline: { backgroundColor: 'transparent', color: '#007bff', border: '1px solid #007bff' }
+  }
+
+  const sizes = {
+    small: { padding: '4px 8px', fontSize: 12 },
+    medium: { padding: '8px 16px', fontSize: 14 },
+    large: { padding: '12px 24px', fontSize: 16 }
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled || loading}
+      style={{
+        ...variants[variant],
+        ...sizes[size],
+        border: variant === 'outline' ? '1px solid #007bff' : 'none',
+        borderRadius: 4,
+        cursor: (disabled || loading) ? 'not-allowed' : 'pointer',
+        opacity: (disabled || loading) ? 0.6 : 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8
+      }}
+      {...props}
+    >
+      {loading && <span>⏳</span>}
+      {children}
+    </button>
+  )
+}
+
+// 使用示例
+function App() {
+  return (
+    <div>
+      <Button>默认按钮</Button>
+      <Button variant="secondary">次要按钮</Button>
+      <Button variant="danger">危险按钮</Button>
+      <Button variant="outline">轮廓按钮</Button>
+      <Button size="small">小按钮</Button>
+      <Button size="large">大按钮</Button>
+      <Button disabled>禁用按钮</Button>
+      <Button loading>加载中</Button>
+    </div>
+  )
+}
+
+export default App
+```
+
+### React 19 组件设计增强
+
+使用 React 19 的新特性优化组件设计。
+
+```js
+// React 19: 使用 ref 作为 prop（无需 forwardRef）
+function Input({ label, value, onChange, ref, error, ...props }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'block', marginBottom: 8 }}>{label}</label>
+      <input
+        ref={ref}
+        value={value}
+        onChange={onChange}
+        style={{
+          width: '100%',
+          padding: '8px',
+          border: error ? '1px solid red' : '1px solid #ccc',
+          borderRadius: 4
+        }}
+        {...props}
+      />
+      {error && <p style={{ color: 'red', fontSize: 12, marginTop: 4 }}>{error}</p>}
+    </div>
+  )
+}
+
+// React 19: 使用 Actions 处理表单
+function Form({ onSubmit, children }) {
+  return (
+    <form 
+      action={async (formData) => {
+        const data = Object.fromEntries(formData)
+        await onSubmit(data)
+      }}
+    >
+      {children}
+    </form>
+  )
+}
+
+// 使用示例
+import { useRef, useState } from 'react'
+
+function ContactForm() {
+  const nameRef = useRef(null)
+  const emailRef = useRef(null)
+  const [errors, setErrors] = useState({})
+
+  const handleSubmit = async (data) => {
+    const newErrors = {}
+    
+    if (!data.name) {
+      newErrors.name = '姓名不能为空'
+    }
+    if (!data.email) {
+      newErrors.email = '邮箱不能为空'
+    } else if (!/\S+@\S+\.\S+/.test(data.email)) {
+      newErrors.email = '邮箱格式不正确'
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors)
+      return
+    }
+
+    console.log('提交表单:', data)
+    alert('提交成功！')
+  }
+
+  return (
+    <Form onSubmit={handleSubmit}>
+      <Input
+        ref={nameRef}
+        name="name"
+        label="姓名"
+        error={errors.name}
+      />
+      <Input
+        ref={emailRef}
+        name="email"
+        type="email"
+        label="邮箱"
+        error={errors.email}
+      />
+      <Button type="submit">提交</Button>
+    </Form>
+  )
+}
+
+export default ContactForm
+```
+
+## 🎯 组件文档编写
+
+### PropTypes 文档
+
+使用 PropTypes 为组件提供类型检查和文档。
+
+```js
+import PropTypes from 'prop-types'
+
+function Button({ 
+  children, 
+  variant, 
+  size, 
+  disabled, 
+  loading, 
+  onClick 
+}) {
+  const variants = {
+    primary: { backgroundColor: '#007bff', color: 'white' },
+    secondary: { backgroundColor: '#6c757d', color: 'white' },
+    danger: { backgroundColor: '#dc3545', color: 'white' },
+    outline: { backgroundColor: 'transparent', color: '#007bff', border: '1px solid #007bff' }
+  }
+
+  const sizes = {
+    small: { padding: '4px 8px', fontSize: 12 },
+    medium: { padding: '8px 16px', fontSize: 14 },
+    large: { padding: '12px 24px', fontSize: 16 }
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled || loading}
+      style={{
+        ...variants[variant],
+        ...sizes[size],
+        border: variant === 'outline' ? '1px solid #007bff' : 'none',
+        borderRadius: 4,
+        cursor: (disabled || loading) ? 'not-allowed' : 'pointer',
+        opacity: (disabled || loading) ? 0.6 : 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8
+      }}
+    >
+      {loading && <span>⏳</span>}
+      {children}
+    </button>
+  )
+}
+
+Button.propTypes = {
+  children: PropTypes.node.isRequired,
+  variant: PropTypes.oneOf(['primary', 'secondary', 'danger', 'outline']),
+  size: PropTypes.oneOf(['small', 'medium', 'large']),
+  disabled: PropTypes.bool,
+  loading: PropTypes.bool,
+  onClick: PropTypes.func
+}
+
+Button.defaultProps = {
+  variant: 'primary',
+  size: 'medium',
+  disabled: false,
+  loading: false,
+  onClick: () => {}
+}
+
+export default Button
+```
+
+### TypeScript 类型定义
+
+使用 TypeScript 提供更好的类型安全。
+
+```ts
+import { ButtonHTMLAttributes, ReactNode } from 'react'
+
+type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'outline'
+type ButtonSize = 'small' | 'medium' | 'large'
+
+interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  children: ReactNode
+  variant?: ButtonVariant
+  size?: ButtonSize
+  disabled?: boolean
+  loading?: boolean
+}
+
+export function Button({ 
+  children, 
+  variant = 'primary', 
+  size = 'medium', 
+  disabled = false, 
+  loading = false,
+  onClick,
+  ...props 
+}: ButtonProps) {
+  const variants = {
+    primary: { backgroundColor: '#007bff', color: 'white' },
+    secondary: { backgroundColor: '#6c757d', color: 'white' },
+    danger: { backgroundColor: '#dc3545', color: 'white' },
+    outline: { backgroundColor: 'transparent', color: '#007bff', border: '1px solid #007bff' }
+  }
+
+  const sizes = {
+    small: { padding: '4px 8px', fontSize: 12 },
+    medium: { padding: '8px 16px', fontSize: 14 },
+    large: { padding: '12px 24px', fontSize: 16 }
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled || loading}
+      style={{
+        ...variants[variant],
+        ...sizes[size],
+        border: variant === 'outline' ? '1px solid #007bff' : 'none',
+        borderRadius: 4,
+        cursor: (disabled || loading) ? 'not-allowed' : 'pointer',
+        opacity: (disabled || loading) ? 0.6 : 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8
+      }}
+      {...props}
+    >
+      {loading && <span>⏳</span>}
+      {children}
+    </button>
+  )
+}
+
+export default Button
+```
+
+### JSDoc 注释
+
+使用 JSDoc 为组件提供详细的文档注释。
+
+```js
+/**
+ * Button 组件 - 一个可复用的按钮组件
+ * 
+ * @component
+ * @example
+ * ```jsx
+ * <Button variant="primary" size="medium" onClick={handleClick}>
+ *   点击我
+ * </Button>
+ * ```
+ * 
+ * @param {Object} props - 组件属性
+ * @param {ReactNode} props.children - 按钮内容
+ * @param {'primary'|'secondary'|'danger'|'outline'} [props.variant='primary'] - 按钮变体
+ * @param {'small'|'medium'|'large'} [props.size='medium'] - 按钮尺寸
+ * @param {boolean} [props.disabled=false] - 是否禁用
+ * @param {boolean} [props.loading=false] - 是否显示加载状态
+ * @param {Function} [props.onClick] - 点击事件处理函数
+ * @returns {JSX.Element} 按钮组件
+ */
+function Button({ 
+  children, 
+  variant = 'primary', 
+  size = 'medium', 
+  disabled = false, 
+  loading = false,
+  onClick 
+}) {
+  // 组件实现...
+}
+
+export default Button
+```
+
+## 🎯 单元测试
+
+### 使用 Jest 和 React Testing Library
+
+```js
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import '@testing-library/jest-dom'
+import Button from './Button'
+
+describe('Button 组件', () => {
+  test('应该渲染按钮文本', () => {
+    render(<Button>点击我</Button>)
+    expect(screen.getByText('点击我')).toBeInTheDocument()
+  })
+
+  test('应该在点击时调用 onClick 处理函数', () => {
+    const handleClick = jest.fn()
+    render(<Button onClick={handleClick}>点击我</Button>)
+    
+    fireEvent.click(screen.getByText('点击我'))
+    expect(handleClick).toHaveBeenCalledTimes(1)
+  })
+
+  test('应该在禁用状态下不响应点击', () => {
+    const handleClick = jest.fn()
+    render(<Button disabled onClick={handleClick}>点击我</Button>)
+    
+    fireEvent.click(screen.getByText('点击我'))
+    expect(handleClick).not.toHaveBeenCalled()
+  })
+
+  test('应该在加载状态下显示加载图标', () => {
+    render(<Button loading>提交</Button>)
+    expect(screen.getByText('⏳')).toBeInTheDocument()
+  })
+
+  test('应该应用正确的变体样式', () => {
+    const { rerender } = render(<Button variant="primary">按钮</Button>)
+    expect(screen.getByRole('button')).toHaveStyle({ backgroundColor: '#007bff' })
+
+    rerender(<Button variant="danger">按钮</Button>)
+    expect(screen.getByRole('button')).toHaveStyle({ backgroundColor: '#dc3545' })
+  })
+
+  test('应该应用正确的尺寸样式', () => {
+    const { rerender } = render(<Button size="small">按钮</Button>)
+    expect(screen.getByRole('button')).toHaveStyle({ padding: '4px 8px', fontSize: 12 })
+
+    rerender(<Button size="large">按钮</Button>)
+    expect(screen.getByRole('button')).toHaveStyle({ padding: '12px 24px', fontSize: 16 })
+  })
+})
+```
+
+### 测试自定义 Hooks
+
+```js
+import { renderHook, act } from '@testing-library/react'
+import { useCounter } from './useCounter'
+
+describe('useCounter Hook', () => {
+  test('应该返回初始计数', () => {
+    const { result } = renderHook(() => useCounter())
+    expect(result.current.count).toBe(0)
+  })
+
+  test('应该接受自定义初始值', () => {
+    const { result } = renderHook(() => useCounter(10))
+    expect(result.current.count).toBe(10)
+  })
+
+  test('应该能够增加计数', () => {
+    const { result } = renderHook(() => useCounter())
+    
+    act(() => {
+      result.current.increment()
+    })
+    
+    expect(result.current.count).toBe(1)
+  })
+
+  test('应该能够减少计数', () => {
+    const { result } = renderHook(() => useCounter(10))
+    
+    act(() => {
+      result.current.decrement()
+    })
+    
+    expect(result.current.count).toBe(9)
+  })
+
+  test('应该能够重置计数', () => {
+    const { result } = renderHook(() => useCounter(10))
+    
+    act(() => {
+      result.current.increment()
+      result.current.reset()
+    })
+    
+    expect(result.current.count).toBe(10)
+  })
+})
+```
+
+### React 19 测试增强
+
+测试 React 19 的新特性。
+
+```js
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import '@testing-library/jest-dom'
+import { useActionState, useEffectEvent, useEffect } from 'react'
+
+// 测试 Actions
+describe('Actions 测试', () => {
+  test('应该处理表单提交', async () => {
+    async function submitAction(prevState, formData) {
+      const name = formData.get('name')
+      return { success: true, name }
+    }
+
+    function TestForm() {
+      const [state, formAction, isPending] = useActionState(submitAction, null)
+
+      return (
+        <form action={formAction}>
+          <input name="name" defaultValue="张三" />
+          <button type="submit" disabled={isPending}>
+            {isPending ? '提交中...' : '提交'}
+          </button>
+          {state?.success && <p>提交成功: {state.name}</p>}
+        </form>
+      )
+    }
+
+    render(<TestForm />)
+    
+    const submitButton = screen.getByRole('button')
+    fireEvent.click(submitButton)
+
+    await waitFor(() => {
+      expect(screen.getByText('提交成功: 张三')).toBeInTheDocument()
+    })
+  })
+})
+
+// 测试 useEffectEvent
+describe('useEffectEvent 测试', () => {
+  test('应该避免因事件处理函数变化导致 Effect 重新运行', () => {
+    const effectCallback = jest.fn()
+    const eventCallback = jest.fn()
+
+    function TestComponent({ value }) {
+      const handleEvent = useEffectEvent(() => {
+        eventCallback(value)
+      })
+
+      useEffect(() => {
+        effectCallback()
+        handleEvent()
+      }, [])
+
+      return null
+    }
+
+    const { rerender } = render(<TestComponent value={1} />)
+    expect(effectCallback).toHaveBeenCalledTimes(1)
+    expect(eventCallback).toHaveBeenCalledTimes(1)
+
+    rerender(<TestComponent value={2} />)
+    expect(effectCallback).toHaveBeenCalledTimes(1)
+    expect(eventCallback).toHaveBeenCalledTimes(2)
+  })
+})
+```
+
+## 🎯 Storybook 集成
+
+### 基本配置
+
+```js
+// .storybook/main.js
+module.exports = {
+  stories: ['../src/**/*.stories.@(js|jsx|ts|tsx|mdx)'],
+  addons: [
+    '@storybook/addon-links',
+    '@storybook/addon-essentials',
+    '@storybook/addon-interactions',
+    '@storybook/preset-create-react-app'
+  ],
+  framework: {
+    name: '@storybook/react-webpack5',
+    options: {}
+  },
+  docs: {
+    autodocs: 'tag'
+  }
+}
+
+// .storybook/preview.js
+import '../src/styles/index.css'
+
+export const parameters = {
+  actions: { argTypesRegex: '^on[A-Z].*' },
+  controls: {
+    matchers: {
+      color: /(background|color)$/i,
+      date: /Date$/
+    }
+  }
+}
+```
+
+### 编写 Stories
+
+```js
+import Button from './Button'
+
+export default {
+  title: 'Components/Button',
+  component: Button,
+  argTypes: {
+    variant: {
+      control: 'select',
+      options: ['primary', 'secondary', 'danger', 'outline']
+    },
+    size: {
+      control: 'select',
+      options: ['small', 'medium', 'large']
+    },
+    onClick: { action: 'clicked' }
+  }
+}
+
+const Template = (args) => <Button {...args} />
+
+export const Primary = Template.bind({})
+Primary.args = {
+  children: '主要按钮',
+  variant: 'primary'
+}
+
+export const Secondary = Template.bind({})
+Secondary.args = {
+  children: '次要按钮',
+  variant: 'secondary'
+}
+
+export const Danger = Template.bind({})
+Danger.args = {
+  children: '危险按钮',
+  variant: 'danger'
+}
+
+export const Outline = Template.bind({})
+Outline.args = {
+  children: '轮廓按钮',
+  variant: 'outline'
+}
+
+export const Small = Template.bind({})
+Small.args = {
+  children: '小按钮',
+  size: 'small'
+}
+
+export const Large = Template.bind({})
+Large.args = {
+  children: '大按钮',
+  size: 'large'
+}
+
+export const Disabled = Template.bind({})
+Disabled.args = {
+  children: '禁用按钮',
+  disabled: true
+}
+
+export const Loading = Template.bind({})
+Loading.args = {
+  children: '加载中',
+  loading: true
+}
+
+export const AllVariants = () => (
+  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+    <Button variant="primary">Primary</Button>
+    <Button variant="secondary">Secondary</Button>
+    <Button variant="danger">Danger</Button>
+    <Button variant="outline">Outline</Button>
+  </div>
+)
+
+export const AllSizes = () => (
+  <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+    <Button size="small">Small</Button>
+    <Button size="medium">Medium</Button>
+    <Button size="large">Large</Button>
+  </div>
+)
+```
+
+### React 19 Stories
+
+```js
+import { useActionState } from 'react'
+import Button from './Button'
+import Input from './Input'
+
+export default {
+  title: 'React 19/Actions',
+  component: Button
+}
+
+async function submitAction(prevState, formData) {
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  return { success: true, message: '提交成功！' }
+}
+
+export function ActionForm() {
+  const [state, formAction, isPending] = useActionState(submitAction, null)
+
+  return (
+    <form action={formAction} style={{ maxWidth: 400, padding: 20 }}>
+      <Input name="username" label="用户名" />
+      <Input name="email" type="email" label="邮箱" />
+      <Button type="submit" disabled={isPending} loading={isPending}>
+        {isPending ? '提交中...' : '提交'}
+      </Button>
+      {state?.success && (
+        <div style={{ color: 'green', marginTop: 16 }}>
+          {state.message}
+        </div>
+      )}
+    </form>
+  )
+}
+```
+
+## 📝 实际应用示例
+
+### 综合示例：完整的组件库
+
+```js
+// 组件库结构
+my-ui-library/
+├── src/
+│   ├── components/
+│   │   ├── Button/
+│   │   │   ├── Button.jsx
+│   │   │   ├── Button.test.js
+│   │   │   ├── Button.stories.js
+│   │   │   └── index.js
+│   │   ├── Input/
+│   │   │   ├── Input.jsx
+│   │   │   ├── Input.test.js
+│   │   │   ├── Input.stories.js
+│   │   │   └── index.js
+│   │   ├── Modal/
+│   │   │   ├── Modal.jsx
+│   │   │   ├── Modal.test.js
+│   │   │   ├── Modal.stories.js
+│   │   │   └── index.js
+│   │   └── index.js
+│   ├── hooks/
+│   │   ├── useModal.js
+│   │   ├── useForm.js
+│   │   └── index.js
+│   ├── utils/
+│   │   ├── cn.js
+│   │   └── index.js
+│   └── index.js
+├── .storybook/
+├── tests/
+├── package.json
+└── rollup.config.js
+
+// src/components/index.js
+export { default as Button } from './Button'
+export { default as Input } from './Input'
+export { default as Modal } from './Modal'
+
+// src/index.js
+export * from './components'
+export * from './hooks'
+export * from './utils'
+
+// 使用示例
+import { Button, Input, Modal, useModal } from 'my-ui-library'
+
+function App() {
+  const { isOpen, open, close } = useModal()
+
+  return (
+    <div>
+      <h1>我的应用</h1>
+      <Button onClick={open}>打开模态框</Button>
+      <Modal isOpen={isOpen} onClose={close}>
+        <h2>模态框标题</h2>
+        <p>这是模态框内容</p>
+        <Button onClick={close}>关闭</Button>
+      </Modal>
+    </div>
+  )
+}
+
+export default App
+```
+
+## 🔗 相关概念
+
+- **组件设计原则**: 单一职责、可复用性、可组合性
+- **PropTypes**: 运行时类型检查
+- **TypeScript**: 编译时类型安全
+- **JSDoc**: 组件文档注释
+- **单元测试**: Jest 和 React Testing Library
+- **Storybook**: 组件开发和文档工具
+- **React 19 Actions**: 服务端操作
+- **React 19 ref 作为 prop**: 简化 ref 传递
+
+## 📚 学习检查点
+
+- [ ] 理解组件设计的核心原则
+- [ ] 掌握 PropTypes 和 TypeScript 的使用
+- [ ] 能够编写完整的组件文档
+- [ ] 熟悉组件单元测试的方法
+- [ ] 了解 Storybook 的配置和使用
+- [ ] 掌握 React 19 对组件库的影响
+- [ ] 能够创建可复用的组件库
+- [ ] 理解组件库的发布和维护
+
+## 🚀 下一步
+
+→ [测试策略](../03-testing/01-testing-strategies.mdx)

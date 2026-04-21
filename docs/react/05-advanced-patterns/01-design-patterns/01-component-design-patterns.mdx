@@ -1,0 +1,1049 @@
+# 组件设计模式
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-21
+
+## 📚 概念介绍
+
+组件设计模式是 React 开发中用于复用逻辑、提高代码可维护性和可扩展性的重要技术。在 React 19 中，虽然 Hooks 已经成为主流，但理解经典设计模式仍然有助于构建更好的应用架构。本节将介绍容器组件与展示组件、高阶组件、Render Props、自定义 Hooks 和组合模式等核心设计模式，以及 React 19 引入的 Actions 模式和 useEffectEvent 模式。
+
+## 🎯 容器组件与展示组件
+
+### 基本概念
+
+容器组件负责数据获取和状态管理，展示组件专注于 UI 渲染。
+
+```js
+import { useState, useEffect } from 'react'
+
+// 展示组件 - 只负责渲染 UI
+function TodoList({ todos, onToggle, onDelete }) {
+  return (
+    <ul>
+      {todos.map((todo) => (
+        <li key={todo.id}>
+          <input
+            type="checkbox"
+            checked={todo.completed}
+            onChange={() => onToggle(todo.id)}
+          />
+          <span style={{ textDecoration: todo.completed ? 'line-through' : 'none' }}>
+            {todo.text}
+          </span>
+          <button onClick={() => onDelete(todo.id)}>删除</button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+// 容器组件 - 负责数据获取和状态管理
+function TodoListContainer() {
+  const [todos, setTodos] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetchTodos()
+      .then((data) => {
+        setTodos(data)
+        setLoading(false)
+      })
+  }, [])
+
+  const handleToggle = (id) => {
+    setTodos(todos.map((todo) => 
+      todo.id === id ? { ...todo, completed: !todo.completed } : todo
+    ))
+  }
+
+  const handleDelete = (id) => {
+    setTodos(todos.filter((todo) => todo.id !== id))
+  }
+
+  if (loading) return <div>加载中...</div>
+
+  return (
+    <TodoList 
+      todos={todos} 
+      onToggle={handleToggle} 
+      onDelete={handleDelete} 
+    />
+  )
+}
+
+async function fetchTodos() {
+  const response = await fetch('https://api.example.com/todos')
+  return response.json()
+}
+
+// 使用示例
+function App() {
+  return (
+    <div>
+      <h1>待办事项</h1>
+      <TodoListContainer />
+    </div>
+  )
+}
+
+export default App
+```
+
+### React 19 优化版
+
+使用 React 19 的 Actions 和 Suspense 优化容器组件：
+
+```js
+import { Suspense, use } from 'react'
+
+// 展示组件保持不变
+function TodoList({ todos, onToggle, onDelete }) {
+  return (
+    <ul>
+      {todos.map((todo) => (
+        <li key={todo.id}>
+          <input
+            type="checkbox"
+            checked={todo.completed}
+            onChange={() => onToggle(todo.id)}
+          />
+          <span style={{ textDecoration: todo.completed ? 'line-through' : 'none' }}>
+            {todo.text}
+          </span>
+          <button onClick={() => onDelete(todo.id)}>删除</button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+// 数据获取函数 - 使用模拟数据确保可运行
+async function fetchTodos() {
+  // 模拟网络延迟
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+  // 返回模拟数据
+  return [
+    { id: 1, text: '学习 React 19', completed: false },
+    { id: 2, text: '编写文档', completed: true },
+    { id: 3, text: '实践 Actions', completed: false }
+  ]
+}
+
+// 使用 use API 读取数据
+function TodoListContainer() {
+  const todos = use(fetchTodos())
+
+  return <TodoList todos={todos} />
+}
+
+// 使用 Suspense 包装
+function App() {
+  return (
+    <div>
+      <h1>待办事项</h1>
+      <Suspense fallback={<div>加载中...</div>}>
+        <TodoListContainer />
+      </Suspense>
+    </div>
+  )
+}
+```
+
+## 🎯 高阶组件 (HOC)
+
+### 基本概念
+
+高阶组件是参数为组件，返回值为新组件的函数。
+
+```js
+import { useState, useEffect } from 'react'
+
+// HOC: 为组件添加加载状态
+function withLoading(WrappedComponent) {
+  return function WithLoadingComponent(props) {
+    const [loading, setLoading] = useState(true)
+    const [data, setData] = useState(null)
+
+    useEffect(() => {
+      const fetchData = async () => {
+        try {
+          const result = await props.fetchData()
+          setData(result)
+        } finally {
+          setLoading(false)
+        }
+      }
+      fetchData()
+    }, [])
+
+    if (loading) {
+      return <div>加载中...</div>
+    }
+
+    return <WrappedComponent {...props} data={data} />
+  }
+}
+
+// 使用 HOC
+function UserProfile({ data }) {
+  return (
+    <div>
+      <h1>{data.name}</h1>
+      <p>{data.email}</p>
+    </div>
+  )
+}
+
+const UserProfileWithLoading = withLoading(UserProfile)
+
+// 使用示例
+function App() {
+  return (
+    <UserProfileWithLoading 
+      fetchData={async () => ({
+        name: '张三',
+        email: 'zhangsan@example.com'
+      })}
+    />
+  )
+}
+
+export default App
+```
+
+### 多个 HOC 组合
+
+```js
+import { useState, useEffect } from 'react'
+
+// HOC 1: 添加加载状态
+function withLoading(WrappedComponent) {
+  return function WithLoadingComponent(props) {
+    const [loading, setLoading] = useState(true)
+    const [data, setData] = useState(null)
+
+    useEffect(() => {
+      const fetchData = async () => {
+        try {
+          const result = await props.fetchData()
+          setData(result)
+        } finally {
+          setLoading(false)
+        }
+      }
+      fetchData()
+    }, [])
+
+    if (loading) {
+      return <div>加载中...</div>
+    }
+
+    return <WrappedComponent {...props} data={data} />
+  }
+}
+
+// HOC 2: 添加错误处理
+function withErrorHandling(WrappedComponent) {
+  return function WithErrorHandlingComponent(props) {
+    const [error, setError] = useState(null)
+
+    const handleError = (err) => {
+      setError(err.message)
+    }
+
+    if (error) {
+      return <div>错误: {error}</div>
+    }
+
+    return <WrappedComponent {...props} onError={handleError} />
+  }
+}
+
+// 组合 HOC
+function enhanceComponent(WrappedComponent) {
+  return withErrorHandling(withLoading(WrappedComponent))
+}
+
+// 使用组合后的 HOC
+function UserProfile({ data, onError }) {
+  if (!data) {
+    onError(new Error('没有数据'))
+    return null
+  }
+
+  return (
+    <div>
+      <h1>{data.name}</h1>
+      <p>{data.email}</p>
+    </div>
+  )
+}
+
+const EnhancedUserProfile = enhanceComponent(UserProfile)
+
+// 使用示例
+function App() {
+  return (
+    <EnhancedUserProfile 
+      fetchData={async () => ({
+        name: '张三',
+        email: 'zhangsan@example.com'
+      })}
+    />
+  )
+}
+
+export default App
+```
+
+## 🎯 Render Props
+
+### 基本概念
+
+Render Props 是一种在组件之间共享代码的技术，通过函数 prop 来传递渲染逻辑。
+
+```js
+import { useState, useEffect } from 'react'
+
+// Render Props 组件
+function MouseTracker({ render }) {
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+
+  const handleMouseMove = (event) => {
+    setPosition({
+      x: event.clientX,
+      y: event.clientY
+    })
+  }
+
+  useEffect(() => {
+    window.addEventListener('mousemove', handleMouseMove)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+    }
+  }, [])
+
+  return render(position)
+}
+
+// 使用 Render Props
+function App() {
+  return (
+    <div>
+      <h1>鼠标位置追踪</h1>
+      <MouseTracker 
+        render={({ x, y }) => (
+          <div>
+            <p>X: {x}</p>
+            <p>Y: {y}</p>
+          </div        )}
+      />
+      <MouseTracker 
+        render={({ x, y }) => (
+          <div 
+            style={{
+              position: 'absolute',
+              left: x,
+              top: y,
+              width: 20,
+              height: 20,
+              backgroundColor: 'red',
+              borderRadius: '50%'
+            }}
+          />
+        )}
+      />
+    </div>
+  )
+}
+
+export default App
+```
+
+### Render Props 与 Children
+
+```js
+import { useState, useEffect } from 'react'
+
+// 使用 children 作为 render prop
+function DataFetcher({ children, url }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true)
+        const response = await fetch(url)
+        const result = await response.json()
+        setData(result)
+      } catch (err) {
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchData()
+  }, [url])
+
+  return children({ data, loading, error })
+}
+
+// 使用示例
+function App() {
+  return (
+    <DataFetcher url="https://api.example.com/users/1">
+      {({ data, loading, error }) => {
+        if (loading) return <div>加载中...</div>
+        if (error) return <div>错误: {error}</div>
+        return (
+          <div>
+            <h1>{data.name}</h1>
+            <p>{data.email}</p>
+          </div>
+        )
+      }}
+    </DataFetcher>
+  )
+}
+
+export default App
+```
+
+## 🎯 自定义 Hooks
+
+### 基本概念
+
+自定义 Hooks 是复用有状态逻辑的最佳方式，比 HOC 和 Render Props 更简洁。
+
+```js
+import { useState, useEffect } from 'react'
+
+// 自定义 Hook: 数据获取
+function useFetch(url) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true)
+        const response = await fetch(url)
+        if (!response.ok) {
+          throw new Error('Network response was not ok')
+        }
+        const result = await response.json()
+        setData(result)
+      } catch (err) {
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchData()
+  }, [url])
+
+  return { data, loading, error }
+}
+
+// 自定义 Hook: 窗口大小
+function useWindowSize() {
+  const [size, setSize] = useState({
+    width: window.innerWidth,
+    height: window.innerHeight
+  })
+
+  useEffect(() => {
+    const handleResize = () => {
+      setSize({
+        width: window.innerWidth,
+        height: window.innerHeight
+      })
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  return size
+}
+
+// 自定义 Hook: 本地存储
+function useLocalStorage(key, initialValue) {
+  const [storedValue, setStoredValue] = useState(() => {
+    try {
+      const item = window.localStorage.getItem(key)
+      return item ? JSON.parse(item) : initialValue
+    } catch (error) {
+      return initialValue
+    }
+  })
+
+  const setValue = (value) => {
+    try {
+      setStoredValue(value)
+      window.localStorage.setItem(key, JSON.stringify(value))
+    } catch (error) {
+      console.error('Error saving to localStorage:', error)
+    }
+  }
+
+  return [storedValue, setValue]
+}
+
+// 使用自定义 Hooks
+function UserProfile({ userId }) {
+  const { data, loading, error } = useFetch(`https://api.example.com/users/${userId}`)
+  const { width, height } = useWindowSize()
+  const [theme, setTheme] = useLocalStorage('theme', 'light')
+
+  if (loading) return <div>加载中...</div>
+  if (error) return <div>错误: {error}</div>
+
+  return (
+    <div>
+      <h1>{data.name}</h1>
+      <p>{data.email}</p>
+      <p>窗口大小: {width} x {height}</p>
+      <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>
+        切换主题: {theme}
+      </button>
+    </div>
+  )
+}
+
+function App() {
+  return <UserProfile userId={1} />
+}
+
+export default App
+```
+
+### React 19 自定义 Hook 最佳实践
+
+使用 React 19 的 useEffectEvent 和 Actions 优化自定义 Hooks：
+
+```js
+import { useState, useEffect, useEffectEvent } from 'react'
+
+// 使用 useEffectEvent 优化事件处理
+function useOnlineStatus() {
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
+
+  const handleOnline = useEffectEvent(() => {
+    setIsOnline(true)
+  })
+
+  const handleOffline = useEffectEvent(() => {
+    setIsOnline(false)
+  })
+
+  useEffect(() => {
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
+
+  return isOnline
+}
+
+// 使用 useActionState 管理异步操作
+function useAsyncAction(asyncFn, initialState) {
+  const [state, dispatch] = useActionState(
+    async (prevState, action) => {
+      try {
+        const result = await asyncFn(action)
+        return { data: result, error: null, loading: false }
+      } catch (error) {
+        return { ...prevState, error: error.message, loading: false }
+      }
+    },
+    { data: initialState, error: null, loading: false }
+  )
+
+  return [state, dispatch]
+}
+
+// 使用示例
+function App() {
+  const isOnline = useOnlineStatus()
+  const [formState, submitForm] = useAsyncAction(
+    async (formData) => {
+      const response = await fetch('https://api.example.com/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData)
+      })
+      return response.json()
+    },
+    null
+  )
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    const formData = new FormData(e.target)
+    submitForm(Object.fromEntries(formData))
+  }
+
+  return (
+    <div>
+      <p>网络状态: {isOnline ? '在线' : '离线'}</p>
+      <form onSubmit={handleSubmit}>
+        <input name="username" placeholder="用户名" />
+        <button type="submit" disabled={formState.loading}>
+          {formState.loading ? '提交中...' : '提交'}
+        </button>
+      </form>
+      {formState.error && <div>错误: {formState.error}</div>}
+      {formState.data && <div>成功: {JSON.stringify(formState.data)}</div>}
+    </div>
+  )
+}
+
+export default App
+```
+
+## 🎯 组合模式
+
+### 基本概念
+
+组合模式通过组合多个小组件来构建复杂的 UI，强调"组合优于继承"。
+
+```js
+import { useState } from 'react'
+
+// 基础组件
+function Card({ children, title }) {
+  return (
+    <div style={{ border: '1px solid #ccc', borderRadius: 8, padding: 16 }}>
+      {title && <h2>{title}</h2>}
+      {children}
+    </div>
+  )
+}
+
+function Button({ children, onClick, variant = 'primary' }) {
+  const styles = {
+    primary: { backgroundColor: '#007bff', color: 'white' },
+    secondary: { backgroundColor: '#6c757d', color: 'white' },
+    danger: { backgroundColor: '#dc3545', color: 'white' }
+  }
+
+  return (
+    <button 
+      onClick={onClick}
+      style={{
+        ...styles[variant],
+        padding: '8px 16px',
+        border: 'none',
+        borderRadius: 4,
+        cursor: 'pointer'
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function Input({ label, value, onChange, type = 'text' }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'block', marginBottom: 8 }}>{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={onChange}
+        style={{
+          width: '100%',
+          padding: '8px',
+          border: '1px solid #ccc',
+          borderRadius: 4
+        }}
+      />
+    </div>
+  )
+}
+
+// 组合组件
+function LoginForm() {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    console.log('登录:', { username, password })
+  }
+
+  return (
+    <Card title="登录">
+      <form onSubmit={handleSubmit}>
+        <Input
+          label="用户名"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+        />
+        <Input
+          label="密码"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <Button type="submit">登录</Button>
+      </form>
+    </Card>
+  )
+}
+
+// 使用示例
+function App() {
+  return (
+    <div style={{ maxWidth: 400, margin: '0 auto' }}>
+      <LoginForm />
+    </div>
+  )
+}
+
+export default App
+```
+
+### React 19 组合模式增强
+
+使用 React 19 的 Actions 和 Context 作为 provider：
+
+```js
+import { createContext, useContext, useState } from 'react'
+
+// 创建 Context
+const ThemeContext = createContext()
+
+// Theme Provider (React 19: 直接使用 Context 作为 provider)
+function ThemeProvider({ children, defaultTheme = 'light' }) {
+  const [theme, setTheme] = useState(defaultTheme)
+
+  return (
+    <ThemeContext value={{ theme, setTheme }}>
+      {children}
+    </ThemeContext>
+  )
+}
+
+// 使用 Context
+function useTheme() {
+  const context = useContext(ThemeContext)
+  if (!context) {
+    throw new Error('useTheme must be used within ThemeProvider')
+  }
+  return context
+}
+
+// 主题切换组件
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme()
+
+  return (
+    <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>
+      切换到 {theme === 'light' ? '深色' : '浅色'} 主题
+    </button>
+  )
+}
+
+// 主题化卡片组件
+function ThemedCard({ children, title }) {
+  const { theme } = useTheme()
+
+  const styles = {
+    light: {
+      backgroundColor: 'white',
+      color: 'black',
+      border: '1px solid #ccc'
+    },
+    dark: {
+      backgroundColor: '#333',
+      color: 'white',
+      border: '1px solid #555'
+    }
+  }
+
+  return (
+    <div style={{ ...styles[theme], borderRadius: 8, padding: 16 }}>
+      {title && <h2>{title}</h2>}
+      {children}
+    </div>
+  )
+}
+
+// 使用示例
+function App() {
+  return (
+    <ThemeProvider defaultTheme="light">
+      <div>
+        <ThemeToggle />
+        <ThemedCard title="主题卡片">
+          <p>这是一个主题化的卡片组件</p>
+        </ThemedCard>
+      </div>
+    </ThemeProvider>
+  )
+}
+
+export default App
+```
+
+## 🎯 React 19 Actions 模式
+
+### 基本 Actions
+
+```js
+import { useActionState } from 'react'
+
+// Action 函数
+async function updateName(prevState, formData) {
+  const name = formData.get('name')
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+  return { success: true, name }
+}
+
+// 使用 Action
+function NameForm() {
+  const [state, formAction, isPending] = useActionState(updateName, null)
+
+  return (
+    <form action={formAction}>
+      <input type="text" name="name" defaultValue="张三" />
+      <button type="submit" disabled={isPending}>
+        {isPending ? '更新中...' : '更新'}
+      </button>
+      {state?.success && <p>更新成功: {state.name}</p>}
+    </form>
+  )
+}
+
+function App() {
+  return <NameForm />
+}
+
+export default App
+```
+
+### 乐观更新模式
+
+```js
+import { useOptimistic, useActionState } from 'react'
+
+// 乐观更新示例
+function TodoApp() {
+  const [todos, setTodos] = useState([
+    { id: 1, text: '学习 React 19', completed: false }
+  ])
+
+  const [optimisticTodos, addOptimisticTodo] = useOptimistic(
+    todos,
+    (state, newTodo) => [...state, { ...newTodo, id: Date.now() }]
+  )
+
+  async function addTodo(prevState, formData) {
+    const text = formData.get('text')
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    return [...todos, { id: Date.now(), text, completed: false }]
+  }
+
+  const [state, formAction, isPending] = useActionState(addTodo, todos)
+
+  return (
+    <div>
+      <form action={formAction}>
+        <input type="text" name="text" placeholder="添加待办事项" />
+        <button type="submit" disabled={isPending}>
+          {isPending ? '添加中...' : '添加'}
+        </button>
+      </form>
+      <ul>
+        {optimisticTodos.map((todo) => (
+          <li key={todo.id}>{todo.text}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function App() {
+  return <TodoApp />
+}
+
+export default App
+```
+
+## 📝 实际应用示例
+
+### 综合示例：博客文章系统
+
+```js
+import { useState, useEffect, useEffectEvent, useActionState, useOptimistic, Suspense, use } from 'react'
+import { createContext, useContext } from 'react'
+
+// Context
+const BlogContext = createContext()
+
+function BlogProvider({ children }) {
+  const [posts, setPosts] = useState([])
+
+  return (
+    <BlogContext value={{ posts, setPosts }}>
+      {children}
+    </BlogContext>
+  )
+}
+
+function useBlog() {
+  const context = useContext(BlogContext)
+  if (!context) {
+    throw new Error('useBlog must be used within BlogProvider')
+  }
+  return context
+}
+
+// 数据获取 - 使用模拟数据确保可运行
+async function fetchPosts() {
+  // 模拟网络延迟
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+  // 返回模拟数据
+  return [
+    {
+      id: 1,
+      title: 'React 19 新特性详解',
+      excerpt: '深入了解 React 19 的 Actions、useEffectEvent 等新特性',
+      likes: 42
+    },
+    {
+      id: 2,
+      title: 'Server Components 实战',
+      excerpt: '如何在项目中有效使用 React Server Components',
+      likes: 38
+    },
+    {
+      id: 3,
+      title: '性能优化最佳实践',
+      excerpt: 'React 19 性能优化的新方法和技巧',
+      likes: 56
+    }
+  ]
+}
+
+// 文章列表组件
+function PostList() {
+  const posts = use(fetchPosts())
+
+  return (
+    <div>
+      {posts.map((post) => (
+        <PostCard key={post.id} post={post} />
+      ))}
+    </div>
+  )
+}
+
+// 文章卡片组件
+function PostCard({ post }) {
+  const [liked, setLiked] = useState(false)
+  const [optimisticLikes, addOptimisticLike] = useOptimistic(
+    post.likes,
+    (state, increment) => state + increment
+  )
+
+  const handleLike = useEffectEvent(async () => {
+    addOptimisticLike(1)
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    setLiked(true)
+  })
+
+  return (
+    <div style={{ border: '1px solid #ccc', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+      <h2>{post.title}</h2>
+      <p>{post.excerpt}</p>
+      <button onClick={handleLike} disabled={liked}>
+        {liked ? '已点赞' : '点赞'} ({optimisticLikes})
+      </button>
+    </div>
+  )
+}
+
+// 评论表单组件
+function CommentForm({ postId }) {
+  const [optimisticComments, addOptimisticComment] = useOptimistic(
+    [],
+    (state, newComment) => [...state, newComment]
+  )
+
+  async function addComment(prevState, formData) {
+    const text = formData.get('comment')
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    return [...prevState, { id: Date.now(), text, author: '匿名用户' }]
+  }
+
+  const [state, formAction, isPending] = useActionState(addComment, [])
+
+  return (
+    <div>
+      <form action={formAction}>
+        <textarea name="comment" placeholder="发表评论" rows={4} />
+        <button type="submit" disabled={isPending}>
+          {isPending ? '提交中...' : '提交评论'}
+        </button>
+      </form>
+      <div>
+        {[...state, ...optimisticComments].map((comment) => (
+          <div key={comment.id} style={{ padding: 8, borderBottom: '1px solid #eee' }}>
+            <strong>{comment.author}</strong>: {comment.text}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// 主应用
+function App() {
+  return (
+    <BlogProvider>
+      <div style={{ maxWidth: 800, margin: '0 auto', padding: 20 }}>
+        <h1>博客系统</h1>
+        <Suspense fallback={<div>加载中...</div>}>
+          <PostList />
+        </Suspense>
+      </div>
+    </BlogProvider>
+  )
+}
+
+export default App
+```
+
+## 🔗 相关概念
+
+- **自定义 Hooks**: 复用有状态逻辑的最佳方式
+- **Context API**: 跨组件共享状态
+- **组合模式**: 通过组合构建复杂 UI
+- **Actions**: React 19 的异步状态管理模式
+- **useEffectEvent**: 分离 Effect 中的事件逻辑
+- **useOptimistic**: 乐观更新状态管理
+
+## 📚 学习检查点
+
+- [ ] 理解容器组件与展示组件的职责分离
+- [ ] 掌握高阶组件的创建和使用
+- [ ] 熟悉 Render Props 模式的应用场景
+- [ ] 能够创建和使用自定义 Hooks
+- [ ] 理解组合模式的优势
+- [ ] 掌握 React 19 Actions 的使用
+- [ ] 能够实现乐观更新
+- [ ] 理解 useEffectEvent 的作用
+
+## 🚀 下一步
+
+→ [架构设计模式](./02-architecture-patterns.mdx)
