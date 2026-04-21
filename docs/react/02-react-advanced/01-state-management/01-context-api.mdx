@@ -1,0 +1,623 @@
+# Context API
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+Context API 是 React 提供的一种跨组件层级共享数据的方式，避免了通过 props 逐层传递的繁琐。本章节将详细介绍 Context API 的使用方法、最佳实践以及 React 19 中的新特性。
+
+## 🎯 Context 基础
+
+### 创建和使用 Context
+
+```jsx
+import React, { createContext, useContext, useState } from 'react';
+
+// 创建 Context
+const ThemeContext = createContext('light');
+const UserContext = createContext(null);
+
+// 提供者组件
+function App() {
+  const [theme, setTheme] = useState('light');
+  const [user, setUser] = useState({ name: 'Alice', role: 'admin' });
+  
+  return (
+    <ThemeContext value={{ theme, setTheme }}>
+      <UserContext value={user}>
+        <Header />
+        <MainContent />
+      </UserContext>
+    </ThemeContext>
+  );
+}
+
+// 消费者组件
+function Header() {
+  const { theme, setTheme } = useContext(ThemeContext);
+  const user = useContext(UserContext);
+  
+  return (
+    <header style={{ background: theme === 'dark' ? '#333' : '#fff' }}>
+      <h1>Welcome, {user.name}</h1>
+      <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>
+        Toggle Theme
+      </button>
+    </header>
+  );
+}
+
+function MainContent() {
+  const { theme } = useContext(ThemeContext);
+  const user = useContext(UserContext);
+  
+  return (
+    <main style={{ background: theme === 'dark' ? '#222' : '#f5f5f5' }}>
+      <h2>Role: {user.role}</h2>
+      <p>Current theme: {theme}</p>
+    </main>
+  );
+}
+
+export default App;
+```
+
+### 默认值的使用
+
+```jsx
+import React, { createContext, useContext } from 'react';
+
+// 创建带有默认值的 Context
+const LanguageContext = createContext('en');
+
+function App() {
+  return (
+    <div>
+      <Greeting />
+      <Settings />
+    </div>
+  );
+}
+
+function Greeting() {
+  const language = useContext(LanguageContext);
+  
+  const greetings = {
+    en: 'Hello',
+    zh: '你好',
+    ja: 'こんにちは'
+  };
+  
+  return <h1>{greetings[language] || greetings.en}</h1>;
+}
+
+function Settings() {
+  return (
+    <LanguageContext value="zh">
+      <Greeting />
+    </LanguageContext>
+  );
+}
+
+export default App;
+```
+
+## 🎯 Context 性能优化
+
+### 使用 useMemo 优化 Provider
+
+```jsx
+import React, { createContext, useContext, useState, useMemo } from 'react';
+
+const AppContext = createContext();
+
+function AppProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [theme, setTheme] = useState('light');
+  const [notifications, setNotifications] = useState([]);
+  
+  // 使用 useMemo 避免不必要的重新渲染
+  const contextValue = useMemo(() => ({
+    user,
+    setUser,
+    theme,
+    setTheme,
+    notifications,
+    setNotifications
+  }), [user, theme, notifications]);
+  
+  return (
+    <AppContext value={contextValue}>
+      {children}
+    </AppContext>
+  );
+}
+
+function UserProfile() {
+  const { user, theme } = useContext(AppContext);
+  
+  if (!user) return <div>Please log in</div>;
+  
+  return (
+    <div style={{ color: theme === 'dark' ? '#fff' : '#000' }}>
+      <h2>{user.name}</h2>
+      <p>{user.email}</p>
+    </div>
+  );
+}
+
+export { AppProvider, AppContext };
+export default AppProvider;
+```
+
+### 分离 Context 避免不必要的更新
+
+```jsx
+import React, { createContext, useContext, useState } from 'react';
+
+// 分离不同类型的 Context
+const UserContext = createContext();
+const ThemeContext = createContext();
+const NotificationContext = createContext();
+
+function App() {
+  const [user, setUser] = useState(null);
+  const [theme, setTheme] = useState('light');
+  const [notifications, setNotifications] = useState([]);
+  
+  return (
+    <UserContext value={{ user, setUser }}>
+      <ThemeContext value={{ theme, setTheme }}>
+        <NotificationContext value={{ notifications, setNotifications }}>
+          <Dashboard />
+        </NotificationContext>
+      </ThemeContext>
+    </UserContext>
+  );
+}
+
+function Dashboard() {
+  const { user } = useContext(UserContext);
+  const { theme } = useContext(ThemeContext);
+  const { notifications } = useContext(NotificationContext);
+  
+  return (
+    <div style={{ background: theme === 'dark' ? '#333' : '#fff' }}>
+      <h1>Welcome, {user?.name}</h1>
+      <p>Notifications: {notifications.length}</p>
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 🎯 Context 最佳实践
+
+### 自定义 Hook 封装
+
+```jsx
+import React, { createContext, useContext, useState } from 'react';
+
+const AuthContext = createContext();
+
+function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  
+  const login = (credentials) => {
+    // 模拟登录
+    setUser({ name: 'Alice', email: 'alice@example.com' });
+    setIsAuthenticated(true);
+  };
+  
+  const logout = () => {
+    setUser(null);
+    setIsAuthenticated(false);
+  };
+  
+  const value = {
+    user,
+    isAuthenticated,
+    login,
+    logout
+  };
+  
+  return (
+    <AuthContext value={value}>
+      {children}
+    </AuthContext>
+  );
+}
+
+// 自定义 Hook
+function useAuth() {
+  const context = useContext(AuthContext);
+  
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  
+  return context;
+}
+
+// 使用示例
+function LoginButton() {
+  const { login } = useAuth();
+  
+  return <button onClick={() => login({ username: 'alice', password: '123456' })}>
+    Login
+  </button>;
+}
+
+function LogoutButton() {
+  const { logout } = useAuth();
+  
+  return <button onClick={logout}>Logout</button>;
+}
+
+function UserInfo() {
+  const { user, isAuthenticated } = useAuth();
+  
+  if (!isAuthenticated) return <div>Please login</div>;
+  
+  return (
+    <div>
+      <p>Name: {user.name}</p>
+      <p>Email: {user.email}</p>
+      <LogoutButton />
+    </div>
+  );
+}
+
+export { AuthProvider, useAuth };
+export default AuthProvider;
+```
+
+### Context 组合模式
+
+```jsx
+import React, { createContext, useContext, useState } from 'react';
+
+// 创建多个 Context
+const ThemeContext = createContext();
+const LayoutContext = createContext();
+const DataContext = createContext();
+
+function App() {
+  const [theme, setTheme] = useState('light');
+  const [layout, setLayout] = useState('grid');
+  const [data, setData] = useState([]);
+  
+  return (
+    <ThemeContext value={{ theme, setTheme }}>
+      <LayoutContext value={{ layout, setLayout }}>
+        <DataContext value={{ data, setData }}>
+          <Dashboard />
+        </DataContext>
+      </LayoutContext>
+    </ThemeContext>
+  );
+}
+
+function Dashboard() {
+  const { theme } = useContext(ThemeContext);
+  const { layout } = useContext(LayoutContext);
+  const { data } = useContext(DataContext);
+  
+  return (
+    <div className={`dashboard ${theme} ${layout}`}>
+      <h1>Dashboard</h1>
+      <p>Theme: {theme}</p>
+      <p>Layout: {layout}</p>
+      <p>Data items: {data.length}</p>
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 🎯 React 19 Context 新特性
+
+### Context 作为 Provider
+
+```jsx
+import React, { createContext, useContext, useState } from 'react';
+
+// React 19 新方式：直接使用 Context 作为 provider
+const ThemeContext = createContext('light');
+
+function App() {
+  const [theme, setTheme] = useState('light');
+  
+  return (
+    <ThemeContext value={theme}>
+      <ChildComponent />
+      <ThemeToggle setTheme={setTheme} />
+    </ThemeContext>
+  );
+}
+
+function ChildComponent() {
+  const theme = useContext(ThemeContext);
+  
+  return (
+    <div style={{ 
+      background: theme === 'dark' ? '#333' : '#fff',
+      color: theme === 'dark' ? '#fff' : '#000'
+    }}>
+      Current theme: {theme}
+    </div>
+  );
+}
+
+function ThemeToggle({ setTheme }) {
+  return (
+    <button onClick={() => setTheme(prev => prev === 'light' ? 'dark' : 'light')}>
+      Toggle Theme
+    </button>
+  );
+}
+
+export default App;
+```
+
+### 条件性读取 Context
+
+```jsx
+import React, { createContext, useContext, useState } from 'react';
+
+const UserContext = createContext(null);
+const ThemeContext = createContext('light');
+
+function Profile() {
+  const user = useContext(UserContext);
+  
+  // 早期返回后仍然可以读取 Context
+  if (!user) {
+    return <div>Please log in</div>;
+  }
+  
+  const theme = useContext(ThemeContext);
+  
+  return (
+    <div style={{ color: theme === 'dark' ? '#fff' : '#000' }}>
+      <h2>Welcome, {user.name}</h2>
+      <p>Email: {user.email}</p>
+    </div>
+  );
+}
+
+function App() {
+  const [user, setUser] = useState(null);
+  
+  return (
+    <UserContext value={user}>
+      <ThemeContext value="dark">
+        <Profile />
+        <button onClick={() => setUser({ name: 'Alice', email: 'alice@example.com' })}>
+          Set User
+        </button>
+      </ThemeContext>
+    </UserContext>
+  );
+}
+
+export default App;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：应用状态管理
+
+```jsx
+import React, { createContext, useContext, useState, useMemo } from 'react';
+
+// 创建 Context
+const AppContext = createContext();
+
+// Provider 组件
+function AppProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [theme, setTheme] = useState('light');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [notifications, setNotifications] = useState([]);
+  
+  // 用户操作
+  const login = (userData) => {
+    setUser(userData);
+  };
+  
+  const logout = () => {
+    setUser(null);
+  };
+  
+  // 通知操作
+  const addNotification = (notification) => {
+    const newNotification = {
+      id: Date.now(),
+      ...notification,
+      timestamp: new Date().toISOString()
+    };
+    setNotifications(prev => [newNotification, ...prev]);
+  };
+  
+  const removeNotification = (id) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+  };
+  
+  // 使用 useMemo 优化
+  const contextValue = useMemo(() => ({
+    // 用户状态
+    user,
+    isAuthenticated: !!user,
+    login,
+    logout,
+    
+    // 主题状态
+    theme,
+    setTheme,
+    
+    // UI 状态
+    sidebarOpen,
+    setSidebarOpen,
+    
+    // 通知状态
+    notifications,
+    addNotification,
+    removeNotification
+  }), [user, theme, sidebarOpen, notifications]);
+  
+  return (
+    <AppContext value={contextValue}>
+      {children}
+    </AppContext>
+  );
+}
+
+// 自定义 Hook
+function useApp() {
+  const context = useContext(AppContext);
+  
+  if (!context) {
+    throw new Error('useApp must be used within an AppProvider');
+  }
+  
+  return context;
+}
+
+// 组件示例
+function Header() {
+  const { user, logout, theme, setTheme } = useApp();
+  
+  return (
+    <header style={{ 
+      background: theme === 'dark' ? '#333' : '#fff',
+      color: theme === 'dark' ? '#fff' : '#000',
+      padding: '1rem',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center'
+    }}>
+      <h1>My App</h1>
+      <div>
+        {user && (
+          <>
+            <span>Welcome, {user.name}</span>
+            <button onClick={logout} style={{ marginLeft: '1rem' }}>
+              Logout
+            </button>
+          </>
+        )}
+        <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>
+          {theme === 'light' ? '🌙' : '☀️'}
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function Sidebar() {
+  const { sidebarOpen, notifications, removeNotification } = useApp();
+  
+  if (!sidebarOpen) return null;
+  
+  return (
+    <aside style={{ 
+      width: '300px',
+      padding: '1rem',
+      borderRight: '1px solid #ddd'
+    }}>
+      <h2>Notifications</h2>
+      {notifications.length === 0 ? (
+        <p>No notifications</p>
+      ) : (
+        <ul>
+          {notifications.map(notification => (
+            <li key={notification.id} style={{ marginBottom: '0.5rem' }}>
+              <p>{notification.message}</p>
+              <small>{new Date(notification.timestamp).toLocaleString()}</small>
+              <button onClick={() => removeNotification(notification.id)}>
+                Dismiss
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </aside>
+  );
+}
+
+function MainContent() {
+  const { user, addNotification } = useApp();
+  
+  const handleClick = () => {
+    addNotification({
+      type: 'success',
+      message: 'Action completed successfully!'
+    });
+  };
+  
+  return (
+    <main style={{ padding: '1rem' }}>
+      {user ? (
+        <div>
+          <h2>Welcome back, {user.name}!</h2>
+          <button onClick={handleClick}>
+            Trigger Notification
+          </button>
+        </div>
+      ) : (
+        <div>
+          <h2>Please log in</h2>
+          <button onClick={() => addNotification({
+            type: 'info',
+            message: 'Login required'
+          })}>
+            Show Login Notification
+          </button>
+        </div>
+      )}
+    </main>
+  );
+}
+
+function App() {
+  return (
+    <AppProvider>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+        <Header />
+        <div style={{ display: 'flex', flex: 1 }}>
+          <Sidebar />
+          <MainContent />
+        </div>
+      </div>
+    </AppProvider>
+  );
+}
+
+export { AppProvider, useApp };
+export default App;
+```
+
+## 🔗 相关概念
+
+- **useState**：状态管理基础
+- **useReducer**：复杂状态管理
+- **Redux**：全局状态管理库
+- **性能优化**：避免不必要的重新渲染
+
+## 📚 学习检查点
+
+- [ ] 理解 Context API 的基本概念
+- [ ] 掌握创建和使用 Context 的方法
+- [ ] 理解 Context 的性能优化策略
+- [ ] 掌握自定义 Hook 封装 Context
+- [ ] 了解 React 19 Context 的新特性
+- [ ] 能够在实际项目中应用 Context
+
+## 🚀 下一步
+
+→ [Redux](./02-redux) - 学习 Redux 状态管理库

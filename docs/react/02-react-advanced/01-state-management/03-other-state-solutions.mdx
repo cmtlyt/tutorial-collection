@@ -1,0 +1,812 @@
+# 其他状态解决方案
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+除了 Context API 和 Redux，React 生态系统中有许多其他优秀的状态管理解决方案。本章节将介绍 Zustand、Jotai、Recoil、MobX 等流行的状态管理库，以及它们的使用场景和最佳实践。
+
+## 🎯 Zustand
+
+### 基本用法
+
+Zustand 是一个轻量级、简单易用的状态管理库。
+
+```jsx
+import { create } from 'zustand';
+
+// 创建 Store
+const useStore = create((set) => ({
+  count: 0,
+  increment: () => set((state) => ({ count: state.count + 1 })),
+  decrement: () => set((state) => ({ count: state.count - 1 })),
+  reset: () => set({ count: 0 })
+}));
+
+// 组件中使用
+function Counter() {
+  const { count, increment, decrement, reset } = useStore();
+  
+  return (
+    <div>
+      <h2>Count: {count}</h2>
+      <button onClick={increment}>Increment</button>
+      <button onClick={decrement}>Decrement</button>
+      <button onClick={reset}>Reset</button>
+    </div>
+  );
+}
+
+export default Counter;
+```
+
+### 复杂状态管理
+
+```jsx
+import { create } from 'zustand';
+
+// Todo Store
+const useTodoStore = create((set, get) => ({
+  todos: [],
+  filter: 'all',
+  
+  addTodo: (text) => set((state) => ({
+    todos: [...state.todos, {
+      id: Date.now(),
+      text,
+      completed: false
+    }]
+  })),
+  
+  toggleTodo: (id) => set((state) => ({
+    todos: state.todos.map(todo =>
+      todo.id === id ? { ...todo, completed: !todo.completed } : todo
+    )
+  })),
+  
+  deleteTodo: (id) => set((state) => ({
+    todos: state.todos.filter(todo => todo.id !== id)
+  })),
+  
+  setFilter: (filter) => set({ filter }),
+  
+  // 选择器
+  visibleTodos: () => {
+    const { todos, filter } = get();
+    switch (filter) {
+      case 'active':
+        return todos.filter(todo => !todo.completed);
+      case 'completed':
+        return todos.filter(todo => todo.completed);
+      default:
+        return todos;
+    }
+  },
+  
+  stats: () => {
+    const todos = get().todos;
+    return {
+      total: todos.length,
+      active: todos.filter(todo => !todo.completed).length,
+      completed: todos.filter(todo => todo.completed).length
+    };
+  }
+}));
+
+// 组件
+function TodoApp() {
+  const { todos, filter, addTodo, toggleTodo, deleteTodo, setFilter, visibleTodos, stats } = useTodoStore();
+  const [input, setInput] = React.useState('');
+  
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (input.trim()) {
+      addTodo(input);
+      setInput('');
+    }
+  };
+  
+  return (
+    <div>
+      <h1>Todo App</h1>
+      
+      <form onSubmit={handleSubmit}>
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Add a new todo"
+        />
+        <button type="submit">Add</button>
+      </form>
+      
+      <div>
+        <button onClick={() => setFilter('all')} disabled={filter === 'all'}>
+          All
+        </button>
+        <button onClick={() => setFilter('active')} disabled={filter === 'active'}>
+          Active
+        </button>
+        <button onClick={() => setFilter('completed')} disabled={filter === 'completed'}>
+          Completed
+        </button>
+      </div>
+      
+      <div>
+        <p>Total: {stats().total}</p>
+        <p>Active: {stats().active}</p>
+        <p>Completed: {stats().completed}</p>
+      </div>
+      
+      <ul>
+        {visibleTodos().map(todo => (
+          <li key={todo.id}>
+            <input
+              type="checkbox"
+              checked={todo.completed}
+              onChange={() => toggleTodo(todo.id)}
+            />
+            <span style={{ textDecoration: todo.completed ? 'line-through' : 'none' }}>
+              {todo.text}
+            </span>
+            <button onClick={() => deleteTodo(todo.id)}>Delete</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default TodoApp;
+```
+
+### 异步操作
+
+```jsx
+import { create } from 'zustand';
+
+// 异步 Store
+const useUserStore = create((set, get) => ({
+  users: [],
+  currentUser: null,
+  loading: false,
+  error: null,
+  
+  fetchUsers: async () => {
+    set({ loading: true, error: null });
+    try {
+      const response = await fetch('https://jsonplaceholder.typicode.com/users');
+      const users = await response.json();
+      set({ users, loading: false });
+    } catch (error) {
+      set({ error: error.message, loading: false });
+    }
+  },
+  
+  fetchUserById: async (userId) => {
+    set({ loading: true, error: null });
+    try {
+      const response = await fetch(`https://jsonplaceholder.typicode.com/users/${userId}`);
+      const user = await response.json();
+      set({ currentUser: user, loading: false });
+    } catch (error) {
+      set({ error: error.message, loading: false });
+    }
+  },
+  
+  clearCurrentUser: () => set({ currentUser: null })
+}));
+
+// 组件
+function UserList() {
+  const { users, loading, error, fetchUsers } = useUserStore();
+  
+  React.useEffect(() => {
+    fetchUsers();
+  }, [fetchUsers]);
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error}</div>;
+  
+  return (
+    <div>
+      <h2>Users</h2>
+      <ul>
+        {users.map(user => (
+          <li key={user.id}>
+            <h3>{user.name}</h3>
+            <p>{user.email}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default UserList;
+```
+
+## 🎯 Jotai
+
+### 基本用法
+
+Jotai 是一个原子化的状态管理库，提供了一种更细粒度的状态管理方式。
+
+```jsx
+import { atom, useAtom } from 'jotai';
+
+// 创建原子
+const countAtom = atom(0);
+const doubledAtom = atom((get) => get(countAtom) * 2);
+
+// 组件中使用
+function Counter() {
+  const [count, setCount] = useAtom(countAtom);
+  const [doubled] = useAtom(doubledAtom);
+  
+  return (
+    <div>
+      <h2>Count: {count}</h2>
+      <h3>Doubled: {doubled}</h3>
+      <button onClick={() => setCount(count + 1)}>Increment</button>
+      <button onClick={() => setCount(count - 1)}>Decrement</button>
+    </div>
+  );
+}
+
+export default Counter;
+```
+
+### 复杂状态管理
+
+```jsx
+import { atom, useAtom, useAtomValue, useSetAtom } from 'jotai';
+
+// 原子定义
+const todosAtom = atom([]);
+const filterAtom = atom('all');
+
+// 派生原子
+const visibleTodosAtom = atom((get) => {
+  const todos = get(todosAtom);
+  const filter = get(filterAtom);
+  
+  switch (filter) {
+    case 'active':
+      return todos.filter(todo => !todo.completed);
+    case 'completed':
+      return todos.filter(todo => todo.completed);
+    default:
+      return todos;
+  }
+});
+
+const statsAtom = atom((get) => {
+  const todos = get(todosAtom);
+  return {
+    total: todos.length,
+    active: todos.filter(todo => !todo.completed).length,
+    completed: todos.filter(todo => todo.completed).length
+  };
+});
+
+// 操作原子
+const addTodoAtom = atom(null, (get, set, text) => {
+  set(todosAtom, [
+    ...get(todosAtom),
+    {
+      id: Date.now(),
+      text,
+      completed: false
+    }
+  ]);
+});
+
+const toggleTodoAtom = atom(null, (get, set, id) => {
+  set(todosAtom, get(todosAtom).map(todo =>
+    todo.id === id ? { ...todo, completed: !todo.completed } : todo
+  ));
+});
+
+const deleteTodoAtom = atom(null, (get, set, id) => {
+  set(todosAtom, get(todosAtom).filter(todo => todo.id !== id));
+});
+
+// 组件
+function TodoApp() {
+  const [todos] = useAtom(todosAtom);
+  const [filter, setFilter] = useAtom(filterAtom);
+  const visibleTodos = useAtomValue(visibleTodosAtom);
+  const stats = useAtomValue(statsAtom);
+  const addTodo = useSetAtom(addTodoAtom);
+  const toggleTodo = useSetAtom(toggleTodoAtom);
+  const deleteTodo = useSetAtom(deleteTodoAtom);
+  const [input, setInput] = React.useState('');
+  
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (input.trim()) {
+      addTodo(input);
+      setInput('');
+    }
+  };
+  
+  return (
+    <div>
+      <h1>Todo App</h1>
+      
+      <form onSubmit={handleSubmit}>
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Add a new todo"
+        />
+        <button type="submit">Add</button>
+      </form>
+      
+      <div>
+        <button onClick={() => setFilter('all')} disabled={filter === 'all'}>
+          All
+        </button>
+        <button onClick={() => setFilter('active')} disabled={filter === 'active'}>
+          Active
+        </button>
+        <button onClick={() => setFilter('completed')} disabled={filter === 'completed'}>
+          Completed
+        </button>
+      </div>
+      
+      <div>
+        <p>Total: {stats.total}</p>
+        <p>Active: {stats.active}</p>
+        <p>Completed: {stats.completed}</p>
+      </div>
+      
+      <ul>
+        {visibleTodos.map(todo => (
+          <li key={todo.id}>
+            <input
+              type="checkbox"
+              checked={todo.completed}
+              onChange={() => toggleTodo(todo.id)}
+            />
+            <span style={{ textDecoration: todo.completed ? 'line-through' : 'none' }}>
+              {todo.text}
+            </span>
+            <button onClick={() => deleteTodo(todo.id)}>Delete</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default TodoApp;
+```
+
+## 🎯 Recoil
+
+### 基本用法
+
+Recoil 是 Facebook 开发的状态管理库，提供了一种基于原子的状态管理方式。
+
+```jsx
+import { atom, useRecoilState, useRecoilValue } from 'recoil';
+
+// 定义原子
+const countState = atom({
+  key: 'countState',
+  default: 0
+});
+
+const doubledState = atom({
+  key: 'doubledState',
+  get: ({ get }) => get(countState) * 2
+});
+
+// 组件中使用
+function Counter() {
+  const [count, setCount] = useRecoilState(countState);
+  const doubled = useRecoilValue(doubledState);
+  
+  return (
+    <div>
+      <h2>Count: {count}</h2>
+      <h3>Doubled: {doubled}</h3>
+      <button onClick={() => setCount(count + 1)}>Increment</button>
+      <button onClick={() => setCount(count - 1)}>Decrement</button>
+    </div>
+  );
+}
+
+export default Counter;
+```
+
+### 复杂状态管理
+
+```jsx
+import { atom, selector, useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
+
+// 原子定义
+const todosState = atom({
+  key: 'todosState',
+  default: []
+});
+
+const filterState = atom({
+  key: 'filterState',
+  default: 'all'
+});
+
+// 选择器
+const visibleTodosState = selector({
+  key: 'visibleTodosState',
+  get: ({ get }) => {
+    const todos = get(todosState);
+    const filter = get(filterState);
+    
+    switch (filter) {
+      case 'active':
+        return todos.filter(todo => !todo.completed);
+      case 'completed':
+        return todos.filter(todo => todo.completed);
+      default:
+        return todos;
+    }
+  }
+});
+
+const statsState = selector({
+  key: 'statsState',
+  get: ({ get }) => {
+    const todos = get(todosState);
+    return {
+      total: todos.length,
+      active: todos.filter(todo => !todo.completed).length,
+      completed: todos.filter(todo => todo.completed).length
+    };
+  }
+});
+
+// 组件
+function TodoApp() {
+  const [todos, setTodos] = useRecoilState(todosState);
+  const [filter, setFilter] = useRecoilState(filterState);
+  const visibleTodos = useRecoilValue(visibleTodosState);
+  const stats = useRecoilValue(statsState);
+  const [input, setInput] = React.useState('');
+  
+  const addTodo = (text) => {
+    setTodos([...todos, {
+      id: Date.now(),
+      text,
+      completed: false
+    }]);
+  };
+  
+  const toggleTodo = (id) => {
+    setTodos(todos.map(todo =>
+      todo.id === id ? { ...todo, completed: !todo.completed } : todo
+    ));
+  };
+  
+  const deleteTodo = (id) => {
+    setTodos(todos.filter(todo => todo.id !== id));
+  };
+  
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (input.trim()) {
+      addTodo(input);
+      setInput('');
+    }
+  };
+  
+  return (
+    <div>
+      <h1>Todo App</h1>
+      
+      <form onSubmit={handleSubmit}>
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Add a new todo"
+        />
+        <button type="submit">Add</button>
+      </form>
+      
+      <div>
+        <button onClick={() => setFilter('all')} disabled={filter === 'all'}>
+          All
+        </button>
+        <button onClick={() => setFilter('active')} disabled={filter === 'active'}>
+          Active
+        </button>
+        <button onClick={() => setFilter('completed')} disabled={filter === 'completed'}>
+          Completed
+        </button>
+      </div>
+      
+      <div>
+        <p>Total: {stats.total}</p>
+        <p>Active: {stats.active}</p>
+        <p>Completed: {stats.completed}</p>
+      </div>
+      
+      <ul>
+        {visibleTodos.map(todo => (
+          <li key={todo.id}>
+            <input
+              type="checkbox"
+              checked={todo.completed}
+              onChange={() => toggleTodo(todo.id)}
+            />
+            <span style={{ textDecoration: todo.completed ? 'line-through' : 'none' }}>
+              {todo.text}
+            </span>
+            <button onClick={() => deleteTodo(todo.id)}>Delete</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default TodoApp;
+```
+
+## 🎯 MobX
+
+### 基本用法
+
+MobX 是一个响应式的状态管理库，使用观察者模式来自动追踪状态变化。
+
+```jsx
+import { makeAutoObservable } from 'mobx';
+import { observer } from 'mobx-react-lite';
+
+// Store
+class CounterStore {
+  count = 0;
+  
+  constructor() {
+    makeAutoObservable(this);
+  }
+  
+  increment() {
+    this.count += 1;
+  }
+  
+  decrement() {
+    this.count -= 1;
+  }
+  
+  reset() {
+    this.count = 0;
+  }
+  
+  get doubled() {
+    return this.count * 2;
+  }
+}
+
+// 组件
+const Counter = observer(({ store }) => {
+  return (
+    <div>
+      <h2>Count: {store.count}</h2>
+      <h3>Doubled: {store.doubled}</h3>
+      <button onClick={() => store.increment()}>Increment</button>
+      <button onClick={() => store.decrement()}>Decrement</button>
+      <button onClick={() => store.reset()}>Reset</button>
+    </div>
+  );
+});
+
+// 使用
+const counterStore = new CounterStore();
+
+function App() {
+  return <Counter store={counterStore} />;
+}
+
+export default App;
+```
+
+### 复杂状态管理
+
+```jsx
+import { makeAutoObservable } from 'mobx';
+import { observer } from 'mobx-react-lite';
+
+// Todo Store
+class TodoStore {
+  todos = [];
+  filter = 'all';
+  
+  constructor() {
+    makeAutoObservable(this);
+  }
+  
+  addTodo(text) {
+    this.todos.push({
+      id: Date.now(),
+      text,
+      completed: false
+    });
+  }
+  
+  toggleTodo(id) {
+    const todo = this.todos.find(t => t.id === id);
+    if (todo) {
+      todo.completed = !todo.completed;
+    }
+  }
+  
+  deleteTodo(id) {
+    this.todos = this.todos.filter(t => t.id !== id);
+  }
+  
+  setFilter(filter) {
+    this.filter = filter;
+  }
+  
+  get visibleTodos() {
+    switch (this.filter) {
+      case 'active':
+        return this.todos.filter(todo => !todo.completed);
+      case 'completed':
+        return this.todos.filter(todo => todo.completed);
+      default:
+        return this.todos;
+    }
+  }
+  
+  get stats() {
+    return {
+      total: this.todos.length,
+      active: this.todos.filter(todo => !todo.completed).length,
+      completed: this.todos.filter(todo => todo.completed).length
+    };
+  }
+}
+
+// 组件
+const TodoApp = observer(({ store }) => {
+  const [input, setInput] = React.useState('');
+  
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (input.trim()) {
+      store.addTodo(input);
+      setInput('');
+    }
+  };
+  
+  return (
+    <div>
+      <h1>Todo App</h1>
+      
+      <form onSubmit={handleSubmit}>
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Add a new todo"
+        />
+        <button type="submit">Add</button>
+      </form>
+      
+      <div>
+        <button onClick={() => store.setFilter('all')} disabled={store.filter === 'all'}>
+          All
+        </button>
+        <button onClick={() => store.setFilter('active')} disabled={store.filter === 'active'}>
+          Active
+        </button>
+        <button onClick={() => store.setFilter('completed')} disabled={store.filter === 'completed'}>
+          Completed
+        </button>
+      </div>
+      
+      <div>
+        <p>Total: {store.stats.total}</p>
+        <p>Active: {store.stats.active}</p>
+        <p>Completed: {store.stats.completed}</p>
+      </div>
+      
+      <ul>
+        {store.visibleTodos.map(todo => (
+          <li key={todo.id}>
+            <input
+              type="checkbox"
+              checked={todo.completed}
+              onChange={() => store.toggleTodo(todo.id)}
+            />
+            <span style={{ textDecoration: todo.completed ? 'line-through' : 'none' }}>
+              {todo.text}
+            </span>
+            <button onClick={() => store.deleteTodo(todo.id)}>Delete</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+});
+
+// 使用
+const todoStore = new TodoStore();
+
+function App() {
+  return <TodoApp store={todoStore} />;
+}
+
+export default App;
+```
+
+## 📝 状态管理方案对比
+
+### 选择合适的方案
+
+| 方案 | 适用场景 | 优势 | 劣势 |
+|------|----------|------|------|
+| Context API | 小型应用、简单状态 | 内置、轻量级 | 性能问题、样板代码 |
+| Redux | 大型应用、复杂状态 | 生态成熟、可预测 | 样板代码多、学习曲线陡 |
+| Zustand | 中小型应用 | 简单易用、轻量级 | 生态相对较小 |
+| Jotai | 需要细粒度控制 | 原子化、灵活 | 需要理解原子概念 |
+| Recoil | React 原生集成 | 与 React 深度集成 | 体积较大、Facebook 维护 |
+| MobX | 响应式需求 | 响应式、自动追踪 | 隐式更新、调试困难 |
+
+### 决策指南
+
+```jsx
+// 小型应用：使用 Context API 或 Zustand
+function SmallApp() {
+  const [state, setState] = React.useState({});
+  // 或者使用 Zustand
+}
+
+// 中型应用：使用 Zustand 或 Jotai
+function MediumApp() {
+  const store = useStore();
+  // 或者使用 Jotai 原子
+}
+
+// 大型应用：使用 Redux 或 MobX
+function LargeApp() {
+  const store = useReduxStore();
+  // 或者使用 MobX
+}
+
+// 需要细粒度控制：使用 Jotai
+function GranularApp() {
+  const [count] = useAtom(countAtom);
+}
+
+// 需要响应式：使用 MobX
+function ReactiveApp() {
+  const store = useMobXStore();
+}
+```
+
+## 🔗 相关概念
+
+- **Context API**：React 内置状态管理
+- **Redux**：可预测的状态容器
+- **状态管理最佳实践**：如何选择合适的方案
+
+## 📚 学习检查点
+
+- [ ] 理解不同状态管理方案的特点
+- [ ] 掌握 Zustand 的基本用法
+- [ ] 理解 Jotai 的原子化概念
+- [ ] 掌握 Recoil 的使用方法
+- [ ] 理解 MobX 的响应式原理
+- [ ] 能够根据项目需求选择合适的方案
+
+## 🚀 下一步
+
+→ [React Router 基础](../../02-routing/01-react-router-basics) - 学习路由管理

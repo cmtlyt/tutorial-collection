@@ -1,0 +1,645 @@
+# 渲染优化
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+渲染优化是提升 React 应用性能的核心。通过理解 React 的渲染机制，合理使用 key、避免不必要的渲染、优化状态更新等方式，可以显著提高应用的性能。本章节将详细介绍渲染优化的各种技巧。
+
+## 🎯 Key 属性优化
+
+### 正确使用 Key
+
+```jsx
+import React from 'react';
+
+function TodoList({ todos }) {
+  return (
+    <ul>
+      {todos.map(todo => (
+        <li key={todo.id}>
+          <input type="checkbox" checked={todo.completed} />
+          <span>{todo.text}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// 错误示例：使用索引作为 key
+function BadTodoList({ todos }) {
+  return (
+    <ul>
+      {todos.map((todo, index) => (
+        <li key={index}>
+          <input type="checkbox" checked={todo.completed} />
+          <span>{todo.text}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function App() {
+  const [todos, setTodos] = React.useState([
+    { id: 1, text: 'Learn React', completed: false },
+    { id: 2, text: 'Build an app', completed: false },
+    { id: 3, text: 'Deploy to production', completed: false }
+  ]);
+  
+  const addTodo = () => {
+    setTodos([...todos, {
+      id: Date.now(),
+      text: `New todo ${todos.length + 1}`,
+      completed: false
+    }]);
+  };
+  
+  const removeFirst = () => {
+    setTodos(todos.slice(1));
+  };
+  
+  return (
+    <div>
+      <h1>Todo List</h1>
+      <button onClick={addTodo}>Add Todo</button>
+      <button onClick={removeFirst}>Remove First</button>
+      
+      <h2>Correct (using id as key):</h2>
+      <TodoList todos={todos} />
+      
+      <h2>Incorrect (using index as key):</h2>
+      <BadTodoList todos={todos} />
+    </div>
+  );
+}
+
+export default App;
+```
+
+### Key 在列表重排序中的作用
+
+```jsx
+import React from 'react';
+
+function SortableList({ items }) {
+  return (
+    <ul>
+      {items.map(item => (
+        <li key={item.id} style={{ padding: '8px', margin: '4px', background: '#f0f0f0' }}>
+          {item.name}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function App() {
+  const [items, setItems] = React.useState([
+    { id: 1, name: 'Item 1' },
+    { id: 2, name: 'Item 2' },
+    { id: 3, name: 'Item 3' }
+  ]);
+  
+  const shuffle = () => {
+    const shuffled = [...items].sort(() => Math.random() - 0.5);
+    setItems(shuffled);
+  };
+  
+  return (
+    <div>
+      <h1>Sortable List</h1>
+      <button onClick={shuffle}>Shuffle</button>
+      <SortableList items={items} />
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 🎯 状态更新优化
+
+### 批量状态更新
+
+```jsx
+import React from 'react';
+
+function Counter() {
+  const [count, setCount] = React.useState(0);
+  const [otherCount, setOtherCount] = React.useState(0);
+  
+  // 不优化的方式 - 多次渲染
+  const handleClickBad = () => {
+    setCount(count + 1);
+    setOtherCount(otherCount + 1);
+    setCount(count + 1);
+    setOtherCount(otherCount + 1);
+  };
+  
+  // 优化的方式 - 批量更新
+  const handleClickGood = () => {
+    React.startTransition(() => {
+      setCount(prev => prev + 1);
+      setOtherCount(prev => prev + 1);
+      setCount(prev => prev + 1);
+      setOtherCount(prev => prev + 1);
+    });
+  };
+  
+  return (
+    <div>
+      <h1>Count: {count}</h1>
+      <h1>Other Count: {otherCount}</h1>
+      
+      <button onClick={handleClickBad}>Bad Update</button>
+      <button onClick={handleClickGood}>Good Update</button>
+    </div>
+  );
+}
+
+export default Counter;
+```
+
+### 函数式状态更新
+
+```jsx
+import React from 'react';
+
+function Counter() {
+  const [count, setCount] = React.useState(0);
+  
+  // 不优化的方式 - 依赖当前值
+  const handleClickBad = () => {
+    setCount(count + 1);
+    setCount(count + 1);
+    setCount(count + 1);
+  };
+  
+  // 优化的方式 - 使用函数式更新
+  const handleClickGood = () => {
+    setCount(prev => prev + 1);
+    setCount(prev => prev + 1);
+    setCount(prev => prev + 1);
+  };
+  
+  return (
+    <div>
+      <h1>Count: {count}</h1>
+      
+      <button onClick={handleClickBad}>Bad Update (count: {count})</button>
+      <button onClick={handleClickGood}>Good Update (count: {count})</button>
+    </div>
+  );
+}
+
+export default Counter;
+```
+
+## 🎯 避免不必要的渲染
+
+### 组件拆分
+
+```jsx
+import React from 'react';
+
+// 不优化的方式 - 整个组件重新渲染
+function BadComponent({ data, settings }) {
+  return (
+    <div>
+      <h1>Data: {data}</h1>
+      <p>Theme: {settings.theme}</p>
+      <p>Language: {settings.language}</p>
+    </div>
+  );
+}
+
+// 优化的方式 - 拆分组件
+const DataDisplay = React.memo(function DataDisplay({ data }) {
+  console.log('DataDisplay rendered');
+  return <h1>Data: {data}</h1>;
+});
+
+const SettingsDisplay = React.memo(function SettingsDisplay({ settings }) {
+  console.log('SettingsDisplay rendered');
+  return (
+    <div>
+      <p>Theme: {settings.theme}</p>
+      <p>Language: {settings.language}</p>
+    </div>
+  );
+});
+
+function GoodComponent({ data, settings }) {
+  return (
+    <div>
+      <DataDisplay data={data} />
+      <SettingsDisplay settings={settings} />
+    </div>
+  );
+}
+
+function App() {
+  const [data, setData] = React.useState('Initial data');
+  const [settings, setSettings] = React.useState({
+    theme: 'light',
+    language: 'en'
+  });
+  
+  return (
+    <div>
+      <button onClick={() => setData(`Updated at ${Date.now()}`)}>
+        Update Data
+      </button>
+      
+      <button onClick={() => setSettings({ ...settings, theme: settings.theme === 'light' ? 'dark' : 'light' })}>
+        Toggle Theme
+      </button>
+      
+      <h2>Bad Component:</h2>
+      <BadComponent data={data} settings={settings} />
+      
+      <h2>Good Component:</h2>
+      <GoodComponent data={data} settings={settings} />
+    </div>
+  );
+}
+
+export default App;
+```
+
+### 使用 React.memo
+
+```jsx
+import React from 'react';
+
+const ExpensiveComponent = React.memo(function ExpensiveComponent({ value }) {
+  console.log('ExpensiveComponent rendered');
+  
+  // 模拟昂贵计算
+  const result = React.useMemo(() => {
+    let sum = 0;
+    for (let i = 0; i < 1000000; i++) {
+      sum += i;
+    }
+    return sum + value;
+  }, [value]);
+  
+  return <div>Result: {result}</div>;
+});
+
+function App() {
+  const [value, setValue] = React.useState(0);
+  const [otherState, setOtherState] = React.useState(false);
+  
+  return (
+    <div>
+      <h1>Value: {value}</h1>
+      <button onClick={() => setValue(value + 1)}>Increment</button>
+      
+      <h1>Other State: {otherState.toString()}</h1>
+      <button onClick={() => setOtherState(!otherState)}>Toggle</button>
+      
+      <ExpensiveComponent value={value} />
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 🎯 虚拟化长列表
+
+### 基础虚拟化
+
+```jsx
+import React from 'react';
+
+function VirtualizedList({ items, itemHeight, containerHeight }) {
+  const [scrollTop, setScrollTop] = React.useState(0);
+  
+  const visibleStart = Math.floor(scrollTop / itemHeight);
+  const visibleEnd = Math.min(
+    visibleStart + Math.ceil(containerHeight / itemHeight) + 1,
+    items.length
+  );
+  
+  const visibleItems = items.slice(visibleStart, visibleEnd);
+  
+  return (
+    <div
+      style={{
+        height: containerHeight,
+        overflowY: 'auto',
+        border: '1px solid #ddd'
+      }}
+      onScroll={(e) => setScrollTop(e.target.scrollTop)}
+    >
+      <div style={{ height: items.length * itemHeight, position: 'relative' }}>
+        {visibleItems.map((item, index) => (
+          <div
+            key={item.id}
+            style={{
+              position: 'absolute',
+              top: (visibleStart + index) * itemHeight,
+              height: itemHeight,
+              padding: '8px',
+              borderBottom: '1px solid #eee'
+            }}
+          >
+            {item.name}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const items = React.useMemo(() => {
+    return Array.from({ length: 10000 }, (_, i) => ({
+      id: i,
+      name: `Item ${i + 1}`
+    }));
+  }, []);
+  
+  return (
+    <div>
+      <h1>Virtualized List</h1>
+      <VirtualizedList
+        items={items}
+        itemHeight={50}
+        containerHeight={500}
+      />
+    </div>
+  );
+}
+
+export default App;
+```
+
+### 使用 react-window
+
+```jsx
+import React from 'react';
+import { FixedSizeList } from 'react-window';
+
+function Row({ index, style, data }) {
+  return (
+    <div style={style}>
+      {data[index].name}
+    </div>
+  );
+}
+
+function App() {
+  const items = React.useMemo(() => {
+    return Array.from({ length: 10000 }, (_, i) => ({
+      id: i,
+      name: `Item ${i + 1}`
+    }));
+  }, []);
+  
+  return (
+    <div>
+      <h1>Virtualized List with react-window</h1>
+      <FixedSizeList
+        height={500}
+        itemCount={items.length}
+        itemSize={50}
+        width="100%"
+        itemData={items}
+      >
+        {Row}
+      </FixedSizeList>
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 🎯 懒加载和代码分割
+
+### 组件懒加载
+
+```jsx
+import React, { lazy, Suspense } from 'react';
+
+const HeavyComponent = lazy(() => import('./HeavyComponent'));
+
+function App() {
+  const [showHeavy, setShowHeavy] = React.useState(false);
+  
+  return (
+    <div>
+      <h1>Code Splitting Example</h1>
+      
+      <button onClick={() => setShowHeavy(!showHeavy)}>
+        {showHeavy ? 'Hide' : 'Show'} Heavy Component
+      </button>
+      
+      <Suspense fallback={<div>Loading component...</div>}>
+        {showHeavy && <HeavyComponent />}
+      </Suspense>
+    </div>
+  );
+}
+
+export default App;
+```
+
+### 路由懒加载
+
+```jsx
+import React, { lazy, Suspense } from 'react';
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+
+const Home = lazy(() => import('./pages/Home'));
+const About = lazy(() => import('./pages/About'));
+const Contact = lazy(() => import('./pages/Contact'));
+
+function App() {
+  return (
+    <BrowserRouter>
+      <div>
+        <nav>
+          <ul>
+            <li><Link to="/">Home</Link></li>
+            <li><Link to="/about">About</Link></li>
+            <li><Link to="/contact">Contact</Link></li>
+          </ul>
+        </nav>
+        
+        <Suspense fallback={<div>Loading page...</div>}>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/contact" element={<Contact />} />
+          </Routes>
+        </Suspense>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：优化的数据表格
+
+```jsx
+import React, { useMemo, useCallback, memo } from 'react';
+
+const TableCell = memo(function TableCell({ value, column }) {
+  console.log(`TableCell rendered: ${column}`);
+  return <td>{value}</td>;
+});
+
+const TableRow = memo(function TableRow({ row, columns, onRowClick }) {
+  console.log(`TableRow rendered: ${row.id}`);
+  
+  const handleClick = useCallback(() => {
+    onRowClick(row);
+  }, [row, onRowClick]);
+  
+  return (
+    <tr onClick={handleClick} style={{ cursor: 'pointer' }}>
+      {columns.map(column => (
+        <TableCell key={column.key} value={row[column.key]} column={column.key} />
+      ))}
+    </tr>
+  );
+});
+
+function DataTable({ data, columns }) {
+  const [selectedRow, setSelectedRow] = React.useState(null);
+  const [sortBy, setSortBy] = React.useState(null);
+  const [sortOrder, setSortOrder] = React.useState('asc');
+  
+  // 排序数据
+  const sortedData = useMemo(() => {
+    if (!sortBy) return data;
+    
+    return [...data].sort((a, b) => {
+      const aValue = a[sortBy];
+      const bValue = b[sortBy];
+      
+      if (aValue < bValue) return sortOrder === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [data, sortBy, sortOrder]);
+  
+  // 处理排序
+  const handleSort = useCallback((column) => {
+    if (sortBy === column) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(column);
+      setSortOrder('asc');
+    }
+  }, [sortBy, sortOrder]);
+  
+  // 处理行点击
+  const handleRowClick = useCallback((row) => {
+    setSelectedRow(row);
+  }, []);
+  
+  return (
+    <div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            {columns.map(column => (
+              <th
+                key={column.key}
+                onClick={() => handleSort(column.key)}
+                style={{
+                  padding: '8px',
+                  border: '1px solid #ddd',
+                  cursor: 'pointer',
+                  background: sortBy === column.key ? '#f0f0f0' : 'white'
+                }}
+              >
+                {column.label}
+                {sortBy === column.key && (sortOrder === 'asc' ? ' ↑' : ' ↓')}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sortedData.map(row => (
+            <TableRow
+              key={row.id}
+              row={row}
+              columns={columns}
+              onRowClick={handleRowClick}
+              style={{
+                background: selectedRow?.id === row.id ? '#e6f7ff' : 'white'
+              }}
+            />
+          ))}
+        </tbody>
+      </table>
+      
+      {selectedRow && (
+        <div style={{ marginTop: '20px', padding: '10px', background: '#f0f0f0' }}>
+          <h3>Selected Row:</h3>
+          <pre>{JSON.stringify(selectedRow, null, 2)}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const data = useMemo(() => {
+    return Array.from({ length: 1000 }, (_, i) => ({
+      id: i,
+      name: `User ${i + 1}`,
+      email: `user${i + 1}@example.com`,
+      age: 20 + (i % 50)
+    }));
+  }, []);
+  
+  const columns = useMemo(() => [
+    { key: 'id', label: 'ID' },
+    { key: 'name', label: 'Name' },
+    { key: 'email', label: 'Email' },
+    { key: 'age', label: 'Age' }
+  ], []);
+  
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>Optimized Data Table</h1>
+      <DataTable data={data} columns={columns} />
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 🔗 相关概念
+
+- **组件优化**：React.memo、useMemo、useCallback
+- **Key 属性**：正确使用 key 提高性能
+- **状态更新**：批量更新和函数式更新
+- **虚拟化**：处理长列表性能问题
+
+## 📚 学习检查点
+
+- [ ] 理解 key 属性的重要性
+- [ ] 掌握状态更新的优化方法
+- [ ] 理解如何避免不必要的渲染
+- [ ] 掌握虚拟化长列表的技巧
+- [ ] 理解懒加载和代码分割
+- [ ] 能够在实际项目中应用渲染优化
+
+## 🚀 下一步
+
+→ [网络优化](./03-network-optimization) - 学习网络优化技巧

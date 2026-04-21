@@ -1,0 +1,730 @@
+# 网络优化
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+网络优化是提升 React 应用性能的重要方面。通过合理使用数据获取库、缓存策略、请求优化等技术，可以显著减少网络请求，提高应用响应速度。本章节将详细介绍网络优化的各种技巧。
+
+## 🎯 数据获取优化
+
+### 使用 React Query
+
+```jsx
+import React from 'react';
+import { useQuery, useMutation, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+// 创建 Query Client
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000, // 5 分钟
+      cacheTime: 10 * 60 * 1000, // 10 分钟
+      refetchOnWindowFocus: false
+    }
+  }
+});
+
+// 获取数据
+function fetchUsers() {
+  return fetch('https://jsonplaceholder.typicode.com/users')
+    .then(response => response.json());
+}
+
+function UsersList() {
+  const {
+    data: users,
+    isLoading,
+    isError,
+    error,
+    refetch
+  } = useQuery({
+    queryKey: ['users'],
+    queryFn: fetchUsers
+  });
+  
+  if (isLoading) return <div>Loading...</div>;
+  if (isError) return <div>Error: {error.message}</div>;
+  
+  return (
+    <div>
+      <h2>Users</h2>
+      <button onClick={() => refetch()}>Refresh</button>
+      <ul>
+        {users.map(user => (
+          <li key={user.id}>
+            <h3>{user.name}</h3>
+            <p>{user.email}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <UsersList />
+    </QueryClientProvider>
+  );
+}
+
+export default App;
+```
+
+### 依赖查询
+
+```jsx
+import React from 'react';
+import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+const queryClient = new QueryClient();
+
+function fetchUser(userId) {
+  return fetch(`https://jsonplaceholder.typicode.com/users/${userId}`)
+    .then(response => response.json());
+}
+
+function fetchUserPosts(userId) {
+  return fetch(`https://jsonplaceholder.typicode.com/posts?userId=${userId}`)
+    .then(response => response.json());
+}
+
+function UserDetail({ userId }) {
+  const {
+    data: user,
+    isLoading: userLoading,
+    isError: userError
+  } = useQuery({
+    queryKey: ['user', userId],
+    queryFn: () => fetchUser(userId),
+    enabled: !!userId
+  });
+  
+  const {
+    data: posts,
+    isLoading: postsLoading,
+    isError: postsError
+  } = useQuery({
+    queryKey: ['userPosts', userId],
+    queryFn: () => fetchUserPosts(userId),
+    enabled: !!userId // 只有当 userId 存在时才执行
+  });
+  
+  if (userLoading || postsLoading) return <div>Loading...</div>;
+  if (userError || postsError) return <div>Error loading data</div>;
+  
+  return (
+    <div>
+      <h2>{user.name}</h2>
+      <p>Email: {user.email}</p>
+      
+      <h3>Posts ({posts.length})</h3>
+      <ul>
+        {posts.map(post => (
+          <li key={post.id}>
+            <h4>{post.title}</h4>
+            <p>{post.body}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function App() {
+  const [userId, setUserId] = React.useState(1);
+  
+  return (
+    <QueryClientProvider client={queryClient}>
+      <div>
+        <button onClick={() => setUserId(userId + 1)}>Next User</button>
+        <UserDetail userId={userId} />
+      </div>
+    </QueryClientProvider>
+  );
+}
+
+export default App;
+```
+
+## 🎯 缓存策略
+
+### SWR 缓存
+
+```jsx
+import React from 'react';
+import useSWR from 'swr';
+
+const fetcher = (url) => fetch(url).then((res) => res.json());
+
+function UsersList() {
+  const { data, error, isLoading } = useSWR(
+    'https://jsonplaceholder.typicode.com/users',
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      dedupingInterval: 60000 // 1 分钟内去重
+    }
+  );
+  
+  if (isLoading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  
+  return (
+    <div>
+      <h2>Users</h2>
+      <ul>
+        {data.map(user => (
+          <li key={user.id}>
+            <h3>{user.name}</h3>
+            <p>{user.email}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default UsersList;
+```
+
+### 自定义缓存 Hook
+
+```jsx
+import React from 'react';
+
+function useCache(key, fetcher, options = {}) {
+  const {
+    ttl = 5 * 60 * 1000, // 5 分钟
+    staleTime = 0
+  } = options;
+  
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [timestamp, setTimestamp] = React.useState(null);
+  
+  const isStale = React.useMemo(() => {
+    if (!timestamp) return true;
+    return Date.now() - timestamp > staleTime;
+  }, [timestamp, staleTime]);
+  
+  const isExpired = React.useMemo(() => {
+    if (!timestamp) return true;
+    return Date.now() - timestamp > ttl;
+  }, [timestamp, ttl]);
+  
+  const fetch = React.useCallback(async () => {
+    if (loading) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const result = await fetcher();
+      setData(result);
+      setTimestamp(Date.now());
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [fetcher, loading]);
+  
+  React.useEffect(() => {
+    if (!data || isExpired) {
+      fetch();
+    }
+  }, [key]);
+  
+  return {
+    data,
+    loading,
+    error,
+    isStale,
+    refetch: fetch
+  };
+}
+
+function UsersList() {
+  const { data, loading, error, isStale, refetch } = useCache(
+    'users',
+    async () => {
+      const response = await fetch('https://jsonplaceholder.typicode.com/users');
+      return response.json();
+    },
+    {
+      ttl: 10 * 60 * 1000, // 10 分钟
+      staleTime: 5 * 60 * 1000 // 5 分钟
+    }
+  );
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  
+  return (
+    <div>
+      <h2>Users {isStale && '(stale)'}</h2>
+      <button onClick={refetch}>Refresh</button>
+      <ul>
+        {data.map(user => (
+          <li key={user.id}>
+            <h3>{user.name}</h3>
+            <p>{user.email}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default UsersList;
+```
+
+## 🎯 请求优化
+
+### 请求去重
+
+```jsx
+import React from 'react';
+
+function useDedupedFetch(url, options = {}) {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  
+  // 使用 ref 存储进行中的请求
+  const pendingRequestsRef = React.useRef({});
+  
+  const fetch = React.useCallback(async () => {
+    // 如果已经有相同的请求在进行中，返回该请求的 Promise
+    if (pendingRequestsRef.current[url]) {
+      return pendingRequestsRef.current[url];
+    }
+    
+    setLoading(true);
+    setError(null);
+    
+    // 创建新的请求 Promise
+    const requestPromise = fetch(url, options)
+      .then(response => response.json())
+      .then(result => {
+        setData(result);
+        delete pendingRequestsRef.current[url];
+        return result;
+      })
+      .catch(err => {
+        setError(err);
+        delete pendingRequestsRef.current[url];
+        throw err;
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+    
+    // 存储请求 Promise
+    pendingRequestsRef.current[url] = requestPromise;
+    
+    return requestPromise;
+  }, [url, JSON.stringify(options)]);
+  
+  React.useEffect(() => {
+    fetch();
+  }, [fetch]);
+  
+  return { data, loading, error, refetch: fetch };
+}
+
+function UsersList() {
+  const { data, loading, error } = useDedupedFetch(
+    'https://jsonplaceholder.typicode.com/users'
+  );
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  
+  return (
+    <div>
+      <h2>Users</h2>
+      <ul>
+        {data.map(user => (
+          <li key={user.id}>
+            <h3>{user.name}</h3>
+            <p>{user.email}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default UsersList;
+```
+
+### 请求节流和防抖
+
+```jsx
+import React from 'react';
+
+function useDebouncedValue(value, delay) {
+  const [debouncedValue, setDebouncedValue] = React.useState(value);
+  
+  React.useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+    
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+  
+  return debouncedValue;
+}
+
+function SearchUsers() {
+  const [searchTerm, setSearchTerm] = React.useState('');
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 500);
+  const [results, setResults] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+  
+  React.useEffect(() => {
+    if (debouncedSearchTerm) {
+      setLoading(true);
+      fetch(`https://jsonplaceholder.typicode.com/users?q=${debouncedSearchTerm}`)
+        .then(response => response.json())
+        .then(data => {
+          setResults(data);
+          setLoading(false);
+        })
+        .catch(error => {
+          console.error('Error:', error);
+          setLoading(false);
+        });
+    } else {
+      setResults([]);
+    }
+  }, [debouncedSearchTerm]);
+  
+  return (
+    <div>
+      <input
+        type="text"
+        value={searchTerm}
+        onChange={(e) => setSearchTerm(e.target.value)}
+        placeholder="Search users..."
+      />
+      
+      {loading && <div>Loading...</div>}
+      
+      <ul>
+        {results.map(user => (
+          <li key={user.id}>
+            <h3>{user.name}</h3>
+            <p>{user.email}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default SearchUsers;
+```
+
+## 🎯 图片优化
+
+### 懒加载图片
+
+```jsx
+import React, { useRef, useState, useEffect } from 'react';
+
+function LazyImage({ src, alt, placeholder, ...props }) {
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [isInView, setIsInView] = useState(false);
+  const imgRef = useRef(null);
+  
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsInView(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.1 }
+    );
+    
+    if (imgRef.current) {
+      observer.observe(imgRef.current);
+    }
+    
+    return () => {
+      if (imgRef.current) {
+        observer.unobserve(imgRef.current);
+      }
+    };
+  }, []);
+  
+  return (
+    <div ref={imgRef} {...props}>
+      {isInView ? (
+        <img
+          src={src}
+          alt={alt}
+          onLoad={() => setIsLoaded(true)}
+          style={{
+            opacity: isLoaded ? 1 : 0,
+            transition: 'opacity 0.3s'
+          }}
+        />
+      ) : (
+        <div style={{ background: '#f0f0f0', minHeight: '200px' }}>
+          {placeholder}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const images = [
+    { id: 1, src: 'https://via.placeholder.com/400x300?text=Image+1', alt: 'Image 1' },
+    { id: 2, src: 'https://via.placeholder.com/400x300?text=Image+2', alt: 'Image 2' },
+    { id: 3, src: 'https://via.placeholder.com/400x300?text=Image+3', alt: 'Image 3' }
+  ];
+  
+  return (
+    <div>
+      <h1>Lazy Loaded Images</h1>
+      {images.map(image => (
+        <LazyImage
+          key={image.id}
+          src={image.src}
+          alt={image.alt}
+          placeholder="Loading..."
+          style={{ width: '400px', height: '300px', margin: '10px' }}
+        />
+      ))}
+    </div>
+  );
+}
+
+export default App;
+```
+
+### 响应式图片
+
+```jsx
+import React from 'react';
+
+function ResponsiveImage({ src, srcSet, sizes, alt, ...props }) {
+  return (
+    <img
+      src={src}
+      srcSet={srcSet}
+      sizes={sizes}
+      alt={alt}
+      loading="lazy"
+      {...props}
+    />
+  );
+}
+
+function App() {
+  return (
+    <div>
+      <h1>Responsive Images</h1>
+      <ResponsiveImage
+        src="https://via.placeholder.com/800x600?text=Responsive+Image"
+        srcSet="
+          https://via.placeholder.com/400x300?text=Small 400w,
+          https://via.placeholder.com/800x600?text=Medium 800w,
+          https://via.placeholder.com/1200x900?text=Large 1200w
+        "
+        sizes="(max-width: 600px) 400px, (max-width: 1200px) 800px, 1200px"
+        alt="Responsive Image"
+        style={{ maxWidth: '100%', height: 'auto' }}
+      />
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：优化的数据获取应用
+
+```jsx
+import React from 'react';
+import { useQuery, useMutation, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000,
+      cacheTime: 10 * 60 * 1000,
+      refetchOnWindowFocus: false
+    }
+  }
+});
+
+// API 函数
+async function fetchPosts() {
+  const response = await fetch('https://jsonplaceholder.typicode.com/posts?_limit=10');
+  return response.json();
+}
+
+async function createPost(post) {
+  const response = await fetch('https://jsonplaceholder.typicode.com/posts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(post)
+  });
+  return response.json();
+}
+
+async function updatePost(postId, updates) {
+  const response = await fetch(`https://jsonplaceholder.typicode.com/posts/${postId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates)
+  });
+  return response.json();
+}
+
+async function deletePost(postId) {
+  const response = await fetch(`https://jsonplaceholder.typicode.com/posts/${postId}`, {
+    method: 'DELETE'
+  });
+  return response.json();
+}
+
+// 组件
+function PostList() {
+  const {
+    data: posts,
+    isLoading,
+    isError,
+    error,
+    refetch
+  } = useQuery({
+    queryKey: ['posts'],
+    queryFn: fetchPosts
+  });
+  
+  const createMutation = useMutation({
+    mutationFn: createPost,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['posts'] });
+    }
+  });
+  
+  const updateMutation = useMutation({
+    mutationFn: ({ postId, updates }) => updatePost(postId, updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['posts'] });
+    }
+  });
+  
+  const deleteMutation = useMutation({
+    mutationFn: deletePost,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['posts'] });
+    }
+  });
+  
+  if (isLoading) return <div>Loading posts...</div>;
+  if (isError) return <div>Error: {error.message}</div>;
+  
+  return (
+    <div>
+      <div style={{ marginBottom: '20px' }}>
+        <h2>Posts ({posts.length})</h2>
+        <button onClick={() => refetch()}>Refresh</button>
+        <button
+          onClick={() => createMutation.mutate({
+            title: 'New Post',
+            body: 'This is a new post',
+            userId: 1
+          })}
+          disabled={createMutation.isLoading}
+        >
+          {createMutation.isLoading ? 'Creating...' : 'Create Post'}
+        </button>
+      </div>
+      
+      <ul style={{ listStyle: 'none', padding: 0 }}>
+        {posts.map(post => (
+          <li key={post.id} style={{ 
+            border: '1px solid #ddd',
+            padding: '16px',
+            marginBottom: '16px',
+            borderRadius: '4px'
+          }}>
+            <h3>{post.title}</h3>
+            <p>{post.body}</p>
+            <div style={{ marginTop: '10px' }}>
+              <button
+                onClick={() => updateMutation.mutate({
+                  postId: post.id,
+                  updates: { title: `${post.title} (Updated)` }
+                })}
+                disabled={updateMutation.isLoading}
+              >
+                {updateMutation.isLoading ? 'Updating...' : 'Update'}
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(post.id)}
+                disabled={deleteMutation.isLoading}
+                style={{ marginLeft: '10px' }}
+              >
+                {deleteMutation.isLoading ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <div style={{ padding: '20px' }}>
+        <h1>Optimized Data Fetching App</h1>
+        <PostList />
+      </div>
+    </QueryClientProvider>
+  );
+}
+
+export default App;
+```
+
+## 🔗 相关概念
+
+- **React Query**：强大的数据获取和缓存库
+- **SWR**：轻量级的数据获取库
+- **缓存策略**：staleTime、cacheTime 等
+- **请求优化**：去重、节流、防抖
+
+## 📚 学习检查点
+
+- [ ] 理解 React Query 的基本用法
+- [ ] 掌握缓存策略的配置
+- [ ] 理解请求去重的方法
+- [ ] 掌握请求节流和防抖
+- [ ] 理解图片优化的重要性
+- [ ] 能够在实际项目中应用网络优化
+
+## 🚀 下一步
+
+→ [并发渲染](../04-react-19-performance/01-concurrent-rendering) - 学习 React 19 并发渲染特性

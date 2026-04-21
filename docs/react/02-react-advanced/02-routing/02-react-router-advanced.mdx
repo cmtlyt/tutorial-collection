@@ -1,0 +1,766 @@
+# React Router 高级
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+React Router 提供了许多高级特性，包括查询参数、路由懒加载、路由过渡动画、自定义路由等。本章节将详细介绍这些高级特性的使用方法。
+
+## 🎯 查询参数
+
+### useSearchParams Hook
+
+```jsx
+import { BrowserRouter, Routes, Route, useSearchParams } from 'react-router-dom';
+
+function App() {
+  return (
+    <BrowserRouter>
+      <div>
+        <Routes>
+          <Route path="/" element={<ProductList />} />
+          <Route path="/product/:id" element={<ProductDetail />} />
+        </Routes>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+function ProductList() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const category = searchParams.get('category');
+  const sort = searchParams.get('sort') || 'default';
+  
+  const products = [
+    { id: 1, name: 'Product 1', category: 'electronics' },
+    { id: 2, name: 'Product 2', category: 'clothing' },
+    { id: 3, name: 'Product 3', category: 'electronics' }
+  ];
+  
+  const filteredProducts = category
+    ? products.filter(p => p.category === category)
+    : products;
+  
+  const handleCategoryChange = (newCategory) => {
+    setSearchParams({ category: newCategory, sort });
+  };
+  
+  const handleSortChange = (newSort) => {
+    setSearchParams({ category, sort: newSort });
+  };
+  
+  return (
+    <div>
+      <h1>Product List</h1>
+      
+      <div>
+        <label>Category:</label>
+        <select value={category || ''} onChange={(e) => handleCategoryChange(e.target.value)}>
+          <option value="">All</option>
+          <option value="electronics">Electronics</option>
+          <option value="clothing">Clothing</option>
+        </select>
+      </div>
+      
+      <div>
+        <label>Sort:</label>
+        <select value={sort} onChange={(e) => handleSortChange(e.target.value)}>
+          <option value="default">Default</option>
+          <option value="price">Price</option>
+          <option value="name">Name</option>
+        </select>
+      </div>
+      
+      <ul>
+        {filteredProducts.map(product => (
+          <li key={product.id}>
+            <Link to={`/product/${product.id}`}>
+              {product.name} ({product.category})
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ProductDetail() {
+  const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const from = searchParams.get('from');
+  
+  return (
+    <div>
+      <h1>Product Detail: {id}</h1>
+      {from && <p>From: {from}</p>}
+      <Link to={from || '/'}>Back to List</Link>
+    </div>
+  );
+}
+
+export default App;
+```
+
+### 复杂查询参数
+
+```jsx
+import { BrowserRouter, Routes, Route, useSearchParams } from 'react-router-dom';
+
+function App() {
+  return (
+    <BrowserRouter>
+      <div>
+        <Routes>
+          <Route path="/" element={<SearchPage />} />
+        </Routes>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+function SearchPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = searchParams.get('q') || '';
+  const page = parseInt(searchParams.get('page')) || 1;
+  const perPage = parseInt(searchParams.get('per_page')) || 10;
+  const filters = searchParams.getAll('filter');
+  
+  const handleSearch = (e) => {
+    e.preventDefault();
+    const searchValue = e.target.elements.search.value;
+    setSearchParams({ q: searchValue, page: 1, per_page });
+  };
+  
+  const handlePageChange = (newPage) => {
+    setSearchParams({ q: query, page: newPage, per_page });
+  };
+  
+  const handleFilterToggle = (filter) => {
+    const newFilters = filters.includes(filter)
+      ? filters.filter(f => f !== filter)
+      : [...filters, filter];
+    setSearchParams({ q: query, page, per_page, filter: newFilters });
+  };
+  
+  return (
+    <div>
+      <h1>Search Page</h1>
+      
+      <form onSubmit={handleSearch}>
+        <input name="search" defaultValue={query} placeholder="Search..." />
+        <button type="submit">Search</button>
+      </form>
+      
+      <div>
+        <h3>Filters:</h3>
+        {['electronics', 'clothing', 'books'].map(filter => (
+          <label key={filter}>
+            <input
+              type="checkbox"
+              checked={filters.includes(filter)}
+              onChange={() => handleFilterToggle(filter)}
+            />
+            {filter}
+          </label>
+        ))}
+      </div>
+      
+      <div>
+        <h3>Page {page}</h3>
+        <button
+          onClick={() => handlePageChange(page - 1)}
+          disabled={page === 1}
+        >
+          Previous
+        </button>
+        <button onClick={() => handlePageChange(page + 1)}>Next</button>
+      </div>
+      
+      <div>
+        <p>Query: {query}</p>
+        <p>Page: {page}</p>
+        <p>Per Page: {perPage}</p>
+        <p>Filters: {filters.join(', ')}</p>
+      </div>
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 🎯 路由懒加载
+
+### React.lazy 和 Suspense
+
+```jsx
+import { BrowserRouter, Routes, Route, Link, Suspense } from 'react-router-dom';
+import React, { lazy, Suspense as ReactSuspense } from 'react';
+
+// 懒加载组件
+const Home = lazy(() => import('./components/Home'));
+const About = lazy(() => import('./components/About'));
+const Contact = lazy(() => import('./components/Contact'));
+
+function App() {
+  return (
+    <BrowserRouter>
+      <div>
+        <nav>
+          <ul>
+            <li><Link to="/">Home</Link></li>
+            <li><Link to="/about">About</Link></li>
+            <li><Link to="/contact">Contact</Link></li>
+          </ul>
+        </nav>
+        
+        <Suspense fallback={<div>Loading...</div>}>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/contact" element={<Contact />} />
+          </Routes>
+        </Suspense>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+### 嵌套路由懒加载
+
+```jsx
+import { BrowserRouter, Routes, Route, Link, Outlet, Suspense } from 'react-router-dom';
+import React, { lazy } from 'react';
+
+// 懒加载组件
+const Home = lazy(() => import('./pages/Home'));
+const UsersList = lazy(() => import('./pages/users/UsersList'));
+const UserDetail = lazy(() => import('./pages/users/UserDetail'));
+const PostsList = lazy(() => import('./pages/posts/PostsList'));
+const PostDetail = lazy(() => import('./pages/posts/PostDetail'));
+
+function App() {
+  return (
+    <BrowserRouter>
+      <div>
+        <nav>
+          <ul>
+            <li><Link to="/">Home</Link></li>
+            <li><Link to="/users">Users</Link></li>
+            <li><Link to="/posts">Posts</Link></li>
+          </ul>
+        </nav>
+        
+        <Suspense fallback={<div>Loading...</div>}>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            
+            <Route path="/users">
+              <Route index element={<UsersList />} />
+              <Route path=":userId" element={<UserDetail />} />
+            </Route>
+            
+            <Route path="/posts">
+              <Route index element={<PostsList />} />
+              <Route path=":postId" element={<PostDetail />} />
+            </Route>
+          </Routes>
+        </Suspense>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+## 🎯 路由过渡动画
+
+### 使用 CSS 动画
+
+```jsx
+import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
+
+function App() {
+  const location = useLocation();
+  
+  return (
+    <BrowserRouter>
+      <div>
+        <nav>
+          <ul>
+            <li><Link to="/">Home</Link></li>
+            <li><Link to="/about">About</Link></li>
+            <li><Link to="/contact">Contact</Link></li>
+          </ul>
+        </nav>
+        
+        <AnimatePresence mode="wait">
+          <Routes location={location} key={location.pathname}>
+            <Route path="/" element={
+              <motion.div
+                initial={{ opacity: 0, x: -100 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 100 }}
+                transition={{ duration: 0.3 }}
+              >
+                <Home />
+              </motion.div>
+            } />
+            <Route path="/about" element={
+              <motion.div
+                initial={{ opacity: 0, x: -100 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 100 }}
+                transition={{ duration: 0.3 }}
+              >
+                <About />
+              </motion.div>
+            } />
+            <Route path="/contact" element={
+              <motion.div
+                initial={{ opacity: 0, x: -100 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 100 }}
+                transition={{ duration: 0.3 }}
+              >
+                <Contact />
+              </motion.div>
+            } />
+          </Routes>
+        </AnimatePresence>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+function Home() {
+  return <h1>Home Page</h1>;
+}
+
+function About() {
+  return <h1>About Page</h1>;
+}
+
+function Contact() {
+  return <h1>Contact Page</h1>;
+}
+
+export default App;
+```
+
+### 淡入淡出动画
+
+```jsx
+import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
+
+function App() {
+  const location = useLocation();
+  
+  return (
+    <BrowserRouter>
+      <div>
+        <nav>
+          <ul>
+            <li><Link to="/">Home</Link></li>
+            <li><Link to="/about">About</Link></li>
+            <li><Link to="/contact">Contact</Link></li>
+          </ul>
+        </nav>
+        
+        <AnimatePresence mode="wait">
+          <Routes location={location} key={location.pathname}>
+            <Route path="/" element={
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.5 }}
+              >
+                <Home />
+              </motion.div>
+            } />
+            <Route path="/about" element={
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.5 }}
+              >
+                <About />
+              </motion.div>
+            } />
+            <Route path="/contact" element={
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.5 }}
+              >
+                <Contact />
+              </motion.div>
+            } />
+          </Routes>
+        </AnimatePresence>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+function Home() {
+  return <h1>Home Page</h1>;
+}
+
+function About() {
+  return <h1>About Page</h1>;
+}
+
+function Contact() {
+  return <h1>Contact Page</h1>;
+}
+
+export default App;
+```
+
+## 🎯 自定义路由
+
+### 自定义 Link 组件
+
+```jsx
+import { Link as RouterLink, useLocation } from 'react-router-dom';
+
+function CustomLink({ to, children, ...props }) {
+  const location = useLocation();
+  const isActive = location.pathname === to;
+  
+  return (
+    <RouterLink
+      to={to}
+      className={isActive ? 'active' : ''}
+      {...props}
+    >
+      {children}
+    </RouterLink>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <div>
+        <nav>
+          <ul>
+            <li><CustomLink to="/">Home</CustomLink></li>
+            <li><CustomLink to="/about">About</CustomLink></li>
+            <li><CustomLink to="/contact">Contact</CustomLink></li>
+          </ul>
+        </nav>
+        
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/about" element={<About />} />
+          <Route path="/contact" element={<Contact />} />
+        </Routes>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+### 自定义路由守卫
+
+```jsx
+import { Navigate, useLocation } from 'react-router-dom';
+
+function ProtectedRoute({ children, requiredRole }) {
+  const { user } = useAuth();
+  const location = useLocation();
+  
+  if (!user) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+  
+  if (requiredRole && user.role !== requiredRole) {
+    return <Navigate to="/unauthorized" replace />;
+  }
+  
+  return children;
+}
+
+function AdminRoute({ children }) {
+  return <ProtectedRoute requiredRole="admin">{children}</ProtectedRoute>;
+}
+
+function UserRoute({ children }) {
+  return <ProtectedRoute requiredRole="user">{children}</ProtectedRoute>;
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <div>
+        <nav>
+          <ul>
+            <li><Link to="/">Home</Link></li>
+            <li><Link to="/dashboard">Dashboard</Link></li>
+            <li><Link to="/admin">Admin</Link></li>
+          </ul>
+        </nav>
+        
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/dashboard" element={
+            <UserRoute>
+              <Dashboard />
+            </UserRoute>
+          } />
+          <Route path="/admin" element={
+            <AdminRoute>
+              <AdminPanel />
+            </AdminRoute>
+          } />
+        </Routes>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：电商应用
+
+```jsx
+import { BrowserRouter, Routes, Route, Link, Outlet, useParams, useSearchParams, useLocation, useNavigate, lazy, Suspense } from 'react-router-dom';
+
+// 懒加载组件
+const Home = lazy(() => import('./pages/Home'));
+const ProductList = lazy(() => import('./pages/ProductList'));
+const ProductDetail = lazy(() => import('./pages/ProductDetail'));
+const Cart = lazy(() => import('./pages/Cart'));
+const Checkout = lazy(() => import('./pages/Checkout'));
+const Login = lazy(() => import('./pages/Login'));
+const Profile = lazy(() => import('./pages/Profile'));
+
+function App() {
+  return (
+    <BrowserRouter>
+      <div className="app">
+        <Header />
+        
+        <Suspense fallback={<div className="loading">Loading...</div>}>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            
+            <Route path="/products" element={<ProductList />} />
+            <Route path="/products/:productId" element={<ProductDetail />} />
+            
+            <Route path="/cart" element={
+              <ProtectedRoute>
+                <Cart />
+              </ProtectedRoute>
+            } />
+            
+            <Route path="/checkout" element={
+              <ProtectedRoute>
+                <Checkout />
+              </ProtectedRoute>
+            } />
+            
+            <Route path="/login" element={<Login />} />
+            <Route path="/profile" element={
+              <ProtectedRoute>
+                <Profile />
+              </ProtectedRoute>
+            } />
+          </Routes>
+        </Suspense>
+        
+        <Footer />
+      </div>
+    </BrowserRouter>
+  );
+}
+
+function Header() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { cartItems } = useCart();
+  
+  return (
+    <header className="header">
+      <div className="logo">
+        <Link to="/">MyStore</Link>
+      </div>
+      
+      <nav className="nav">
+        <ul>
+          <li>
+            <Link to="/" className={location.pathname === '/' ? 'active' : ''}>
+              Home
+            </Link>
+          </li>
+          <li>
+            <Link to="/products" className={location.pathname.startsWith('/products') ? 'active' : ''}>
+              Products
+            </Link>
+          </li>
+          <li>
+            <Link to="/cart" className={location.pathname === '/cart' ? 'active' : ''}>
+              Cart ({cartItems.length})
+            </Link>
+          </li>
+        </ul>
+      </nav>
+      
+      <div className="user-actions">
+        <Link to="/profile">Profile</Link>
+      </div>
+    </header>
+  );
+}
+
+function Footer() {
+  return (
+    <footer className="footer">
+      <p>&copy; 2026 MyStore. All rights reserved.</p>
+    </footer>
+  );
+}
+
+function ProductList() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const category = searchParams.get('category');
+  const sort = searchParams.get('sort') || 'name';
+  const search = searchParams.get('search') || '';
+  
+  const { products, loading } = useProducts();
+  
+  const filteredProducts = products.filter(product => {
+    const matchesCategory = !category || product.category === category;
+    const matchesSearch = !search || product.name.toLowerCase().includes(search.toLowerCase());
+    return matchesCategory && matchesSearch;
+  });
+  
+  const sortedProducts = [...filteredProducts].sort((a, b) => {
+    if (sort === 'price') return a.price - b.price;
+    if (sort === 'name') return a.name.localeCompare(b.name);
+    return 0;
+  });
+  
+  const handleSearch = (e) => {
+    setSearchParams({ search: e.target.value, category, sort });
+  };
+  
+  const handleCategoryChange = (newCategory) => {
+    setSearchParams({ search, category: newCategory, sort });
+  };
+  
+  const handleSortChange = (newSort) => {
+    setSearchParams({ search, category, sort: newSort });
+  };
+  
+  if (loading) return <div>Loading products...</div>;
+  
+  return (
+    <div className="product-list">
+      <div className="filters">
+        <input
+          type="text"
+          placeholder="Search products..."
+          value={search}
+          onChange={handleSearch}
+        />
+        
+        <select value={category || ''} onChange={(e) => handleCategoryChange(e.target.value)}>
+          <option value="">All Categories</option>
+          <option value="electronics">Electronics</option>
+          <option value="clothing">Clothing</option>
+          <option value="books">Books</option>
+        </select>
+        
+        <select value={sort} onChange={(e) => handleSortChange(e.target.value)}>
+          <option value="name">Sort by Name</option>
+          <option value="price">Sort by Price</option>
+        </select>
+      </div>
+      
+      <div className="products-grid">
+        {sortedProducts.map(product => (
+          <ProductCard key={product.id} product={product} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProductCard({ product }) {
+  return (
+    <div className="product-card">
+      <Link to={`/products/${product.id}`}>
+        <img src={product.image} alt={product.name} />
+        <h3>{product.name}</h3>
+        <p className="price">${product.price}</p>
+      </Link>
+    </div>
+  );
+}
+
+function ProductDetail() {
+  const { productId } = useParams();
+  const { product, loading } = useProduct(productId);
+  const { addToCart } = useCart();
+  const navigate = useNavigate();
+  
+  const handleAddToCart = () => {
+    addToCart(product);
+    navigate('/cart');
+  };
+  
+  if (loading) return <div>Loading product...</div>;
+  
+  return (
+    <div className="product-detail">
+      <img src={product.image} alt={product.name} />
+      <div className="product-info">
+        <h1>{product.name}</h1>
+        <p className="price">${product.price}</p>
+        <p className="description">{product.description}</p>
+        <button onClick={handleAddToCart}>Add to Cart</button>
+      </div>
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 🔗 相关概念
+
+- **useSearchParams**：查询参数管理
+- **React.lazy**：组件懒加载
+- **Suspense**：加载状态处理
+- **AnimatePresence**：路由过渡动画
+
+## 📚 学习检查点
+
+- [ ] 理解查询参数的使用
+- [ ] 掌握路由懒加载的方法
+- [ ] 理解路由过渡动画的实现
+- [ ] 掌握自定义路由组件
+- [ ] 能够实现复杂的路由守卫
+- [ ] 能够在实际项目中应用高级路由特性
+
+## 🚀 下一步
+
+→ [组件优化](../03-performance/01-component-optimization) - 学习性能优化技巧

@@ -1,0 +1,686 @@
+# 并发渲染
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-21
+
+## 📚 概念介绍
+
+并发渲染是 React 18 引入的重要特性，它允许 React 准备多个版本的 UI，并在不阻塞主线程的情况下更新界面。React 19 进一步增强了并发渲染的能力。本章节将详细介绍并发渲染的概念、使用方法和最佳实践。
+
+## 🎯 并发模式基础
+
+### 理解并发渲染
+
+```jsx
+import React from 'react';
+
+// 传统渲染模式
+function TraditionalRendering() {
+  const [count, setCount] = React.useState(0);
+  const [items, setItems] = React.useState([]);
+  
+  const handleClick = () => {
+    // 这些更新会同步执行，阻塞主线程
+    setCount(count + 1);
+    setItems([...items, `Item ${items.length + 1}`]);
+  };
+  
+  return (
+    <div>
+      <h1>Count: {count}</h1>
+      <button onClick={handleClick}>Add Item</button>
+      <ul>
+        {items.map((item, index) => (
+          <li key={index}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// 并发渲染模式
+function ConcurrentRendering() {
+  const [count, setCount] = React.useState(0);
+  const [items, setItems] = React.useState([]);
+  
+  const handleClick = () => {
+    // 使用 startTransition 标记非紧急更新
+    React.startTransition(() => {
+      setCount(count + 1);
+      setItems([...items, `Item ${items.length + 1}`]);
+    });
+  };
+  
+  return (
+    <div>
+      <h1>Count: {count}</h1>
+      <button onClick={handleClick}>Add Item</button>
+      <ul>
+        {items.map((item, index) => (
+          <li key={index}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export { TraditionalRendering, ConcurrentRendering };
+```
+
+### useTransition Hook
+
+```jsx
+import React from 'react';
+
+function SearchComponent() {
+  const [query, setQuery] = React.useState('');
+  const [results, setResults] = React.useState([]);
+  const [isPending, startTransition] = React.useTransition();
+  
+  const handleSearch = (value) => {
+    // 立即更新输入框（紧急）
+    setQuery(value);
+    
+    // 延迟更新搜索结果（非紧急）
+    startTransition(() => {
+      // 模拟搜索
+      const mockResults = Array.from({ length: 100 }, (_, i) => ({
+        id: i,
+        title: `Result ${i + 1} for "${value}"`,
+        description: `This is result ${i + 1} for search query "${value}"`
+      }));
+      setResults(mockResults);
+    });
+  };
+  
+  return (
+    <div>
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => handleSearch(e.target.value)}
+        placeholder="Search..."
+        style={{ width: '100%', padding: '8px', marginBottom: '16px' }}
+      />
+      
+      {isPending && <div style={{ color: 'orange' }}>Searching...</div>}
+      
+      <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+        {results.map(result => (
+          <div key={result.id} style={{ padding: '8px', borderBottom: '1px solid #eee' }}>
+            <h3>{result.title}</h3>
+            <p>{result.description}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default SearchComponent;
+```
+
+## 🎯 优先级更新
+
+### 紧急与非紧急更新
+
+```jsx
+import React from 'react';
+
+function PriorityUpdates() {
+  const [count, setCount] = React.useState(0);
+  const [heavyData, setHeavyData] = React.useState([]);
+  const [isPending, startTransition] = React.useTransition();
+  
+  const handleIncrement = () => {
+    // 紧急更新 - 立即响应
+    setCount(count + 1);
+  };
+  
+  const handleLoadData = () => {
+    // 非紧急更新 - 可以延迟
+    startTransition(() => {
+      // 模拟加载大量数据
+      const data = Array.from({ length: 10000 }, (_, i) => ({
+        id: i,
+        value: Math.random()
+      }));
+      setHeavyData(data);
+    });
+  };
+  
+  return (
+    <div>
+      <h1>Priority Updates</h1>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <h2>Counter (High Priority)</h2>
+        <p>Count: {count}</p>
+        <button onClick={handleIncrement}>Increment</button>
+      </div>
+      
+      <div>
+        <h2>Heavy Data (Low Priority)</h2>
+        <button onClick={handleLoadData}>Load Data</button>
+        {isPending && <p style={{ color: 'orange' }}>Loading data...</p>}
+        <p>Data items: {heavyData.length}</p>
+      </div>
+    </div>
+  );
+}
+
+export default PriorityUpdates;
+```
+
+### 批量更新优化
+
+```jsx
+import React from 'react';
+
+function BatchUpdates() {
+  const [state1, setState1] = React.useState(0);
+  const [state2, setState2] = React.useState(0);
+  const [state3, setState3] = React.useState(0);
+  const [isPending, startTransition] = React.useTransition();
+  
+  const handleBatchUpdate = () => {
+    // 不使用 startTransition - 多次渲染
+    setState1(state1 + 1);
+    setState2(state2 + 1);
+    setState3(state3 + 1);
+  };
+  
+  const handleOptimizedBatchUpdate = () => {
+    // 使用 startTransition - 单次渲染
+    startTransition(() => {
+      setState1(prev => prev + 1);
+      setState2(prev => prev + 1);
+      setState3(prev => prev + 1);
+    });
+  };
+  
+  return (
+    <div>
+      <h1>Batch Updates</h1>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <h2>State 1: {state1}</h2>
+        <h2>State 2: {state2}</h2>
+        <h2>State 3: {state3}</h2>
+      </div>
+      
+      <button onClick={handleBatchUpdate}>Batch Update</button>
+      <button onClick={handleOptimizedBatchUpdate}>
+        Optimized Batch Update
+      </button>
+      
+      {isPending && <p style={{ color: 'orange' }}>Updating...</p>}
+    </div>
+  );
+}
+
+export default BatchUpdates;
+```
+
+## 🎯 Suspense 与并发
+
+### 数据获取 Suspense
+
+```jsx
+import React, { Suspense } from 'react';
+
+// 模拟异步数据获取
+function fetchUserData(userId) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({
+        id: userId,
+        name: `User ${userId}`,
+        email: `user${userId}@example.com`
+      });
+    }, 2000);
+  });
+}
+
+// 使用 Suspense 的数据获取
+function useUserData(userId) {
+  const [data, setData] = React.useState(null);
+  
+  React.useEffect(() => {
+    let isMounted = true;
+    
+    fetchUserData(userId).then((userData) => {
+      if (isMounted) {
+        setData(userData);
+      }
+    });
+    
+    return () => {
+      isMounted = false;
+    };
+  }, [userId]);
+  
+  if (!data) {
+    throw new Promise((resolve) => {
+      // Suspense 会捕获这个 Promise
+      setTimeout(resolve, 2000);
+    });
+  }
+  
+  return data;
+}
+
+function UserProfile({ userId }) {
+  const user = useUserData(userId);
+  
+  return (
+    <div>
+      <h2>{user.name}</h2>
+      <p>Email: {user.email}</p>
+    </div>
+  );
+}
+
+function App() {
+  const [userId, setUserId] = React.useState(1);
+  
+  return (
+    <div>
+      <h1>User Profile</h1>
+      <button onClick={() => setUserId(userId + 1)}>Next User</button>
+      
+      <Suspense fallback={<div>Loading user...</div>}>
+        <UserProfile userId={userId} />
+      </Suspense>
+    </div>
+  );
+}
+
+export default App;
+```
+
+### 嵌套 Suspense
+
+```jsx
+import React, { Suspense } from 'react';
+
+function fetchPost(postId) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({
+        id: postId,
+        title: `Post ${postId}`,
+        content: `Content for post ${postId}`
+      });
+    }, 1500);
+  });
+}
+
+function fetchComments(postId) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve(Array.from({ length: 5 }, (_, i) => ({
+        id: i,
+        text: `Comment ${i + 1} for post ${postId}`
+      })));
+    }, 1000);
+  });
+}
+
+function PostDetail({ postId }) {
+  const post = fetchPost(postId);
+  
+  return (
+    <div>
+      <h2>{post.title}</h2>
+      <p>{post.content}</p>
+      
+      <Suspense fallback={<div>Loading comments...</div>}>
+        <Comments postId={postId} />
+      </Suspense>
+    </div>
+  );
+}
+
+function Comments({ postId }) {
+  const comments = fetchComments(postId);
+  
+  return (
+    <div>
+      <h3>Comments</h3>
+      <ul>
+        {comments.map(comment => (
+          <li key={comment.id}>{comment.text}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function App() {
+  const [postId, setPostId] = React.useState(1);
+  
+  return (
+    <div>
+      <h1>Blog Post</h1>
+      <button onClick={() => setPostId(postId + 1)}>Next Post</button>
+      
+      <Suspense fallback={<div>Loading post...</div>}>
+        <PostDetail postId={postId} />
+      </Suspense>
+    </div>
+  );
+}
+
+export default App;
+```
+
+## 🎯 并发特性最佳实践
+
+### 识别紧急与非紧急更新
+
+```jsx
+import React from 'react';
+
+function BestPractices() {
+  const [searchQuery, setSearchQuery] = React.useState('');
+  const [searchResults, setSearchResults] = React.useState([]);
+  const [selectedItem, setSelectedItem] = React.useState(null);
+  const [isPending, startTransition] = React.useTransition();
+  
+  // 紧急更新：用户输入
+  const handleInputChange = (e) => {
+    setSearchQuery(e.target.value);
+  };
+  
+  // 非紧急更新：搜索结果
+  const handleSearch = () => {
+    startTransition(() => {
+      // 模拟搜索
+      const results = Array.from({ length: 20 }, (_, i) => ({
+        id: i,
+        title: `Result ${i + 1} for "${searchQuery}"`
+      }));
+      setSearchResults(results);
+    });
+  };
+  
+  // 紧急更新：选择项
+  const handleSelectItem = (item) => {
+    setSelectedItem(item);
+  };
+  
+  return (
+    <div>
+      <input
+        type="text"
+        value={searchQuery}
+        onChange={handleInputChange}
+        placeholder="Search..."
+        style={{ width: '100%', padding: '8px', marginBottom: '16px' }}
+      />
+      
+      <button onClick={handleSearch}>Search</button>
+      
+      {isPending && <div style={{ color: 'orange' }}>Searching...</div>}
+      
+      <div style={{ display: 'flex', gap: '20px' }}>
+        <div style={{ flex: 1 }}>
+          <h2>Results</h2>
+          <ul>
+            {searchResults.map(result => (
+              <li
+                key={result.id}
+                onClick={() => handleSelectItem(result)}
+                style={{ cursor: 'pointer', padding: '8px' }}
+              >
+                {result.title}
+              </li>
+            ))}
+          </ul>
+        </div>
+        
+        <div style={{ flex: 1 }}>
+          <h2>Selected</h2>
+          {selectedItem ? (
+            <div>
+              <h3>{selectedItem.title}</h3>
+            </div>
+          ) : (
+            <p>No item selected</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default BestPractices;
+```
+
+### 性能监控
+
+```jsx
+import React from 'react';
+
+function PerformanceMonitor() {
+  const [count, setCount] = React.useState(0);
+  const [data, setData] = React.useState([]);
+  const [isPending, startTransition] = React.useTransition();
+  const [renderTime, setRenderTime] = React.useState(0);
+  
+  const startTimeRef = React.useRef(0);
+  
+  const handleLoadData = () => {
+    startTimeRef.current = performance.now();
+    
+    startTransition(() => {
+      // 模拟加载大量数据
+      const heavyData = Array.from({ length: 50000 }, (_, i) => ({
+        id: i,
+        value: Math.random()
+      }));
+      setData(heavyData);
+      
+      const endTime = performance.now();
+      setRenderTime(endTime - startTimeRef.current);
+    });
+  };
+  
+  return (
+    <div>
+      <h1>Performance Monitor</h1>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <h2>Counter</h2>
+        <p>Count: {count}</p>
+        <button onClick={() => setCount(count + 1)}>Increment</button>
+      </div>
+      
+      <div>
+        <h2>Heavy Data</h2>
+        <button onClick={handleLoadData}>Load Data</button>
+        {isPending && <p style={{ color: 'orange' }}>Loading...</p>}
+        <p>Data items: {data.length}</p>
+        <p>Render time: {renderTime.toFixed(2)}ms</p>
+      </div>
+    </div>
+  );
+}
+
+export default PerformanceMonitor;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：优化的搜索应用
+
+```jsx
+import React, { Suspense } from 'react';
+
+// 模拟搜索 API
+function searchAPI(query) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      const results = Array.from({ length: 50 }, (_, i) => ({
+        id: i,
+        title: `${query} - Result ${i + 1}`,
+        description: `Description for result ${i + 1}`,
+        score: Math.random()
+      }));
+      resolve(results);
+    }, 800);
+  });
+}
+
+function SearchResults({ query }) {
+  const [results, setResults] = React.useState([]);
+  const [isPending, startTransition] = React.useTransition();
+  
+  React.useEffect(() => {
+    if (query) {
+      startTransition(async () => {
+        const data = await searchAPI(query);
+        setResults(data);
+      });
+    } else {
+      setResults([]);
+    }
+  }, [query]);
+  
+  return (
+    <div>
+      {isPending && <div style={{ color: 'orange' }}>Searching...</div>}
+      
+      {results.length > 0 && (
+        <div>
+          <h3>Results ({results.length})</h3>
+          <ul style={{ listStyle: 'none', padding: 0 }}>
+            {results.map(result => (
+              <li
+                key={result.id}
+                style={{
+                  padding: '12px',
+                  margin: '8px 0',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px'
+                }}
+              >
+                <h4>{result.title}</h4>
+                <p>{result.description}</p>
+                <small>Score: {result.score.toFixed(2)}</small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SearchApp() {
+  const [query, setQuery] = React.useState('');
+  const [selectedResult, setSelectedResult] = React.useState(null);
+  const [isPending, startTransition] = React.useTransition();
+  
+  const handleInputChange = (e) => {
+    // 紧急更新：立即更新输入框
+    setQuery(e.target.value);
+  };
+  
+  const handleSelectResult = (result) => {
+    // 紧急更新：立即显示选中项
+    setSelectedResult(result);
+  };
+  
+  const handleClear = () => {
+    startTransition(() => {
+      setQuery('');
+      setSelectedResult(null);
+    });
+  };
+  
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>Optimized Search App</h1>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <input
+          type="text"
+          value={query}
+          onChange={handleInputChange}
+          placeholder="Search..."
+          style={{
+            width: '100%',
+            padding: '12px',
+            fontSize: '16px',
+            border: '1px solid #ddd',
+            borderRadius: '4px'
+          }}
+        />
+        {query && (
+          <button onClick={handleClear} style={{ marginTop: '8px' }}>
+            Clear
+          </button>
+        )}
+      </div>
+      
+      <div style={{ display: 'flex', gap: '20px' }}>
+        <div style={{ flex: 1 }}>
+          <Suspense fallback={<div>Loading...</div>}>
+            <SearchResults query={query} />
+          </Suspense>
+        </div>
+        
+        <div style={{ flex: 1 }}>
+          {selectedResult ? (
+            <div style={{
+              padding: '16px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              background: '#f9f9f9'
+            }}>
+              <h2>Selected Result</h2>
+              <h3>{selectedResult.title}</h3>
+              <p>{selectedResult.description}</p>
+              <p>Score: {selectedResult.score.toFixed(2)}</p>
+            </div>
+          ) : (
+            <div style={{
+              padding: '16px',
+              border: '1px dashed #ddd',
+              borderRadius: '4px',
+              textAlign: 'center',
+              color: '#999'
+            }}>
+              Select a result to view details
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default SearchApp;
+```
+
+## 🔗 相关概念
+
+- **useTransition**：管理非紧急更新
+- **Suspense**：处理异步组件
+- **并发模式**：React 18+ 的并发渲染
+- **优先级更新**：区分紧急和非紧急更新
+
+## 📚 学习检查点
+
+- [ ] 理解并发渲染的基本概念
+- [ ] 掌握 useTransition Hook 的使用
+- [ ] 理解优先级更新的机制
+- [ ] 掌握 Suspense 的使用方法
+- [ ] 能够识别紧急和非紧急更新
+- [ ] 能够在实际项目中应用并发特性
+
+## 🚀 下一步
+
+→ [Activity 组件](./02-activity-component) - 学习 React 19 Activity 组件
