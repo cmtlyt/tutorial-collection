@@ -1,0 +1,898 @@
+# React Compiler
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-22
+
+## 📚 概念介绍
+
+React Compiler 是一个革命性的自动优化编译器，它通过在构建阶段分析组件代码，自动识别可以跳过的渲染和计算，从而显著提升 React 应用的性能。编译器自动应用 `useMemo`、`useCallback`、`React.memo` 的等效优化，让开发者无需手动进行性能优化。
+
+## 🎯 编译器核心原理
+
+React Compiler 在构建时分析组件的依赖关系和渲染行为，自动应用优化策略。
+
+### 编译器工作原理
+
+```js
+// 传统方式：需要手动优化
+function TraditionalComponent({ items }) {
+  const expensiveValue = useMemo(() => {
+    return items.reduce((sum, item) => sum + item.value, 0)
+  }, [items])
+  
+  const handleClick = useCallback(() => {
+    console.log('Clicked')
+  }, [])
+  
+  return (
+    <div>
+      <p>Total: {expensiveValue}</p>
+      <button onClick={handleClick}>Click me</button>
+    </div>
+  )
+}
+
+// 使用 React Compiler：无需手动优化
+function OptimizedComponent({ items }) {
+  const expensiveValue = items.reduce((sum, item) => sum + item.value, 0)
+  
+  const handleClick = () => {
+    console.log('Clicked')
+  }
+  
+  return (
+    <div>
+      <p>Total: {expensiveValue}</p>
+      <button onClick={handleClick}>Click me</button>
+    </div>
+  )
+}
+```
+
+### 编译器优化示例
+
+```js
+import { useState } from 'react'
+
+function ProductList({ products }) {
+  const [filter, setFilter] = useState('')
+  
+  const filteredProducts = products.filter(product => 
+    product.name.toLowerCase().includes(filter.toLowerCase())
+  )
+  
+  const totalValue = products.reduce((sum, product) => sum + product.price, 0)
+  
+  return (
+    <div style={{ padding: '20px' }}>
+      <input 
+        type="text"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder="搜索产品..."
+        style={{ 
+          padding: '8px', 
+          marginBottom: '16px',
+          width: '100%',
+          maxWidth: '400px'
+        }}
+      />
+      
+      <div style={{ marginBottom: '16px' }}>
+        <strong>总价值：${totalValue.toFixed(2)}</strong>
+      </div>
+      
+      <div style={{ display: 'grid', gap: '12px' }}>
+        {filteredProducts.map(product => (
+          <div 
+            key={product.id} 
+            style={{ 
+              padding: '12px', 
+              border: '1px solid #ddd', 
+              borderRadius: '4px' 
+            }}
+          >
+            <h4>{product.name}</h4>
+            <p>价格：${product.price.toFixed(2)}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const sampleProducts = [
+  { id: 1, name: '笔记本电脑', price: 5999 },
+  { id: 2, name: '智能手机', price: 3999 },
+  { id: 3, name: '平板电脑', price: 2999 },
+  { id: 4, name: '智能手表', price: 1299 },
+  { id: 5, name: '无线耳机', price: 699 }
+]
+
+function App() {
+  return <ProductList products={sampleProducts} />
+}
+
+export default App
+```
+
+## 🎯 安装与配置
+
+React Compiler 支持多种构建工具，包括 Babel、Vite、Metro、Rsbuild 等。
+
+### Vite 配置
+
+```js
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [
+    react({
+      babel: {
+        plugins: [
+          ['babel-plugin-react-compiler', {
+            target: '18' // 或 '19'
+          }]
+        ]
+      }
+    })
+  ]
+})
+```
+
+### Babel 配置
+
+```js
+module.exports = {
+  presets: [
+    ['@babel/preset-react', { runtime: 'automatic' }]
+  ],
+  plugins: [
+    'babel-plugin-react-compiler'
+  ]
+}
+```
+
+### Next.js 配置
+
+```js
+const nextConfig = {
+  experimental: {
+    reactCompiler: true
+  }
+}
+
+module.exports = nextConfig
+```
+
+## 🎯 自动优化场景
+
+React Compiler 能够自动识别和优化多种性能问题。
+
+### 跳过级联重渲染
+
+```js
+import { useState } from 'react'
+
+function ParentComponent() {
+  const [count, setCount] = useState(0)
+  const [name, setName] = useState('React')
+  
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>父组件</h1>
+      <button onClick={() => setCount(c => c + 1)}>
+        计数：{count}
+      </button>
+      
+      <ChildComponent name={name} />
+    </div>
+  )
+}
+
+function ChildComponent({ name }) {
+  console.log('ChildComponent rendered')
+  
+  return (
+    <div style={{ marginTop: '20px', padding: '16px', background: '#f0f0f0' }}>
+      <h2>子组件</h2>
+      <p>名称：{name}</p>
+      <p>这个组件不会因为父组件的计数器更新而重新渲染</p>
+    </div>
+  )
+}
+
+export default ParentComponent
+```
+
+### 优化昂贵计算
+
+```js
+import { useState } from 'react'
+
+function FibonacciCalculator({ n }) {
+  const fibonacci = (num) => {
+    if (num <= 1) return num
+    return fibonacci(num - 1) + fibonacci(num - 2)
+  }
+  
+  const result = fibonacci(n)
+  
+  return (
+    <div style={{ padding: '20px' }}>
+      <h2>斐波那契数列计算器</h2>
+      <p>计算 F({n}) = {result}</p>
+      <p style={{ color: '#666', fontSize: '0.9em' }}>
+        这个计算会被编译器自动缓存，避免重复计算
+      </p>
+    </div>
+  )
+}
+
+function CalculatorApp() {
+  const [selectedNumber, setSelectedNumber] = useState(10)
+  const [updateTrigger, setUpdateTrigger] = useState(0)
+  
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>计算器应用</h1>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <label>
+          选择数字：
+          <select 
+            value={selectedNumber}
+            onChange={(e) => setSelectedNumber(parseInt(e.target.value))}
+            style={{ marginLeft: '8px', padding: '4px' }}
+          >
+            {[10, 15, 20, 25, 30].map(num => (
+              <option key={num} value={num}>{num}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <button 
+          onClick={() => setUpdateTrigger(t => t + 1)}
+          style={{ padding: '8px 16px' }}
+        >
+          触发父组件更新（不影响计算结果）
+        </button>
+      </div>
+      
+      <FibonacciCalculator n={selectedNumber} />
+    </div>
+  )
+}
+
+export default CalculatorApp
+```
+
+### 处理函数引用
+
+```js
+import { useState } from 'react'
+
+function TaskList({ tasks, onToggleTask }) {
+  return (
+    <div style={{ padding: '16px', border: '1px solid #ddd', borderRadius: '4px' }}>
+      <h3>任务列表</h3>
+      <ul style={{ listStyle: 'none', padding: 0 }}>
+        {tasks.map(task => (
+          <li key={task.id} style={{ marginBottom: '8px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input 
+                type="checkbox"
+                checked={task.completed}
+                onChange={() => onToggleTask(task.id)}
+              />
+              <span style={{ 
+                textDecoration: task.completed ? 'line-through' : 'none',
+                color: task.completed ? '#999' : '#333'
+              }}>
+                {task.text}
+              </span>
+            </label>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function TaskManager() {
+  const [tasks, setTasks] = useState([
+    { id: 1, text: '完成 React Compiler 学习', completed: false },
+    { id: 2, text: '实践性能优化', completed: false },
+    { id: 3, text: '阅读官方文档', completed: true }
+  ])
+  
+  const [filter, setFilter] = useState('all')
+  
+  const toggleTask = (taskId) => {
+    setTasks(prev => prev.map(task => 
+      task.id === taskId 
+        ? { ...task, completed: !task.completed }
+        : task
+    ))
+  }
+  
+  const filteredTasks = tasks.filter(task => {
+    if (filter === 'active') return !task.completed
+    if (filter === 'completed') return task.completed
+    return true
+  })
+  
+  return (
+    <div style={{ padding: '20px', maxWidth: '600px', margin: '0 auto' }}>
+      <h1>任务管理器</h1>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <button 
+          onClick={() => setFilter('all')}
+          style={{ 
+            padding: '8px 16px',
+            background: filter === 'all' ? '#007bff' : '#fff',
+            color: filter === 'all' ? '#fff' : '#333',
+            border: '1px solid #ddd',
+            marginRight: '8px'
+          }}
+        >
+          全部
+        </button>
+        <button 
+          onClick={() => setFilter('active')}
+          style={{ 
+            padding: '8px 16px',
+            background: filter === 'active' ? '#007bff' : '#fff',
+            color: filter === 'active' ? '#fff' : '#333',
+            border: '1px solid #ddd',
+            marginRight: '8px'
+          }}
+        >
+          进行中
+        </button>
+        <button 
+          onClick={() => setFilter('completed')}
+          style={{ 
+            padding: '8px 16px',
+            background: filter === 'completed' ? '#007bff' : '#fff',
+            color: filter === 'completed' ? '#fff' : '#333',
+            border: '1px solid #ddd'
+          }}
+        >
+          已完成
+        </button>
+      </div>
+      
+      <TaskList tasks={filteredTasks} onToggleTask={toggleTask} />
+      
+      <div style={{ marginTop: '20px', padding: '16px', background: '#f0f0f0', borderRadius: '4px' }}>
+        <p><strong>编译器优化说明：</strong></p>
+        <ul>
+          <li>函数引用会被自动优化，无需使用 useCallback</li>
+          <li>子组件不会因为父组件的 filter 状态变化而重新渲染</li>
+          <li>计算结果会被自动缓存</li>
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+export default TaskManager
+```
+
+## 🎯 与手动优化的关系
+
+React Compiler 能够与现有的手动优化代码和谐共存。
+
+### 保留现有优化
+
+```js
+import { useState, useMemo } from 'react'
+
+function DataProcessor({ data }) {
+  const processedData = useMemo(() => {
+    return data.map(item => ({
+      ...item,
+      processed: true,
+      timestamp: Date.now()
+    }))
+  }, [data])
+  
+  return (
+    <div>
+      {processedData.map(item => (
+        <div key={item.id}>
+          {item.name} - {item.processed ? '已处理' : '未处理'}
+        </div>
+      ))}
+    </div>
+  )
+}
+```
+
+### 增量采用策略
+
+```js
+import { useState } from 'react'
+
+function LegacyComponent({ items }) {
+  const expensiveCalculation = useMemo(() => {
+    return items.reduce((sum, item) => sum + item.value, 0)
+  }, [items])
+  
+  return <div>Total: {expensiveCalculation}</div>
+}
+
+function NewComponent({ items }) {
+  const expensiveCalculation = items.reduce((sum, item) => sum + item.value, 0)
+  
+  return <div>Total: {expensiveCalculation}</div>
+}
+
+function HybridApp() {
+  const [items, setItems] = useState([
+    { id: 1, value: 100 },
+    { id: 2, value: 200 },
+    { id: 3, value: 300 }
+  ])
+  
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>混合优化策略</h1>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <h2>传统优化（useMemo）</h2>
+        <LegacyComponent items={items} />
+      </div>
+      
+      <div>
+        <h2>编译器优化</h2>
+        <NewComponent items={items} />
+      </div>
+      
+      <div style={{ marginTop: '20px' }}>
+        <button 
+          onClick={() => setItems([...items, { 
+            id: Date.now(), 
+            value: Math.floor(Math.random() * 1000) 
+          }])}
+          style={{ padding: '8px 16px' }}
+        >
+          添加项目
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export default HybridApp
+```
+
+## 🎯 调试与故障排除
+
+React Compiler 提供了调试工具来帮助开发者理解和验证优化效果。
+
+### 性能分析
+
+```js
+import { useState, useEffect } from 'react'
+
+function PerformanceMonitor({ componentName }) {
+  const [renderCount, setRenderCount] = useState(0)
+  const [lastRenderTime, setLastRenderTime] = useState(null)
+  
+  useEffect(() => {
+    setRenderCount(prev => prev + 1)
+    setLastRenderTime(new Date().toISOString())
+  })
+  
+  return (
+    <div style={{ 
+      padding: '8px', 
+      background: '#f0f0f0', 
+      borderRadius: '4px',
+      fontSize: '12px',
+      marginBottom: '8px'
+    }}>
+      <strong>{componentName}</strong>
+      <br />
+      渲染次数：{renderCount}
+      <br />
+      最后渲染：{lastRenderTime ? new Date(lastRenderTime).toLocaleTimeString() : 'N/A'}
+    </div>
+  )
+}
+
+function ExpensiveChild({ data }) {
+  const startTime = performance.now()
+  
+  for (let i = 0; i < 100000; i++) {
+    Math.sqrt(i) * Math.sin(i)
+  }
+  
+  const endTime = performance.now()
+  
+  return (
+    <div style={{ padding: '16px', border: '1px solid #ddd', margin: '8px 0' }}>
+      <PerformanceMonitor componentName="ExpensiveChild" />
+      <p>数据：{data}</p>
+      <p>计算耗时：{(endTime - startTime).toFixed(2)}ms</p>
+    </div>
+  )
+}
+
+function ParentComponent() {
+  const [count, setCount] = useState(0)
+  const [data, setData] = useState('初始数据')
+  
+  return (
+    <div style={{ padding: '20px' }}>
+      <PerformanceMonitor componentName="ParentComponent" />
+      
+      <h1>性能监控演示</h1>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <button 
+          onClick={() => setCount(c => c + 1)}
+          style={{ padding: '8px 16px', marginRight: '8px' }}
+        >
+          计数：{count}
+        </button>
+        
+        <button 
+          onClick={() => setData(`更新数据 ${Date.now()}`)}
+          style={{ padding: '8px 16px' }}
+        >
+          更新数据
+        </button>
+      </div>
+      
+      <ExpensiveChild data={data} />
+      
+      <div style={{ marginTop: '20px', padding: '16px', background: '#e0f0ff' }}>
+        <h3>观察要点：</h3>
+        <ul>
+          <li>点击"计数"按钮时，ExpensiveChild 不应该重新渲染</li>
+          <li>点击"更新数据"按钮时，ExpensiveChild 才会重新渲染</li>
+          <li>这证明了编译器的自动优化效果</li>
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+export default ParentComponent
+```
+
+### 编译器规则验证
+
+```js
+import { useState } from 'react'
+
+function ValidComponent({ items }) {
+  const [filter, setFilter] = useState('')
+  
+  const filteredItems = items.filter(item => 
+    item.name.toLowerCase().includes(filter.toLowerCase())
+  )
+  
+  return (
+    <div>
+      <input 
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+      />
+      {filteredItems.map(item => (
+        <div key={item.id}>{item.name}</div>
+      ))}
+    </div>
+  )
+}
+
+function InvalidComponent({ items }) {
+  const [filter, setFilter] = useState('')
+  
+  return (
+    <div>
+      <input 
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+      />
+      {items
+        .filter(item => item.name.toLowerCase().includes(filter.toLowerCase()))
+        .map(item => (
+          <div key={item.id}>{item.name}</div>
+        ))}
+    </div>
+  )
+}
+
+function CompilerRulesDemo() {
+  const items = [
+    { id: 1, name: 'Apple' },
+    { id: 2, name: 'Banana' },
+    { id: 3, name: 'Cherry' }
+  ]
+  
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>编译器规则验证</h1>
+      
+      <div style={{ marginBottom: '20px' }}>
+        <h2>✅ 正确用法</h2>
+        <p>将过滤结果提取到变量中</p>
+        <ValidComponent items={items} />
+      </div>
+      
+      <div>
+        <h2>❌ 不推荐用法</h2>
+        <p>在 JSX 中直接进行过滤</p>
+        <InvalidComponent items={items} />
+      </div>
+    </div>
+  )
+}
+
+export default CompilerRulesDemo
+```
+
+## 📝 实际应用示例
+
+### 完整的性能优化应用
+
+```js
+import { useState, useEffect } from 'react'
+
+function ProductCard({ product, onAddToCart }) {
+  const [isHovered, setIsHovered] = useState(false)
+  
+  return (
+    <div 
+      style={{ 
+        padding: '16px', 
+        border: '1px solid #ddd', 
+        borderRadius: '8px',
+        transition: 'transform 0.2s, box-shadow 0.2s',
+        transform: isHovered ? 'translateY(-4px)' : 'none',
+        boxShadow: isHovered ? '0 4px 12px rgba(0,0,0,0.1)' : 'none'
+      }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <h3>{product.name}</h3>
+      <p style={{ color: '#666' }}>{product.description}</p>
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center',
+        marginTop: '12px'
+      }}>
+        <strong>${product.price.toFixed(2)}</strong>
+        <button 
+          onClick={() => onAddToCart(product)}
+          style={{
+            padding: '6px 12px',
+            background: '#007bff',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }}
+        >
+          添加到购物车
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ShoppingCart({ items, onRemove }) {
+  const total = items.reduce((sum, item) => sum + item.price, 0)
+  
+  return (
+    <div style={{ 
+      position: 'fixed', 
+      right: '20px', 
+      top: '20px',
+      width: '300px',
+      maxHeight: '400px',
+      overflowY: 'auto',
+      background: '#fff',
+      border: '1px solid #ddd',
+      borderRadius: '8px',
+      padding: '16px',
+      boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+    }}>
+      <h3>购物车 ({items.length})</h3>
+      
+      {items.length === 0 ? (
+        <p style={{ color: '#999' }}>购物车为空</p>
+      ) : (
+        <>
+          {items.map((item, index) => (
+            <div 
+              key={`${item.id}-${index}`}
+              style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between',
+                padding: '8px 0',
+                borderBottom: '1px solid #eee'
+              }}
+            >
+              <span>{item.name}</span>
+              <div>
+                <span>${item.price.toFixed(2)}</span>
+                <button 
+                  onClick={() => onRemove(index)}
+                  style={{ 
+                    marginLeft: '8px', 
+                    padding: '2px 6px',
+                    background: '#dc3545',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '2px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          ))}
+          
+          <div style={{ 
+            marginTop: '16px', 
+            paddingTop: '16px', 
+            borderTop: '2px solid #ddd',
+            fontWeight: 'bold',
+            display: 'flex',
+            justifyContent: 'space-between'
+          }}>
+            <span>总计：</span>
+            <span>${total.toFixed(2)}</span>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function ProductApp() {
+  const [searchTerm, setSearchTerm] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [cart, setCart] = useState([])
+  const [notification, setNotification] = useState(null)
+  
+  const products = [
+    { id: 1, name: '笔记本电脑', description: '高性能办公本', price: 5999, category: 'electronics' },
+    { id: 2, name: '智能手机', description: '最新款旗舰机', price: 3999, category: 'electronics' },
+    { id: 3, name: '机械键盘', description: 'RGB背光键盘', price: 699, category: 'electronics' },
+    { id: 4, name: '运动鞋', description: '舒适透气', price: 399, category: 'clothing' },
+    { id: 5, name: '背包', description: '大容量旅行包', price: 299, category: 'clothing' },
+    { id: 6, name: '水杯', description: '保温水杯', price: 99, category: 'home' }
+  ]
+  
+  const filteredProducts = products.filter(product => {
+    const matchesSearch = product.name.toLowerCase().includes(searchTerm.toLowerCase())
+    const matchesCategory = categoryFilter === 'all' || product.category === categoryFilter
+    return matchesSearch && matchesCategory
+  })
+  
+  const addToCart = (product) => {
+    setCart(prev => [...prev, product])
+    showNotification(`已添加 ${product.name} 到购物车`)
+  }
+  
+  const removeFromCart = (index) => {
+    setCart(prev => prev.filter((_, i) => i !== index))
+  }
+  
+  const showNotification = (message) => {
+    setNotification(message)
+    setTimeout(() => setNotification(null), 2000)
+  }
+  
+  return (
+    <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
+      <h1>React Compiler 性能优化演示</h1>
+      
+      {notification && (
+        <div style={{
+          position: 'fixed',
+          top: '20px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          padding: '12px 24px',
+          background: '#28a745',
+          color: '#fff',
+          borderRadius: '4px',
+          zIndex: 1000
+        }}>
+          {notification}
+        </div>
+      )}
+      
+      <div style={{ marginBottom: '20px', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+        <input 
+          type="text"
+          placeholder="搜索产品..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          style={{ 
+            padding: '8px', 
+            border: '1px solid #ddd',
+            borderRadius: '4px',
+            flex: 1,
+            minWidth: '200px'
+          }}
+        />
+        
+        <select 
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+          style={{ 
+            padding: '8px', 
+            border: '1px solid #ddd',
+            borderRadius: '4px'
+          }}
+        >
+          <option value="all">所有分类</option>
+          <option value="electronics">电子产品</option>
+          <option value="clothing">服装</option>
+          <option value="home">家居</option>
+        </select>
+      </div>
+      
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+        {filteredProducts.map(product => (
+          <ProductCard 
+            key={product.id} 
+            product={product} 
+            onAddToCart={addToCart}
+          />
+        ))}
+      </div>
+      
+      <ShoppingCart items={cart} onRemove={removeFromCart} />
+      
+      <div style={{ marginTop: '40px', padding: '16px', background: '#f0f0f0', borderRadius: '8px' }}>
+        <h3>React Compiler 优化说明：</h3>
+        <ul>
+          <li>✅ 搜索和过滤不会导致 ProductCard 重新渲染</li>
+          <li>✅ 购物车的变化不会影响产品列表的渲染</li>
+          <li>✅ 所有计算都被自动缓存和优化</li>
+          <li>✅ 无需手动使用 useMemo、useCallback 或 React.memo</li>
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+export default ProductApp
+```
+
+## 🔗 相关概念
+
+- **React 19 核心特性**：Actions 系统、新的 Hooks 等基础特性
+- **React 19.2 新特性**：Activity 组件、Performance Tracks 等高级特性
+- **React Server Components**：服务端组件架构，与编译器配合使用
+- **性能优化**：深入理解 React 性能优化的最佳实践
+
+## 📚 学习检查点
+
+学习完本节后，你应该能够：
+- [ ] 理解 React Compiler 的工作原理
+- [ ] 掌握编译器的安装和配置方法
+- [ ] 了解编译器能够自动优化的场景
+- [ ] 理解编译器与手动优化的关系
+- [ ] 掌握编译器的调试和故障排除方法
+- [ ] 能够在实际项目中应用 React Compiler
+- [ ] 了解编译器的限制和最佳实践
+
+## 🚀 下一步
+
+→ [新兴框架与工具](./05-emerging-frameworks.mdx) - 探索 React 生态中的新兴框架和工具

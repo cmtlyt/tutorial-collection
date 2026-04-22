@@ -1,0 +1,908 @@
+# React 19 核心特性
+
+> **版本**：v1.0  
+> **最后更新**：2026-04-22
+
+## 📚 概念介绍
+
+React 19 是 React 生态系统的重大更新，引入了许多革命性的新特性，彻底改变了我们构建 React 应用的方式。这些新特性旨在简化开发流程、提升性能、改善用户体验，并为未来的 React 发展奠定基础。
+
+## 🎯 Actions 系统
+
+Actions 是 React 19 中最核心的新特性之一，它彻底改变了我们处理表单和异步操作的方式。Actions 允许你直接在表单元素上传递函数，React 会自动处理加载状态、错误处理和表单重置。
+
+### 基础 Actions
+
+```js
+import { useState } from 'react'
+
+function TodoForm() {
+  const [todos, setTodos] = useState([])
+
+  async function addTodo(formData) {
+    const todo = formData.get('todo')
+    if (!todo.trim()) return
+
+    // 模拟 API 调用
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    
+    setTodos(prev => [...prev, { id: Date.now(), text: todo }])
+    return { success: true }
+  }
+
+  return (
+    <div>
+      <form action={addTodo}>
+        <input name="todo" type="text" placeholder="添加新任务" />
+        <button type="submit">添加</button>
+      </form>
+      
+      <ul>
+        {todos.map(todo => (
+          <li key={todo.id}>{todo.text}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+export default TodoForm
+```
+
+### useActionState Hook
+
+`useActionState` 让你能够基于 Action 的结果来更新 UI 状态。
+
+```js
+import { useActionState } from 'react'
+
+async function updateName(prevState, formData) {
+  const name = formData.get('name')
+  
+  if (name.length < 3) {
+    return { 
+      error: '名字至少需要3个字符',
+      prevName: prevState.name 
+    }
+  }
+
+  // 模拟 API 调用
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  
+  return { 
+    success: true, 
+    name,
+    prevName: prevState.name 
+  }
+}
+
+function NameForm() {
+  const [state, formAction, isPending] = useActionState(updateName, {
+    name: '',
+    error: null,
+    prevName: ''
+  })
+
+  return (
+    <div>
+      <form action={formAction}>
+        <input 
+          name="name" 
+          type="text" 
+          defaultValue={state.prevName}
+          disabled={isPending}
+        />
+        <button type="submit" disabled={isPending}>
+          {isPending ? '更新中...' : '更新'}
+        </button>
+      </form>
+      
+      {state.error && (
+        <p style={{ color: 'red' }}>{state.error}</p>
+      )}
+      
+      {state.success && (
+        <p style={{ color: 'green' }}>
+          已更新：{state.prevName} → {state.name}
+        </p>
+      )}
+    </div>
+  )
+}
+
+export default NameForm
+```
+
+### useOptimistic Hook
+
+`useOptimistic` 允许你在等待服务器响应时立即更新 UI，提供更好的用户体验。
+
+```js
+import { useOptimistic, useState } from 'react'
+
+async function sendLikeMessage(messageId) {
+  // 模拟 API 调用
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  return { success: true, messageId }
+}
+
+function MessageList({ initialMessages }) {
+  const [messages, setMessages] = useState(initialMessages)
+  const [optimisticMessages, addOptimisticMessage] = useOptimistic(
+    messages,
+    (state, newMessage) => {
+      const updated = state.map(msg => 
+        msg.id === newMessage.id 
+          ? { ...msg, likes: msg.likes + 1 }
+          : msg
+      )
+      return updated
+    }
+  )
+
+  async function handleLike(messageId) {
+    addOptimisticMessage({ id: messageId })
+    await sendLikeMessage(messageId)
+    setMessages(prev => prev.map(msg => 
+      msg.id === messageId 
+        ? { ...msg, likes: msg.likes + 1 }
+        : msg
+    ))
+  }
+
+  return (
+    <div>
+      {optimisticMessages.map(message => (
+        <div key={message.id} style={{ marginBottom: '16px', padding: '12px', border: '1px solid #ddd' }}>
+          <p>{message.text}</p>
+          <button onClick={() => handleLike(message.id)}>
+            ❤️ {message.likes} 点赞
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// 使用示例
+const sampleMessages = [
+  { id: 1, text: 'React 19 太棒了！', likes: 42 },
+  { id: 2, text: 'Actions 系统让表单处理变得简单', likes: 28 },
+  { id: 3, text: 'useOptimistic 提升了用户体验', likes: 15 }
+]
+
+function App() {
+  return <MessageList initialMessages={sampleMessages} />
+}
+
+export default App
+```
+
+### useFormStatus Hook
+
+`useFormStatus` 提供了表单的提交状态信息。
+
+```js
+import { useFormStatus } from 'react'
+
+function SubmitButton() {
+  const { pending } = useFormStatus()
+  
+  return (
+    <button type="submit" disabled={pending}>
+      {pending ? '提交中...' : '提交'}
+    </button>
+  )
+}
+
+function ContactForm() {
+  async function handleSubmit(formData) {
+    const email = formData.get('email')
+    const message = formData.get('message')
+    
+    // 模拟 API 调用
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    
+    console.log('提交的数据:', { email, message })
+    return { success: true }
+  }
+
+  return (
+    <form action={handleSubmit}>
+      <div style={{ marginBottom: '16px' }}>
+        <label>
+          邮箱：
+          <input name="email" type="email" required />
+        </label>
+      </div>
+      
+      <div style={{ marginBottom: '16px' }}>
+        <label>
+          消息：
+          <textarea name="message" required rows={4} />
+        </label>
+      </div>
+      
+      <SubmitButton />
+    </form>
+  )
+}
+
+export default ContactForm
+```
+
+## 🎯 新的 Hooks
+
+### use Hook
+
+`use` 是一个新的 React Hook，用于读取 Promise 或 Context 的值。
+
+```js
+import { use, useState, Suspense } from 'react'
+
+// 模拟异步数据获取
+async function fetchUserData(userId) {
+  await new Promise(resolve => setTimeout(resolve, 1500))
+  return {
+    id: userId,
+    name: `用户 ${userId}`,
+    email: `user${userId}@example.com`,
+    avatar: `https://i.pravatar.cc/150?img=${userId}`
+  }
+}
+
+function UserProfile({ userId }) {
+  const userPromise = fetchUserData(userId)
+  const user = use(userPromise)
+  
+  return (
+    <div style={{ padding: '20px', border: '1px solid #ddd', borderRadius: '8px' }}>
+      <img 
+        src={user.avatar} 
+        alt={user.name} 
+        style={{ borderRadius: '50%', width: '80px', height: '80px' }}
+      />
+      <h2>{user.name}</h2>
+      <p>{user.email}</p>
+    </div>
+  )
+}
+
+function UserDashboard() {
+  const [currentUserId, setCurrentUserId] = useState(1)
+  
+  return (
+    <div>
+      <div style={{ marginBottom: '20px' }}>
+        <button onClick={() => setCurrentUserId(1)}>用户 1</button>
+        <button onClick={() => setCurrentUserId(2)}>用户 2</button>
+        <button onClick={() => setCurrentUserId(3)}>用户 3</button>
+      </div>
+      
+      <Suspense fallback={<div>加载中...</div>}>
+        <UserProfile userId={currentUserId} />
+      </Suspense>
+    </div>
+  )
+}
+
+export default UserDashboard
+```
+
+### Context 作为 Provider
+
+React 19 允许直接将 Context 作为组件使用，简化了 Context 的使用方式。
+
+```js
+import { createContext, useState, useContext } from 'react'
+
+const ThemeContext = createContext('light')
+
+function ThemeProvider({ children }) {
+  const [theme, setTheme] = useState('light')
+  
+  return (
+    <ThemeContext value={theme}>
+      <div style={{ 
+        background: theme === 'dark' ? '#333' : '#fff',
+        color: theme === 'dark' ? '#fff' : '#333',
+        minHeight: '100vh',
+        padding: '20px'
+      }}>
+        {children}
+        <button 
+          onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}
+          style={{ marginTop: '20px' }}
+        >
+          切换主题
+        </button>
+      </div>
+    </ThemeContext>
+  )
+}
+
+function ThemeContent() {
+  const theme = useContext(ThemeContext)
+  
+  return (
+    <div>
+      <h1>当前主题：{theme === 'light' ? '浅色' : '深色'}</h1>
+      <p>这是一个使用 React 19 Context API 的示例</p>
+    </div>
+  )
+}
+
+function App() {
+  return (
+    <ThemeProvider>
+      <ThemeContent />
+    </ThemeProvider>
+  )
+}
+
+export default App
+```
+
+## 🎯 ref 作为 prop
+
+React 19 允许将 ref 作为常规 prop 传递，不再需要使用 `forwardRef`。
+
+```js
+import { useRef, useEffect } from 'react'
+
+function CustomInput({ ref, ...props }) {
+  useEffect(() => {
+    if (ref.current) {
+      console.log('Input ref 已挂载:', ref.current)
+    }
+  }, [ref])
+  
+  return <input ref={ref} {...props} />
+}
+
+function FocusExample() {
+  const inputRef = useRef(null)
+  
+  const handleClick = () => {
+    if (inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.style.border = '2px solid blue'
+    }
+  }
+  
+  return (
+    <div>
+      <CustomInput 
+        ref={inputRef}
+        type="text" 
+        placeholder="点击按钮聚焦这里"
+        style={{ padding: '8px', fontSize: '16px' }}
+      />
+      <button 
+        onClick={handleClick}
+        style={{ marginLeft: '10px', padding: '8px 16px' }}
+      >
+        聚焦输入框
+      </button>
+    </div>
+  )
+}
+
+export default FocusExample
+```
+
+## 🎯 文档元数据支持
+
+React 19 原生支持在组件中渲染文档元数据标签，React 会自动将这些标签提升到文档的 `<head>` 部分。
+
+### 基础元数据
+
+```js
+function BlogPost({ title, description, author }) {
+  return (
+    <html>
+      <head>
+        <title>{title}</title>
+        <meta name="description" content={description} />
+        <meta name="author" content={author} />
+        <meta property="og:title" content={title} />
+        <meta property="og:description" content={description} />
+        <link rel="canonical" href="https://example.com/blog" />
+      </head>
+      <body>
+        <article>
+          <h1>{title}</h1>
+          <p>{description}</p>
+        </article>
+      </body>
+    </html>
+  )
+}
+
+// 使用示例
+function App() {
+  return (
+    <BlogPost
+      title="React 19 文档元数据支持"
+      description="学习 React 19 中如何使用原生的文档元数据支持"
+      author="React 开发者"
+    />
+  )
+}
+
+export default App
+```
+
+### 组件化元数据
+
+```js
+function SEOHead({ title, description, keywords, image }) {
+  return (
+    <>
+      <title>{title}</title>
+      <meta name="description" content={description} />
+      <meta name="keywords" content={keywords.join(', ')} />
+      
+      {/* Open Graph */}
+      <meta property="og:title" content={title} />
+      <meta property="og:description" content={description} />
+      <meta property="og:image" content={image} />
+      
+      {/* Twitter Card */}
+      <meta name="twitter:card" content="summary_large_image" />
+      <meta name="twitter:title" content={title} />
+      <meta name="twitter:description" content={description} />
+      <meta name="twitter:image" content={image} />
+    </>
+  )
+}
+
+function Article({ article }) {
+  return (
+    <div>
+      <SEOHead
+        title={article.title}
+        description={article.excerpt}
+        keywords={article.tags}
+        image={article.coverImage}
+      />
+      
+      <article>
+        <h1>{article.title}</h1>
+        <p>{article.excerpt}</p>
+        <div>{article.content}</div>
+      </article>
+    </div>
+  )
+}
+
+// 使用示例
+const sampleArticle = {
+  title: '深入理解 React 19',
+  excerpt: 'React 19 带来了许多令人兴奋的新特性...',
+  tags: ['React', 'JavaScript', '前端开发'],
+  coverImage: 'https://example.com/cover.jpg',
+  content: '文章内容...'
+}
+
+function App() {
+  return <Article article={sampleArticle} />
+}
+
+export default App
+```
+
+## 🎯 样式表支持
+
+React 19 内置了对样式表的管理和优化，支持优先级管理和自动去重。
+
+### 基础样式表
+
+```js
+function App() {
+  return (
+    <html>
+      <head>
+        <link rel="stylesheet" href="styles.css" precedence="default" />
+        <link rel="stylesheet" href="critical.css" precedence="high" />
+      </head>
+      <body>
+        <div>
+          <h1>React 19 样式表支持</h1>
+          <p>样式表会按照 precedence 属性的顺序加载</p>
+        </div>
+      </body>
+    </html>
+  )
+}
+
+export default App
+```
+
+### 动态样式表
+
+```js
+import { useState } from 'react'
+
+function ThemeSwitcher() {
+  const [theme, setTheme] = useState('light')
+  
+  const stylesheet = theme === 'light' 
+    ? <link rel="stylesheet" href="light-theme.css" precedence="default" />
+    : <link rel="stylesheet" href="dark-theme.css" precedence="default" />
+  
+  return (
+    <html>
+      <head>
+        {stylesheet}
+      </head>
+      <body>
+        <div style={{ padding: '20px' }}>
+          <h1>主题切换器</h1>
+          <button onClick={() => setTheme('light')}>浅色主题</button>
+          <button onClick={() => setTheme('dark')}>深色主题</button>
+        </div>
+      </body>
+    </html>
+  )
+}
+
+export default ThemeSwitcher
+```
+
+## 🎯 异步脚本支持
+
+React 19 简化了异步脚本的使用，可以在组件树中任何位置渲染异步脚本。
+
+### 基础异步脚本
+
+```js
+function Analytics() {
+  return (
+    <>
+      <script 
+        async 
+        src="https://www.googletagmanager.com/gtag/js?id=GA_MEASUREMENT_ID"
+      />
+      <script
+        async
+        dangerouslySetInnerHTML={{
+          __html: `
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', 'GA_MEASUREMENT_ID');
+          `
+        }}
+      />
+    </>
+  )
+}
+
+function App() {
+  return (
+    <html>
+      <head>
+        <Analytics />
+      </head>
+      <body>
+        <div>
+          <h1>网站分析</h1>
+          <p>Google Analytics 已集成</p>
+        </div>
+      </body>
+    </html>
+  )
+}
+
+export default App
+```
+
+### 条件脚本加载
+
+```js
+import { useState } from 'react'
+
+function VideoPlayer({ videoId }) {
+  const [loadScript, setLoadScript] = useState(false)
+  
+  return (
+    <div>
+      <button onClick={() => setLoadScript(true)}>
+        加载视频播放器
+      </button>
+      
+      {loadScript && (
+        <>
+          <script 
+            src="https://cdn.example.com/player.js"
+            async
+          />
+          <div id={`player-${videoId}`} />
+        </>
+      )}
+    </div>
+  )
+}
+
+export default VideoPlayer
+```
+
+## 🎯 资源预加载 API
+
+React 19 提供了多个资源预加载 API，用于优化页面加载性能。
+
+### 完整预加载示例
+
+```js
+function ResourcePreloadExample() {
+  return (
+    <html>
+      <head>
+        {/* DNS 预解析 */}
+        <link rel="dns-prefetch" href="https://cdn.example.com" />
+        
+        {/* 预连接 */}
+        <link rel="preconnect" href="https://api.example.com" />
+        
+        {/* 预加载字体 */}
+        <link rel="preload" href="fonts.woff2" as="font" type="font/woff2" crossOrigin="" />
+        
+        {/* 预加载样式表 */}
+        <link rel="preload" href="styles.css" as="style" />
+        
+        {/* 预初始化脚本 */}
+        <script src="critical.js" async />
+      </head>
+      <body>
+        <div>
+          <h1>资源预加载示例</h1>
+          <p>所有关键资源都已预加载</p>
+        </div>
+      </body>
+    </html>
+  )
+}
+
+export default ResourcePreloadExample
+```
+
+## 🎯 改进的 Suspense
+
+React 19 改进了 Suspense 的行为，提供了更好的用户体验和性能。
+
+### Suspense 边界优化
+
+```js
+import { use, Suspense, useState } from 'react'
+
+async function fetchData(url) {
+  const response = await fetch(url)
+  return response.json()
+}
+
+function DataComponent({ url }) {
+  const data = use(fetchData(url))
+  
+  return (
+    <div style={{ padding: '16px', border: '1px solid #ddd', margin: '8px' }}>
+      <h3>{data.title}</h3>
+      <p>{data.description}</p>
+    </div>
+  )
+}
+
+function DataLoader() {
+  const [showData, setShowData] = useState(false)
+  
+  return (
+    <div>
+      <button onClick={() => setShowData(true)}>
+        加载数据
+      </button>
+      
+      {showData && (
+        <Suspense fallback={<div>加载中...</div>}>
+          <DataComponent url="/api/data/1" />
+          <DataComponent url="/api/data/2" />
+          <DataComponent url="/api/data/3" />
+        </Suspense>
+      )}
+    </div>
+  )
+}
+
+export default DataLoader
+```
+
+## 📝 实际应用示例
+
+### 综合表单应用
+
+```js
+import { useState, useActionState, useOptimistic, Suspense } from 'react'
+
+async function submitForm(prevState, formData) {
+  const name = formData.get('name')
+  const email = formData.get('email')
+  const message = formData.get('message')
+  
+  if (!name || !email || !message) {
+    return { 
+      error: '所有字段都是必填的',
+      data: prevState.data 
+    }
+  }
+  
+  // 模拟 API 调用
+  await new Promise(resolve => setTimeout(resolve, 2000))
+  
+  return { 
+    success: true, 
+    data: { name, email, message },
+    submittedAt: new Date().toISOString()
+  }
+}
+
+function ContactForm() {
+  const [state, formAction, isPending] = useActionState(submitForm, {
+    data: null,
+    error: null,
+    success: false,
+    submittedAt: null
+  })
+  
+  const [optimisticSubmissions, addOptimisticSubmission] = useOptimistic(
+    [],
+    (state, newSubmission) => [...state, newSubmission]
+  )
+  
+  const handleSubmit = (formData) => {
+    addOptimisticSubmission({
+      name: formData.get('name'),
+      timestamp: new Date().toISOString()
+    })
+    return formAction(formData)
+  }
+  
+  return (
+    <div style={{ maxWidth: '600px', margin: '0 auto', padding: '20px' }}>
+      <h1>联系我们</h1>
+      
+      <form action={handleSubmit} style={{ marginBottom: '20px' }}>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', marginBottom: '8px' }}>
+            姓名：
+            <input 
+              name="name" 
+              type="text" 
+              disabled={isPending}
+              style={{ 
+                width: '100%', 
+                padding: '8px',
+                border: '1px solid #ddd',
+                borderRadius: '4px'
+              }}
+            />
+          </label>
+        </div>
+        
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', marginBottom: '8px' }}>
+            邮箱：
+            <input 
+              name="email" 
+              type="email" 
+              disabled={isPending}
+              style={{ 
+                width: '100%', 
+                padding: '8px',
+                border: '1px solid #ddd',
+                borderRadius: '4px'
+              }}
+            />
+          </label>
+        </div>
+        
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', marginBottom: '8px' }}>
+            消息：
+            <textarea 
+              name="message" 
+              disabled={isPending}
+              rows={4}
+              style={{ 
+                width: '100%', 
+                padding: '8px',
+                border: '1px solid #ddd',
+                borderRadius: '4px',
+                resize: 'vertical'
+              }}
+            />
+          </label>
+        </div>
+        
+        <button 
+          type="submit" 
+          disabled={isPending}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: isPending ? '#ccc' : '#007bff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: isPending ? 'not-allowed' : 'pointer'
+          }}
+        >
+          {isPending ? '提交中...' : '提交'}
+        </button>
+      </form>
+      
+      {state.error && (
+        <div style={{ 
+          padding: '12px', 
+          backgroundColor: '#fee', 
+          border: '1px solid #fcc',
+          borderRadius: '4px',
+          marginBottom: '16px'
+        }}>
+          <strong>错误：</strong> {state.error}
+        </div>
+      )}
+      
+      {state.success && (
+        <div style={{ 
+          padding: '12px', 
+          backgroundColor: '#efe', 
+          border: '1px solid #cfc',
+          borderRadius: '4px',
+          marginBottom: '16px'
+        }}>
+          <strong>提交成功！</strong>
+          <p>姓名：{state.data.name}</p>
+          <p>邮箱：{state.data.email}</p>
+          <p>消息：{state.data.message}</p>
+          <p>提交时间：{new Date(state.submittedAt).toLocaleString()}</p>
+        </div>
+      )}
+      
+      {optimisticSubmissions.length > 0 && (
+        <div style={{ marginTop: '20px' }}>
+          <h3>乐观更新记录</h3>
+          <ul>
+            {optimisticSubmissions.map((submission, index) => (
+              <li key={index}>
+                {submission.name} - {new Date(submission.timestamp).toLocaleTimeString()}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default ContactForm
+```
+
+## 🔗 相关概念
+
+- **React 19.2 新特性**：Activity 组件、useEffectEvent、Performance Tracks 等更高级的特性
+- **React Server Components**：服务端组件架构，进一步优化性能
+- **React Compiler**：自动优化编译器，减少手动优化的需求
+- **Actions 系统**：表单和异步操作的新范式
+
+## 📚 学习检查点
+
+学习完本节后，你应该能够：
+- [ ] 理解 Actions 系统的工作原理和使用场景
+- [ ] 掌握 useActionState、useOptimistic、useFormStatus 的使用方法
+- [ ] 理解 use Hook 的作用和适用场景
+- [ ] 掌握文档元数据的原生支持方式
+- [ ] 理解样式表和异步脚本的优化机制
+- [ ] 掌握资源预加载 API 的使用方法
+- [ ] 理解 Suspense 的改进和最佳实践
+
+## 🚀 下一步
+
+→ [React 19.2 新特性](./02-react-19-2-features.mdx) - 学习 React 19.2 引入的最新特性
