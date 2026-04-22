@@ -5,8 +5,905 @@
 
 ## 📚 概念介绍
 
-本节将介绍API 类型方案的核心概念和实践方法。
+传统的前后端协作中，API 接口的类型定义往往靠文档或口头约定来同步，接口变更时很容易出现前后端不一致的问题。**端到端类型安全（End-to-End Type Safety）** 的目标是：从服务端定义接口到客户端调用接口，全链路由 TypeScript 类型系统保障一致性，任何不匹配在编译时就会报错。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+本节将介绍四种主流的 API 类型方案：**tRPC**、**GraphQL Code Generator**、**OpenAPI/Swagger 类型生成** 和 **Zod + 类型推断**。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 使用 tRPC 实现前后端零接口定义的端到端类型安全
+- 使用 GraphQL Code Generator 从 Schema 自动生成 TypeScript 类型
+- 使用 OpenAPI 规范生成类型安全的 API 客户端
+- 使用 Zod Schema 同时获得运行时校验和编译时类型
+- 根据项目需求选择合适的 API 类型方案
+
+## 🎯 tRPC：端到端类型安全
+
+tRPC 是目前最受欢迎的端到端类型安全方案。它无需代码生成、无需 Schema 定义，直接通过 TypeScript 的类型推断在服务端和客户端之间共享类型。
+
+### 核心思路
+
+```
+传统 REST API:
+  服务端定义接口 → 写文档 → 前端手动定义类型 → 手动保持同步 ❌
+
+tRPC:
+  服务端定义 Router → TypeScript 自动推断 → 前端直接调用 ✅
+  无代码生成、无 Schema 文件、无类型手动同步
+```
+
+### 安装依赖
+
+```bash
+# 服务端
+pnpm add @trpc/server zod
+
+# 客户端
+pnpm add @trpc/client @trpc/server
+```
+
+### 服务端：定义 Router
+
+```js
+import { initTRPC } from "@trpc/server";
+import { z } from "zod";
+
+// 初始化 tRPC 实例
+const trpcInstance = initTRPC.create();
+const publicProcedure = trpcInstance.procedure;
+const router = trpcInstance.router;
+
+// 模拟数据库
+const usersDatabase = new Map();
+let nextUserId = 1;
+
+// 定义用户相关路由
+const userRouter = router({
+  // 查询：获取用户列表
+  list: publicProcedure
+    .input(
+      z.object({
+        page: z.number().min(1).default(1),
+        pageSize: z.number().min(1).max(100).default(20),
+      })
+    )
+    .query(({ input }) => {
+      const allUsers = Array.from(usersDatabase.values());
+      const startIndex = (input.page - 1) * input.pageSize;
+      const paginatedUsers = allUsers.slice(
+        startIndex,
+        startIndex + input.pageSize
+      );
+      return {
+        items: paginatedUsers,
+        total: allUsers.length,
+        page: input.page,
+        pageSize: input.pageSize,
+        hasNextPage: startIndex + input.pageSize < allUsers.length,
+      };
+    }),
+
+  // 查询：根据 ID 获取单个用户
+  getById: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .query(({ input }) => {
+      const user = usersDatabase.get(input.id);
+      if (!user) {
+        throw new Error(`User with id ${input.id} not found`);
+      }
+      return user;
+    }),
+
+  // 变更：创建用户
+  create: publicProcedure
+    .input(
+      z.object({
+        name: z.string().min(1).max(100),
+        email: z.string().email(),
+        role: z.enum(["admin", "editor", "viewer"]),
+      })
+    )
+    .mutation(({ input }) => {
+      const newUser = {
+        id: nextUserId++,
+        name: input.name,
+        email: input.email,
+        role: input.role,
+        createdAt: new Date().toISOString(),
+      };
+      usersDatabase.set(newUser.id, newUser);
+      return newUser;
+    }),
+
+  // 变更：更新用户
+  update: publicProcedure
+    .input(
+      z.object({
+        id: z.number(),
+        name: z.string().min(1).max(100).optional(),
+        email: z.string().email().optional(),
+        role: z.enum(["admin", "editor", "viewer"]).optional(),
+      })
+    )
+    .mutation(({ input }) => {
+      const existingUser = usersDatabase.get(input.id);
+      if (!existingUser) {
+        throw new Error(`User with id ${input.id} not found`);
+      }
+      const updatedUser = {
+        ...existingUser,
+        ...Object.fromEntries(
+          Object.entries(input).filter(
+            ([key, value]) => key !== "id" && value !== undefined
+          )
+        ),
+      };
+      usersDatabase.set(input.id, updatedUser);
+      return updatedUser;
+    }),
+});
+
+// 合并为根 Router
+const appRouter = router({
+  user: userRouter,
+});
+
+// 导出类型（仅类型，不导出运行时代码）
+export type AppRouter = typeof appRouter;
+export { appRouter };
+```
+
+### 客户端：类型安全调用
+
+```js
+import { createTRPCClient, httpBatchLink } from "@trpc/client";
+import type { AppRouter } from "../server/router"; // 仅导入类型
+
+// 创建类型安全的客户端
+const trpc = createTRPCClient<AppRouter>({
+  links: [
+    httpBatchLink({
+      url: "http://localhost:3000/trpc",
+    }),
+  ],
+});
+
+// 所有调用都有完整的类型提示和类型检查
+async function demo() {
+  // query 调用 — 返回值类型自动推断
+  const users = await trpc.user.list.query({ page: 1, pageSize: 10 });
+  console.log(users.items); // 类型: Array<{ id: number; name: string; email: string; ... }>
+  console.log(users.hasNextPage); // 类型: boolean
+
+  // 根据 ID 查询
+  const singleUser = await trpc.user.getById.query({ id: 1 });
+  console.log(singleUser.name); // 类型: string
+  console.log(singleUser.role); // 类型: "admin" | "editor" | "viewer"
+
+  // mutation 调用 — 参数类型自动校验
+  const newUser = await trpc.user.create.mutate({
+    name: "张三",
+    email: "zhangsan@example.com",
+    role: "editor",
+  });
+  console.log(newUser.id); // 类型: number
+
+  // 类型错误示例（编译时报错）：
+  // await trpc.user.create.mutate({ name: 123 });         // ❌ name 应为 string
+  // await trpc.user.create.mutate({ role: "superadmin" }); // ❌ role 不在枚举中
+}
+
+demo();
+```
+
+### tRPC 的关键优势
+
+- **零代码生成**：不需要运行额外的命令来生成类型文件
+- **实时同步**：修改服务端接口后，客户端立即获得类型更新
+- **自动推断**：输入参数和返回值的类型都由 TypeScript 自动推断
+- **运行时校验**：通过 Zod 定义的 input schema，请求参数在运行时也会被校验
+
+## 🎯 GraphQL Code Generator
+
+GraphQL Code Generator 从 GraphQL Schema 和查询语句自动生成 TypeScript 类型和类型安全的 Hooks。
+
+### 安装依赖
+
+```bash
+pnpm add graphql
+pnpm add -D @graphql-codegen/cli @graphql-codegen/typescript \
+  @graphql-codegen/typescript-operations \
+  @graphql-codegen/typescript-resolvers
+```
+
+### GraphQL Schema 定义
+
+`schema.graphql`：
+
+```graphql
+type User {
+  id: ID!
+  name: String!
+  email: String!
+  role: UserRole!
+  posts: [Post!]!
+  createdAt: String!
+}
+
+enum UserRole {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+type Post {
+  id: ID!
+  title: String!
+  content: String!
+  author: User!
+  publishedAt: String
+}
+
+type PaginatedUsers {
+  items: [User!]!
+  total: Int!
+  hasNextPage: Boolean!
+}
+
+type Query {
+  user(id: ID!): User
+  users(page: Int!, pageSize: Int!): PaginatedUsers!
+  post(id: ID!): Post
+}
+
+type Mutation {
+  createUser(input: CreateUserInput!): User!
+  updateUser(id: ID!, input: UpdateUserInput!): User!
+  createPost(input: CreatePostInput!): Post!
+}
+
+input CreateUserInput {
+  name: String!
+  email: String!
+  role: UserRole!
+}
+
+input UpdateUserInput {
+  name: String
+  email: String
+  role: UserRole
+}
+
+input CreatePostInput {
+  title: String!
+  content: String!
+  authorId: ID!
+}
+```
+
+### 配置代码生成器
+
+`codegen.ts`：
+
+```js
+import type { CodegenConfig } from "@graphql-codegen/cli";
+
+const config: CodegenConfig = {
+  schema: "./schema.graphql",
+  documents: ["src/**/*.graphql"],
+  generates: {
+    // 从 Schema 生成基础类型
+    "src/generated/types.ts": {
+      plugins: [
+        "typescript",
+        "typescript-operations",
+      ],
+      config: {
+        enumsAsTypes: true,
+        skipTypename: false,
+        scalars: {
+          ID: "string",
+        },
+      },
+    },
+    // 为 Resolver 生成类型
+    "src/generated/resolvers.ts": {
+      plugins: ["typescript", "typescript-resolvers"],
+      config: {
+        useIndexSignature: true,
+        contextType: "../context#GraphQLContext",
+      },
+    },
+  },
+};
+
+export default config;
+```
+
+### 编写查询文件
+
+`src/queries/user.graphql`：
+
+```graphql
+query GetUser($id: ID!) {
+  user(id: $id) {
+    id
+    name
+    email
+    role
+    posts {
+      id
+      title
+    }
+  }
+}
+
+query GetUsers($page: Int!, $pageSize: Int!) {
+  users(page: $page, pageSize: $pageSize) {
+    items {
+      id
+      name
+      email
+      role
+      createdAt
+    }
+    total
+    hasNextPage
+  }
+}
+
+mutation CreateUser($input: CreateUserInput!) {
+  createUser(input: $input) {
+    id
+    name
+    email
+    role
+  }
+}
+```
+
+### 运行代码生成
+
+```bash
+# 添加到 package.json scripts
+# "codegen": "graphql-codegen --config codegen.ts"
+
+pnpm run codegen
+```
+
+### 生成的类型示例
+
+代码生成器会自动生成类似以下内容：
+
+```js
+// src/generated/types.ts（由 codegen 自动生成，这里展示生成结果示意）
+
+export type UserRole = "ADMIN" | "EDITOR" | "VIEWER";
+
+export type User = {
+  __typename?: "User";
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  posts: Array<Post>;
+  createdAt: string;
+};
+
+export type Post = {
+  __typename?: "Post";
+  id: string;
+  title: string;
+  content: string;
+  author: User;
+  publishedAt?: string | null;
+};
+
+export type GetUserQueryVariables = {
+  id: string;
+};
+
+export type GetUserQuery = {
+  __typename?: "Query";
+  user?: {
+    __typename?: "User";
+    id: string;
+    name: string;
+    email: string;
+    role: UserRole;
+    posts: Array<{
+      __typename?: "Post";
+      id: string;
+      title: string;
+    }>;
+  } | null;
+};
+
+export type CreateUserMutationVariables = {
+  input: CreateUserInput;
+};
+
+export type CreateUserInput = {
+  name: string;
+  email: string;
+  role: UserRole;
+};
+
+export type CreateUserMutation = {
+  __typename?: "Mutation";
+  createUser: {
+    __typename?: "User";
+    id: string;
+    name: string;
+    email: string;
+    role: UserRole;
+  };
+};
+```
+
+### 在业务代码中使用
+
+```js
+import type {
+  GetUserQuery,
+  GetUserQueryVariables,
+  CreateUserMutation,
+  CreateUserMutationVariables,
+} from "./generated/types";
+
+// 类型安全的 GraphQL 请求函数
+async function graphqlRequest<TData, TVariables>(
+  query: string,
+  variables: TVariables
+): Promise<TData> {
+  const response = await fetch("/graphql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables }),
+  });
+  const result = await response.json();
+  if (result.errors) {
+    throw new Error(result.errors[0].message);
+  }
+  return result.data as TData;
+}
+
+// 使用生成的类型调用查询
+async function fetchUser(userId: string) {
+  const data = await graphqlRequest<GetUserQuery, GetUserQueryVariables>(
+    `query GetUser($id: ID!) {
+      user(id: $id) { id name email role posts { id title } }
+    }`,
+    { id: userId }
+  );
+  if (data.user) {
+    console.log(data.user.name); // 类型: string
+    console.log(data.user.role); // 类型: "ADMIN" | "EDITOR" | "VIEWER"
+  }
+}
+
+// 使用生成的类型调用变更
+async function addUser() {
+  const data = await graphqlRequest<
+    CreateUserMutation,
+    CreateUserMutationVariables
+  >(
+    `mutation CreateUser($input: CreateUserInput!) {
+      createUser(input: $input) { id name email role }
+    }`,
+    {
+      input: {
+        name: "李四",
+        email: "lisi@example.com",
+        role: "EDITOR",
+      },
+    }
+  );
+  console.log(data.createUser.id); // 类型: string
+}
+
+fetchUser("1");
+addUser();
+```
+
+## 🎯 OpenAPI/Swagger 类型生成
+
+OpenAPI（原 Swagger）是 REST API 最通用的描述规范。通过工具可以从 OpenAPI 规范文件自动生成 TypeScript 类型和 API 客户端。
+
+### 安装依赖
+
+```bash
+pnpm add -D openapi-typescript
+```
+
+### OpenAPI 规范文件
+
+`openapi.yaml`：
+
+```yaml
+openapi: 3.0.3
+info:
+  title: User API
+  version: 1.0.0
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: pageSize
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+    post:
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+  /users/{id}:
+    get:
+      operationId: getUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '404':
+          description: 用户不存在
+components:
+  schemas:
+    User:
+      type: object
+      required: [id, name, email, role, createdAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [admin, editor, viewer]
+        createdAt:
+          type: string
+          format: date-time
+    CreateUserRequest:
+      type: object
+      required: [name, email, role]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [admin, editor, viewer]
+    PaginatedUsers:
+      type: object
+      required: [items, total, hasNextPage]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        total:
+          type: integer
+        hasNextPage:
+          type: boolean
+```
+
+### 生成 TypeScript 类型
+
+```bash
+# 从 OpenAPI 规范生成类型
+npx openapi-typescript openapi.yaml -o src/generated/api-types.ts
+```
+
+### 使用生成的类型
+
+```js
+import type { paths, components } from "./generated/api-types";
+
+// 从 components 中提取 Schema 类型
+type User = components["schemas"]["User"];
+type CreateUserRequest = components["schemas"]["CreateUserRequest"];
+type PaginatedUsers = components["schemas"]["PaginatedUsers"];
+
+// 从 paths 中提取请求/响应类型
+type ListUsersParams =
+  paths["/users"]["get"]["parameters"]["query"];
+type ListUsersResponse =
+  paths["/users"]["get"]["responses"]["200"]["content"]["application/json"];
+type CreateUserBody =
+  paths["/users"]["post"]["requestBody"]["content"]["application/json"];
+
+// 类型安全的 API 客户端
+async function listUsers(
+  params: ListUsersParams
+): Promise<PaginatedUsers> {
+  const searchParams = new URLSearchParams({
+    page: String(params.page),
+    pageSize: String(params.pageSize),
+  });
+  const response = await fetch(`/api/users?${searchParams}`);
+  return response.json() as Promise<PaginatedUsers>;
+}
+
+async function createUser(
+  data: CreateUserRequest
+): Promise<User> {
+  const response = await fetch("/api/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return response.json() as Promise<User>;
+}
+
+async function getUser(userId: string): Promise<User> {
+  const response = await fetch(`/api/users/${userId}`);
+  return response.json() as Promise<User>;
+}
+
+// 使用
+async function demo() {
+  const result = await listUsers({ page: 1, pageSize: 20 });
+  console.log(result.items[0].name); // 类型: string
+  console.log(result.hasNextPage);    // 类型: boolean
+
+  const user = await createUser({
+    name: "王五",
+    email: "wangwu@example.com",
+    role: "viewer",
+  });
+  console.log(user.id); // 类型: string
+}
+
+demo();
+```
+
+## 🎯 Zod + 类型推断
+
+Zod 是一个 TypeScript 优先的 Schema 声明和校验库，可以从同一个 Schema 定义中同时获得**运行时校验**和**编译时类型**。
+
+### 安装
+
+```bash
+pnpm add zod
+```
+
+### 定义 Schema 并推断类型
+
+```js
+import { z } from "zod";
+
+// 定义 Schema
+const UserRoleSchema = z.enum(["admin", "editor", "viewer"]);
+
+const UserSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  email: z.string().email(),
+  role: UserRoleSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+const CreateUserSchema = z.object({
+  name: z.string().min(1).max(100),
+  email: z.string().email(),
+  role: UserRoleSchema,
+});
+
+const UpdateUserSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  email: z.string().email().optional(),
+  role: UserRoleSchema.optional(),
+});
+
+const PaginatedResponseSchema = <T extends z.ZodType>(itemSchema: T) =>
+  z.object({
+    items: z.array(itemSchema),
+    total: z.number().int().nonnegative(),
+    page: z.number().int().positive(),
+    pageSize: z.number().int().positive(),
+    hasNextPage: z.boolean(),
+  });
+
+// 从 Schema 推断 TypeScript 类型
+type UserRole = z.infer<typeof UserRoleSchema>;
+// 等价于: type UserRole = "admin" | "editor" | "viewer"
+
+type User = z.infer<typeof UserSchema>;
+// 等价于: type User = { id: string; name: string; email: string; role: "admin" | "editor" | "viewer"; ... }
+
+type CreateUser = z.infer<typeof CreateUserSchema>;
+type UpdateUser = z.infer<typeof UpdateUserSchema>;
+
+export {
+  UserSchema,
+  CreateUserSchema,
+  UpdateUserSchema,
+  PaginatedResponseSchema,
+};
+export type { User, UserRole, CreateUser, UpdateUser };
+```
+
+### 在服务端使用：运行时校验
+
+```js
+import { UserSchema, CreateUserSchema } from "./schemas";
+import type { User, CreateUser } from "./schemas";
+
+// 校验外部输入（如 API 请求体）
+function validateAndCreateUser(rawBody: unknown): User {
+  // parse() 在校验失败时抛出 ZodError
+  const validatedInput = CreateUserSchema.parse(rawBody);
+
+  const newUser: User = {
+    id: crypto.randomUUID(),
+    name: validatedInput.name,
+    email: validatedInput.email,
+    role: validatedInput.role,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  return UserSchema.parse(newUser);
+}
+
+// safeParse 不抛错，返回 success/error 结果
+function safeValidateInput(rawBody: unknown) {
+  const result = CreateUserSchema.safeParse(rawBody);
+
+  if (!result.success) {
+    // result.error 包含详细的校验错误信息
+    const fieldErrors = result.error.flatten().fieldErrors;
+    return {
+      success: false as const,
+      errors: fieldErrors,
+    };
+  }
+
+  return {
+    success: true as const,
+    data: result.data, // 类型已经是 CreateUser
+  };
+}
+
+// 测试
+const validResult = safeValidateInput({
+  name: "赵六",
+  email: "zhaoliu@example.com",
+  role: "admin",
+});
+
+if (validResult.success) {
+  console.log(validResult.data.name); // 类型: string
+}
+
+const invalidResult = safeValidateInput({
+  name: "",
+  email: "not-an-email",
+  role: "superadmin",
+});
+
+if (!invalidResult.success) {
+  console.log(invalidResult.errors);
+  // { name: ["String must contain at least 1 character(s)"],
+  //   email: ["Invalid email"],
+  //   role: ["Invalid enum value. Expected 'admin' | 'editor' | 'viewer'"] }
+}
+```
+
+### Zod 与 tRPC 结合
+
+Zod 是 tRPC 的默认校验方案，两者结合可以实现从服务端到客户端的完整类型安全链路：
+
+```js
+import { initTRPC } from "@trpc/server";
+import { z } from "zod";
+
+const trpcInstance = initTRPC.create();
+
+const appRouter = trpcInstance.router({
+  user: trpcInstance.router({
+    create: trpcInstance.procedure
+      .input(
+        z.object({
+          name: z.string().min(1),
+          email: z.string().email(),
+          role: z.enum(["admin", "editor", "viewer"]),
+        })
+      )
+      .mutation(({ input }) => {
+        // input 的类型由 Zod Schema 自动推断
+        // 运行时也会自动校验请求参数
+        return {
+          id: crypto.randomUUID(),
+          ...input,
+          createdAt: new Date().toISOString(),
+        };
+      }),
+  }),
+});
+
+export type AppRouter = typeof appRouter;
+```
+
+## 📊 方案对比
+
+| 特性 | tRPC | GraphQL CodeGen | OpenAPI TypeGen | Zod |
+|------|------|-----------------|-----------------|-----|
+| **类型来源** | 自动推断 | Schema 生成 | 规范文件生成 | Schema 推断 |
+| **需要代码生成** | ❌ | ✅ | ✅ | ❌ |
+| **运行时校验** | ✅（通过 Zod） | ❌（需额外库） | ❌（需额外库） | ✅ |
+| **跨语言支持** | 仅 TypeScript | 多语言 | 多语言 | 仅 TypeScript |
+| **适用协议** | 自有协议 | GraphQL | REST | 任意 |
+| **适用场景** | 全栈 TS 项目 | GraphQL 项目 | 跨语言 REST | 校验+类型 |
+| **学习曲线** | 低 | 中 | 低-中 | 低 |
+
+### 选型建议
+
+```
+全栈 TypeScript 项目（前后端同仓）   → tRPC
+已有 GraphQL 接口                   → GraphQL Code Generator
+已有 REST API / 跨语言团队           → OpenAPI 类型生成
+需要运行时校验 + 类型推断             → Zod（可与其他方案结合）
+```
+
+## 🔗 相关概念
+
+- **[运行时类型校验](./02-runtime-validation.mdx)**：深入学习 Zod、Valibot、io-ts 等运行时校验库
+- **[类型共享](/typescript/06-ecosystem-engineering/01-monorepo/02-type-sharing)**：Monorepo 中的类型共享策略
+- **类型推断**：TypeScript 的 `infer` 和条件类型是 tRPC 和 Zod 实现类型安全的基础
+
+## 📝 学习检查点
+
+- [ ] 理解端到端类型安全的核心理念
+- [ ] 能够使用 tRPC 定义 Router 并在客户端类型安全地调用
+- [ ] 理解 GraphQL Code Generator 的工作流程
+- [ ] 能够从 OpenAPI 规范生成 TypeScript 类型
+- [ ] 掌握 Zod 的 Schema 定义和 `z.infer` 类型推断
+- [ ] 能够根据项目情况选择合适的 API 类型方案
+
+## 🚀 下一步
+
+→ [运行时类型校验](./02-runtime-validation.mdx) - 深入学习 Zod、Valibot、io-ts 等运行时校验库的使用

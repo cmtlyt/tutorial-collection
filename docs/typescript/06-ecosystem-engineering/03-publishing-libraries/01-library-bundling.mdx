@@ -5,8 +5,706 @@
 
 ## 📚 概念介绍
 
-本节将介绍库打包的核心概念和实践方法。
+发布一个 TypeScript 库，不仅仅是把 `.ts` 文件编译成 `.js`。你需要考虑输出格式（ESM vs CJS vs 双格式）、声明文件生成、`package.json` 的 `exports` 字段配置、以及选择合适的打包工具。一个配置不当的库可能会导致消费者的构建失败、类型丢失、Tree-shaking 无效等问题。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+本节将系统介绍 TypeScript 库打包的完整知识体系，帮助你发布高质量的 npm 包。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 理解 ESM、CJS 和双格式输出的区别与适用场景
+- 正确配置 `package.json` 的 `exports` 字段
+- 使用 tsc 生成声明文件
+- 使用 tsup 和 unbuild 打包 TypeScript 库
+- 掌握一个库从源码到发布的完整配置
+
+## 🔑 模块格式基础
+
+### ESM vs CJS
+
+```
+ESM (ES Modules)                    CJS (CommonJS)
+─────────────────                   ─────────────────
+import { fn } from "pkg"           const { fn } = require("pkg")
+export function fn() {}             module.exports = { fn }
+静态导入，支持 Tree-shaking          动态导入，不支持 Tree-shaking
+浏览器原生支持                       Node.js 传统格式
+文件扩展名 .mjs 或 type:"module"    文件扩展名 .cjs 或 type:"commonjs"
+```
+
+### 为什么需要双格式
+
+目前 npm 生态中同时存在 ESM 和 CJS 两种模块系统：
+
+- **纯 ESM**：新项目推荐，但部分旧工具链（如某些 Jest 配置、旧版 Node.js）可能不兼容
+- **纯 CJS**：广泛兼容，但不支持 Tree-shaking，不符合未来趋势
+- **双格式（Dual Package）**：同时提供 ESM 和 CJS 入口，兼容性最好
+
+```
+dist/
+├── index.mjs      ← ESM 格式（import 语法）
+├── index.cjs      ← CJS 格式（require 语法）
+├── index.d.mts    ← ESM 对应的声明文件
+└── index.d.cts    ← CJS 对应的声明文件
+```
+
+## 🎯 声明文件生成
+
+### 使用 tsc 生成声明文件
+
+`tsconfig.json`：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "declaration": true,
+    "declarationDir": "dist",
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+```
+
+关键选项说明：
+
+| 选项 | 说明 |
+|------|------|
+| `declaration` | 生成 `.d.ts` 声明文件 |
+| `declarationDir` | 声明文件输出目录 |
+| `declarationMap` | 生成声明映射文件（.d.ts.map），支持 IDE 跳转到源码 |
+| `emitDeclarationOnly` | 只生成声明文件，不生成 JS（JS 由打包工具生成） |
+
+### 声明文件示例
+
+源码 `src/index.ts`：
+
+```js
+export function add(a: number, b: number): number {
+  return a + b;
+}
+
+export interface MathOptions {
+  precision: number;
+  roundingMode: "ceil" | "floor" | "round";
+}
+
+export function divide(
+  numerator: number,
+  denominator: number,
+  options?: MathOptions
+): number {
+  if (denominator === 0) {
+    throw new Error("Division by zero");
+  }
+  const result = numerator / denominator;
+  if (!options) return result;
+
+  const factor = Math.pow(10, options.precision);
+  switch (options.roundingMode) {
+    case "ceil":
+      return Math.ceil(result * factor) / factor;
+    case "floor":
+      return Math.floor(result * factor) / factor;
+    case "round":
+      return Math.round(result * factor) / factor;
+  }
+}
+```
+
+生成的 `dist/index.d.ts`：
+
+```js
+export declare function add(a: number, b: number): number;
+
+export interface MathOptions {
+  precision: number;
+  roundingMode: "ceil" | "floor" | "round";
+}
+
+export declare function divide(
+  numerator: number,
+  denominator: number,
+  options?: MathOptions
+): number;
+```
+
+## 🎯 package.json exports 字段
+
+`exports` 字段是 Node.js 12.11+ 引入的模块入口映射机制，取代了传统的 `main` 和 `module` 字段，可以精确控制包的每个入口点。
+
+### 基础配置
+
+```json
+{
+  "name": "my-lib",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": ["dist"]
+}
+```
+
+### 条件导出优先级
+
+`exports` 中的条件按**从上到下**的优先级匹配：
+
+```json
+{
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.mjs"
+    }
+  }
+}
+```
+
+- **`types`**：必须放在第一位，TypeScript 编译器用来解析类型
+- **`import`**：`import` 语句匹配
+- **`require`**：`require()` 调用匹配
+- **`default`**：兜底，匹配所有其他情况
+
+### 多入口导出
+
+```json
+{
+  "name": "my-ui-lib",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./button": {
+      "types": "./dist/button.d.mts",
+      "import": "./dist/button.mjs",
+      "require": "./dist/button.cjs"
+    },
+    "./utils": {
+      "types": "./dist/utils.d.mts",
+      "import": "./dist/utils.mjs",
+      "require": "./dist/utils.cjs"
+    },
+    "./styles/*.css": {
+      "import": "./dist/styles/*.css",
+      "require": "./dist/styles/*.css"
+    }
+  }
+}
+```
+
+消费方可以按路径导入：
+
+```js
+import { Button } from "my-ui-lib/button";
+import { debounce } from "my-ui-lib/utils";
+import "my-ui-lib/styles/theme.css";
+```
+
+### 常见陷阱
+
+```json
+// ❌ 错误：types 不在第一位
+{
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    }
+  }
+}
+
+// ✅ 正确：types 必须在第一位
+{
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  }
+}
+```
+
+## 🎯 使用 tsup 打包
+
+tsup 基于 esbuild，开箱即用，零配置即可打包 TypeScript 库，是目前最流行的 TS 库打包工具之一。
+
+### 安装
+
+```bash
+pnpm add -D tsup
+```
+
+### 基础配置
+
+`tsup.config.ts`：
+
+```js
+import { defineConfig } from "tsup";
+
+export default defineConfig({
+  entry: ["src/index.ts"],
+  format: ["esm", "cjs"],
+  dts: true,
+  splitting: true,
+  sourcemap: true,
+  clean: true,
+  minify: false,
+  target: "es2022",
+  outDir: "dist",
+});
+```
+
+配置说明：
+
+| 选项 | 说明 |
+|------|------|
+| `entry` | 入口文件 |
+| `format` | 输出格式，`esm` 和 `cjs` 表示双格式 |
+| `dts` | 自动生成声明文件 |
+| `splitting` | 代码分割（仅 ESM 生效） |
+| `sourcemap` | 生成 Source Map |
+| `clean` | 构建前清理输出目录 |
+| `minify` | 是否压缩（库通常不压缩） |
+| `target` | 目标 JS 版本 |
+
+### 多入口配置
+
+```js
+import { defineConfig } from "tsup";
+
+export default defineConfig({
+  entry: {
+    index: "src/index.ts",
+    button: "src/components/button.ts",
+    utils: "src/utils/index.ts",
+  },
+  format: ["esm", "cjs"],
+  dts: true,
+  splitting: true,
+  sourcemap: true,
+  clean: true,
+  target: "es2022",
+  outDir: "dist",
+  external: ["react", "react-dom"],
+});
+```
+
+### 生成的文件结构
+
+```
+dist/
+├── index.mjs       ← ESM 入口
+├── index.cjs       ← CJS 入口
+├── index.d.mts     ← ESM 声明文件
+├── index.d.cts     ← CJS 声明文件
+├── button.mjs
+├── button.cjs
+├── button.d.mts
+├── button.d.cts
+├── utils.mjs
+├── utils.cjs
+├── utils.d.mts
+└── utils.d.cts
+```
+
+### 对应的 package.json
+
+```json
+{
+  "name": "my-lib",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./button": {
+      "types": "./dist/button.d.mts",
+      "import": "./dist/button.mjs",
+      "require": "./dist/button.cjs"
+    },
+    "./utils": {
+      "types": "./dist/utils.d.mts",
+      "import": "./dist/utils.mjs",
+      "require": "./dist/utils.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+## 🎯 使用 unbuild 打包
+
+unbuild 是 UnJS 团队出品的打包工具，基于 rollup 和 mkdist，支持自动推断配置、Stub 模式（开发时直接引用源码），特别适合 Monorepo 中的内部包。
+
+### 安装
+
+```bash
+pnpm add -D unbuild
+```
+
+### 基础配置
+
+`build.config.ts`：
+
+```js
+import { defineBuildConfig } from "unbuild";
+
+export default defineBuildConfig({
+  entries: ["src/index"],
+  declaration: true,
+  clean: true,
+  rollup: {
+    emitCJS: true,
+    inlineDependencies: false,
+  },
+  externals: ["react", "react-dom"],
+});
+```
+
+### 多入口配置
+
+```js
+import { defineBuildConfig } from "unbuild";
+
+export default defineBuildConfig({
+  entries: [
+    "src/index",
+    "src/components/button",
+    "src/utils/index",
+  ],
+  declaration: true,
+  clean: true,
+  rollup: {
+    emitCJS: true,
+  },
+});
+```
+
+### Stub 模式
+
+unbuild 独有的 Stub 模式可以在开发时直接引用源码（通过 jiti 实时编译），无需每次修改后重新构建：
+
+```bash
+# 生成 stub 文件（指向源码的代理）
+unbuild --stub
+
+# dist/index.mjs 内容变为：
+# import jiti from "jiti";
+# export default jiti(null, { ... })("/path/to/src/index.ts");
+```
+
+在 Monorepo 中，被依赖的包使用 Stub 模式后，修改源码即刻生效，无需手动 rebuild。
+
+### 对应的 package.json
+
+```json
+{
+  "name": "my-lib",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "unbuild",
+    "dev": "unbuild --stub",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "unbuild": "^3.3.0",
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+## 📊 打包工具对比
+
+| 特性 | tsup | unbuild | tsc (仅编译) |
+|------|------|---------|-------------|
+| **底层引擎** | esbuild | rollup + mkdist | TypeScript Compiler |
+| **构建速度** | ⚡ 极快 | 🚀 快 | 🐢 较慢 |
+| **声明文件** | ✅ 自动 | ✅ 自动 | ✅ 原生 |
+| **代码分割** | ✅ (ESM) | ✅ | ❌ |
+| **Stub 模式** | ❌ | ✅ | ❌ |
+| **Bundle 优化** | ✅ | ✅ | ❌（仅转译） |
+| **配置复杂度** | 低 | 低 | 中 |
+| **适用场景** | 通用 TS 库 | Monorepo 内部包 | 仅需类型声明 |
+
+### 选型建议
+
+```
+发布到 npm 的独立库     → tsup（速度快，功能全面）
+Monorepo 内部包         → unbuild（Stub 模式开发体验好）
+只需声明文件的类型包     → tsc --emitDeclarationOnly
+```
+
+## 📝 实际应用示例
+
+### 完整的库发布配置
+
+以一个字符串工具库为例，展示从源码到发布的完整配置：
+
+**项目结构**：
+
+```
+string-utils/
+├── src/
+│   ├── index.ts
+│   ├── case.ts
+│   └── format.ts
+├── package.json
+├── tsconfig.json
+└── tsup.config.ts
+```
+
+**src/case.ts**：
+
+```js
+export function toCamelCase(input: string): string {
+  return input
+    .replace(/[-_\s]+(.)?/g, (_, char) => (char ? char.toUpperCase() : ""))
+    .replace(/^[A-Z]/, (char) => char.toLowerCase());
+}
+
+export function toKebabCase(input: string): string {
+  return input
+    .replace(/([a-z])([A-Z])/g, "$1-$2")
+    .replace(/[\s_]+/g, "-")
+    .toLowerCase();
+}
+
+export function toSnakeCase(input: string): string {
+  return input
+    .replace(/([a-z])([A-Z])/g, "$1_$2")
+    .replace(/[\s-]+/g, "_")
+    .toLowerCase();
+}
+
+export function toPascalCase(input: string): string {
+  return input
+    .replace(/[-_\s]+(.)?/g, (_, char) => (char ? char.toUpperCase() : ""))
+    .replace(/^[a-z]/, (char) => char.toUpperCase());
+}
+```
+
+**src/format.ts**：
+
+```js
+export function truncate(
+  input: string,
+  maxLength: number,
+  suffix: string = "..."
+): string {
+  if (input.length <= maxLength) return input;
+  return input.slice(0, maxLength - suffix.length) + suffix;
+}
+
+export function capitalize(input: string): string {
+  if (input.length === 0) return input;
+  return input.charAt(0).toUpperCase() + input.slice(1);
+}
+
+export function padStart(
+  input: string,
+  targetLength: number,
+  padChar: string = " "
+): string {
+  if (input.length >= targetLength) return input;
+  const padding = padChar.repeat(targetLength - input.length).slice(0, targetLength - input.length);
+  return padding + input;
+}
+
+export function template(
+  templateStr: string,
+  variables: Record<string, string | number>
+): string {
+  return templateStr.replace(/\{\{(\w+)\}\}/g, (match, key) => {
+    return key in variables ? String(variables[key]) : match;
+  });
+}
+```
+
+**src/index.ts**：
+
+```js
+export { toCamelCase, toKebabCase, toSnakeCase, toPascalCase } from "./case";
+export { truncate, capitalize, padStart, template } from "./format";
+```
+
+**tsup.config.ts**：
+
+```js
+import { defineConfig } from "tsup";
+
+export default defineConfig({
+  entry: {
+    index: "src/index.ts",
+    case: "src/case.ts",
+    format: "src/format.ts",
+  },
+  format: ["esm", "cjs"],
+  dts: true,
+  splitting: true,
+  sourcemap: true,
+  clean: true,
+  target: "es2022",
+  outDir: "dist",
+});
+```
+
+**tsconfig.json**：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "skipLibCheck": true,
+    "esModuleInterop": true
+  },
+  "include": ["src"]
+}
+```
+
+**package.json**：
+
+```json
+{
+  "name": "@my-org/string-utils",
+  "version": "1.0.0",
+  "description": "TypeScript 字符串工具库",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./case": {
+      "types": "./dist/case.d.mts",
+      "import": "./dist/case.mjs",
+      "require": "./dist/case.cjs"
+    },
+    "./format": {
+      "types": "./dist/format.d.mts",
+      "import": "./dist/format.mjs",
+      "require": "./dist/format.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm run build"
+  },
+  "keywords": ["typescript", "string", "utils"],
+  "license": "MIT",
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+**发布流程**：
+
+```bash
+# 1. 构建
+pnpm run build
+
+# 2. 类型检查
+pnpm run typecheck
+
+# 3. 检查将要发布的文件
+npm pack --dry-run
+
+# 4. 发布
+npm publish --access public
+```
+
+**消费方使用**：
+
+```js
+// 全量导入
+import { toCamelCase, truncate } from "@my-org/string-utils";
+
+// 按子路径导入（更好的 Tree-shaking）
+import { toCamelCase } from "@my-org/string-utils/case";
+import { truncate } from "@my-org/string-utils/format";
+
+console.log(toCamelCase("hello-world")); // "helloWorld"
+console.log(truncate("这是一段很长的文本内容", 10)); // "这是一段很长的..."
+```
+
+## 🔗 相关概念
+
+- **[类型测试](./02-type-testing.mdx)**：使用 tsd 和 expect-type 确保声明文件的正确性
+- **[版本管理](./03-version-management.mdx)**：语义化版本与类型变更策略
+- **Tree-shaking**：ESM 格式支持的死代码消除优化
+
+## 📝 学习检查点
+
+- [ ] 理解 ESM 和 CJS 的区别以及双格式输出的必要性
+- [ ] 掌握 `exports` 字段的条件导出配置和优先级规则
+- [ ] 知道 `types` 条件必须放在 `exports` 的第一位
+- [ ] 能够使用 tsup 配置单入口和多入口的库打包
+- [ ] 了解 unbuild 的 Stub 模式及其在 Monorepo 中的优势
+- [ ] 掌握从源码到发布的完整配置流程
+- [ ] 能够正确配置 `files` 字段控制发布内容
+
+## 🚀 下一步
+
+→ [类型测试](./02-type-testing.mdx) - 学习如何测试库的类型声明是否正确

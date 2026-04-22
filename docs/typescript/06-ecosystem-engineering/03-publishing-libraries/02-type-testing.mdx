@@ -5,8 +5,777 @@
 
 ## 📚 概念介绍
 
-本节将介绍类型测试的核心概念和实践方法。
+当你发布一个 TypeScript 库时，**类型声明本身就是 API 的一部分**。一次看似无害的重构可能会改变函数的返回类型、缩小联合类型的范围、或者让某个泛型推断失效——这些变化不会导致运行时测试失败，但会让消费者的代码编译报错。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+**类型测试（Type Testing）** 的目的就是确保你的库的类型声明是正确的、符合预期的。它验证的不是运行时行为，而是编译时的类型推断结果。本节将介绍两个主流的类型测试工具：**tsd** 和 **expect-type**，以及类型回归测试的策略。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 理解类型测试的必要性和测试目标
+- 使用 tsd 编写声明文件级别的类型测试
+- 使用 expect-type 在普通测试文件中嵌入类型断言
+- 设计类型回归测试策略防止类型破坏性变更
+- 将类型测试集成到 CI/CD 流程中
+
+## 🔑 为什么需要类型测试
+
+### 运行时测试捕获不到的问题
+
+```js
+// 库的 v1.0 版本
+export function getConfig(key: string): string | number {
+  // ...
+  return "";
+}
+
+// 库的 v1.1 版本（重构后）
+export function getConfig(key: string): string {
+  // ...
+  return "";
+}
+```
+
+上面的变更中，返回类型从 `string | number` 变成了 `string`。所有运行时测试可能都通过了，但依赖 `number` 返回值的消费者代码会编译报错——这就是一个**类型层面的破坏性变更**，只有类型测试能捕获。
+
+### 类型测试要验证什么
+
+```
+✅ 函数参数和返回值的类型推断是否正确
+✅ 泛型推断是否得到预期类型
+✅ 联合类型、条件类型的推断结果
+✅ 可选参数、默认值的类型行为
+✅ 类型错误场景（应该报错的确实报错）
+✅ 类型兼容性（赋值是否成立）
+```
+
+## 🎯 tsd：声明文件类型测试
+
+tsd 是一个专门用于测试 TypeScript 声明文件的工具，由 sindresorhus 维护。它通过特殊的断言函数来验证类型推断结果。
+
+### 安装
+
+```bash
+pnpm add -D tsd
+```
+
+### 项目结构
+
+```
+my-lib/
+├── src/
+│   └── index.ts
+├── dist/
+│   ├── index.js
+│   └── index.d.ts
+├── test-d/
+│   └── index.test-d.ts    ← tsd 类型测试文件
+├── package.json
+└── tsconfig.json
+```
+
+### package.json 配置
+
+```json
+{
+  "name": "my-lib",
+  "version": "1.0.0",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "test:types": "tsd"
+  },
+  "devDependencies": {
+    "tsd": "^0.31.0",
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+### 被测试的库代码
+
+`src/index.ts`：
+
+```js
+export function identity<T>(value: T): T {
+  return value;
+}
+
+export function merge<A extends object, B extends object>(
+  target: A,
+  source: B
+): A & B {
+  return { ...target, ...source };
+}
+
+export function createStore<T>(initialValue: T) {
+  let currentValue = initialValue;
+  return {
+    get(): T {
+      return currentValue;
+    },
+    set(newValue: T): void {
+      currentValue = newValue;
+    },
+    update(updater: (prev: T) => T): void {
+      currentValue = updater(currentValue);
+    },
+  };
+}
+
+export type EventMap = {
+  click: { x: number; y: number };
+  keydown: { key: string; code: string };
+  resize: { width: number; height: number };
+};
+
+export function on<K extends keyof EventMap>(
+  event: K,
+  handler: (payload: EventMap[K]) => void
+): () => void {
+  const listeners: Array<(payload: EventMap[K]) => void> = [];
+  listeners.push(handler);
+  return () => {
+    const index = listeners.indexOf(handler);
+    if (index >= 0) listeners.splice(index, 1);
+  };
+}
+
+export type Result<T, E = Error> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+export function ok<T>(value: T): Result<T, never> {
+  return { ok: true, value };
+}
+
+export function err<E>(error: E): Result<never, E> {
+  return { ok: false, error };
+}
+```
+
+### 编写 tsd 类型测试
+
+`test-d/index.test-d.ts`：
+
+```js
+import { expectType, expectNotType, expectError, expectAssignable, expectNotAssignable } from "tsd";
+import {
+  identity,
+  merge,
+  createStore,
+  on,
+  ok,
+  err,
+} from "../dist/index.js";
+import type { Result, EventMap } from "../dist/index.js";
+
+// ===== identity 函数测试 =====
+
+// 验证泛型推断
+expectType<string>(identity("hello"));
+expectType<number>(identity(42));
+expectType<boolean>(identity(true));
+expectType<{ name: string }>(identity({ name: "test" }));
+
+// 验证不是错误的类型
+expectNotType<number>(identity("hello"));
+
+// ===== merge 函数测试 =====
+
+const merged = merge({ name: "张三" }, { age: 25 });
+expectType<{ name: string } & { age: number }>(merged);
+
+// 验证合并后的属性都可访问
+expectType<string>(merged.name);
+expectType<number>(merged.age);
+
+// ===== createStore 测试 =====
+
+const numberStore = createStore(0);
+expectType<number>(numberStore.get());
+
+const stringStore = createStore("hello");
+expectType<string>(stringStore.get());
+
+// set 方法必须接受正确类型
+numberStore.set(42);
+expectError(numberStore.set("not a number"));
+
+// update 的回调参数和返回值类型正确
+numberStore.update((prev) => {
+  expectType<number>(prev);
+  return prev + 1;
+});
+
+// 复杂类型的 store
+const objectStore = createStore({ count: 0, label: "test" });
+expectType<{ count: number; label: string }>(objectStore.get());
+expectError(objectStore.set({ count: 0 })); // 缺少 label 字段
+
+// ===== 事件系统测试 =====
+
+// on 的 handler 参数类型根据事件名推断
+on("click", (payload) => {
+  expectType<{ x: number; y: number }>(payload);
+});
+
+on("keydown", (payload) => {
+  expectType<{ key: string; code: string }>(payload);
+});
+
+on("resize", (payload) => {
+  expectType<{ width: number; height: number }>(payload);
+});
+
+// 不存在的事件名应该报错
+expectError(on("unknown-event", () => {}));
+
+// 返回值是取消订阅函数
+const unsubscribe = on("click", () => {});
+expectType<() => void>(unsubscribe);
+
+// ===== Result 类型测试 =====
+
+const successResult = ok(42);
+expectType<Result<number, never>>(successResult);
+
+const errorResult = err(new Error("failed"));
+expectType<Result<never, Error>>(errorResult);
+
+// Result 可赋值性
+expectAssignable<Result<number>>(ok(42));
+expectAssignable<Result<number>>(err(new Error("oops")));
+
+// 窄化后的类型
+const result: Result<string> = ok("hello");
+if (result.ok) {
+  expectType<string>(result.value);
+} else {
+  expectType<Error>(result.error);
+}
+
+// never 不可赋值给具体类型
+expectNotAssignable<Result<string, never>>(err(new Error("oops")));
+```
+
+### 运行类型测试
+
+```bash
+# 先构建声明文件
+pnpm run build
+
+# 运行 tsd 类型测试
+pnpm run test:types
+```
+
+### tsd 断言函数速览
+
+| 断言函数 | 作用 |
+|---------|------|
+| `expectType<T>(value)` | 验证 value 的类型严格等于 T |
+| `expectNotType<T>(value)` | 验证 value 的类型不等于 T |
+| `expectAssignable<T>(value)` | 验证 value 的类型可赋值给 T |
+| `expectNotAssignable<T>(value)` | 验证 value 的类型不可赋值给 T |
+| `expectError(expression)` | 验证表达式会产生类型错误 |
+| `expectDeprecated(expression)` | 验证表达式标记了 @deprecated |
+| `expectNotDeprecated(expression)` | 验证表达式没有标记 @deprecated |
+
+## 🎯 expect-type：嵌入式类型断言
+
+expect-type 可以直接在普通测试文件中使用（不需要单独的 `test-d` 目录），适合和 Vitest、Jest 等运行时测试框架混合使用。
+
+### 安装
+
+```bash
+pnpm add -D expect-type
+```
+
+### 基本用法
+
+```js
+import { expectTypeOf } from "expect-type";
+
+// ===== 基础类型断言 =====
+
+expectTypeOf("hello").toBeString();
+expectTypeOf(42).toBeNumber();
+expectTypeOf(true).toBeBoolean();
+expectTypeOf(null).toBeNull();
+expectTypeOf(undefined).toBeUndefined();
+expectTypeOf(Symbol("test")).toBeSymbol();
+
+// ===== 复杂类型断言 =====
+
+// 对象类型
+expectTypeOf({ name: "张三", age: 25 }).toEqualTypeOf<{
+  name: string;
+  age: number;
+}>();
+
+// 数组类型
+expectTypeOf([1, 2, 3]).toEqualTypeOf<number[]>();
+
+// 联合类型
+expectTypeOf<"a" | "b" | "c">().toEqualTypeOf<"a" | "b" | "c">();
+
+// 函数类型
+expectTypeOf((a: number, b: string) => true).toEqualTypeOf<
+  (a: number, b: string) => boolean
+>();
+```
+
+### 函数签名测试
+
+```js
+import { expectTypeOf } from "expect-type";
+
+function divide(numerator: number, denominator: number): number {
+  return numerator / denominator;
+}
+
+// 测试参数类型
+expectTypeOf(divide).parameter(0).toBeNumber();
+expectTypeOf(divide).parameter(1).toBeNumber();
+
+// 测试返回值类型
+expectTypeOf(divide).returns.toBeNumber();
+
+// 测试参数数量
+expectTypeOf(divide).parameters.toEqualTypeOf<[number, number]>();
+
+// 泛型函数测试
+function firstElement<T>(array: T[]): T | undefined {
+  return array[0];
+}
+
+expectTypeOf(firstElement).parameter(0).toEqualTypeOf<unknown[]>();
+expectTypeOf(firstElement<string>).returns.toEqualTypeOf<
+  string | undefined
+>();
+expectTypeOf(firstElement([1, 2, 3])).toEqualTypeOf<number | undefined>();
+expectTypeOf(firstElement(["a", "b"])).toEqualTypeOf<string | undefined>();
+```
+
+### 与 Vitest 集成
+
+```js
+import { describe, it, expect } from "vitest";
+import { expectTypeOf } from "expect-type";
+
+function createPair<A, B>(first: A, second: B): [A, B] {
+  return [first, second];
+}
+
+describe("createPair", () => {
+  it("应该返回正确的运行时值", () => {
+    const pair = createPair("hello", 42);
+    expect(pair).toEqual(["hello", 42]);
+  });
+
+  it("应该推断正确的类型", () => {
+    const stringNumberPair = createPair("hello", 42);
+    expectTypeOf(stringNumberPair).toEqualTypeOf<[string, number]>();
+
+    const booleanArrayPair = createPair(true, [1, 2, 3]);
+    expectTypeOf(booleanArrayPair).toEqualTypeOf<[boolean, number[]]>();
+  });
+
+  it("不应该接受错误类型", () => {
+    const pair = createPair("a", 1);
+    expectTypeOf(pair).not.toEqualTypeOf<[number, string]>();
+  });
+});
+```
+
+### Vitest 内置的 assertType
+
+Vitest 也内置了类型测试支持，可以直接在 `.test-d.ts` 文件中使用：
+
+```js
+import { describe, it, assertType, expectTypeOf } from "vitest";
+
+interface User {
+  id: string;
+  name: string;
+  email: string;
+}
+
+function fetchUser(id: string): Promise<User> {
+  return fetch(`/api/users/${id}`).then((r) => r.json());
+}
+
+describe("fetchUser 类型测试", () => {
+  it("返回 Promise<User>", () => {
+    expectTypeOf(fetchUser).returns.resolves.toEqualTypeOf<User>();
+  });
+
+  it("接受 string 参数", () => {
+    expectTypeOf(fetchUser).parameter(0).toBeString();
+  });
+
+  it("断言具体值的类型", () => {
+    const user: User = { id: "1", name: "test", email: "test@test.com" };
+    assertType<User>(user);
+  });
+});
+```
+
+在 `vitest.config.ts` 中启用类型测试：
+
+```js
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    typecheck: {
+      enabled: true,
+      tsconfig: "./tsconfig.json",
+    },
+  },
+});
+```
+
+运行：
+
+```bash
+vitest typecheck
+```
+
+## 🎯 类型回归测试策略
+
+### 为什么需要类型回归测试
+
+```
+v1.0.0 发布
+  ↓
+v1.1.0 内部重构（类型不小心变了）
+  ↓
+消费者升级 → 编译失败 💥
+
+有了类型回归测试：
+v1.0.0 发布（附带类型测试）
+  ↓
+v1.1.0 内部重构 → 类型测试失败 ← 在 CI 中就被发现
+  ↓
+修复类型 or 标记为 breaking change
+  ↓
+安全发布 ✅
+```
+
+### 关键的类型回归测试场景
+
+```js
+import { expectTypeOf } from "expect-type";
+
+// 场景 1：确保公共 API 的返回类型不变
+interface Config {
+  host: string;
+  port: number;
+  debug: boolean;
+}
+
+function getConfig(): Config {
+  return { host: "localhost", port: 3000, debug: false };
+}
+
+// 如果 getConfig 的返回类型发生变化，这个测试会失败
+expectTypeOf(getConfig).returns.toEqualTypeOf<Config>();
+
+// 场景 2：确保泛型推断行为不变
+function toArray<T>(value: T | T[]): T[] {
+  return Array.isArray(value) ? value : [value];
+}
+
+expectTypeOf(toArray("hello")).toEqualTypeOf<string[]>();
+expectTypeOf(toArray([1, 2, 3])).toEqualTypeOf<number[]>();
+expectTypeOf(toArray<string | number>("hello")).toEqualTypeOf<(string | number)[]>();
+
+// 场景 3：确保联合类型的完整性
+type SupportedFormat = "json" | "yaml" | "toml" | "xml";
+
+function parseFile(format: SupportedFormat): object {
+  return {};
+}
+
+// 如果有人从 SupportedFormat 中删除了 "toml"，这个测试会捕获到
+expectTypeOf<SupportedFormat>().toEqualTypeOf<"json" | "yaml" | "toml" | "xml">();
+
+// 场景 4：确保可选性不变
+interface Options {
+  timeout: number;
+  retries?: number;
+  headers?: Record<string, string>;
+}
+
+// 确保 retries 和 headers 始终是可选的
+expectTypeOf<Options["retries"]>().toEqualTypeOf<number | undefined>();
+expectTypeOf<Options["headers"]>().toEqualTypeOf<Record<string, string> | undefined>();
+
+// 确保 timeout 始终是必填的
+expectTypeOf<Required<Pick<Options, "timeout">>>().toEqualTypeOf<{ timeout: number }>();
+```
+
+### 类型快照测试
+
+对于复杂的类型推断，可以使用"类型快照"的方式固定预期结果：
+
+```js
+import { expectTypeOf } from "expect-type";
+
+// 复杂的条件类型
+type ExtractArrayType<T> = T extends Array<infer U> ? U : never;
+type ExtractPromiseType<T> = T extends Promise<infer U> ? U : never;
+
+// 类型快照：固定推断结果
+expectTypeOf<ExtractArrayType<string[]>>().toEqualTypeOf<string>();
+expectTypeOf<ExtractArrayType<number[]>>().toEqualTypeOf<number>();
+expectTypeOf<ExtractArrayType<(string | number)[]>>().toEqualTypeOf<string | number>();
+expectTypeOf<ExtractArrayType<string>>().toEqualTypeOf<never>();
+
+expectTypeOf<ExtractPromiseType<Promise<string>>>().toEqualTypeOf<string>();
+expectTypeOf<ExtractPromiseType<Promise<number[]>>>().toEqualTypeOf<number[]>();
+expectTypeOf<ExtractPromiseType<string>>().toEqualTypeOf<never>();
+
+// 映射类型快照
+type Nullable<T> = { [K in keyof T]: T[K] | null };
+
+expectTypeOf<Nullable<{ name: string; age: number }>>().toEqualTypeOf<{
+  name: string | null;
+  age: number | null;
+}>();
+```
+
+### CI 集成
+
+在 `package.json` 中配置类型测试命令：
+
+```json
+{
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:types": "tsd",
+    "test:all": "pnpm run build && pnpm run test && pnpm run test:types",
+    "prepublishOnly": "pnpm run test:all"
+  }
+}
+```
+
+GitHub Actions 配置示例：
+
+```yaml
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm run build
+      - run: pnpm run test
+      - run: pnpm run test:types
+```
+
+## 📊 工具对比
+
+| 特性 | tsd | expect-type | Vitest typecheck |
+|------|-----|-------------|-----------------|
+| **测试位置** | 独立 `test-d` 目录 | 任意测试文件 | `.test-d.ts` 文件 |
+| **测试目标** | 声明文件 (.d.ts) | 源码类型推断 | 源码类型推断 |
+| **需要构建** | ✅ 需要先生成 .d.ts | ❌ 直接测试源码 | ❌ 直接测试源码 |
+| **与测试框架集成** | 独立运行 | 可嵌入测试文件 | Vitest 原生 |
+| **API 风格** | `expectType<T>(val)` | `expectTypeOf(val)` | 两者都支持 |
+| **适用场景** | npm 包发布前验证 | 开发过程中验证 | Vitest 项目 |
+
+### 推荐方案
+
+```
+发布 npm 包          → tsd（验证最终的 .d.ts 文件）
+日常开发中的类型验证   → expect-type + Vitest
+两者结合              → 最全面的类型保障
+```
+
+## 📝 实际应用示例
+
+### 为 TypeScript 库构建完整的类型测试套件
+
+以一个事件发射器库为例：
+
+**src/index.ts**（库源码）：
+
+```js
+export type EventHandler<T = void> = T extends void
+  ? () => void
+  : (payload: T) => void;
+
+export interface TypedEmitter<Events extends Record<string, unknown>> {
+  on<K extends keyof Events>(event: K, handler: EventHandler<Events[K]>): this;
+  off<K extends keyof Events>(event: K, handler: EventHandler<Events[K]>): this;
+  emit<K extends keyof Events>(
+    ...args: Events[K] extends void ? [event: K] : [event: K, payload: Events[K]]
+  ): boolean;
+  listenerCount<K extends keyof Events>(event: K): number;
+}
+
+export function createEmitter<
+  Events extends Record<string, unknown>
+>(): TypedEmitter<Events> {
+  const listeners = new Map<keyof Events, Set<Function>>();
+
+  return {
+    on(event, handler) {
+      if (!listeners.has(event)) {
+        listeners.set(event, new Set());
+      }
+      listeners.get(event)!.add(handler);
+      return this;
+    },
+    off(event, handler) {
+      listeners.get(event)?.delete(handler);
+      return this;
+    },
+    emit(...args) {
+      const [event, payload] = args;
+      const handlers = listeners.get(event);
+      if (!handlers || handlers.size === 0) return false;
+      handlers.forEach((handler) => handler(payload));
+      return true;
+    },
+    listenerCount(event) {
+      return listeners.get(event)?.size ?? 0;
+    },
+  };
+}
+```
+
+**test-d/index.test-d.ts**（tsd 类型测试）：
+
+```js
+import { expectType, expectError } from "tsd";
+import { createEmitter } from "../dist/index.js";
+import type { TypedEmitter, EventHandler } from "../dist/index.js";
+
+// 定义事件映射
+type AppEvents = {
+  login: { userId: string; timestamp: number };
+  logout: void;
+  error: { code: number; message: string };
+};
+
+const emitter = createEmitter<AppEvents>();
+
+// 验证返回类型
+expectType<TypedEmitter<AppEvents>>(emitter);
+
+// on 方法的 handler 参数类型根据事件推断
+emitter.on("login", (payload) => {
+  expectType<{ userId: string; timestamp: number }>(payload);
+});
+
+emitter.on("logout", () => {
+  // void 事件没有参数
+});
+
+emitter.on("error", (payload) => {
+  expectType<{ code: number; message: string }>(payload);
+});
+
+// 错误的事件名应该报错
+expectError(emitter.on("nonexistent", () => {}));
+
+// 错误的 handler 签名应该报错
+expectError(emitter.on("login", (payload: string) => {}));
+
+// emit 方法：void 事件不需要 payload
+emitter.emit("logout");
+
+// emit 方法：非 void 事件必须传 payload
+emitter.emit("login", { userId: "user-1", timestamp: Date.now() });
+
+// emit 缺少 payload 应该报错
+expectError(emitter.emit("login"));
+
+// emit 传入错误类型的 payload 应该报错
+expectError(emitter.emit("login", { userId: 123 }));
+
+// 链式调用返回 this
+expectType<TypedEmitter<AppEvents>>(emitter.on("logout", () => {}));
+
+// listenerCount 返回 number
+expectType<number>(emitter.listenerCount("login"));
+
+// EventHandler 类型测试
+expectType<EventHandler<void>>(() => {});
+expectType<EventHandler<string>>((payload: string) => {});
+```
+
+**tests/emitter.test.ts**（运行时 + 类型混合测试）：
+
+```js
+import { describe, it, expect } from "vitest";
+import { expectTypeOf } from "expect-type";
+import { createEmitter } from "../src/index";
+
+type TestEvents = {
+  data: { value: number };
+  done: void;
+};
+
+describe("createEmitter", () => {
+  it("应该正确触发带 payload 的事件", () => {
+    const emitter = createEmitter<TestEvents>();
+    let receivedValue = 0;
+
+    emitter.on("data", (payload) => {
+      receivedValue = payload.value;
+    });
+
+    emitter.emit("data", { value: 42 });
+    expect(receivedValue).toBe(42);
+  });
+
+  it("应该正确推断 handler 的 payload 类型", () => {
+    const emitter = createEmitter<TestEvents>();
+
+    emitter.on("data", (payload) => {
+      expectTypeOf(payload).toEqualTypeOf<{ value: number }>();
+    });
+  });
+
+  it("listenerCount 应该返回 number 类型", () => {
+    const emitter = createEmitter<TestEvents>();
+    expectTypeOf(emitter.listenerCount("data")).toBeNumber();
+  });
+
+  it("on 应该返回 emitter 自身以支持链式调用", () => {
+    const emitter = createEmitter<TestEvents>();
+    const result = emitter.on("done", () => {});
+    expectTypeOf(result).toEqualTypeOf(emitter);
+  });
+});
+```
+
+## 🔗 相关概念
+
+- **[库打包](./01-library-bundling.mdx)**：打包配置决定了声明文件的生成方式
+- **[版本管理](./03-version-management.mdx)**：类型测试结果直接影响版本号的判定
+- **条件类型与泛型**：类型测试的核心就是验证泛型推断和条件类型的正确性
+
+## 📝 学习检查点
+
+- [ ] 理解类型测试的目的：验证编译时类型推断而非运行时行为
+- [ ] 掌握 tsd 的安装配置和断言函数的使用
+- [ ] 掌握 expect-type 的链式断言 API
+- [ ] 了解 Vitest typecheck 模式的使用
+- [ ] 能够为泛型函数、事件系统等复杂类型编写类型测试
+- [ ] 理解类型回归测试的策略和 CI 集成方式
+
+## 🚀 下一步
+
+→ [版本管理](./03-version-management.mdx) - 学习语义化版本与 TypeScript 类型变更的关系

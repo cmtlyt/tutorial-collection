@@ -5,8 +5,597 @@
 
 ## 📚 概念介绍
 
-本节将介绍版本管理的核心概念和实践方法。
+发布 TypeScript 库时，版本号不只是一个数字——它承载着与消费者之间的兼容性承诺。不同于纯 JavaScript 库，TypeScript 库的版本管理还需要考虑**类型层面的破坏性变更**：即使运行时行为完全不变，类型签名的变化也可能导致消费者的代码编译失败。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+本节将介绍语义化版本（SemVer）与 TypeScript 类型变更的关系、类型兼容性策略、以及使用 Changesets 管理版本发布的完整工作流。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 理解语义化版本（SemVer）的核心规则
+- 判断 TypeScript 类型变更属于哪个版本级别
+- 制定类型兼容性策略
+- 使用 Changesets 管理 Monorepo 中的版本发布
+- 建立从代码变更到版本发布的完整工作流
+
+## 🔑 语义化版本基础
+
+### SemVer 规则
+
+```
+MAJOR.MINOR.PATCH
+  │      │     │
+  │      │     └── 修复 bug（向后兼容）
+  │      └──────── 新增功能（向后兼容）
+  └─────────────── 破坏性变更（不向后兼容）
+
+示例：
+  1.0.0 → 1.0.1  修复 bug
+  1.0.0 → 1.1.0  新增功能
+  1.0.0 → 2.0.0  破坏性变更
+```
+
+### TypeScript 库的特殊性
+
+对于 TypeScript 库，**类型声明是公共 API 的一部分**。这意味着：
+
+```
+运行时行为不变 + 类型签名变化 = 可能是破坏性变更
+
+例如：返回类型从 string | number 收窄为 string
+  → 运行时没有任何影响
+  → 但依赖 number 分支的消费者代码会编译失败
+  → 这是一个 MAJOR 版本变更
+```
+
+## 🎯 类型变更的版本级别判定
+
+### PATCH：类型修复
+
+PATCH 版本用于修复类型中的**明显错误**，修复后消费者的代码只会更好、不会更差。
+
+```js
+// v1.0.0 — 类型错误：返回值应该是 string 但声明为 any
+export function formatDate(date: Date): any {
+  return date.toISOString();
+}
+
+// v1.0.1 — 修复：修正返回类型
+export function formatDate(date: Date): string {
+  return date.toISOString();
+}
+// ✅ PATCH：类型更精确了，之前使用 any 的消费者不会受影响
+```
+
+```js
+// v1.0.0 — 缺少导出
+// （内部有 FormatOptions 类型但忘了导出）
+
+// v1.0.1 — 补充导出
+export interface FormatOptions {
+  locale: string;
+  timeZone: string;
+}
+// ✅ PATCH：新增导出不影响已有代码
+```
+
+### MINOR：类型扩展
+
+MINOR 版本用于**向后兼容**的类型变更：新增类型、扩展联合类型、新增可选参数或可选属性等。
+
+```js
+// v1.0.0
+export interface Config {
+  host: string;
+  port: number;
+}
+
+// v1.1.0 — 新增可选属性
+export interface Config {
+  host: string;
+  port: number;
+  timeout?: number;    // 新增
+  retries?: number;    // 新增
+}
+// ✅ MINOR：新属性是可选的，已有代码不受影响
+```
+
+```js
+// v1.0.0
+export function parse(input: string): Result {
+  // ...
+}
+
+// v1.1.0 — 新增可选参数
+export function parse(input: string, options?: ParseOptions): Result {
+  // ...
+}
+// ✅ MINOR：新参数是可选的，已有调用不受影响
+```
+
+```js
+// v1.0.0
+export type LogLevel = "info" | "warn" | "error";
+
+// v1.1.0 — 扩展联合类型
+export type LogLevel = "debug" | "info" | "warn" | "error" | "fatal";
+// ✅ MINOR：添加新成员不影响已有代码
+// ⚠️ 注意：如果消费者有 switch exhaustive check，可能需要处理新成员
+```
+
+```js
+// v1.0.0
+export function createStore<T>(initial: T): Store<T> {
+  // ...
+}
+
+// v1.1.0 — 新增泛型默认值
+export function createStore<T = unknown>(initial: T): Store<T> {
+  // ...
+}
+// ✅ MINOR：泛型默认值不影响显式传参的已有代码
+```
+
+### MAJOR：类型破坏性变更
+
+MAJOR 版本用于任何可能导致消费者**编译失败**的类型变更。
+
+```js
+// v1.0.0
+export function getUser(id: string): User | null {
+  // ...
+}
+
+// v2.0.0 — 返回类型变更
+export function getUser(id: string): User | undefined {
+  // ...
+}
+// ❌ MAJOR：消费者如果检查了 !== null，现在需要改为 !== undefined
+```
+
+```js
+// v1.0.0
+export interface Config {
+  host: string;
+  port: number;
+  debug: boolean;
+}
+
+// v2.0.0 — 删除属性
+export interface Config {
+  host: string;
+  port: number;
+  // debug 被移除
+}
+// ❌ MAJOR：使用 config.debug 的代码会编译失败
+```
+
+```js
+// v1.0.0
+export interface Config {
+  host: string;
+  port: number;
+  timeout?: number;
+}
+
+// v2.0.0 — 可选变必填
+export interface Config {
+  host: string;
+  port: number;
+  timeout: number;  // 从可选变为必填
+}
+// ❌ MAJOR：没有提供 timeout 的消费者代码会编译失败
+```
+
+```js
+// v1.0.0
+export function format(value: string | number): string {
+  // ...
+}
+
+// v2.0.0 — 参数类型收窄
+export function format(value: string): string {
+  // ...
+}
+// ❌ MAJOR：传入 number 的调用会编译失败
+```
+
+```js
+// v1.0.0
+export type Status = "active" | "inactive" | "pending";
+
+// v2.0.0 — 移除联合类型成员
+export type Status = "active" | "inactive";
+// ❌ MAJOR：使用 "pending" 的代码会编译失败
+```
+
+### 速查表
+
+| 变更类型 | 版本级别 | 示例 |
+|---------|---------|------|
+| 修复错误的类型声明 | PATCH | `any` → 正确类型 |
+| 补充缺失的导出 | PATCH | 新增 `export` |
+| 新增可选属性 | MINOR | `timeout?: number` |
+| 新增可选参数 | MINOR | `(x, opts?)` |
+| 扩展联合类型（添加成员） | MINOR | 新增 `"debug"` |
+| 新增泛型默认值 | MINOR | `<T = unknown>` |
+| 删除属性 | **MAJOR** | 移除 `debug` |
+| 可选变必填 | **MAJOR** | `?` → 必填 |
+| 收窄参数类型 | **MAJOR** | `string \| number` → `string` |
+| 收窄返回类型的联合 | 视情况 | 可能是 PATCH 或 MAJOR |
+| 扩展返回类型的联合 | **MAJOR** | `string` → `string \| null` |
+| 删除联合类型成员 | **MAJOR** | 移除 `"pending"` |
+| 重命名导出 | **MAJOR** | `User` → `UserEntity` |
+| 修改泛型约束 | **MAJOR** | `<T>` → `<T extends object>` |
+
+## 🎯 类型兼容性策略
+
+### TypeScript 版本支持策略
+
+你的库应该明确声明支持的 TypeScript 最低版本：
+
+```json
+{
+  "name": "my-lib",
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.0"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  }
+}
+```
+
+### 常见策略
+
+```
+策略一：支持最近 N 个 TypeScript 大版本
+  例如：当前 TS 5.7，支持 >= 5.0
+  适合：大多数库
+
+策略二：跟进最新 TypeScript 版本
+  例如：始终要求最新的 TS 版本
+  适合：小众库、内部工具
+
+策略三：极宽泛的支持范围
+  例如：支持 >= 4.7
+  适合：基础设施库（如 lodash 类型）
+```
+
+### 升级 TypeScript 最低版本 = MAJOR
+
+提升库要求的 TypeScript 最低版本是一个**破坏性变更**，因为使用旧版 TypeScript 的消费者将无法编译你的库：
+
+```
+my-lib v1.x  →  支持 TypeScript >= 4.9
+my-lib v2.0  →  支持 TypeScript >= 5.0（MAJOR）
+```
+
+## 🎯 Changesets 工作流
+
+Changesets 是一个用于管理 Monorepo 版本和 Changelog 的工具，它将版本决策分散到每次 PR 中，让团队在代码变更时就决定版本号和变更说明。
+
+### 安装与初始化
+
+```bash
+# 安装
+pnpm add -D @changesets/cli
+
+# 初始化（生成 .changeset 目录）
+pnpm changeset init
+```
+
+初始化后的目录结构：
+
+```
+my-monorepo/
+├── .changeset/
+│   ├── config.json     ← Changesets 配置
+│   └── README.md
+├── packages/
+│   ├── utils/
+│   └── ui/
+└── package.json
+```
+
+### Changesets 配置
+
+`.changeset/config.json`：
+
+```json
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.0.0/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": []
+}
+```
+
+配置说明：
+
+| 选项 | 说明 |
+|------|------|
+| `commit` | 是否在 version 时自动 git commit |
+| `fixed` | 固定版本组（组内所有包使用相同版本号） |
+| `linked` | 关联版本组（组内包版本号联动升级） |
+| `access` | npm 发布的访问级别 |
+| `updateInternalDependencies` | 内部依赖更新时的版本升级级别 |
+| `ignore` | 忽略的包（不参与版本管理） |
+
+### 工作流程
+
+```
+1. 开发者提交代码
+      │
+2. 运行 pnpm changeset 创建变更记录
+      │
+3. 提交 PR（包含 changeset 文件）
+      │
+4. Code Review（包括 changeset 内容审核）
+      │
+5. 合并到 main 分支
+      │
+6. 运行 pnpm changeset version（消费所有 changeset，更新版本号和 CHANGELOG）
+      │
+7. 运行 pnpm changeset publish（发布到 npm）
+```
+
+### 步骤 1：创建变更记录
+
+开发完成后运行：
+
+```bash
+pnpm changeset
+```
+
+交互式提示：
+
+```
+🦋  Which packages would you like to include?
+   ◉ @my-monorepo/utils
+   ◯ @my-monorepo/ui
+
+🦋  Which packages should have a major bump?
+   ◯ @my-monorepo/utils
+
+🦋  Which packages should have a minor bump?
+   ◉ @my-monorepo/utils
+
+🦋  Please enter a summary for this change:
+   Added debounce and throttle utility functions
+```
+
+这会在 `.changeset/` 下生成一个 Markdown 文件：
+
+`.changeset/happy-dogs-dance.md`：
+
+```markdown
+---
+"@my-monorepo/utils": minor
+---
+
+Added debounce and throttle utility functions
+```
+
+### 步骤 2：消费变更记录并更新版本
+
+当准备发布时：
+
+```bash
+pnpm changeset version
+```
+
+这个命令会：
+1. 读取所有 `.changeset/*.md` 文件
+2. 根据变更级别更新每个包的 `package.json` 版本号
+3. 生成或更新每个包的 `CHANGELOG.md`
+4. 删除已消费的 changeset 文件
+5. 更新所有依赖这些包的内部包版本
+
+### 步骤 3：发布
+
+```bash
+# 构建所有包
+pnpm run build
+
+# 发布到 npm
+pnpm changeset publish
+```
+
+### 完整的 package.json scripts
+
+```json
+{
+  "name": "my-monorepo",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "test:types": "turbo run test:types",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "pnpm run build && pnpm run test && pnpm run test:types && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.0",
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+### 多个 changeset 合并
+
+一次发布中可以包含多个 changeset。Changesets 会自动合并同一个包的多个变更记录，取最高的版本级别：
+
+```
+.changeset/happy-dogs.md     → @my-monorepo/utils: patch (修复 bug)
+.changeset/green-cats.md     → @my-monorepo/utils: minor (新增功能)
+.changeset/angry-birds.md    → @my-monorepo/ui: patch (修复样式)
+
+执行 changeset version 后：
+  @my-monorepo/utils: 1.0.0 → 1.1.0（取最高级别 minor）
+  @my-monorepo/ui:    1.0.0 → 1.0.1（patch）
+```
+
+## 📝 实际应用示例
+
+### Monorepo 中的完整发布流程
+
+以一个包含 `shared-types`、`utils` 和 `web` 的 Monorepo 为例：
+
+**场景**：你修改了 `shared-types` 中 `User` 接口，新增了一个可选属性 `avatar`。
+
+**1. 修改代码**
+
+`packages/shared-types/src/user.ts`：
+
+```js
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: "admin" | "editor" | "viewer";
+  avatar?: string;   // 新增
+  createdAt: string;
+}
+```
+
+**2. 创建 changeset**
+
+```bash
+pnpm changeset
+```
+
+选择 `@my-monorepo/shared-types`，级别为 `minor`（新增可选属性），填写说明：
+
+```markdown
+---
+"@my-monorepo/shared-types": minor
+---
+
+Added optional `avatar` field to User interface
+```
+
+**3. 运行类型测试确保无破坏性变更**
+
+```bash
+pnpm run test:types
+# ✅ 所有类型测试通过（新增可选属性不会破坏已有类型测试）
+```
+
+**4. 提交 PR 并合并**
+
+```bash
+git add .
+git commit -m "feat(shared-types): add avatar field to User"
+git push origin feat/user-avatar
+# → 创建 PR → Code Review → 合并到 main
+```
+
+**5. 发布**
+
+```bash
+# 更新版本号
+pnpm changeset version
+# @my-monorepo/shared-types: 1.0.0 → 1.1.0
+# 依赖它的 @my-monorepo/utils 和 @my-monorepo/web
+# 的 shared-types 依赖版本也会自动更新
+
+# 确认变更
+git add .
+git commit -m "chore: version packages"
+
+# 构建 + 测试 + 发布
+pnpm run release
+```
+
+### GitHub Actions 自动化发布
+
+```yaml
+name: Release
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install
+      - run: pnpm run build
+      - run: pnpm run test
+      - run: pnpm run test:types
+
+      - name: Create Release PR or Publish
+        uses: changesets/action@v1
+        with:
+          publish: pnpm run release
+          version: pnpm changeset version
+          commit: "chore: version packages"
+          title: "chore: version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+```
+
+这个 Action 的行为：
+- 如果有待消费的 changeset：创建一个 "Version Packages" PR，包含版本号更新和 CHANGELOG 变更
+- 如果没有待消费的 changeset（例如 Version PR 被合并后）：直接执行 `pnpm run release` 发布到 npm
+
+### 版本发布检查清单
+
+```
+发布前检查清单：
+  □ 所有运行时测试通过
+  □ 所有类型测试通过
+  □ changeset 的版本级别正确（特别注意类型变更）
+  □ CHANGELOG 描述清晰
+  □ 如果是 MAJOR 版本，是否提供了迁移指南
+  □ 如果升级了 TypeScript 最低版本，标记为 MAJOR
+  □ package.json 的 exports 字段正确
+  □ 声明文件 (.d.ts) 正确生成
+  □ npm pack --dry-run 确认发布文件列表
+```
+
+## 🔗 相关概念
+
+- **[库打包](./01-library-bundling.mdx)**：打包配置直接影响发布产物的质量
+- **[类型测试](./02-type-testing.mdx)**：类型测试结果帮助判断版本级别
+- **[Monorepo 工具](/typescript/06-ecosystem-engineering/01-monorepo/01-monorepo-tools)**：Monorepo 中多包的协调发布
+
+## 📝 学习检查点
+
+- [ ] 理解语义化版本（SemVer）的 MAJOR/MINOR/PATCH 规则
+- [ ] 能够判断 TypeScript 类型变更属于哪个版本级别
+- [ ] 知道新增可选属性是 MINOR，删除属性是 MAJOR
+- [ ] 理解升级 TypeScript 最低版本是 MAJOR 变更
+- [ ] 掌握 Changesets 的安装、配置和完整工作流
+- [ ] 能够在 Monorepo 中使用 Changesets 管理多包版本
+- [ ] 了解如何将 Changesets 集成到 GitHub Actions CI/CD
+
+## 🚀 下一步
+
+恭喜完成第六阶段的学习！你已经掌握了 TypeScript 生态与工程化的核心知识。建议继续学习：
+
+- **[第七阶段：前沿特性与未来展望](/roadmaps/ts-learning-roadmap)** - 了解 TypeScript 最新特性和新兴技术

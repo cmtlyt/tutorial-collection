@@ -5,8 +5,729 @@
 
 ## 📚 概念介绍
 
-本节将介绍类型共享的核心概念和实践方法。
+在 Monorepo 中，多个包之间共享类型定义是最核心的需求之一。合理的类型共享策略可以确保前后端使用相同的数据结构定义、多个应用引用相同的业务模型，从而在编译时就捕获接口不一致的问题。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+本节将介绍三种主要的类型共享方式：**共享类型包**、**TypeScript Project References** 和 **路径别名与包引用**。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 创建专用的共享类型包并在多个项目中引用
+- 使用 TypeScript Project References 实现增量编译
+- 配置路径别名简化跨包导入
+- 理解不同类型共享策略的适用场景
+
+## 🎯 共享类型包
+
+最直接的类型共享方式是创建一个独立的类型包，所有需要共享类型的包都依赖它。
+
+### 创建共享类型包
+
+```
+my-monorepo/
+└── packages/
+    └── shared-types/
+        ├── package.json
+        ├── tsconfig.json
+        └── src/
+            ├── index.ts
+            ├── user.ts
+            ├── order.ts
+            └── api.ts
+```
+
+`packages/shared-types/package.json`：
+
+```json
+{
+  "name": "@my-monorepo/shared-types",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+### 定义共享类型
+
+`packages/shared-types/src/user.ts`：
+
+```js
+export interface User {
+  id: string;
+  email: string;
+  displayName: string;
+  role: UserRole;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type UserRole = "admin" | "editor" | "viewer";
+
+export interface CreateUserRequest {
+  email: string;
+  displayName: string;
+  role: UserRole;
+}
+
+export interface UpdateUserRequest {
+  displayName?: string;
+  role?: UserRole;
+}
+```
+
+`packages/shared-types/src/order.ts`：
+
+```js
+export interface Order {
+  id: string;
+  userId: string;
+  items: OrderItem[];
+  status: OrderStatus;
+  totalAmount: number;
+  createdAt: string;
+}
+
+export interface OrderItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export type OrderStatus = "pending" | "confirmed" | "shipped" | "delivered" | "cancelled";
+
+export interface CreateOrderRequest {
+  userId: string;
+  items: Array<{
+    productId: string;
+    quantity: number;
+  }>;
+}
+```
+
+`packages/shared-types/src/api.ts`：
+
+```js
+export interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  message?: string;
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasNextPage: boolean;
+}
+
+export interface ApiError {
+  code: string;
+  message: string;
+  details?: Record<string, string[]>;
+}
+```
+
+`packages/shared-types/src/index.ts`：
+
+```js
+export type { User, UserRole, CreateUserRequest, UpdateUserRequest } from "./user";
+export type { Order, OrderItem, OrderStatus, CreateOrderRequest } from "./order";
+export type { ApiResponse, PaginatedResponse, ApiError } from "./api";
+```
+
+### 在其他包中使用
+
+后端服务 `packages/server/package.json`：
+
+```json
+{
+  "name": "@my-monorepo/server",
+  "dependencies": {
+    "@my-monorepo/shared-types": "workspace:*"
+  }
+}
+```
+
+`packages/server/src/routes/user.ts`：
+
+```js
+import type {
+  User,
+  CreateUserRequest,
+  ApiResponse,
+  PaginatedResponse,
+} from "@my-monorepo/shared-types";
+
+function createUser(request: CreateUserRequest): ApiResponse<User> {
+  const newUser: User = {
+    id: crypto.randomUUID(),
+    email: request.email,
+    displayName: request.displayName,
+    role: request.role,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  return { success: true, data: newUser };
+}
+
+function listUsers(page: number, pageSize: number): PaginatedResponse<User> {
+  const allUsers: User[] = []; // 实际从数据库查询
+  return {
+    items: allUsers.slice((page - 1) * pageSize, page * pageSize),
+    total: allUsers.length,
+    page,
+    pageSize,
+    hasNextPage: page * pageSize < allUsers.length,
+  };
+}
+
+export { createUser, listUsers };
+```
+
+前端应用 `apps/web/src/api/user.ts`：
+
+```js
+import type {
+  User,
+  CreateUserRequest,
+  ApiResponse,
+  PaginatedResponse,
+} from "@my-monorepo/shared-types";
+
+async function fetchUsers(page: number = 1): Promise<PaginatedResponse<User>> {
+  const response = await fetch(`/api/users?page=${page}`);
+  return response.json() as Promise<PaginatedResponse<User>>;
+}
+
+async function createUser(data: CreateUserRequest): Promise<ApiResponse<User>> {
+  const response = await fetch("/api/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return response.json() as Promise<ApiResponse<User>>;
+}
+
+export { fetchUsers, createUser };
+```
+
+前后端使用同一套 `User`、`CreateUserRequest`、`ApiResponse` 类型，任何字段变更都会在编译时被所有消费方感知到。
+
+## 🎯 TypeScript Project References
+
+TypeScript 内置的 Project References 功能可以将大型项目拆分为多个相互引用的子项目，实现**增量编译**——只重新编译发生变化的部分。
+
+### 基本配置
+
+根目录 `tsconfig.json`（仅用于引用，不直接编译）：
+
+```json
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared-types" },
+    { "path": "packages/utils" },
+    { "path": "packages/server" },
+    { "path": "apps/web" }
+  ]
+}
+```
+
+被引用的包必须开启 `composite`，以 `packages/shared-types/tsconfig.json` 为例：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+```
+
+依赖共享类型的包通过 `references` 声明依赖，以 `packages/server/tsconfig.json` 为例：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../shared-types" }
+  ]
+}
+```
+
+### composite 选项详解
+
+开启 `composite: true` 会启用以下行为：
+
+| 行为 | 说明 |
+|------|------|
+| 强制开启 `declaration` | 必须生成 `.d.ts` 文件供下游消费 |
+| 强制 `rootDir` 默认为 tsconfig 所在目录 | 保证输出结构稳定 |
+| 所有源文件必须被 `include` 或 `files` 匹配 | 不允许遗漏文件 |
+| 生成 `.tsBuildInfo` 文件 | 用于增量编译追踪 |
+
+### 增量构建
+
+```bash
+# 构建所有引用的项目（自动按依赖顺序）
+tsc --build
+
+# 增量构建（只重新编译变化的部分）
+tsc --build
+
+# 强制全量重建
+tsc --build --force
+
+# 清理构建产物
+tsc --build --clean
+
+# 查看详细构建信息
+tsc --build --verbose
+```
+
+### 增量编译的效果
+
+```
+首次构建：
+  shared-types  →  编译 (1.2s)
+  utils         →  编译 (0.8s)
+  server        →  编译 (2.1s)
+  web           →  编译 (1.5s)
+  总计: 5.6s
+
+修改 shared-types 后再次构建：
+  shared-types  →  重新编译 (1.2s)
+  utils         →  跳过（无变化）
+  server        →  重新编译 (2.1s)  ← 依赖了 shared-types
+  web           →  重新编译 (1.5s)  ← 依赖了 shared-types
+  总计: 4.8s
+
+仅修改 web 后再次构建：
+  shared-types  →  跳过
+  utils         →  跳过
+  server        →  跳过
+  web           →  重新编译 (1.5s)
+  总计: 1.5s
+```
+
+### declarationMap 的作用
+
+开启 `declarationMap: true` 后，IDE 中按住 Ctrl/Cmd 点击从 `@my-monorepo/shared-types` 导入的类型时，会直接跳转到**源码** `.ts` 文件而非编译后的 `.d.ts` 文件，极大提升开发体验。
+
+## 🎯 路径别名与包引用
+
+路径别名可以让跨包导入更简洁，同时支持 IDE 自动补全和跳转。
+
+### tsconfig paths 配置
+
+根目录 `tsconfig.base.json`：
+
+```json
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@my-monorepo/shared-types": ["packages/shared-types/src/index.ts"],
+      "@my-monorepo/utils": ["packages/utils/src/index.ts"],
+      "@my-monorepo/server/*": ["packages/server/src/*"]
+    }
+  }
+}
+```
+
+子包继承路径配置：
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+```
+
+### paths 与 workspace 协议的关系
+
+```
+开发时类型解析                     构建时模块解析
+┌─────────────────────┐          ┌──────────────────────┐
+│ tsconfig paths       │          │ pnpm workspace:*     │
+│ 直接指向源码 .ts 文件 │          │ 通过 node_modules    │
+│ IDE 类型检查 ✅       │          │ 解析到 dist/ 目录    │
+│ 跳转到源码 ✅         │          │ 运行时加载 ✅         │
+└─────────────────────┘          └──────────────────────┘
+```
+
+- **paths** 解决的是 TypeScript 编译器和 IDE 的类型检查问题
+- **workspace:\*** 解决的是运行时和构建时的模块解析问题
+- 两者通常需要配合使用
+
+### 构建工具中的别名配置
+
+如果使用 Vite，还需要在 `vite.config.ts` 中配置对应别名：
+
+```js
+import { defineConfig } from "vite";
+import path from "path";
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      "@my-monorepo/shared-types": path.resolve(
+        __dirname,
+        "../../packages/shared-types/src"
+      ),
+      "@my-monorepo/utils": path.resolve(
+        __dirname,
+        "../../packages/utils/src"
+      ),
+    },
+  },
+});
+```
+
+### 内部包的 exports 字段
+
+为内部包配置 `exports` 字段可以同时满足 TypeScript 类型解析和运行时解析：
+
+```json
+{
+  "name": "@my-monorepo/shared-types",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./user": {
+      "types": "./dist/user.d.ts",
+      "import": "./dist/user.js"
+    },
+    "./order": {
+      "types": "./dist/order.d.ts",
+      "import": "./dist/order.js"
+    }
+  }
+}
+```
+
+这样消费方可以更精细地导入：
+
+```js
+import type { User } from "@my-monorepo/shared-types/user";
+import type { Order } from "@my-monorepo/shared-types/order";
+```
+
+## 📊 三种方案对比
+
+| 方案 | 优势 | 适用场景 |
+|------|------|---------|
+| **共享类型包** | 简单直观、边界清晰 | 前后端共享接口类型、业务模型定义 |
+| **Project References** | 增量编译、构建性能好 | 大型 Monorepo、频繁修改的项目 |
+| **路径别名** | 开发体验好、直接引用源码 | 开发阶段快速迭代 |
+
+### 推荐的组合策略
+
+```
+小型 Monorepo（< 5个包）:
+  共享类型包 + 路径别名
+
+中型 Monorepo（5-15个包）:
+  共享类型包 + Project References + 路径别名
+
+大型 Monorepo（15+个包）:
+  共享类型包 + Project References + 路径别名 + Turborepo/Nx 缓存
+```
+
+## 📝 实际应用示例
+
+### 全栈应用的类型共享实践
+
+以一个包含 API 服务端、Web 前端和管理后台的项目为例，展示完整的类型共享方案：
+
+**项目结构**：
+
+```
+fullstack-monorepo/
+├── pnpm-workspace.yaml
+├── tsconfig.json                 # 根引用配置
+├── tsconfig.base.json            # 共享编译选项
+├── packages/
+│   ├── shared-types/             # 共享类型包
+│   │   ├── src/
+│   │   │   ├── index.ts
+│   │   │   ├── user.ts
+│   │   │   ├── order.ts
+│   │   │   └── api.ts
+│   │   ├── package.json
+│   │   └── tsconfig.json
+│   └── utils/
+│       ├── src/
+│       │   └── index.ts
+│       ├── package.json
+│       └── tsconfig.json
+├── apps/
+│   ├── api/                      # API 服务端
+│   │   ├── src/
+│   │   │   ├── index.ts
+│   │   │   └── routes/
+│   │   │       └── user.ts
+│   │   ├── package.json
+│   │   └── tsconfig.json
+│   └── web/                      # Web 前端
+│       ├── src/
+│       │   ├── index.ts
+│       │   └── services/
+│       │       └── user-service.ts
+│       ├── package.json
+│       └── tsconfig.json
+```
+
+**根 tsconfig.json（Project References 入口）**：
+
+```json
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared-types" },
+    { "path": "packages/utils" },
+    { "path": "apps/api" },
+    { "path": "apps/web" }
+  ]
+}
+```
+
+**根 tsconfig.base.json（共享编译选项）**：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@fullstack/shared-types": ["packages/shared-types/src/index.ts"],
+      "@fullstack/utils": ["packages/utils/src/index.ts"]
+    }
+  }
+}
+```
+
+**API 服务端 apps/api/tsconfig.json**：
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/shared-types" },
+    { "path": "../../packages/utils" }
+  ]
+}
+```
+
+**API 路由 apps/api/src/routes/user.ts**：
+
+```js
+import type {
+  User,
+  CreateUserRequest,
+  UpdateUserRequest,
+  ApiResponse,
+  PaginatedResponse,
+} from "@fullstack/shared-types";
+
+const users: Map<string, User> = new Map();
+
+function handleCreateUser(body: CreateUserRequest): ApiResponse<User> {
+  const newUser: User = {
+    id: crypto.randomUUID(),
+    email: body.email,
+    displayName: body.displayName,
+    role: body.role,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  users.set(newUser.id, newUser);
+  return { success: true, data: newUser };
+}
+
+function handleUpdateUser(
+  userId: string,
+  body: UpdateUserRequest
+): ApiResponse<User> {
+  const existingUser = users.get(userId);
+  if (!existingUser) {
+    return {
+      success: false,
+      data: null as unknown as User,
+      message: "User not found",
+    };
+  }
+
+  const updatedUser: User = {
+    ...existingUser,
+    ...body,
+    updatedAt: new Date().toISOString(),
+  };
+  users.set(userId, updatedUser);
+  return { success: true, data: updatedUser };
+}
+
+function handleListUsers(
+  page: number,
+  pageSize: number
+): PaginatedResponse<User> {
+  const allUsers = Array.from(users.values());
+  const startIndex = (page - 1) * pageSize;
+  const paginatedUsers = allUsers.slice(startIndex, startIndex + pageSize);
+
+  return {
+    items: paginatedUsers,
+    total: allUsers.length,
+    page,
+    pageSize,
+    hasNextPage: startIndex + pageSize < allUsers.length,
+  };
+}
+
+export { handleCreateUser, handleUpdateUser, handleListUsers };
+```
+
+**前端服务 apps/web/src/services/user-service.ts**：
+
+```js
+import type {
+  User,
+  CreateUserRequest,
+  UpdateUserRequest,
+  ApiResponse,
+  PaginatedResponse,
+} from "@fullstack/shared-types";
+
+const API_BASE = "/api";
+
+async function getUsers(
+  page: number = 1,
+  pageSize: number = 20
+): Promise<PaginatedResponse<User>> {
+  const response = await fetch(
+    `${API_BASE}/users?page=${page}&pageSize=${pageSize}`
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch users: ${response.statusText}`);
+  }
+  return response.json() as Promise<PaginatedResponse<User>>;
+}
+
+async function createUser(
+  data: CreateUserRequest
+): Promise<ApiResponse<User>> {
+  const response = await fetch(`${API_BASE}/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to create user: ${response.statusText}`);
+  }
+  return response.json() as Promise<ApiResponse<User>>;
+}
+
+async function updateUser(
+  userId: string,
+  data: UpdateUserRequest
+): Promise<ApiResponse<User>> {
+  const response = await fetch(`${API_BASE}/users/${userId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to update user: ${response.statusText}`);
+  }
+  return response.json() as Promise<ApiResponse<User>>;
+}
+
+export { getUsers, createUser, updateUser };
+```
+
+**构建命令**：
+
+```bash
+# 使用 tsc --build 按依赖顺序增量构建
+tsc --build
+
+# 或使用 Turborepo 编排
+turbo run build
+```
+
+当修改 `shared-types` 中的 `User` 接口（如新增一个 `avatar` 字段）时，`tsc --build` 会自动重新编译所有依赖 `shared-types` 的包，前后端代码中缺少 `avatar` 字段的地方会立即报错。
+
+## 🔗 相关概念
+
+- **[Monorepo 工具](./01-monorepo-tools.mdx)**：pnpm workspace、Turborepo、Nx 的使用
+- **[API 类型方案](/typescript/06-ecosystem-engineering/02-type-safe-api/01-api-type-solutions)**：tRPC、GraphQL Code Generator 等端到端类型方案
+- **package.json exports**：现代 Node.js 的条件导出机制
+
+## 📝 学习检查点
+
+- [ ] 能够创建共享类型包并在多个子包中引用
+- [ ] 理解 `composite`、`declaration`、`declarationMap` 选项的作用
+- [ ] 掌握 TypeScript Project References 的配置和增量构建命令
+- [ ] 理解 tsconfig paths 与 pnpm workspace 的各自职责
+- [ ] 能够为内部包配置 `exports` 字段实现子路径导出
+- [ ] 知道如何根据项目规模选择合适的类型共享组合策略
+
+## 🚀 下一步
+
+→ [API 类型方案](/typescript/06-ecosystem-engineering/02-type-safe-api/01-api-type-solutions) - 学习 tRPC、GraphQL Code Generator 等端到端类型安全方案

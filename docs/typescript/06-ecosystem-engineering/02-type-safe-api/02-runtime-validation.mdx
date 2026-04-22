@@ -5,8 +5,807 @@
 
 ## 📚 概念介绍
 
-本节将介绍运行时类型校验的核心概念和实践方法。
+TypeScript 的类型系统只在**编译时**生效，编译为 JavaScript 后所有类型信息都会被擦除。这意味着来自外部的数据（API 响应、用户输入、环境变量、文件读取等）在运行时是没有类型保障的——即使你声明了 `as User`，运行时依然可能拿到完全不符合 `User` 结构的数据。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+**运行时类型校验**库的作用就是弥补这个缺口：用一份 Schema 定义同时提供编译时类型和运行时校验。本节将深入学习三个主流运行时校验库：**Zod**、**Valibot** 和 **io-ts**，并探讨它们如何与 TypeScript 类型系统桥接。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 理解 TypeScript 类型擦除的局限性和运行时校验的必要性
+- 使用 Zod 定义 Schema 并进行运行时数据校验
+- 使用 Valibot 构建轻量级的校验逻辑
+- 了解 io-ts 的函数式校验范式
+- 掌握运行时校验与编译时类型的桥接模式
+
+## 🔑 为什么需要运行时校验
+
+### 类型擦除问题
+
+```js
+// TypeScript 编译前
+interface User {
+  id: string;
+  name: string;
+  email: string;
+}
+
+// 这行代码在编译后完全消失
+const user: User = await fetch("/api/user/1").then((r) => r.json());
+
+// 如果 API 返回了 { id: 123, name: null }，TypeScript 不会报错
+// 因为运行时已经没有 User 类型的概念了
+console.log(user.email.toUpperCase()); // 💥 运行时报错: Cannot read property 'toUpperCase' of undefined
+```
+
+### 信任边界
+
+```
+                    信任边界
+                      │
+  TypeScript 安全区    │     不可信数据来源
+  ─────────────────   │   ─────────────────
+  内部函数调用 ✅      │   HTTP API 响应
+  模块间引用 ✅        │   用户表单输入
+  已校验的数据 ✅      │   URL 参数
+                      │   环境变量
+                      │   文件读取
+                      │   WebSocket 消息
+                      │   第三方 SDK 回调
+```
+
+**所有跨越信任边界的数据都需要运行时校验。**
+
+## 🎯 Zod
+
+Zod 是目前最流行的 TypeScript 运行时校验库，API 设计直观，功能丰富，与 tRPC、React Hook Form 等生态深度集成。
+
+### 基础 Schema 定义
+
+```js
+import { z } from "zod";
+
+// 原始类型
+const stringSchema = z.string();
+const numberSchema = z.number();
+const booleanSchema = z.boolean();
+const dateSchema = z.date();
+
+// 带约束的类型
+const emailSchema = z.string().email("邮箱格式不正确");
+const ageSchema = z.number().int().min(0).max(150);
+const usernameSchema = z.string().min(2, "至少2个字符").max(50, "最多50个字符");
+const urlSchema = z.string().url();
+
+// 枚举类型
+const roleSchema = z.enum(["admin", "editor", "viewer"]);
+
+// 字面量类型
+const statusSchema = z.literal("active");
+
+// 可选和可空
+const optionalName = z.string().optional();       // string | undefined
+const nullableName = z.string().nullable();       // string | null
+const nullishName = z.string().nullish();         // string | null | undefined
+
+// 带默认值
+const pageSchema = z.number().int().positive().default(1);
+```
+
+### 对象 Schema
+
+```js
+import { z } from "zod";
+
+const AddressSchema = z.object({
+  street: z.string(),
+  city: z.string(),
+  province: z.string(),
+  postalCode: z.string().regex(/^\d{6}$/, "邮编必须为6位数字"),
+});
+
+const UserSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  email: z.string().email(),
+  age: z.number().int().min(0).max(150).optional(),
+  role: z.enum(["admin", "editor", "viewer"]),
+  address: AddressSchema.optional(),
+  tags: z.array(z.string()).default([]),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  createdAt: z.string().datetime(),
+});
+
+// 从 Schema 推断类型
+type User = z.infer<typeof UserSchema>;
+
+// 派生 Schema
+const CreateUserSchema = UserSchema.omit({
+  id: true,
+  createdAt: true,
+});
+type CreateUser = z.infer<typeof CreateUserSchema>;
+
+const UpdateUserSchema = UserSchema.partial().omit({
+  id: true,
+  createdAt: true,
+});
+type UpdateUser = z.infer<typeof UpdateUserSchema>;
+
+const UserSummarySchema = UserSchema.pick({
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+});
+type UserSummary = z.infer<typeof UserSummarySchema>;
+```
+
+### 校验方法
+
+```js
+import { z } from "zod";
+
+const UserSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  age: z.number().int().min(0).optional(),
+});
+
+// 方式一：parse — 校验失败抛出 ZodError
+try {
+  const user = UserSchema.parse({
+    name: "张三",
+    email: "zhangsan@example.com",
+    age: 25,
+  });
+  console.log(user.name); // 类型: string
+} catch (error) {
+  if (error instanceof z.ZodError) {
+    console.error("校验失败:", error.issues);
+  }
+}
+
+// 方式二：safeParse — 不抛错，返回结果对象
+const result = UserSchema.safeParse({
+  name: "",
+  email: "invalid",
+  age: -1,
+});
+
+if (result.success) {
+  console.log(result.data.name); // 类型安全
+} else {
+  // 获取格式化的错误信息
+  const flatErrors = result.error.flatten();
+  console.log(flatErrors.fieldErrors);
+  // {
+  //   name: ["String must contain at least 1 character(s)"],
+  //   email: ["Invalid email"],
+  //   age: ["Number must be greater than or equal to 0"]
+  // }
+}
+```
+
+### 高级 Schema 模式
+
+```js
+import { z } from "zod";
+
+// 联合类型（Discriminated Union）
+const ShapeSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("circle"),
+    radius: z.number().positive(),
+  }),
+  z.object({
+    type: z.literal("rectangle"),
+    width: z.number().positive(),
+    height: z.number().positive(),
+  }),
+  z.object({
+    type: z.literal("triangle"),
+    base: z.number().positive(),
+    height: z.number().positive(),
+  }),
+]);
+
+type Shape = z.infer<typeof ShapeSchema>;
+
+// 递归类型
+const CategorySchema: z.ZodType<Category> = z.lazy(() =>
+  z.object({
+    id: z.string(),
+    name: z.string(),
+    children: z.array(CategorySchema).default([]),
+  })
+);
+
+interface Category {
+  id: string;
+  name: string;
+  children: Category[];
+}
+
+// 自定义校验（refine / superRefine）
+const PasswordSchema = z
+  .object({
+    password: z.string().min(8),
+    confirmPassword: z.string(),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "两次输入的密码不一致",
+    path: ["confirmPassword"],
+  });
+
+// transform：校验的同时转换数据
+const SearchParamsSchema = z.object({
+  page: z.string().transform(Number).pipe(z.number().int().positive()),
+  pageSize: z.string().transform(Number).pipe(z.number().int().min(1).max(100)),
+  query: z.string().trim().toLowerCase().optional(),
+});
+
+const params = SearchParamsSchema.parse({
+  page: "3",
+  pageSize: "20",
+  query: "  TypeScript  ",
+});
+console.log(params.page);     // 3（number 类型）
+console.log(params.query);    // "typescript"（已 trim + lowercase）
+```
+
+## 🎯 Valibot
+
+Valibot 是一个模块化的轻量级校验库，通过函数组合的方式构建 Schema，支持 Tree-shaking，打包体积远小于 Zod。
+
+### 安装
+
+```bash
+pnpm add valibot
+```
+
+### 基础用法
+
+```js
+import * as v from "valibot";
+
+// 基础 Schema 定义（函数组合风格）
+const EmailSchema = v.pipe(v.string(), v.email("邮箱格式不正确"));
+const AgeSchema = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(150));
+const RoleSchema = v.picklist(["admin", "editor", "viewer"]);
+
+// 对象 Schema
+const UserSchema = v.object({
+  id: v.pipe(v.string(), v.uuid()),
+  name: v.pipe(v.string(), v.minLength(1), v.maxLength(100)),
+  email: v.pipe(v.string(), v.email()),
+  age: v.optional(AgeSchema),
+  role: RoleSchema,
+  tags: v.optional(v.array(v.string()), []),
+  createdAt: v.pipe(v.string(), v.isoTimestamp()),
+});
+
+// 类型推断
+type User = v.InferOutput<typeof UserSchema>;
+
+// 校验
+const result = v.safeParse(UserSchema, {
+  id: "550e8400-e29b-41d4-a716-446655440000",
+  name: "张三",
+  email: "zhangsan@example.com",
+  role: "admin",
+  createdAt: "2026-01-01T00:00:00.000Z",
+});
+
+if (result.success) {
+  console.log(result.output.name); // 类型: string
+} else {
+  console.log(result.issues);
+  // [{ message: "...", path: [...], ... }]
+}
+```
+
+### 派生与组合
+
+```js
+import * as v from "valibot";
+
+const UserSchema = v.object({
+  id: v.pipe(v.string(), v.uuid()),
+  name: v.pipe(v.string(), v.minLength(1)),
+  email: v.pipe(v.string(), v.email()),
+  role: v.picklist(["admin", "editor", "viewer"]),
+  createdAt: v.string(),
+});
+
+// omit 和 pick
+const CreateUserSchema = v.omit(UserSchema, ["id", "createdAt"]);
+type CreateUser = v.InferOutput<typeof CreateUserSchema>;
+
+const UserSummarySchema = v.pick(UserSchema, ["id", "name", "role"]);
+type UserSummary = v.InferOutput<typeof UserSummarySchema>;
+
+// partial
+const UpdateUserSchema = v.partial(
+  v.omit(UserSchema, ["id", "createdAt"])
+);
+type UpdateUser = v.InferOutput<typeof UpdateUserSchema>;
+
+// 联合类型
+const ResultSchema = v.variant("status", [
+  v.object({
+    status: v.literal("success"),
+    data: UserSchema,
+  }),
+  v.object({
+    status: v.literal("error"),
+    message: v.string(),
+    code: v.number(),
+  }),
+]);
+
+type Result = v.InferOutput<typeof ResultSchema>;
+```
+
+### 自定义校验与转换
+
+```js
+import * as v from "valibot";
+
+// pipe 中使用 transform 转换数据
+const SearchParamsSchema = v.object({
+  page: v.pipe(
+    v.string(),
+    v.transform(Number),
+    v.number(),
+    v.integer(),
+    v.minValue(1)
+  ),
+  query: v.pipe(
+    v.string(),
+    v.trim(),
+    v.toLowerCase()
+  ),
+});
+
+// 自定义校验
+const PasswordFormSchema = v.pipe(
+  v.object({
+    password: v.pipe(v.string(), v.minLength(8)),
+    confirmPassword: v.string(),
+  }),
+  v.forward(
+    v.check(
+      (input) => input.password === input.confirmPassword,
+      "两次输入的密码不一致"
+    ),
+    ["confirmPassword"]
+  )
+);
+
+const formResult = v.safeParse(PasswordFormSchema, {
+  password: "12345678",
+  confirmPassword: "12345679",
+});
+
+if (!formResult.success) {
+  console.log(formResult.issues[0].message); // "两次输入的密码不一致"
+}
+```
+
+## 🎯 io-ts
+
+io-ts 采用函数式编程风格（基于 fp-ts），适合喜欢函数式范式的团队。它使用 Codec（编解码器）的概念，既能 decode（校验+转换外部数据）也能 encode（将内部数据转换为外部格式）。
+
+### 安装
+
+```bash
+pnpm add io-ts fp-ts
+```
+
+### 基础用法
+
+```js
+import * as t from "io-ts";
+import { isRight, isLeft } from "fp-ts/Either";
+
+// 基础 Codec 定义
+const UserCodec = t.type({
+  id: t.string,
+  name: t.string,
+  email: t.string,
+  role: t.union([t.literal("admin"), t.literal("editor"), t.literal("viewer")]),
+  age: t.union([t.number, t.undefined]),
+});
+
+// 类型推断
+type User = t.TypeOf<typeof UserCodec>;
+// { id: string; name: string; email: string; role: "admin" | "editor" | "viewer"; age: number | undefined }
+
+// decode 校验
+const result = UserCodec.decode({
+  id: "1",
+  name: "张三",
+  email: "zhangsan@example.com",
+  role: "admin",
+  age: 25,
+});
+
+if (isRight(result)) {
+  const user = result.right;
+  console.log(user.name); // 类型: string
+  console.log(user.role); // 类型: "admin" | "editor" | "viewer"
+} else {
+  console.error("校验失败:", result.left);
+}
+```
+
+### 组合 Codec
+
+```js
+import * as t from "io-ts";
+import { isRight } from "fp-ts/Either";
+
+// 必填字段
+const RequiredFields = t.type({
+  id: t.string,
+  name: t.string,
+  email: t.string,
+});
+
+// 可选字段
+const OptionalFields = t.partial({
+  age: t.number,
+  bio: t.string,
+});
+
+// intersection 合并
+const UserCodec = t.intersection([RequiredFields, OptionalFields]);
+type User = t.TypeOf<typeof UserCodec>;
+// { id: string; name: string; email: string; age?: number; bio?: string }
+
+// 数组
+const UserListCodec = t.array(UserCodec);
+type UserList = t.TypeOf<typeof UserListCodec>;
+
+// Record
+const UserMapCodec = t.record(t.string, UserCodec);
+type UserMap = t.TypeOf<typeof UserMapCodec>;
+
+// 校验示例
+const listResult = UserListCodec.decode([
+  { id: "1", name: "张三", email: "a@b.com" },
+  { id: "2", name: "李四", email: "c@d.com", age: 30 },
+]);
+
+if (isRight(listResult)) {
+  console.log(listResult.right.length); // 2
+  console.log(listResult.right[0].name); // "张三"
+}
+```
+
+### 错误报告
+
+```js
+import * as t from "io-ts";
+import { isLeft } from "fp-ts/Either";
+import { PathReporter } from "io-ts/PathReporter";
+
+const UserCodec = t.type({
+  id: t.string,
+  name: t.string,
+  email: t.string,
+  age: t.number,
+});
+
+const result = UserCodec.decode({
+  id: 123,        // 应为 string
+  name: "张三",
+  // email 缺失
+  age: "not-a-number",
+});
+
+if (isLeft(result)) {
+  const errors = PathReporter.report(result);
+  console.log(errors);
+  // [
+  //   "Invalid value 123 supplied to : { id: string, ... }/id: string",
+  //   "Invalid value undefined supplied to : { id: string, ... }/email: string",
+  //   "Invalid value \"not-a-number\" supplied to : { id: string, ... }/age: number"
+  // ]
+}
+```
+
+## 📊 运行时校验库对比
+
+| 特性 | Zod | Valibot | io-ts |
+|------|-----|---------|-------|
+| **API 风格** | 链式调用 | 函数组合 | 函数式 (fp-ts) |
+| **Bundle 体积** | ~14KB (min+gzip) | ~1-5KB (按需) | ~7KB + fp-ts |
+| **Tree-shaking** | 有限 | ✅ 优秀 | 有限 |
+| **类型推断** | `z.infer<>` | `v.InferOutput<>` | `t.TypeOf<>` |
+| **错误信息** | 清晰友好 | 清晰友好 | 需 PathReporter |
+| **数据转换** | `.transform()` | `v.transform()` | 自定义 Codec |
+| **生态集成** | tRPC, RHF 等 | 不断增长 | fp-ts 生态 |
+| **学习曲线** | 低 | 低 | 中-高 |
+
+### 选型建议
+
+```
+通用项目、与 tRPC/表单库集成   → Zod（生态最丰富）
+极致包体积、函数式组合风格      → Valibot（最轻量）
+函数式编程团队、已用 fp-ts     → io-ts（FP 范式一致）
+```
+
+## 🎯 运行时校验与编译时类型的桥接
+
+### 桥接模式：Single Source of Truth
+
+核心思想是 **Schema 即类型**——从一份 Schema 定义中同时获得运行时校验函数和编译时 TypeScript 类型，避免类型和校验逻辑不一致。
+
+```js
+import { z } from "zod";
+
+// ✅ 正确做法：Schema 即类型（Single Source of Truth）
+const UserSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  email: z.string().email(),
+  role: z.enum(["admin", "editor", "viewer"]),
+});
+
+// 编译时类型从 Schema 推断
+type User = z.infer<typeof UserSchema>;
+
+// 运行时校验使用同一个 Schema
+function validateUser(data: unknown): User {
+  return UserSchema.parse(data);
+}
+```
+
+```js
+// ❌ 错误做法：手动定义类型 + 手动写校验逻辑（两份来源，容易不一致）
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: "admin" | "editor" | "viewer";
+}
+
+function validateUser(data: unknown): User {
+  // 手动校验逻辑可能与 interface 不一致
+  if (typeof data !== "object" || data === null) throw new Error("Invalid");
+  // ... 大量重复的校验代码
+  return data as User; // 不安全的类型断言
+}
+```
+
+### 构建类型安全的 API 客户端
+
+```js
+import { z } from "zod";
+
+// 定义 API 响应 Schema
+const ApiResponseSchema = <T extends z.ZodType>(dataSchema: T) =>
+  z.object({
+    success: z.boolean(),
+    data: dataSchema,
+    message: z.string().optional(),
+  });
+
+const UserSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string().email(),
+  role: z.enum(["admin", "editor", "viewer"]),
+});
+
+const UserListResponseSchema = ApiResponseSchema(z.array(UserSchema));
+
+type ApiResponse<T> = {
+  success: boolean;
+  data: T;
+  message?: string;
+};
+type User = z.infer<typeof UserSchema>;
+
+// 类型安全且运行时校验的 fetch 封装
+async function safeFetch<T extends z.ZodType>(
+  url: string,
+  schema: T,
+  options?: RequestInit
+): Promise<z.infer<T>> {
+  const response = await fetch(url, options);
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  const rawData = await response.json();
+
+  // 运行时校验：确保响应数据符合预期结构
+  const result = schema.safeParse(rawData);
+  if (!result.success) {
+    console.error("API 响应结构不符合预期:", result.error.flatten());
+    throw new Error("API response validation failed");
+  }
+
+  return result.data;
+}
+
+// 使用
+async function getUsers(): Promise<ApiResponse<User[]>> {
+  // 返回值既有编译时类型保障，又经过运行时校验
+  return safeFetch("/api/users", UserListResponseSchema);
+}
+
+async function demo() {
+  const response = await getUsers();
+  if (response.success) {
+    response.data.forEach((user) => {
+      console.log(user.name);  // 类型: string，运行时保证是 string
+      console.log(user.role);  // 类型: "admin" | "editor" | "viewer"
+    });
+  }
+}
+
+demo();
+```
+
+### 环境变量校验
+
+```js
+import { z } from "zod";
+
+const EnvSchema = z.object({
+  NODE_ENV: z.enum(["development", "production", "test"]),
+  PORT: z.string().transform(Number).pipe(z.number().int().positive()),
+  DATABASE_URL: z.string().url(),
+  API_SECRET: z.string().min(32, "API_SECRET 至少需要 32 个字符"),
+  REDIS_URL: z.string().url().optional(),
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+});
+
+type Env = z.infer<typeof EnvSchema>;
+
+function loadEnv(): Env {
+  const result = EnvSchema.safeParse(process.env);
+
+  if (!result.success) {
+    const formatted = result.error.flatten().fieldErrors;
+    console.error("❌ 环境变量校验失败:");
+    for (const [field, errors] of Object.entries(formatted)) {
+      console.error(`  ${field}: ${errors?.join(", ")}`);
+    }
+    process.exit(1);
+  }
+
+  return result.data;
+}
+
+// 在应用启动时立即校验
+const env = loadEnv();
+
+// 之后使用 env 对象是完全类型安全的
+console.log(env.PORT);       // 类型: number
+console.log(env.NODE_ENV);   // 类型: "development" | "production" | "test"
+console.log(env.LOG_LEVEL);  // 类型: "debug" | "info" | "warn" | "error"
+```
+
+## 📝 实际应用示例
+
+### 表单校验与 API 请求的完整链路
+
+```js
+import { z } from "zod";
+
+// 1. 定义 Schema（Single Source of Truth）
+const CreateOrderSchema = z.object({
+  productId: z.string().uuid("商品 ID 格式不正确"),
+  quantity: z.number().int("数量必须为整数").min(1, "至少购买 1 件").max(99, "最多购买 99 件"),
+  shippingAddress: z.object({
+    receiver: z.string().min(2, "收件人至少 2 个字符"),
+    phone: z.string().regex(/^1[3-9]\d{9}$/, "手机号格式不正确"),
+    province: z.string().min(1),
+    city: z.string().min(1),
+    district: z.string().min(1),
+    detail: z.string().min(5, "详细地址至少 5 个字符"),
+  }),
+  couponCode: z.string().optional(),
+  remark: z.string().max(200, "备注最多 200 个字符").optional(),
+});
+
+type CreateOrderInput = z.infer<typeof CreateOrderSchema>;
+
+const OrderResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.object({
+    orderId: z.string(),
+    totalAmount: z.number(),
+    status: z.enum(["pending", "confirmed"]),
+    createdAt: z.string().datetime(),
+  }),
+});
+
+type OrderResponse = z.infer<typeof OrderResponseSchema>;
+
+// 2. 前端表单校验
+function validateOrderForm(formData: unknown): {
+  valid: boolean;
+  data?: CreateOrderInput;
+  errors?: Record<string, string[]>;
+} {
+  const result = CreateOrderSchema.safeParse(formData);
+
+  if (result.success) {
+    return { valid: true, data: result.data };
+  }
+
+  return {
+    valid: false,
+    errors: result.error.flatten().fieldErrors as Record<string, string[]>,
+  };
+}
+
+// 3. 提交订单（运行时校验响应）
+async function submitOrder(orderData: CreateOrderInput): Promise<OrderResponse> {
+  const response = await fetch("/api/orders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(orderData),
+  });
+
+  const rawData = await response.json();
+  return OrderResponseSchema.parse(rawData);
+}
+
+// 4. 完整使用流程
+async function handleOrderSubmit(formData: unknown) {
+  // 前端校验
+  const validation = validateOrderForm(formData);
+  if (!validation.valid) {
+    console.log("表单校验失败:", validation.errors);
+    return;
+  }
+
+  // 提交并校验响应
+  const orderResponse = await submitOrder(validation.data!);
+  console.log(`订单创建成功: ${orderResponse.data.orderId}`);
+  console.log(`总金额: ${orderResponse.data.totalAmount}`);
+}
+
+// 测试
+handleOrderSubmit({
+  productId: "550e8400-e29b-41d4-a716-446655440000",
+  quantity: 2,
+  shippingAddress: {
+    receiver: "张三",
+    phone: "13800138000",
+    province: "浙江省",
+    city: "杭州市",
+    district: "西湖区",
+    detail: "文三路 100 号某大厦 2001 室",
+  },
+  remark: "请尽快发货",
+});
+```
+
+## 🔗 相关概念
+
+- **[API 类型方案](./01-api-type-solutions.mdx)**：tRPC、GraphQL Code Generator 等端到端类型安全方案
+- **[类型共享](/typescript/06-ecosystem-engineering/01-monorepo/02-type-sharing)**：Monorepo 中的跨包类型共享策略
+- **条件类型与 infer**：Zod 的 `z.infer` 背后依赖 TypeScript 的条件类型推断机制
+
+## 📝 学习检查点
+
+- [ ] 理解 TypeScript 类型擦除导致的运行时风险
+- [ ] 掌握 Zod 的 Schema 定义、校验方法和类型推断
+- [ ] 了解 Valibot 的函数组合风格和体积优势
+- [ ] 了解 io-ts 的函数式编解码范式
+- [ ] 理解 Schema 即类型（Single Source of Truth）的桥接模式
+- [ ] 能够构建类型安全且运行时校验的 API 客户端
+- [ ] 能够使用 Zod 校验环境变量
+
+## 🚀 下一步
+
+→ [库打包](/typescript/06-ecosystem-engineering/03-publishing-libraries/01-library-bundling) - 学习如何打包和发布 TypeScript 库

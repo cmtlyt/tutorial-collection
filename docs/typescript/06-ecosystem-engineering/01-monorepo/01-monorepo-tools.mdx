@@ -5,8 +5,569 @@
 
 ## 📚 概念介绍
 
-本节将介绍Monorepo 工具的核心概念和实践方法。
+Monorepo（单一代码仓库）是一种将多个项目或包存放在同一个代码仓库中的开发策略。在 TypeScript 生态中，Monorepo 尤为重要——它能让多个包之间共享类型定义、统一构建配置，并简化依赖管理。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+本节将介绍三种主流 Monorepo 工具：**pnpm workspace**、**Turborepo** 和 **Nx**，帮助你根据项目规模选择合适的方案。
+
+## 🎯 学习目标
+
+完成本节学习后，你将能够：
+- 理解 Monorepo 的核心优势与适用场景
+- 使用 pnpm workspace 搭建 Monorepo 项目
+- 使用 Turborepo 编排任务执行流水线
+- 了解 Nx 的插件体系与高级特性
+- 对比三种工具并选择适合自己项目的方案
+
+## 🔑 Monorepo 核心概念
+
+### 为什么使用 Monorepo
+
+```
+传统多仓库（Polyrepo）              Monorepo
+┌──────────┐ ┌──────────┐       ┌──────────────────────┐
+│ app-repo │ │ lib-repo │       │  monorepo/           │
+│          │ │          │       │  ├── apps/web        │
+│ 独立依赖  │ │ 独立依赖  │       │  ├── packages/ui    │
+│ 独立CI/CD │ │ 独立CI/CD │       │  ├── packages/utils │
+│ 版本同步难 │ │ 版本同步难 │       │  └── packages/types │
+└──────────┘ └──────────┘       └──────────────────────┘
+  类型不共享    类型不共享            统一类型、统一构建
+```
+
+- **代码共享**：包之间直接引用，无需发布到 npm
+- **类型安全**：TypeScript 类型在包间实时同步
+- **原子提交**：跨包变更在同一次提交中完成
+- **统一工具链**：一套 ESLint、Prettier、tsconfig 配置
+
+## 🎯 pnpm workspace
+
+pnpm 是目前最流行的 Monorepo 包管理方案，通过硬链接和内容寻址存储实现高效的磁盘利用。
+
+### 项目初始化
+
+```bash
+# 创建项目目录
+mkdir my-monorepo && cd my-monorepo
+
+# 初始化根项目
+pnpm init
+
+# 创建 workspace 配置
+```
+
+在根目录创建 `pnpm-workspace.yaml`：
+
+```yaml
+packages:
+  - "apps/*"
+  - "packages/*"
+```
+
+### 典型目录结构
+
+```
+my-monorepo/
+├── pnpm-workspace.yaml
+├── package.json
+├── tsconfig.base.json
+├── apps/
+│   └── web/
+│       ├── package.json
+│       ├── tsconfig.json
+│       └── src/
+│           └── index.ts
+└── packages/
+    ├── shared-types/
+    │   ├── package.json
+    │   ├── tsconfig.json
+    │   └── src/
+    │       └── index.ts
+    └── utils/
+        ├── package.json
+        ├── tsconfig.json
+        └── src/
+            └── index.ts
+```
+
+### 根 package.json 配置
+
+```json
+{
+  "name": "my-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter ./apps/* run dev",
+    "build": "pnpm --filter ./packages/* run build && pnpm --filter ./apps/* run build",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+### 包之间的依赖管理
+
+```bash
+# 给 apps/web 安装内部包 @my-monorepo/utils
+pnpm --filter @my-monorepo/web add @my-monorepo/utils
+
+# 给所有包安装共用的开发依赖（安装在根目录）
+pnpm add -Dw typescript eslint
+
+# 给特定包安装外部依赖
+pnpm --filter @my-monorepo/utils add lodash-es
+```
+
+子包的 `package.json` 引用内部依赖时使用 `workspace:*` 协议：
+
+```json
+{
+  "name": "@my-monorepo/web",
+  "dependencies": {
+    "@my-monorepo/utils": "workspace:*",
+    "@my-monorepo/shared-types": "workspace:*"
+  }
+}
+```
+
+### 共享 tsconfig
+
+根目录的 `tsconfig.base.json` 统一编译选项：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@my-monorepo/*": ["packages/*/src"]
+    }
+  }
+}
+```
+
+子包的 `tsconfig.json` 继承基础配置：
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+```
+
+### pnpm filter 常用命令
+
+```bash
+# 在特定包中执行命令
+pnpm --filter @my-monorepo/web dev
+
+# 在所有包中递归执行
+pnpm -r run build
+
+# 只在有变更的包中执行（配合 git）
+pnpm --filter "...[origin/main]" run build
+
+# 执行某个包及其所有依赖
+pnpm --filter @my-monorepo/web... run build
+```
+
+## 🎯 Turborepo
+
+Turborepo 是 Vercel 出品的高性能 Monorepo 构建编排工具，专注于任务调度和缓存。它不替代 pnpm workspace，而是在其之上提供智能的构建流水线。
+
+### 安装与初始化
+
+```bash
+# 在已有 pnpm workspace 项目中添加 Turborepo
+pnpm add -Dw turbo
+
+# 或从模板创建新项目
+pnpm dlx create-turbo@latest my-turborepo
+```
+
+### turbo.json 配置
+
+在根目录创建 `turbo.json`：
+
+```json
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": ["coverage/**"]
+    }
+  }
+}
+```
+
+### 核心概念：任务依赖图
+
+```
+dependsOn: ["^build"]  表示先构建所有上游依赖包
+dependsOn: ["build"]   表示先构建自身的 build 任务
+dependsOn: []          表示没有依赖，可以并行执行
+
+执行 turbo run build 时的任务图：
+
+  @my-monorepo/shared-types:build
+         ↓
+  @my-monorepo/utils:build
+         ↓
+  @my-monorepo/web:build
+```
+
+### 远程缓存
+
+Turborepo 的核心优势是智能缓存——相同输入只构建一次：
+
+```bash
+# 本地缓存（默认开启）
+turbo run build
+# >>> 首次构建：编译所有包
+turbo run build
+# >>> 第二次：命中缓存，几乎瞬间完成
+
+# 启用远程缓存（团队共享）
+npx turbo login
+npx turbo link
+```
+
+### 实际执行示例
+
+```bash
+# 构建所有包（自动按依赖拓扑排序）
+turbo run build
+
+# 并行运行开发服务器
+turbo run dev
+
+# 只构建受影响的包
+turbo run build --filter=@my-monorepo/web...
+
+# 查看任务依赖图
+turbo run build --graph
+```
+
+### package.json 中集成 Turborepo
+
+```json
+{
+  "name": "my-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+## 🎯 Nx
+
+Nx 是一个功能最为丰富的 Monorepo 工具，提供插件体系、代码生成器、依赖图可视化等企业级特性，适合大型团队和复杂项目。
+
+### 初始化
+
+```bash
+# 创建新的 Nx 工作区
+npx create-nx-workspace@latest my-nx-monorepo
+
+# 在已有项目中添加 Nx
+npx nx@latest init
+```
+
+### nx.json 配置
+
+```json
+{
+  "$schema": "https://nx.dev/reference/nx-json",
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["{projectRoot}/dist"],
+      "cache": true
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "cache": true
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "cache": true
+    }
+  },
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*"],
+    "production": [
+      "default",
+      "!{projectRoot}/**/*.spec.ts",
+      "!{projectRoot}/tsconfig.spec.json"
+    ]
+  }
+}
+```
+
+### 项目级配置 project.json
+
+每个包可以有自己的 `project.json`：
+
+```json
+{
+  "name": "@my-monorepo/utils",
+  "sourceRoot": "packages/utils/src",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p tsconfig.json",
+        "cwd": "packages/utils"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run",
+        "cwd": "packages/utils"
+      }
+    }
+  }
+}
+```
+
+### Nx 核心特性
+
+```bash
+# 运行单个目标
+npx nx build @my-monorepo/utils
+
+# 运行所有项目的某个目标
+npx nx run-many -t build
+
+# 只运行受影响的项目
+npx nx affected -t build
+
+# 可视化依赖图（在浏览器中打开）
+npx nx graph
+```
+
+### Nx 插件生态
+
+Nx 提供丰富的插件，可以自动化项目配置：
+
+```bash
+# 添加 React 插件
+npx nx add @nx/react
+
+# 添加 Node.js 插件
+npx nx add @nx/node
+
+# 使用生成器创建新库
+npx nx generate @nx/js:library my-lib --directory=packages/my-lib
+
+# 使用生成器创建新应用
+npx nx generate @nx/react:application my-app --directory=apps/my-app
+```
+
+## 📊 工具对比
+
+| 特性 | pnpm workspace | Turborepo | Nx |
+|------|---------------|-----------|-----|
+| **定位** | 包管理 | 构建编排 | 全功能工具链 |
+| **学习曲线** | 低 | 低 | 中-高 |
+| **任务缓存** | ❌ | ✅ 本地+远程 | ✅ 本地+远程 |
+| **任务编排** | 基础 filter | ✅ 依赖图 | ✅ 依赖图 |
+| **代码生成** | ❌ | ❌ | ✅ 丰富插件 |
+| **依赖图可视化** | ❌ | ✅ 基础 | ✅ 交互式 |
+| **适用规模** | 小-中 | 中-大 | 大-超大 |
+| **是否需要搭配** | 独立使用 | 搭配 pnpm | 可独立 |
+
+### 推荐组合
+
+```
+小型项目（2-5 个包）    → pnpm workspace
+中型项目（5-20 个包）   → pnpm workspace + Turborepo
+大型项目（20+ 个包）    → pnpm workspace + Nx
+                       或 pnpm workspace + Turborepo
+```
+
+## 📝 实际应用示例
+
+### 完整的 pnpm + Turborepo 项目搭建
+
+以下是一个包含 Web 应用、UI 组件库和工具库的完整 Monorepo 设置：
+
+**1. 根目录配置**
+
+`pnpm-workspace.yaml`：
+```yaml
+packages:
+  - "apps/*"
+  - "packages/*"
+```
+
+`turbo.json`：
+```json
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    }
+  }
+}
+```
+
+**2. 工具库 packages/utils**
+
+`packages/utils/package.json`：
+```json
+{
+  "name": "@my-monorepo/utils",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+`packages/utils/src/index.ts`：
+```js
+export function formatCurrency(amount: number, currency: string = "CNY"): string {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency,
+  }).format(amount);
+}
+
+export function generateId(prefix: string = ""): string {
+  const randomPart = Math.random().toString(36).substring(2, 10);
+  const timestamp = Date.now().toString(36);
+  return prefix ? `${prefix}_${timestamp}${randomPart}` : `${timestamp}${randomPart}`;
+}
+
+export function debounce<T extends (...args: unknown[]) => void>(
+  fn: T,
+  delayMs: number
+): (...args: Parameters<T>) => void {
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  return (...args: Parameters<T>) => {
+    if (timerId) clearTimeout(timerId);
+    timerId = setTimeout(() => fn(...args), delayMs);
+  };
+}
+```
+
+**3. 在 Web 应用中使用**
+
+`apps/web/package.json`：
+```json
+{
+  "name": "@my-monorepo/web",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@my-monorepo/utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+`apps/web/src/index.ts`：
+```js
+import { formatCurrency, generateId } from "@my-monorepo/utils";
+
+const orderId = generateId("order");
+const price = formatCurrency(99.9);
+
+console.log(`订单号: ${orderId}`);
+console.log(`价格: ${price}`);
+```
+
+**4. 执行构建**
+
+```bash
+# 安装所有依赖
+pnpm install
+
+# 构建所有包（Turborepo 自动处理依赖顺序）
+turbo run build
+
+# 开发模式
+turbo run dev
+```
+
+## 🔗 相关概念
+
+- **[类型共享](./02-type-sharing.mdx)**：Monorepo 中跨包共享 TypeScript 类型的具体策略
+- **Project References**：TypeScript 内置的多项目管理方案
+- **包管理器**：npm、yarn、pnpm 各自的 workspace 实现
+
+## 📝 学习检查点
+
+- [ ] 理解 Monorepo 相比 Polyrepo 的核心优势
+- [ ] 能够使用 pnpm workspace 搭建 Monorepo 项目
+- [ ] 理解 `workspace:*` 协议的作用
+- [ ] 掌握 Turborepo 的 `turbo.json` 配置和 `dependsOn` 机制
+- [ ] 理解 Turborepo 缓存的工作原理
+- [ ] 了解 Nx 的定位和适用场景
+- [ ] 能够根据项目规模选择合适的 Monorepo 方案
+
+## 🚀 下一步
+
+→ [类型共享](./02-type-sharing.mdx) - 学习在 Monorepo 中跨包共享 TypeScript 类型的实践方法
