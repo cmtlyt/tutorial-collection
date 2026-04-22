@@ -1,12 +1,423 @@
 # 泛型入门
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍泛型入门的核心概念和实践方法。
+泛型（Generics）是 TypeScript 中最强大的特性之一，它允许你编写**可重用、类型安全**的代码。简单来说，泛型就是"类型的参数"——就像函数可以接受值参数一样，泛型让类型也可以接受参数。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+没有泛型时，你要么为每种类型写重复的代码，要么使用 `any` 放弃类型安全。泛型完美地解决了这个矛盾。
+
+## 🎯 泛型函数
+
+### 为什么需要泛型
+
+先看一个没有泛型的场景：
+
+```ts
+// 😞 方案一：为每种类型写重复函数
+function identityString(value: string): string {
+  return value;
+}
+
+function identityNumber(value: number): number {
+  return value;
+}
+
+// 😞 方案二：使用 any，丢失类型信息
+function identityAny(value: any): any {
+  return value;
+}
+
+const result = identityAny("hello");
+// result 的类型是 any，不是 string
+```
+
+### 泛型函数的基本语法
+
+泛型用尖括号 `<T>` 声明一个**类型参数**，`T` 就像一个占位符，在调用时会被替换为具体类型：
+
+```ts
+function identity<T>(value: T): T {
+  return value;
+}
+
+// 显式指定类型参数
+const stringResult = identity<string>("hello");
+// stringResult 的类型是 string
+
+const numberResult = identity<number>(42);
+// numberResult 的类型是 number
+
+// ✅ 推荐：利用类型推断，省略类型参数
+const inferredResult = identity("hello");
+// inferredResult 的类型自动推断为 string
+```
+
+### 多类型参数
+
+泛型函数可以接受多个类型参数：
+
+```ts
+function pair<A, B>(first: A, second: B): [A, B] {
+  return [first, second];
+}
+
+const nameAge = pair("Alice", 30);
+// 类型推断为 [string, number]
+
+const coordinates = pair(10, 20);
+// 类型推断为 [number, number]
+```
+
+一个实用的例子——类型安全的对象属性获取：
+
+```ts
+function getProperty<Obj, Key extends keyof Obj>(obj: Obj, key: Key): Obj[Key] {
+  return obj[key];
+}
+
+const user = { name: "Alice", age: 30, email: "alice@example.com" };
+
+const name = getProperty(user, "name");
+// name 的类型是 string
+
+const age = getProperty(user, "age");
+// age 的类型是 number
+
+// ❌ 编译错误：'address' 不在 user 的属性中
+// const address = getProperty(user, "address");
+```
+
+## 🎯 泛型接口
+
+接口也可以使用泛型，这在定义数据结构时非常有用：
+
+```ts
+// 泛型接口：通用的 API 响应结构
+interface ApiResponse<T> {
+  code: number;
+  message: string;
+  data: T;
+  timestamp: number;
+}
+
+// 用户数据响应
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+const userResponse: ApiResponse<User> = {
+  code: 200,
+  message: "success",
+  data: { id: 1, name: "Alice", email: "alice@example.com" },
+  timestamp: Date.now(),
+};
+
+// 分页列表响应
+interface PaginatedList<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+const userList: ApiResponse<PaginatedList<User>> = {
+  code: 200,
+  message: "success",
+  data: {
+    items: [{ id: 1, name: "Alice", email: "alice@example.com" }],
+    total: 100,
+    page: 1,
+    pageSize: 10,
+  },
+  timestamp: Date.now(),
+};
+```
+
+### 泛型函数接口
+
+接口也可以描述泛型函数的类型：
+
+```ts
+interface Transformer<Input, Output> {
+  (value: Input): Output;
+}
+
+const stringToNumber: Transformer<string, number> = (value) => {
+  return parseInt(value, 10);
+};
+
+const numberToString: Transformer<number, string> = (value) => {
+  return value.toString();
+};
+
+console.log(stringToNumber("42")); // 42
+console.log(numberToString(42));   // "42"
+```
+
+## 🎯 泛型类
+
+类也可以使用泛型来创建可复用的数据结构：
+
+```ts
+class Stack<T> {
+  private items: T[] = [];
+
+  push(item: T): void {
+    this.items.push(item);
+  }
+
+  pop(): T | undefined {
+    return this.items.pop();
+  }
+
+  peek(): T | undefined {
+    return this.items[this.items.length - 1];
+  }
+
+  get size(): number {
+    return this.items.length;
+  }
+
+  isEmpty(): boolean {
+    return this.items.length === 0;
+  }
+}
+
+// 数字栈
+const numberStack = new Stack<number>();
+numberStack.push(1);
+numberStack.push(2);
+numberStack.push(3);
+console.log(numberStack.pop()); // 3
+console.log(numberStack.peek()); // 2
+
+// 字符串栈
+const stringStack = new Stack<string>();
+stringStack.push("hello");
+stringStack.push("world");
+console.log(stringStack.pop()); // "world"
+```
+
+### 类的泛型与接口结合
+
+```ts
+interface Repository<T> {
+  findById(id: string): T | undefined;
+  findAll(): T[];
+  save(entity: T): void;
+  delete(id: string): boolean;
+}
+
+interface Entity {
+  id: string;
+}
+
+class InMemoryRepository<T extends Entity> implements Repository<T> {
+  private store = new Map<string, T>();
+
+  findById(id: string): T | undefined {
+    return this.store.get(id);
+  }
+
+  findAll(): T[] {
+    return Array.from(this.store.values());
+  }
+
+  save(entity: T): void {
+    this.store.set(entity.id, entity);
+  }
+
+  delete(id: string): boolean {
+    return this.store.delete(id);
+  }
+}
+
+interface Product extends Entity {
+  name: string;
+  price: number;
+}
+
+const productRepo = new InMemoryRepository<Product>();
+productRepo.save({ id: "1", name: "TypeScript Book", price: 39.99 });
+productRepo.save({ id: "2", name: "JavaScript Book", price: 29.99 });
+
+console.log(productRepo.findById("1"));
+// { id: "1", name: "TypeScript Book", price: 39.99 }
+console.log(productRepo.findAll().length); // 2
+```
+
+## 🎯 泛型约束
+
+### extends 关键字
+
+有时候你希望泛型参数不是完全任意的，而是满足某些条件。使用 `extends` 关键字可以为泛型添加约束：
+
+```ts
+// 约束 T 必须有 length 属性
+interface HasLength {
+  length: number;
+}
+
+function logLength<T extends HasLength>(value: T): T {
+  console.log(`Length: ${value.length}`);
+  return value;
+}
+
+logLength("hello");       // Length: 5
+logLength([1, 2, 3]);     // Length: 3
+logLength({ length: 10 }); // Length: 10
+
+// ❌ 编译错误：number 没有 length 属性
+// logLength(42);
+```
+
+### keyof 与泛型约束
+
+`keyof` 操作符与泛型结合，可以约束某个参数必须是另一个类型的键：
+
+```ts
+function pick<T, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
+  const result = {} as Pick<T, K>;
+  for (const key of keys) {
+    result[key] = obj[key];
+  }
+  return result;
+}
+
+const user = { name: "Alice", age: 30, email: "alice@example.com", role: "admin" };
+
+const nameAndEmail = pick(user, ["name", "email"]);
+// 类型为 { name: string; email: string }
+console.log(nameAndEmail); // { name: "Alice", email: "alice@example.com" }
+
+// ❌ 编译错误：'address' 不是 user 的属性
+// const invalid = pick(user, ["name", "address"]);
+```
+
+## 🎯 默认泛型参数
+
+泛型参数可以设定默认值，这样在不指定类型时使用默认类型：
+
+```ts
+interface EventPayload {
+  [key: string]: unknown;
+}
+
+interface EventEmitter<Events extends Record<string, EventPayload> = Record<string, EventPayload>> {
+  on<E extends keyof Events>(event: E, handler: (payload: Events[E]) => void): void;
+  emit<E extends keyof Events>(event: E, payload: Events[E]): void;
+}
+
+// 使用默认泛型参数，接受任意事件
+function createBasicEmitter(): EventEmitter {
+  const handlers = new Map<string, Function[]>();
+  return {
+    on(event, handler) {
+      const list = handlers.get(event as string) ?? [];
+      list.push(handler);
+      handlers.set(event as string, list);
+    },
+    emit(event, payload) {
+      const list = handlers.get(event as string) ?? [];
+      list.forEach((handler) => handler(payload));
+    },
+  };
+}
+
+// 指定具体事件类型，获得完整的类型安全
+interface AppEvents {
+  login: { userId: string; timestamp: number };
+  logout: { userId: string };
+  error: { message: string; code: number };
+}
+
+function createTypedEmitter(): EventEmitter<AppEvents> {
+  return createBasicEmitter() as EventEmitter<AppEvents>;
+}
+
+const emitter = createTypedEmitter();
+emitter.on("login", (payload) => {
+  // payload 自动推断为 { userId: string; timestamp: number }
+  console.log(`User ${payload.userId} logged in at ${payload.timestamp}`);
+});
+
+emitter.emit("login", { userId: "u001", timestamp: Date.now() });
+```
+
+## 📝 实际应用示例
+
+### 类型安全的 HTTP 客户端
+
+```ts
+interface RequestConfig {
+  headers?: Record<string, string>;
+  params?: Record<string, string>;
+  timeout?: number;
+}
+
+interface HttpClient {
+  get<T>(url: string, config?: RequestConfig): Promise<ApiResponse<T>>;
+  post<T>(url: string, body: unknown, config?: RequestConfig): Promise<ApiResponse<T>>;
+  put<T>(url: string, body: unknown, config?: RequestConfig): Promise<ApiResponse<T>>;
+  delete<T>(url: string, config?: RequestConfig): Promise<ApiResponse<T>>;
+}
+
+interface ApiResponse<T> {
+  code: number;
+  message: string;
+  data: T;
+}
+
+// 模拟使用
+declare const http: HttpClient;
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+interface Post {
+  id: number;
+  title: string;
+  content: string;
+  authorId: number;
+}
+
+async function fetchUserAndPosts(userId: number) {
+  // 返回类型自动推断为 ApiResponse<User>
+  const userResponse = await http.get<User>(`/api/users/${userId}`);
+  const user = userResponse.data; // 类型是 User
+
+  // 返回类型自动推断为 ApiResponse<Post[]>
+  const postsResponse = await http.get<Post[]>(`/api/users/${userId}/posts`);
+  const posts = postsResponse.data; // 类型是 Post[]
+
+  return { user, posts };
+}
+```
+
+## 🔗 相关概念
+
+- **类型参数推断**: TypeScript 可以根据传入的参数自动推断泛型类型
+- **extends 约束**: 限制泛型参数必须满足某个类型结构
+- **keyof 操作符**: 获取类型的所有键组成的联合类型，常与泛型配合使用
+- **条件类型**: 泛型的进阶用法，基于泛型参数进行类型分支判断
+
+## 📝 学习检查点
+
+- [ ] 理解泛型解决了什么问题（类型安全 vs 代码复用的矛盾）
+- [ ] 能编写泛型函数、泛型接口、泛型类
+- [ ] 理解类型参数推断机制，知道何时需要显式指定类型
+- [ ] 掌握 `extends` 泛型约束的用法
+- [ ] 理解 `keyof` 与泛型结合的模式
+- [ ] 能为泛型参数设置默认值
+
+## 🚀 下一步
+
+→ [泛型进阶](./02-generics-advanced.mdx)

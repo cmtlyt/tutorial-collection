@@ -1,12 +1,457 @@
 # 常用工具类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍常用工具类型的核心概念和实践方法。
+TypeScript 内置了一系列**工具类型（Utility Types）**，它们是基于泛型、映射类型和条件类型构建的"类型函数"，可以对已有类型进行常见的变换操作。掌握这些工具类型，不仅能大幅提升日常开发效率，还能帮助你理解 TypeScript 类型系统的底层运作原理。
+
+本节聚焦于最常用的对象类型操作工具：`Partial`、`Required`、`Readonly`、`Pick`、`Omit`、`Record`、`Exclude`、`Extract` 和 `NonNullable`。
+
+## 🎯 Partial\<T\> 与 Required\<T\>
+
+### Partial\<T\>：所有属性变为可选
+
+`Partial<T>` 将类型 `T` 的所有属性设为可选。
+
+```ts
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  age: number;
+}
+
+// 所有字段都变为可选
+type PartialUser = Partial<User>;
+// {
+//   id?: number;
+//   name?: string;
+//   email?: string;
+//   age?: number;
+// }
+
+// 典型场景：更新操作，只传需要更新的字段
+function updateUser(userId: number, updates: Partial<User>): User {
+  const existingUser: User = {
+    id: userId,
+    name: "Alice",
+    email: "alice@example.com",
+    age: 30,
+  };
+  return { ...existingUser, ...updates };
+}
+
+const updated = updateUser(1, { name: "Bob", age: 25 });
+console.log(updated);
+// { id: 1, name: "Bob", email: "alice@example.com", age: 25 }
+```
+
+### Partial 的底层实现
+
+```ts
+// Partial 的实现原理——映射类型 + 可选修饰符
+type MyPartial<T> = {
+  [K in keyof T]?: T[K];
+};
+```
+
+### Required\<T\>：所有属性变为必选
+
+`Required<T>` 是 `Partial<T>` 的反操作，将所有可选属性变为必选。
+
+```ts
+interface Config {
+  host?: string;
+  port?: number;
+  debug?: boolean;
+  logLevel?: "info" | "warn" | "error";
+}
+
+// 所有字段变为必选
+type FullConfig = Required<Config>;
+// {
+//   host: string;
+//   port: number;
+//   debug: boolean;
+//   logLevel: "info" | "warn" | "error";
+// }
+
+function startServer(config: FullConfig): void {
+  console.log(`Starting server at ${config.host}:${config.port}`);
+  console.log(`Debug mode: ${config.debug}, Log level: ${config.logLevel}`);
+}
+
+// 结合 Partial 实现带默认值的配置
+function createConfig(overrides: Partial<Config> = {}): FullConfig {
+  const defaults: FullConfig = {
+    host: "localhost",
+    port: 3000,
+    debug: false,
+    logLevel: "info",
+  };
+  return { ...defaults, ...overrides };
+}
+
+const config = createConfig({ port: 8080, debug: true });
+startServer(config);
+// Starting server at localhost:8080
+// Debug mode: true, Log level: info
+```
+
+### Required 的底层实现
+
+```ts
+type MyRequired<T> = {
+  [K in keyof T]-?: T[K];
+};
+```
+
+## 🎯 Readonly\<T\>
+
+`Readonly<T>` 将所有属性设为只读，防止属性被修改。
+
+```ts
+interface AppState {
+  currentUser: string;
+  theme: "light" | "dark";
+  notifications: number;
+}
+
+const state: Readonly<AppState> = {
+  currentUser: "Alice",
+  theme: "dark",
+  notifications: 5,
+};
+
+// ❌ 编译错误：readonly 属性不可修改
+// state.theme = "light";
+
+// ✅ 正确做法：创建新对象
+function updateState(
+  currentState: Readonly<AppState>,
+  updates: Partial<AppState>
+): Readonly<AppState> {
+  return Object.freeze({ ...currentState, ...updates });
+}
+
+const newState = updateState(state, { theme: "light" });
+console.log(newState.theme); // "light"
+```
+
+### Readonly 的底层实现
+
+```ts
+type MyReadonly<T> = {
+  readonly [K in keyof T]: T[K];
+};
+```
 
 :::tip
-本文档正在编写中，敬请期待。
+`Readonly<T>` 只是**浅层**只读。嵌套对象的属性仍然可以被修改。如果需要深层只读，参见[自定义工具类型](./04-custom-utility-types.mdx)中的 `DeepReadonly`。
 :::
+
+## 🎯 Pick\<T, K\> 与 Omit\<T, K\>
+
+### Pick\<T, K\>：选取指定属性
+
+`Pick<T, K>` 从类型 `T` 中选取指定的属性集合 `K`，构造新类型。
+
+```ts
+interface Article {
+  id: number;
+  title: string;
+  content: string;
+  author: string;
+  createdAt: Date;
+  updatedAt: Date;
+  tags: string[];
+}
+
+// 列表页只需要部分字段
+type ArticleSummary = Pick<Article, "id" | "title" | "author" | "createdAt">;
+// {
+//   id: number;
+//   title: string;
+//   author: string;
+//   createdAt: Date;
+// }
+
+function renderArticleList(articles: ArticleSummary[]): void {
+  for (const article of articles) {
+    console.log(`[${article.id}] ${article.title} by ${article.author}`);
+  }
+}
+
+renderArticleList([
+  { id: 1, title: "TypeScript Generics", author: "Alice", createdAt: new Date() },
+  { id: 2, title: "Advanced Types", author: "Bob", createdAt: new Date() },
+]);
+```
+
+### Omit\<T, K\>：排除指定属性
+
+`Omit<T, K>` 从类型 `T` 中排除指定的属性集合 `K`，保留剩余属性。
+
+```ts
+// 创建文章时不需要 id 和时间戳
+type CreateArticleInput = Omit<Article, "id" | "createdAt" | "updatedAt">;
+// {
+//   title: string;
+//   content: string;
+//   author: string;
+//   tags: string[];
+// }
+
+function createArticle(input: CreateArticleInput): Article {
+  return {
+    ...input,
+    id: Math.floor(Math.random() * 10000),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
+const newArticle = createArticle({
+  title: "Learning TypeScript",
+  content: "TypeScript is awesome...",
+  author: "Alice",
+  tags: ["typescript", "tutorial"],
+});
+
+console.log(newArticle.id);        // 随机数
+console.log(newArticle.createdAt); // 当前时间
+```
+
+### Pick 和 Omit 的底层实现
+
+```ts
+type MyPick<T, K extends keyof T> = {
+  [P in K]: T[P];
+};
+
+type MyOmit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
+```
+
+## 🎯 Record\<K, V\>
+
+`Record<K, V>` 构造一个对象类型，其属性键为 `K`，属性值为 `V`。
+
+```ts
+// 基本用法：统一值类型的字典
+type PageViews = Record<string, number>;
+
+const views: PageViews = {
+  "/home": 1200,
+  "/about": 350,
+  "/contact": 180,
+};
+
+// 使用联合类型作为键：确保所有键都存在
+type Role = "admin" | "editor" | "viewer";
+
+interface Permission {
+  read: boolean;
+  write: boolean;
+  delete: boolean;
+}
+
+const rolePermissions: Record<Role, Permission> = {
+  admin: { read: true, write: true, delete: true },
+  editor: { read: true, write: true, delete: false },
+  viewer: { read: true, write: false, delete: false },
+};
+
+function checkPermission(role: Role, action: keyof Permission): boolean {
+  return rolePermissions[role][action];
+}
+
+console.log(checkPermission("editor", "write"));  // true
+console.log(checkPermission("viewer", "delete")); // false
+```
+
+### Record 的底层实现
+
+```ts
+type MyRecord<K extends string | number | symbol, V> = {
+  [P in K]: V;
+};
+```
+
+## 🎯 Exclude\<T, U\> 与 Extract\<T, U\>
+
+### Exclude\<T, U\>：从联合类型中排除
+
+`Exclude<T, U>` 从联合类型 `T` 中排除所有可赋值给 `U` 的成员。
+
+```ts
+type AllEvents = "click" | "scroll" | "mousemove" | "keypress" | "keydown";
+
+type MouseEvents = Exclude<AllEvents, "keypress" | "keydown">;
+// "click" | "scroll" | "mousemove"
+
+type NonNullString = Exclude<string | null | undefined, null | undefined>;
+// string
+```
+
+### Extract\<T, U\>：从联合类型中提取
+
+`Extract<T, U>` 从联合类型 `T` 中提取所有可赋值给 `U` 的成员。
+
+```ts
+type KeyboardEvents = Extract<AllEvents, "keypress" | "keydown" | "keyup">;
+// "keypress" | "keydown"
+
+// 从混合类型中提取函数类型
+type Mixed = string | number | (() => void) | ((x: number) => string);
+type Functions = Extract<Mixed, Function>;
+// (() => void) | ((x: number) => string)
+```
+
+### 底层实现
+
+```ts
+// 利用分布式条件类型
+type MyExclude<T, U> = T extends U ? never : T;
+type MyExtract<T, U> = T extends U ? T : never;
+```
+
+## 🎯 NonNullable\<T\>
+
+`NonNullable<T>` 从类型 `T` 中排除 `null` 和 `undefined`。
+
+```ts
+type MaybeString = string | null | undefined;
+type DefiniteString = NonNullable<MaybeString>; // string
+
+// 实际应用：处理可能为空的数据
+interface UserProfile {
+  name: string;
+  bio: string | null;
+  website: string | null | undefined;
+}
+
+function displayField(value: NonNullable<UserProfile["bio"]>): void {
+  // value 确保是 string，不需要额外的空值检查
+  console.log(value.toUpperCase());
+}
+
+const profile: UserProfile = { name: "Alice", bio: "Developer", website: null };
+
+if (profile.bio !== null) {
+  displayField(profile.bio); // "DEVELOPER"
+}
+```
+
+### NonNullable 的底层实现
+
+```ts
+type MyNonNullable<T> = T & {};
+// 或者
+type MyNonNullable2<T> = T extends null | undefined ? never : T;
+```
+
+## 📝 实际应用示例
+
+### 组合使用工具类型构建 CRUD 接口
+
+```ts
+interface BaseEntity {
+  id: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface Product extends BaseEntity {
+  name: string;
+  price: number;
+  description: string;
+  category: string;
+  inStock: boolean;
+}
+
+// 自动字段：由系统自动生成，不需要用户提供
+type AutoFields = keyof BaseEntity;
+
+// 创建时的输入类型：排除自动字段
+type CreateProductInput = Omit<Product, AutoFields>;
+
+// 更新时的输入类型：排除自动字段，且所有字段可选
+type UpdateProductInput = Partial<Omit<Product, AutoFields>>;
+
+// 列表展示：只选择摘要字段
+type ProductSummary = Pick<Product, "id" | "name" | "price" | "category" | "inStock">;
+
+// 只读产品视图
+type ProductView = Readonly<Product>;
+
+interface ProductRepository {
+  create(input: CreateProductInput): Product;
+  update(id: string, input: UpdateProductInput): Product;
+  findById(id: string): ProductView | undefined;
+  findAll(): ProductSummary[];
+  delete(id: string): boolean;
+}
+
+// 模拟实现
+const productRepo: ProductRepository = {
+  create(input) {
+    const now = new Date();
+    return {
+      ...input,
+      id: crypto.randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+    };
+  },
+  update(id, input) {
+    const existing = this.findById(id);
+    if (!existing) throw new Error(`Product ${id} not found`);
+    return { ...existing, ...input, updatedAt: new Date() };
+  },
+  findById(id) {
+    return undefined; // 简化：实际应查询数据源
+  },
+  findAll() {
+    return []; // 简化：实际应查询数据源
+  },
+  delete(id) {
+    return true; // 简化：实际应从数据源删除
+  },
+};
+
+const product = productRepo.create({
+  name: "TypeScript Handbook",
+  price: 49.99,
+  description: "Complete guide to TypeScript",
+  category: "Books",
+  inStock: true,
+});
+
+console.log(product.id);        // UUID
+console.log(product.createdAt); // 当前时间
+
+productRepo.update(product.id, { price: 39.99 });
+// 只更新 price，其他字段保持不变
+```
+
+## 🔗 相关概念
+
+- **映射类型**: `Partial`、`Required`、`Readonly`、`Pick` 的底层实现机制
+- **条件类型**: `Exclude`、`Extract`、`NonNullable` 的底层实现机制
+- **函数相关工具类型**: `ReturnType`、`Parameters` 等，下一节讲解
+- **自定义工具类型**: 基于这些内置类型构建更复杂的工具
+
+## 📝 学习检查点
+
+- [ ] 理解 `Partial` 和 `Required` 的用途及底层实现
+- [ ] 理解 `Readonly` 的浅层只读特性
+- [ ] 掌握 `Pick` 和 `Omit` 选取/排除属性的用法
+- [ ] 能用 `Record` 构造键值对类型
+- [ ] 理解 `Exclude`、`Extract`、`NonNullable` 操作联合类型的方式
+- [ ] 能组合使用多个工具类型解决实际问题
+
+## 🚀 下一步
+
+→ [函数相关工具类型](./02-function-utility-types.mdx)

@@ -1,12 +1,396 @@
 # 映射类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍映射类型的核心概念和实践方法。
+映射类型（Mapped Types）是 TypeScript 中基于已有类型创建新类型的强大工具。它允许你遍历一个类型的所有属性，对每个属性进行变换，从而生成一个全新的类型。TypeScript 内置的 `Partial`、`Required`、`Readonly`、`Pick` 等工具类型底层都是映射类型实现的。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+映射类型的核心语法是 `{ [K in Keys]: ValueType }`，其中 `K` 依次取 `Keys` 联合类型中的每个成员。
+
+## 🎯 基本映射类型
+
+### 遍历键构造新类型
+
+```ts
+// 最基础的映射类型：将所有属性变为 string 类型
+type AllString<T> = {
+  [K in keyof T]: string;
+};
+
+interface User {
+  name: string;
+  age: number;
+  active: boolean;
+}
+
+type StringifiedUser = AllString<User>;
+// 等价于：
+// {
+//   name: string;
+//   age: string;
+//   active: string;
+// }
+```
+
+### 保留原始类型
+
+使用 `T[K]` 索引访问可以保留属性的原始类型：
+
+```ts
+// 将所有属性包装为 Promise
+type Promisify<T> = {
+  [K in keyof T]: Promise<T[K]>;
+};
+
+interface UserData {
+  name: string;
+  age: number;
+  friends: string[];
+}
+
+type AsyncUserData = Promisify<UserData>;
+// {
+//   name: Promise<string>;
+//   age: Promise<number>;
+//   friends: Promise<string[]>;
+// }
+```
+
+### 从联合类型映射
+
+映射类型不仅可以遍历 `keyof T`，也可以遍历任意联合类型：
+
+```ts
+type EventHandlers<Events extends string> = {
+  [E in Events]: (event: E) => void;
+};
+
+type MouseEvents = "click" | "mousedown" | "mouseup";
+
+type MouseHandlers = EventHandlers<MouseEvents>;
+// {
+//   click: (event: "click") => void;
+//   mousedown: (event: "mousedown") => void;
+//   mouseup: (event: "mouseup") => void;
+// }
+```
+
+## 🎯 修饰符操作
+
+映射类型可以添加或移除 `readonly` 和 `?`（可选）修饰符，使用 `+` 添加、`-` 移除。
+
+### 添加修饰符
+
+```ts
+// 将所有属性变为可选（等价于内置的 Partial<T>）
+type MyPartial<T> = {
+  [K in keyof T]?: T[K];
+};
+
+// 将所有属性变为只读（等价于内置的 Readonly<T>）
+type MyReadonly<T> = {
+  readonly [K in keyof T]: T[K];
+};
+
+interface Config {
+  host: string;
+  port: number;
+  debug: boolean;
+}
+
+type PartialConfig = MyPartial<Config>;
+// { host?: string; port?: number; debug?: boolean; }
+
+type ReadonlyConfig = MyReadonly<Config>;
+// { readonly host: string; readonly port: number; readonly debug: boolean; }
+```
+
+### 移除修饰符
+
+使用 `-` 前缀可以移除修饰符：
+
+```ts
+// 将所有可选属性变为必选（等价于内置的 Required<T>）
+type MyRequired<T> = {
+  [K in keyof T]-?: T[K];
+};
+
+// 移除所有 readonly
+type Mutable<T> = {
+  -readonly [K in keyof T]: T[K];
+};
+
+interface PartialUser {
+  name?: string;
+  age?: number;
+  email?: string;
+}
+
+type FullUser = MyRequired<PartialUser>;
+// { name: string; age: number; email: string; }
+
+interface FrozenData {
+  readonly id: number;
+  readonly value: string;
+}
+
+type MutableData = Mutable<FrozenData>;
+// { id: number; value: string; }
+```
+
+### 组合修饰符操作
+
+```ts
+// 同时移除 readonly 和可选
+type WritableRequired<T> = {
+  -readonly [K in keyof T]-?: T[K];
+};
+
+interface Draft {
+  readonly title?: string;
+  readonly content?: string;
+  readonly tags?: string[];
+}
+
+type PublishedArticle = WritableRequired<Draft>;
+// { title: string; content: string; tags: string[]; }
+```
+
+## 🎯 键重映射（Key Remapping via as）
+
+TypeScript 4.1 引入了键重映射语法 `as`，允许在映射过程中变换键名。
+
+### 基本键重映射
+
+```ts
+// 为所有属性名加上 "get" 前缀
+type Getters<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K];
+};
+
+interface Person {
+  name: string;
+  age: number;
+  email: string;
+}
+
+type PersonGetters = Getters<Person>;
+// {
+//   getName: () => string;
+//   getAge: () => number;
+//   getEmail: () => string;
+// }
+```
+
+### 通过 as 过滤属性
+
+当 `as` 映射到 `never` 时，该属性会被过滤掉：
+
+```ts
+// 只保留 string 类型的属性
+type OnlyStringProperties<T> = {
+  [K in keyof T as T[K] extends string ? K : never]: T[K];
+};
+
+interface Mixed {
+  name: string;
+  age: number;
+  email: string;
+  active: boolean;
+}
+
+type StringProps = OnlyStringProperties<Mixed>;
+// { name: string; email: string; }
+
+// 移除指定的属性（等价于内置的 Omit<T, K>）
+type MyOmit<T, Keys extends keyof T> = {
+  [K in keyof T as K extends Keys ? never : K]: T[K];
+};
+
+type WithoutEmail = MyOmit<Person, "email">;
+// { name: string; age: number; }
+```
+
+### 生成事件处理器
+
+键重映射的一个经典用例——为每个属性生成对应的事件处理方法：
+
+```ts
+type EventHandlersFor<T> = {
+  [K in keyof T as `on${Capitalize<string & K>}Change`]: (
+    oldValue: T[K],
+    newValue: T[K]
+  ) => void;
+};
+
+interface FormState {
+  username: string;
+  password: string;
+  rememberMe: boolean;
+}
+
+type FormHandlers = EventHandlersFor<FormState>;
+// {
+//   onUsernameChange: (oldValue: string, newValue: string) => void;
+//   onPasswordChange: (oldValue: string, newValue: string) => void;
+//   onRememberMeChange: (oldValue: boolean, newValue: boolean) => void;
+// }
+```
+
+## 📝 实际应用示例
+
+### 类型安全的表单验证器
+
+```ts
+type ValidationRule<T> = {
+  validate: (value: T) => boolean;
+  message: string;
+};
+
+type FormValidator<T> = {
+  [K in keyof T]: ValidationRule<T[K]>[];
+};
+
+interface RegistrationForm {
+  username: string;
+  email: string;
+  age: number;
+  password: string;
+}
+
+const registrationValidator: FormValidator<RegistrationForm> = {
+  username: [
+    {
+      validate: (value) => value.length >= 3,
+      message: "Username must be at least 3 characters",
+    },
+    {
+      validate: (value) => /^[a-zA-Z0-9_]+$/.test(value),
+      message: "Username can only contain letters, numbers, and underscores",
+    },
+  ],
+  email: [
+    {
+      validate: (value) => value.includes("@"),
+      message: "Email must contain @",
+    },
+  ],
+  age: [
+    {
+      validate: (value) => value >= 18,
+      message: "Must be at least 18 years old",
+    },
+    {
+      validate: (value) => value <= 120,
+      message: "Age must be realistic",
+    },
+  ],
+  password: [
+    {
+      validate: (value) => value.length >= 8,
+      message: "Password must be at least 8 characters",
+    },
+  ],
+};
+
+function validateForm<T>(data: T, validator: FormValidator<T>): Map<keyof T, string[]> {
+  const errors = new Map<keyof T, string[]>();
+
+  for (const key of Object.keys(validator) as Array<keyof T>) {
+    const rules = validator[key];
+    const value = data[key];
+    const fieldErrors: string[] = [];
+
+    for (const rule of rules) {
+      if (!rule.validate(value)) {
+        fieldErrors.push(rule.message);
+      }
+    }
+
+    if (fieldErrors.length > 0) {
+      errors.set(key, fieldErrors);
+    }
+  }
+
+  return errors;
+}
+
+const formData: RegistrationForm = {
+  username: "ab",
+  email: "invalid-email",
+  age: 15,
+  password: "short",
+};
+
+const errors = validateForm(formData, registrationValidator);
+
+for (const [field, messages] of errors) {
+  console.log(`${String(field)}:`);
+  messages.forEach((msg) => console.log(`  - ${msg}`));
+}
+// username:
+//   - Username must be at least 3 characters
+// email:
+//   - Email must contain @
+// age:
+//   - Must be at least 18 years old
+// password:
+//   - Password must be at least 8 characters
+```
+
+### Getter/Setter 自动生成
+
+```ts
+type AccessorsFor<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K];
+} & {
+  [K in keyof T as `set${Capitalize<string & K>}`]: (value: T[K]) => void;
+};
+
+type Observable<T> = T & AccessorsFor<T>;
+
+function makeObservable<T extends Record<string, unknown>>(obj: T): Observable<T> {
+  const result = { ...obj } as Observable<T>;
+
+  for (const key of Object.keys(obj)) {
+    const capitalizedKey = key.charAt(0).toUpperCase() + key.slice(1);
+
+    (result as Record<string, unknown>)[`get${capitalizedKey}`] = () => {
+      return (result as Record<string, unknown>)[key];
+    };
+
+    (result as Record<string, unknown>)[`set${capitalizedKey}`] = (value: unknown) => {
+      (result as Record<string, unknown>)[key] = value;
+    };
+  }
+
+  return result;
+}
+
+const observableUser = makeObservable({ name: "Alice", age: 30 });
+
+console.log(observableUser.getName()); // "Alice"
+observableUser.setAge(31);
+console.log(observableUser.getAge()); // 31
+```
+
+## 🔗 相关概念
+
+- **keyof 操作符**: 获取类型的所有键，映射类型的遍历基础
+- **索引访问类型**: `T[K]` 语法，在映射中获取属性的原始类型
+- **模板字面量类型**: 与键重映射配合，动态构造属性名
+- **条件类型**: 在映射中对属性值进行条件变换
+
+## 📝 学习检查点
+
+- [ ] 理解映射类型的基本语法 `{ [K in keyof T]: ... }`
+- [ ] 能使用修饰符操作（`+/-readonly`、`+/-?`）变换属性特征
+- [ ] 掌握键重映射（`as`）语法来变换和过滤属性名
+- [ ] 能用映射类型实现 `Partial`、`Readonly`、`Pick`、`Omit` 等常见工具类型
+- [ ] 能运用映射类型解决实际问题（表单验证、Getter/Setter 生成等）
+
+## 🚀 下一步
+
+→ [条件类型](./02-conditional-types.mdx)

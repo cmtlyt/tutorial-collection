@@ -1,12 +1,387 @@
 # 条件类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍条件类型的核心概念和实践方法。
+条件类型（Conditional Types）是 TypeScript 类型系统中的"if-else"——它根据类型之间的关系来选择不同的类型分支。语法形如 `T extends U ? X : Y`，表示"如果 T 可以赋值给 U，则结果为 X，否则为 Y"。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+条件类型是构建高级工具类型的基石，TypeScript 内置的 `Exclude`、`Extract`、`NonNullable`、`ReturnType` 等都是基于条件类型实现的。
+
+## 🎯 基本条件类型
+
+### 语法与基本用法
+
+```ts
+// 基本语法：T extends U ? TrueType : FalseType
+type IsString<T> = T extends string ? true : false;
+
+type A = IsString<string>;   // true
+type B = IsString<number>;   // false
+type C = IsString<"hello">;  // true（字面量类型是 string 的子类型）
+
+// 更复杂的条件判断
+type IsArray<T> = T extends unknown[] ? true : false;
+
+type D = IsArray<string[]>;  // true
+type E = IsArray<number>;    // false
+type F = IsArray<[1, 2, 3]>; // true（元组也是数组）
+```
+
+### 条件类型的类型收窄
+
+在条件类型的 `true` 分支中，TypeScript 会收窄 `T` 的类型：
+
+```ts
+// 在 true 分支中，T 被收窄为 string 的子类型
+type MessageOf<T> = T extends { message: string } ? T["message"] : never;
+
+interface SuccessResponse {
+  message: string;
+  data: unknown;
+}
+
+interface ErrorCode {
+  code: number;
+}
+
+type SuccessMessage = MessageOf<SuccessResponse>; // string
+type ErrorMessage = MessageOf<ErrorCode>;          // never
+```
+
+### 嵌套条件类型
+
+条件类型可以嵌套使用，实现多分支判断：
+
+```ts
+type TypeName<T> =
+  T extends string ? "string" :
+  T extends number ? "number" :
+  T extends boolean ? "boolean" :
+  T extends undefined ? "undefined" :
+  T extends null ? "null" :
+  T extends Function ? "function" :
+  T extends unknown[] ? "array" :
+  "object";
+
+type T1 = TypeName<string>;       // "string"
+type T2 = TypeName<42>;           // "number"
+type T3 = TypeName<true>;         // "boolean"
+type T4 = TypeName<() => void>;   // "function"
+type T5 = TypeName<string[]>;     // "array"
+type T6 = TypeName<{ a: 1 }>;     // "object"
+```
+
+## 🎯 分布式条件类型
+
+当条件类型的检查目标是一个**裸类型参数**（即直接写 `T`，而不是 `[T]`、`T[]` 等），并且 `T` 是一个联合类型时，条件类型会**自动分布**到联合类型的每个成员上分别计算。
+
+### 分布式行为
+
+```ts
+type ToArray<T> = T extends unknown ? T[] : never;
+
+// 联合类型自动分布
+type Result = ToArray<string | number>;
+// 等价于 ToArray<string> | ToArray<number>
+// 即 string[] | number[]
+
+// 而不是 (string | number)[]
+```
+
+### 利用分布式实现过滤
+
+内置的 `Exclude` 和 `Extract` 就是利用分布式条件类型实现的：
+
+```ts
+// 从 T 中排除可赋值给 U 的类型
+type MyExclude<T, U> = T extends U ? never : T;
+
+type Numbers = MyExclude<string | number | boolean, string>;
+// 分布：
+// string extends string ? never : string → never
+// number extends string ? never : number → number
+// boolean extends string ? never : boolean → boolean
+// 结果：number | boolean
+
+// 从 T 中提取可赋值给 U 的类型
+type MyExtract<T, U> = T extends U ? T : never;
+
+type Strings = MyExtract<string | number | boolean, string | number>;
+// string | number
+
+// 移除 null 和 undefined
+type MyNonNullable<T> = T extends null | undefined ? never : T;
+
+type SafeValue = MyNonNullable<string | null | undefined>;
+// string
+```
+
+### 禁用分布式行为
+
+如果不想要分布式行为，用方括号包裹类型参数即可：
+
+```ts
+// 分布式版本
+type ToArrayDist<T> = T extends unknown ? T[] : never;
+type A1 = ToArrayDist<string | number>; // string[] | number[]
+
+// 非分布式版本
+type ToArrayNonDist<T> = [T] extends [unknown] ? T[] : never;
+type A2 = ToArrayNonDist<string | number>; // (string | number)[]
+
+// 实际应用：判断是否为联合类型
+type IsUnion<T, Copy = T> =
+  T extends unknown
+    ? [Copy] extends [T]
+      ? false
+      : true
+    : never;
+
+type B1 = IsUnion<string>;          // false
+type B2 = IsUnion<string | number>; // true
+```
+
+## 🎯 infer 关键字
+
+`infer` 是条件类型中最强大的工具之一，它允许你在条件判断中**声明一个待推断的类型变量**，然后在 `true` 分支中使用它。
+
+### 提取函数返回类型
+
+```ts
+// 提取函数返回值类型（等价于内置的 ReturnType）
+type MyReturnType<T> = T extends (...args: unknown[]) => infer R ? R : never;
+
+type FnA = MyReturnType<() => string>;              // string
+type FnB = MyReturnType<(x: number) => boolean>;    // boolean
+type FnC = MyReturnType<() => Promise<number>>;      // Promise<number>
+type FnD = MyReturnType<string>;                     // never
+
+// 提取函数参数类型（等价于内置的 Parameters）
+type MyParameters<T> = T extends (...args: infer P) => unknown ? P : never;
+
+type ParamsA = MyParameters<(a: string, b: number) => void>;
+// [a: string, b: number]
+```
+
+### 提取数组元素类型
+
+```ts
+// 提取数组元素类型
+type ElementOf<T> = T extends (infer E)[] ? E : never;
+
+type Elem1 = ElementOf<string[]>;         // string
+type Elem2 = ElementOf<(string | number)[]>; // string | number
+
+// 提取元组的第一个和最后一个元素
+type First<T extends unknown[]> = T extends [infer F, ...unknown[]] ? F : never;
+type Last<T extends unknown[]> = T extends [...unknown[], infer L] ? L : never;
+
+type F1 = First<[1, 2, 3]>;  // 1
+type F2 = First<[string]>;   // string
+type F3 = First<[]>;         // never
+
+type L1 = Last<[1, 2, 3]>;   // 3
+type L2 = Last<[string]>;    // string
+```
+
+### 提取 Promise 内部类型
+
+```ts
+// 递归解包 Promise（等价于内置的 Awaited）
+type MyAwaited<T> = T extends Promise<infer U> ? MyAwaited<U> : T;
+
+type P1 = MyAwaited<Promise<string>>;              // string
+type P2 = MyAwaited<Promise<Promise<number>>>;     // number
+type P3 = MyAwaited<string>;                        // string（非 Promise 直接返回）
+```
+
+### infer 在不同位置的推断
+
+`infer` 可以在类型结构的不同位置进行推断：
+
+```ts
+// 从对象结构中推断
+type PropType<T, K extends string> =
+  T extends { [key in K]: infer V } ? V : never;
+
+type NameType = PropType<{ name: string; age: number }, "name">; // string
+
+// 从字符串模板中推断
+type ParseRouteParam<T extends string> =
+  T extends `${string}:${infer Param}/${infer Rest}`
+    ? Param | ParseRouteParam<Rest>
+    : T extends `${string}:${infer Param}`
+    ? Param
+    : never;
+
+type RouteParams = ParseRouteParam<"/api/:version/users/:userId/posts/:postId">;
+// "version" | "userId" | "postId"
+```
+
+## 🎯 条件类型嵌套
+
+### 复杂的类型变换
+
+```ts
+// 深层解包：处理 Promise、数组、和值类型
+type DeepUnwrap<T> =
+  T extends Promise<infer U> ? DeepUnwrap<U> :
+  T extends (infer E)[] ? DeepUnwrap<E>[] :
+  T;
+
+type U1 = DeepUnwrap<Promise<string[]>>;           // string[]
+type U2 = DeepUnwrap<Promise<Promise<number>>>;    // number
+type U3 = DeepUnwrap<Promise<string[]>[]>;          // string[][]
+```
+
+### 条件类型与映射类型结合
+
+```ts
+// 将对象中所有函数属性提取出来
+type FunctionProperties<T> = {
+  [K in keyof T as T[K] extends Function ? K : never]: T[K];
+};
+
+// 将对象中所有非函数属性提取出来
+type DataProperties<T> = {
+  [K in keyof T as T[K] extends Function ? never : K]: T[K];
+};
+
+interface UserService {
+  name: string;
+  age: number;
+  greet(): string;
+  updateAge(newAge: number): void;
+}
+
+type UserMethods = FunctionProperties<UserService>;
+// { greet: () => string; updateAge: (newAge: number) => void }
+
+type UserData = DataProperties<UserService>;
+// { name: string; age: number }
+```
+
+## 📝 实际应用示例
+
+### 类型安全的路由参数提取
+
+```ts
+// 从路由字符串中提取参数名
+type ExtractParams<Path extends string> =
+  Path extends `${string}:${infer Param}/${infer Rest}`
+    ? { [K in Param | keyof ExtractParams<`/${Rest}`>]:
+        K extends keyof ExtractParams<`/${Rest}`>
+          ? ExtractParams<`/${Rest}`>[K]
+          : string }
+    : Path extends `${string}:${infer Param}`
+    ? { [K in Param]: string }
+    : {};
+
+type HomeParams = ExtractParams<"/home">;
+// {}
+
+type UserParams = ExtractParams<"/users/:id">;
+// { id: string }
+
+type PostParams = ExtractParams<"/users/:userId/posts/:postId">;
+// { userId: string; postId: string }
+
+function createRoute<Path extends string>(
+  path: Path,
+  handler: (params: ExtractParams<Path>) => void
+): void {
+  console.log(`Route registered: ${path}`);
+  // 路由注册逻辑...
+  handler({} as ExtractParams<Path>);
+}
+
+createRoute("/users/:userId/posts/:postId", (params) => {
+  // params 自动推断为 { userId: string; postId: string }
+  console.log(`User: ${params.userId}, Post: ${params.postId}`);
+});
+```
+
+### 深度可选与深度只读
+
+```ts
+type DeepPartial<T> = T extends object
+  ? { [K in keyof T]?: DeepPartial<T[K]> }
+  : T;
+
+type DeepReadonly<T> = T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
+
+interface AppConfig {
+  database: {
+    host: string;
+    port: number;
+    credentials: {
+      username: string;
+      password: string;
+    };
+  };
+  server: {
+    port: number;
+    cors: {
+      origins: string[];
+      methods: string[];
+    };
+  };
+}
+
+// 所有层级都变为可选
+type PartialConfig = DeepPartial<AppConfig>;
+
+const patch: PartialConfig = {
+  database: {
+    credentials: {
+      password: "new-password",
+      // 不需要提供 username、host、port 等
+    },
+  },
+};
+
+// 所有层级都变为只读
+type FrozenConfig = DeepReadonly<AppConfig>;
+
+function loadConfig(): FrozenConfig {
+  return {
+    database: {
+      host: "localhost",
+      port: 5432,
+      credentials: { username: "admin", password: "secret" },
+    },
+    server: {
+      port: 3000,
+      cors: { origins: ["*"], methods: ["GET", "POST"] },
+    },
+  };
+}
+
+const config = loadConfig();
+// ❌ 编译错误：readonly 属性不可修改
+// config.database.port = 3306;
+```
+
+## 🔗 相关概念
+
+- **映射类型**: 常与条件类型配合，在映射过程中进行条件过滤
+- **infer 关键字**: 条件类型中的类型推断工具
+- **分布式条件类型**: 联合类型在条件类型中的特殊展开行为
+- **模板字面量类型**: 与 `infer` 配合实现字符串级别的类型解析
+
+## 📝 学习检查点
+
+- [ ] 理解条件类型的基本语法 `T extends U ? X : Y`
+- [ ] 理解分布式条件类型的行为，以及如何禁用分布式
+- [ ] 掌握 `infer` 关键字在不同位置的推断用法
+- [ ] 能用 `infer` 提取函数返回值、参数、Promise 内部类型等
+- [ ] 能实现嵌套条件类型和递归类型
+- [ ] 理解条件类型与映射类型的组合模式
+
+## 🚀 下一步
+
+→ [模板字面量类型](./03-template-literal-types.mdx)

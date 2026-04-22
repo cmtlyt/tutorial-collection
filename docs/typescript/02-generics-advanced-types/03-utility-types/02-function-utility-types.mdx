@@ -1,12 +1,436 @@
 # 函数相关工具类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍函数相关工具类型的核心概念和实践方法。
+TypeScript 提供了一组专门用于操作**函数类型**的工具类型，它们可以从函数签名中提取返回值类型、参数类型、构造函数参数类型和实例类型。这些工具在编写高阶函数、封装库、以及实现依赖注入等场景中非常有用。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+本节涵盖四个内置的函数相关工具类型：`ReturnType`、`Parameters`、`ConstructorParameters` 和 `InstanceType`。
+
+## 🎯 ReturnType\<T\>
+
+`ReturnType<T>` 提取函数类型 `T` 的返回值类型。
+
+### 基本用法
+
+```ts
+function createUser(name: string, age: number) {
+  return {
+    id: crypto.randomUUID(),
+    name,
+    age,
+    createdAt: new Date(),
+  };
+}
+
+// 从函数推断返回值类型，无需手动定义接口
+type User = ReturnType<typeof createUser>;
+// {
+//   id: string;
+//   name: string;
+//   age: number;
+//   createdAt: Date;
+// }
+
+const user: User = createUser("Alice", 30);
+console.log(user.id);        // UUID 字符串
+console.log(user.createdAt); // Date 对象
+```
+
+### 处理不同类型的函数
+
+```ts
+// 普通函数
+type R1 = ReturnType<() => string>;          // string
+type R2 = ReturnType<(x: number) => void>;   // void
+type R3 = ReturnType<() => Promise<number>>; // Promise<number>
+
+// 函数重载：取最后一个重载签名的返回值
+declare function overloaded(x: string): string;
+declare function overloaded(x: number): number;
+type R4 = ReturnType<typeof overloaded>; // number
+
+// 泛型函数：泛型参数被推断为约束类型或 unknown
+declare function genericFn<T>(x: T): T;
+type R5 = ReturnType<typeof genericFn>; // unknown
+
+// 非函数类型会报错
+// type R6 = ReturnType<string>; // ❌ 编译错误
+```
+
+### 实际应用：复用函数返回类型
+
+```ts
+// 场景：API 层的响应类型复用
+function fetchUserProfile(userId: string) {
+  return {
+    userId,
+    displayName: "Alice",
+    avatar: "https://example.com/avatar.jpg",
+    bio: "TypeScript enthusiast",
+    joinedAt: new Date("2024-01-01"),
+    stats: {
+      posts: 42,
+      followers: 128,
+      following: 64,
+    },
+  };
+}
+
+// 其他模块直接复用返回类型，无需重复定义
+type UserProfile = ReturnType<typeof fetchUserProfile>;
+type UserStats = UserProfile["stats"];
+
+function renderUserCard(profile: UserProfile): string {
+  return `${profile.displayName} - ${profile.stats.posts} posts`;
+}
+
+function renderStats(stats: UserStats): string {
+  return `Posts: ${stats.posts}, Followers: ${stats.followers}`;
+}
+
+const profile = fetchUserProfile("u001");
+console.log(renderUserCard(profile));
+// "Alice - 42 posts"
+console.log(renderStats(profile.stats));
+// "Posts: 42, Followers: 128"
+```
+
+### ReturnType 的底层实现
+
+```ts
+type MyReturnType<T extends (...args: unknown[]) => unknown> =
+  T extends (...args: unknown[]) => infer R ? R : never;
+```
+
+## 🎯 Parameters\<T\>
+
+`Parameters<T>` 提取函数类型 `T` 的参数类型，返回一个**元组类型**。
+
+### 基本用法
+
+```ts
+function sendEmail(to: string, subject: string, body: string, cc?: string[]) {
+  console.log(`Sending email to ${to}: ${subject}`);
+}
+
+type EmailParams = Parameters<typeof sendEmail>;
+// [to: string, subject: string, body: string, cc?: string[]]
+
+// 可以用索引访问单个参数类型
+type ToParam = EmailParams[0];       // string
+type SubjectParam = EmailParams[1];  // string
+type CcParam = EmailParams[3];       // string[] | undefined
+```
+
+### 实际应用：包装函数与延迟调用
+
+```ts
+// 场景 1：创建一个通用的日志包装器
+function withLogging<T extends (...args: never[]) => unknown>(
+  fn: T,
+  label: string
+): (...args: Parameters<T>) => ReturnType<T> {
+  return (...args: Parameters<T>): ReturnType<T> => {
+    console.log(`[${label}] Called with:`, args);
+    const startTime = performance.now();
+    const result = fn(...args) as ReturnType<T>;
+    const duration = performance.now() - startTime;
+    console.log(`[${label}] Returned in ${duration.toFixed(2)}ms:`, result);
+    return result;
+  };
+}
+
+function add(a: number, b: number): number {
+  return a + b;
+}
+
+const loggedAdd = withLogging(add, "add");
+loggedAdd(2, 3);
+// [add] Called with: [2, 3]
+// [add] Returned in 0.01ms: 5
+
+// 场景 2：延迟调用
+function createDeferredCall<T extends (...args: never[]) => unknown>(
+  fn: T,
+  ...args: Parameters<T>
+): () => ReturnType<T> {
+  return () => fn(...args) as ReturnType<T>;
+}
+
+function greet(name: string, greeting: string): string {
+  return `${greeting}, ${name}!`;
+}
+
+const deferredGreet = createDeferredCall(greet, "Alice", "Hello");
+console.log(deferredGreet()); // "Hello, Alice!"
+```
+
+### Parameters 的底层实现
+
+```ts
+type MyParameters<T extends (...args: unknown[]) => unknown> =
+  T extends (...args: infer P) => unknown ? P : never;
+```
+
+## 🎯 ConstructorParameters\<T\>
+
+`ConstructorParameters<T>` 提取构造函数（类）的参数类型，返回一个元组类型。
+
+### 基本用法
+
+```ts
+class HttpClient {
+  constructor(
+    private baseUrl: string,
+    private timeout: number = 5000,
+    private headers: Record<string, string> = {}
+  ) {}
+
+  get(path: string): string {
+    return `GET ${this.baseUrl}${path}`;
+  }
+}
+
+type HttpClientArgs = ConstructorParameters<typeof HttpClient>;
+// [baseUrl: string, timeout?: number, headers?: Record<string, string>]
+
+// 可以用来创建工厂函数
+function createHttpClient(...args: HttpClientArgs): HttpClient {
+  return new HttpClient(...args);
+}
+
+const client = createHttpClient("https://api.example.com", 3000);
+console.log(client.get("/users")); // "GET https://api.example.com/users"
+```
+
+### 实际应用：依赖注入容器
+
+```ts
+type Constructor<T = unknown> = new (...args: never[]) => T;
+
+class Container {
+  private factories = new Map<string, () => unknown>();
+
+  register<T>(
+    token: string,
+    ctor: Constructor<T>,
+    ...args: ConstructorParameters<Constructor<T>>
+  ): void {
+    this.factories.set(token, () => new ctor(...args));
+  }
+
+  resolve<T>(token: string): T {
+    const factory = this.factories.get(token);
+    if (!factory) {
+      throw new Error(`No registration found for: ${token}`);
+    }
+    return factory() as T;
+  }
+}
+
+class Logger {
+  constructor(private prefix: string) {}
+
+  log(message: string): void {
+    console.log(`[${this.prefix}] ${message}`);
+  }
+}
+
+class DatabaseConnection {
+  constructor(private connectionString: string) {}
+
+  query(sql: string): string {
+    return `Executing on ${this.connectionString}: ${sql}`;
+  }
+}
+
+const container = new Container();
+container.register("logger", Logger, "APP");
+container.register("db", DatabaseConnection, "postgres://localhost:5432/mydb");
+
+const logger = container.resolve<Logger>("logger");
+logger.log("Application started");
+// [APP] Application started
+
+const db = container.resolve<DatabaseConnection>("db");
+console.log(db.query("SELECT * FROM users"));
+// Executing on postgres://localhost:5432/mydb: SELECT * FROM users
+```
+
+### ConstructorParameters 的底层实现
+
+```ts
+type MyConstructorParameters<T extends abstract new (...args: unknown[]) => unknown> =
+  T extends abstract new (...args: infer P) => unknown ? P : never;
+```
+
+## 🎯 InstanceType\<T\>
+
+`InstanceType<T>` 提取构造函数（类）的实例类型。当你拿到的是一个类本身（而非实例），需要引用其实例类型时特别有用。
+
+### 基本用法
+
+```ts
+class Animal {
+  constructor(public name: string, public species: string) {}
+
+  describe(): string {
+    return `${this.name} is a ${this.species}`;
+  }
+}
+
+type AnimalInstance = InstanceType<typeof Animal>;
+// Animal
+
+// 在泛型中使用：类工厂模式
+function createInstance<T extends new (...args: never[]) => unknown>(
+  ctor: T,
+  ...args: ConstructorParameters<T>
+): InstanceType<T> {
+  return new ctor(...args) as InstanceType<T>;
+}
+
+const animal = createInstance(Animal, "Buddy", "Dog");
+// animal 的类型自动推断为 Animal
+console.log(animal.describe()); // "Buddy is a Dog"
+```
+
+### 实际应用：泛型组件注册
+
+```ts
+interface Component {
+  render(): string;
+}
+
+class Button implements Component {
+  constructor(private label: string, private variant: "primary" | "secondary") {}
+
+  render(): string {
+    return `<button class="${this.variant}">${this.label}</button>`;
+  }
+}
+
+class TextInput implements Component {
+  constructor(private placeholder: string, private maxLength: number) {}
+
+  render(): string {
+    return `<input placeholder="${this.placeholder}" maxlength="${this.maxLength}" />`;
+  }
+}
+
+class ComponentRegistry {
+  private registry = new Map<string, new (...args: never[]) => Component>();
+
+  register<T extends new (...args: never[]) => Component>(
+    name: string,
+    componentClass: T
+  ): void {
+    this.registry.set(name, componentClass);
+  }
+
+  create<T extends new (...args: never[]) => Component>(
+    name: string,
+    ...args: ConstructorParameters<T>
+  ): InstanceType<T> {
+    const ComponentClass = this.registry.get(name);
+    if (!ComponentClass) {
+      throw new Error(`Component "${name}" not registered`);
+    }
+    return new ComponentClass(...args) as InstanceType<T>;
+  }
+
+  listRegistered(): string[] {
+    return Array.from(this.registry.keys());
+  }
+}
+
+const registry = new ComponentRegistry();
+registry.register("button", Button);
+registry.register("input", TextInput);
+
+console.log(registry.listRegistered()); // ["button", "input"]
+
+const button = registry.create<typeof Button>("button", "Submit", "primary");
+console.log(button.render()); // '<button class="primary">Submit</button>'
+
+const input = registry.create<typeof TextInput>("input", "Enter name...", 50);
+console.log(input.render()); // '<input placeholder="Enter name..." maxlength="50" />'
+```
+
+### InstanceType 的底层实现
+
+```ts
+type MyInstanceType<T extends abstract new (...args: unknown[]) => unknown> =
+  T extends abstract new (...args: unknown[]) => infer R ? R : never;
+```
+
+## 📝 实际应用示例
+
+### 类型安全的中间件管道
+
+```ts
+type Middleware<Input, Output> = (input: Input) => Output;
+
+function pipe<A, B>(m1: Middleware<A, B>): Middleware<A, B>;
+function pipe<A, B, C>(
+  m1: Middleware<A, B>,
+  m2: Middleware<B, C>
+): Middleware<A, C>;
+function pipe<A, B, C, D>(
+  m1: Middleware<A, B>,
+  m2: Middleware<B, C>,
+  m3: Middleware<C, D>
+): Middleware<A, D>;
+function pipe(...middlewares: Middleware<unknown, unknown>[]): Middleware<unknown, unknown> {
+  return (input: unknown) => {
+    return middlewares.reduce((value, middleware) => middleware(value), input);
+  };
+}
+
+// 每个中间件的参数和返回值类型都是精确推断的
+const processUser = pipe(
+  (input: { raw: string }) => {
+    const parsed = JSON.parse(input.raw) as { name: string; age: string };
+    return parsed;
+  },
+  (parsed) => ({
+    name: parsed.name.trim(),
+    age: parseInt(parsed.age, 10),
+  }),
+  (validated) => ({
+    ...validated,
+    displayName: `${validated.name} (age ${validated.age})`,
+  })
+);
+
+type ProcessInput = Parameters<typeof processUser>[0];
+// { raw: string }
+
+type ProcessOutput = ReturnType<typeof processUser>;
+// { name: string; age: number; displayName: string }
+
+const result = processUser({ raw: '{"name": "Alice", "age": "30"}' });
+console.log(result.displayName); // "Alice (age 30)"
+```
+
+## 🔗 相关概念
+
+- **infer 关键字**: 这四个工具类型的底层实现都依赖 `infer` 进行类型推断
+- **条件类型**: 工具类型的底层是 `T extends ... ? infer R : never` 模式
+- **常用工具类型**: `Partial`、`Pick` 等对象操作工具类型
+- **自定义工具类型**: 基于这些内置类型构建更复杂的工具
+
+## 📝 学习检查点
+
+- [ ] 能用 `ReturnType` 从函数推断返回值类型，避免重复定义接口
+- [ ] 能用 `Parameters` 提取函数参数类型，编写通用的包装函数
+- [ ] 理解 `ConstructorParameters` 和 `InstanceType` 在类工厂模式中的作用
+- [ ] 能手写这四个工具类型的底层实现
+- [ ] 能组合使用函数工具类型实现高阶函数的类型安全
+
+## 🚀 下一步
+
+→ [字符串相关工具类型](./03-string-utility-types.mdx)

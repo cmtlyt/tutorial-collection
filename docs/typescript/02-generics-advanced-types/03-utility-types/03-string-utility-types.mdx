@@ -1,12 +1,342 @@
 # 字符串相关工具类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍字符串相关工具类型的核心概念和实践方法。
+TypeScript 内置了四个**字符串操作工具类型**：`Uppercase`、`Lowercase`、`Capitalize` 和 `Uncapitalize`。它们是编译器内部实现的（intrinsic），无法通过普通的 TypeScript 类型代码来实现，但它们在与模板字面量类型、映射类型、键重映射配合使用时，能够实现强大的字符串级别类型变换。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+本节将详细讲解这四个工具类型的用法，并展示它们在实际开发中的典型应用场景。
+
+## 🎯 Uppercase\<S\>
+
+`Uppercase<S>` 将字符串字面量类型中的所有字符转换为大写。
+
+```ts
+type U1 = Uppercase<"hello">;         // "HELLO"
+type U2 = Uppercase<"TypeScript">;    // "TYPESCRIPT"
+type U3 = Uppercase<"hello world">;   // "HELLO WORLD"
+
+// 作用于联合类型时，自动分布
+type HttpMethod = "get" | "post" | "put" | "delete";
+type UpperMethods = Uppercase<HttpMethod>;
+// "GET" | "POST" | "PUT" | "DELETE"
+```
+
+### 实际应用：环境变量键名
+
+```ts
+type EnvKey = "database_url" | "api_key" | "node_env" | "port";
+
+type EnvVarName = Uppercase<EnvKey>;
+// "DATABASE_URL" | "API_KEY" | "NODE_ENV" | "PORT"
+
+type EnvConfig = Record<EnvVarName, string>;
+
+const env: EnvConfig = {
+  DATABASE_URL: "postgres://localhost:5432/mydb",
+  API_KEY: "sk-abc123",
+  NODE_ENV: "production",
+  PORT: "3000",
+};
+
+console.log(env.DATABASE_URL); // "postgres://localhost:5432/mydb"
+console.log(env.PORT);         // "3000"
+```
+
+## 🎯 Lowercase\<S\>
+
+`Lowercase<S>` 将字符串字面量类型中的所有字符转换为小写。
+
+```ts
+type L1 = Lowercase<"HELLO">;       // "hello"
+type L2 = Lowercase<"TypeScript">;  // "typescript"
+type L3 = Lowercase<"HELLO WORLD">; // "hello world"
+
+// 实际应用：标准化 HTTP 方法
+type RawMethod = "GET" | "Get" | "get";
+type NormalizedMethod = Lowercase<RawMethod>; // "get"
+```
+
+### 实际应用：标签系统标准化
+
+```ts
+type RawTag = "TypeScript" | "JAVASCRIPT" | "React" | "CSS";
+
+type NormalizedTag = Lowercase<RawTag>;
+// "typescript" | "javascript" | "react" | "css"
+
+type TagConfig = {
+  [K in RawTag as Lowercase<K>]: {
+    displayName: K;
+    color: string;
+  };
+};
+
+const tagConfig: TagConfig = {
+  typescript: { displayName: "TypeScript", color: "#3178c6" },
+  javascript: { displayName: "JAVASCRIPT", color: "#f7df1e" },
+  react: { displayName: "React", color: "#61dafb" },
+  css: { displayName: "CSS", color: "#264de4" },
+};
+
+console.log(tagConfig.typescript.color); // "#3178c6"
+```
+
+## 🎯 Capitalize\<S\>
+
+`Capitalize<S>` 将字符串字面量类型的**第一个字符**转换为大写，其余字符保持不变。
+
+```ts
+type C1 = Capitalize<"hello">;       // "Hello"
+type C2 = Capitalize<"typeScript">;  // "TypeScript"
+type C3 = Capitalize<"HELLO">;       // "HELLO"（只影响第一个字符）
+type C4 = Capitalize<"">;            // ""
+
+// 作用于联合类型
+type Events = "click" | "input" | "submit" | "focus";
+type CapitalizedEvents = Capitalize<Events>;
+// "Click" | "Input" | "Submit" | "Focus"
+```
+
+### 实际应用：生成事件处理器名称
+
+`Capitalize` 最常见的用途是配合模板字面量类型生成 `onXxx` 风格的事件名：
+
+```ts
+interface DomEvents {
+  click: { x: number; y: number };
+  input: { value: string };
+  submit: { formData: Record<string, string> };
+  focus: {};
+  blur: {};
+}
+
+// 自动生成 on + 首字母大写 的处理器类型
+type EventHandlers<T> = {
+  [K in keyof T as `on${Capitalize<string & K>}`]: (event: T[K]) => void;
+};
+
+type DomEventHandlers = EventHandlers<DomEvents>;
+// {
+//   onClick: (event: { x: number; y: number }) => void;
+//   onInput: (event: { value: string }) => void;
+//   onSubmit: (event: { formData: Record<string, string> }) => void;
+//   onFocus: (event: {}) => void;
+//   onBlur: (event: {}) => void;
+// }
+
+const handlers: DomEventHandlers = {
+  onClick: (event) => console.log(`Clicked at (${event.x}, ${event.y})`),
+  onInput: (event) => console.log(`Input: ${event.value}`),
+  onSubmit: (event) => console.log("Form submitted", event.formData),
+  onFocus: () => console.log("Focused"),
+  onBlur: () => console.log("Blurred"),
+};
+
+handlers.onClick({ x: 100, y: 200 });
+// Clicked at (100, 200)
+```
+
+### 生成 getter/setter 名称
+
+```ts
+interface UserFields {
+  firstName: string;
+  lastName: string;
+  email: string;
+  age: number;
+}
+
+type GetterName<K extends string> = `get${Capitalize<K>}`;
+type SetterName<K extends string> = `set${Capitalize<K>}`;
+
+type Accessors<T> = {
+  [K in keyof T as GetterName<string & K>]: () => T[K];
+} & {
+  [K in keyof T as SetterName<string & K>]: (value: T[K]) => void;
+};
+
+type UserAccessors = Accessors<UserFields>;
+// {
+//   getFirstName: () => string;
+//   getLastName: () => string;
+//   getEmail: () => string;
+//   getAge: () => number;
+// } & {
+//   setFirstName: (value: string) => void;
+//   setLastName: (value: string) => void;
+//   setEmail: (value: string) => void;
+//   setAge: (value: number) => void;
+// }
+```
+
+## 🎯 Uncapitalize\<S\>
+
+`Uncapitalize<S>` 将字符串字面量类型的**第一个字符**转换为小写，其余字符保持不变。它是 `Capitalize` 的反操作。
+
+```ts
+type UC1 = Uncapitalize<"Hello">;      // "hello"
+type UC2 = Uncapitalize<"TypeScript">; // "typeScript"
+type UC3 = Uncapitalize<"hello">;      // "hello"（已经是小写，不变）
+type UC4 = Uncapitalize<"URL">;        // "uRL"
+```
+
+### 实际应用：从事件处理器名称反推事件名
+
+```ts
+// 从 "onClick" 提取 "click"
+type ExtractEventName<S extends string> =
+  S extends `on${infer EventName}`
+    ? Uncapitalize<EventName>
+    : never;
+
+type E1 = ExtractEventName<"onClick">;  // "click"
+type E2 = ExtractEventName<"onSubmit">; // "submit"
+type E3 = ExtractEventName<"onInput">;  // "input"
+type E4 = ExtractEventName<"invalid">;  // never
+```
+
+### 实际应用：PascalCase 转 camelCase
+
+```ts
+type PascalToCamel<S extends string> = Uncapitalize<S>;
+
+type ComponentNames = "UserProfile" | "ProductCard" | "NavBar";
+
+type InstanceNames = PascalToCamel<ComponentNames>;
+// "userProfile" | "productCard" | "navBar"
+
+// 生成组件实例映射
+type ComponentMap = {
+  [K in ComponentNames as PascalToCamel<K>]: K;
+};
+// {
+//   userProfile: "UserProfile";
+//   productCard: "ProductCard";
+//   navBar: "NavBar";
+// }
+```
+
+## 📝 实际应用示例
+
+### 类型安全的国际化键名生成
+
+```ts
+// 定义翻译命名空间和键
+type Namespace = "common" | "auth" | "dashboard";
+
+type CommonKeys = "submit" | "cancel" | "loading" | "error";
+type AuthKeys = "login" | "logout" | "register" | "forgotPassword";
+type DashboardKeys = "overview" | "analytics" | "settings";
+
+// 生成完整的翻译键：namespace.key 格式
+type TranslationKey =
+  | `${Namespace & "common"}.${CommonKeys}`
+  | `${Namespace & "auth"}.${AuthKeys}`
+  | `${Namespace & "dashboard"}.${DashboardKeys}`;
+
+// 翻译函数使用精确的键类型
+function translate(key: TranslationKey, locale: string = "en"): string {
+  const translations: Record<string, Record<string, string>> = {
+    en: {
+      "common.submit": "Submit",
+      "common.cancel": "Cancel",
+      "common.loading": "Loading...",
+      "common.error": "Error occurred",
+      "auth.login": "Log In",
+      "auth.logout": "Log Out",
+      "auth.register": "Register",
+      "auth.forgotPassword": "Forgot Password?",
+      "dashboard.overview": "Overview",
+      "dashboard.analytics": "Analytics",
+      "dashboard.settings": "Settings",
+    },
+  };
+  return translations[locale]?.[key] ?? key;
+}
+
+console.log(translate("auth.login"));        // "Log In"
+console.log(translate("common.submit"));     // "Submit"
+console.log(translate("dashboard.overview")); // "Overview"
+
+// ❌ 编译错误：不是有效的翻译键
+// translate("auth.submit");
+// translate("invalid.key");
+```
+
+### CSS 变量类型系统
+
+```ts
+type ThemeTokens = {
+  primaryColor: string;
+  secondaryColor: string;
+  fontSize: string;
+  lineHeight: string;
+  borderRadius: string;
+};
+
+// 将 camelCase 属性名转为 CSS 变量名 --kebab-case
+type CamelToKebab<S extends string> =
+  S extends `${infer Head}${infer Tail}`
+    ? Tail extends Uncapitalize<Tail>
+      ? `${Lowercase<Head>}${CamelToKebab<Tail>}`
+      : `${Lowercase<Head>}-${CamelToKebab<Tail>}`
+    : S;
+
+type CSSVarName<K extends string> = `--${CamelToKebab<K>}`;
+
+type ThemeCSSVars = {
+  [K in keyof ThemeTokens as CSSVarName<string & K>]: ThemeTokens[K];
+};
+// {
+//   "--primary-color": string;
+//   "--secondary-color": string;
+//   "--font-size": string;
+//   "--line-height": string;
+//   "--border-radius": string;
+// }
+
+const lightTheme: ThemeCSSVars = {
+  "--primary-color": "#007bff",
+  "--secondary-color": "#6c757d",
+  "--font-size": "16px",
+  "--line-height": "1.5",
+  "--border-radius": "4px",
+};
+
+function applyTheme(theme: ThemeCSSVars): void {
+  const root = { style: { setProperty(name: string, value: string) { console.log(`${name}: ${value}`); } } };
+  for (const [key, value] of Object.entries(theme)) {
+    root.style.setProperty(key, value);
+  }
+}
+
+applyTheme(lightTheme);
+// --primary-color: #007bff
+// --secondary-color: #6c757d
+// --font-size: 16px
+// --line-height: 1.5
+// --border-radius: 4px
+```
+
+## 🔗 相关概念
+
+- **模板字面量类型**: 字符串工具类型与模板字面量配合才能发挥最大威力
+- **映射类型 + 键重映射**: 通过 `as` 重映射键名时最常用到 `Capitalize`
+- **infer + 字符串模式匹配**: 从字符串中提取部分后用工具类型变换
+- **联合类型的分布式行为**: 字符串工具类型自动分布到联合类型每个成员
+
+## 📝 学习检查点
+
+- [ ] 掌握 `Uppercase` 和 `Lowercase` 的用法和区别
+- [ ] 掌握 `Capitalize` 和 `Uncapitalize` 的用法和区别
+- [ ] 理解这四个工具类型是编译器内置的（intrinsic），无法用普通类型代码实现
+- [ ] 能将字符串工具类型与模板字面量类型、映射类型配合使用
+- [ ] 能实现常见的命名风格转换（camelCase ↔ kebab-case、PascalCase → camelCase 等）
+- [ ] 能运用字符串工具类型解决实际问题（事件名生成、CSS 变量、国际化键名等）
+
+## 🚀 下一步
+
+→ [自定义工具类型](./04-custom-utility-types.mdx)

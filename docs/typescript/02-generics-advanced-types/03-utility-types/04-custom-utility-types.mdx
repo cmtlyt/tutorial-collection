@@ -1,12 +1,588 @@
 # 自定义工具类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍自定义工具类型的核心概念和实践方法。
+掌握了内置工具类型后，你完全可以基于泛型、映射类型、条件类型和 `infer` 来构建自己的**自定义工具类型**。自定义工具类型能够解决内置类型覆盖不到的场景，比如深层递归操作、复杂的类型变换等。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+本节将带你实现几个最实用的自定义工具类型：`DeepPartial`、`DeepReadonly`、`Awaited` 的实现原理，以及递归类型的设计模式。
+
+## 🎯 DeepPartial
+
+内置的 `Partial<T>` 只能将**第一层**属性变为可选。当你需要让嵌套对象的所有层级都变为可选时，就需要 `DeepPartial`。
+
+### 实现
+
+```ts
+type DeepPartial<T> = T extends object
+  ? T extends Function
+    ? T // 函数类型保持不变
+    : { [K in keyof T]?: DeepPartial<T[K]> }
+  : T;
+```
+
+### 使用示例
+
+```ts
+interface AppConfig {
+  database: {
+    host: string;
+    port: number;
+    credentials: {
+      username: string;
+      password: string;
+    };
+    pool: {
+      min: number;
+      max: number;
+      idleTimeout: number;
+    };
+  };
+  server: {
+    port: number;
+    cors: {
+      origins: string[];
+      methods: string[];
+      credentials: boolean;
+    };
+  };
+  logging: {
+    level: "debug" | "info" | "warn" | "error";
+    format: "json" | "text";
+  };
+}
+
+// 所有层级都变为可选
+type ConfigPatch = DeepPartial<AppConfig>;
+
+// 可以只提供需要覆盖的部分
+function mergeConfig(base: AppConfig, patch: ConfigPatch): AppConfig {
+  return deepMerge(base, patch) as AppConfig;
+}
+
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    const sourceValue = source[key];
+    const targetValue = target[key];
+    if (
+      sourceValue !== null &&
+      typeof sourceValue === "object" &&
+      !Array.isArray(sourceValue) &&
+      targetValue !== null &&
+      typeof targetValue === "object" &&
+      !Array.isArray(targetValue)
+    ) {
+      result[key] = deepMerge(
+        targetValue as Record<string, unknown>,
+        sourceValue as Record<string, unknown>
+      );
+    } else {
+      result[key] = sourceValue;
+    }
+  }
+  return result;
+}
+
+const defaultConfig: AppConfig = {
+  database: {
+    host: "localhost",
+    port: 5432,
+    credentials: { username: "admin", password: "secret" },
+    pool: { min: 2, max: 10, idleTimeout: 30000 },
+  },
+  server: {
+    port: 3000,
+    cors: { origins: ["*"], methods: ["GET", "POST"], credentials: false },
+  },
+  logging: { level: "info", format: "json" },
+};
+
+// 只覆盖需要修改的深层属性
+const prodConfig = mergeConfig(defaultConfig, {
+  database: {
+    host: "prod-db.example.com",
+    credentials: {
+      password: "super-secret-prod-password",
+    },
+    pool: {
+      max: 50,
+    },
+  },
+  logging: {
+    level: "warn",
+  },
+});
+
+console.log(prodConfig.database.host); // "prod-db.example.com"
+console.log(prodConfig.database.credentials.username); // "admin"（保留默认值）
+console.log(prodConfig.database.pool.max); // 50
+console.log(prodConfig.logging.level); // "warn"
+```
+
+## 🎯 DeepReadonly
+
+与 `DeepPartial` 类似，内置的 `Readonly<T>` 只作用于第一层。`DeepReadonly` 递归地将所有层级的属性都设为只读。
+
+### 实现
+
+```ts
+type DeepReadonly<T> = T extends Function
+  ? T
+  : T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
+```
+
+### 使用示例
+
+```ts
+interface Document {
+  title: string;
+  metadata: {
+    author: string;
+    tags: string[];
+    revision: {
+      version: number;
+      date: Date;
+    };
+  };
+  sections: Array<{
+    heading: string;
+    content: string;
+  }>;
+}
+
+type FrozenDocument = DeepReadonly<Document>;
+
+function loadDocument(): FrozenDocument {
+  return {
+    title: "TypeScript Guide",
+    metadata: {
+      author: "Alice",
+      tags: ["typescript", "tutorial"],
+      revision: {
+        version: 2,
+        date: new Date("2026-04-22"),
+      },
+    },
+    sections: [
+      { heading: "Introduction", content: "Welcome to TypeScript..." },
+      { heading: "Generics", content: "Generics allow you to..." },
+    ],
+  };
+}
+
+const doc = loadDocument();
+
+// ❌ 所有层级都无法修改
+// doc.title = "New Title";
+// doc.metadata.author = "Bob";
+// doc.metadata.revision.version = 3;
+
+// ✅ 可以读取任意深层属性
+console.log(doc.title);                    // "TypeScript Guide"
+console.log(doc.metadata.revision.version); // 2
+console.log(doc.sections[0].heading);       // "Introduction"
+```
+
+## 🎯 Awaited 的实现原理
+
+TypeScript 4.5 引入了内置的 `Awaited<T>` 类型，用于递归解包 `Promise` 和 `PromiseLike`。理解它的实现原理有助于掌握递归条件类型。
+
+### 手动实现
+
+```ts
+// 简化版 Awaited
+type MyAwaited<T> =
+  T extends null | undefined
+    ? T
+    : T extends { then: (onfulfilled: (value: infer V) => unknown) => unknown }
+    ? MyAwaited<V>
+    : T;
+
+// 测试
+type A1 = MyAwaited<Promise<string>>;              // string
+type A2 = MyAwaited<Promise<Promise<number>>>;     // number
+type A3 = MyAwaited<string>;                        // string
+type A4 = MyAwaited<null>;                          // null
+type A5 = MyAwaited<Promise<Promise<Promise<boolean>>>>; // boolean
+```
+
+### 为什么检查 then 而不是 Promise
+
+`Awaited` 检查的是 `{ then: ... }` 结构而非 `Promise` 类型，这是因为 JavaScript 中 `await` 实际上处理的是任何 thenable 对象：
+
+```ts
+// 自定义 thenable 对象也能被正确解包
+interface CustomThenable<T> {
+  then(onfulfilled: (value: T) => void): void;
+}
+
+type A6 = MyAwaited<CustomThenable<string>>; // string
+```
+
+### 实际应用
+
+```ts
+// 批量解包 Promise 元组
+type AwaitedTuple<T extends readonly unknown[]> = {
+  [K in keyof T]: MyAwaited<T[K]>;
+};
+
+type Promises = [Promise<string>, Promise<number>, Promise<boolean>];
+type Resolved = AwaitedTuple<Promises>;
+// [string, number, boolean]
+
+// 提取异步函数的实际返回类型
+type AsyncReturnType<T extends (...args: never[]) => Promise<unknown>> =
+  MyAwaited<ReturnType<T>>;
+
+async function fetchUser(): Promise<{ name: string; age: number }> {
+  return { name: "Alice", age: 30 };
+}
+
+type UserData = AsyncReturnType<typeof fetchUser>;
+// { name: string; age: number }
+```
+
+## 🎯 递归类型
+
+递归类型是自定义工具类型的核心技巧，它让类型能够处理任意深度的嵌套结构。
+
+### DeepRequired：深度必选
+
+```ts
+type DeepRequired<T> = T extends Function
+  ? T
+  : T extends object
+  ? { [K in keyof T]-?: DeepRequired<T[K]> }
+  : T;
+
+interface FormData {
+  name?: string;
+  address?: {
+    street?: string;
+    city?: string;
+    location?: {
+      lat?: number;
+      lng?: number;
+    };
+  };
+}
+
+type CompleteFormData = DeepRequired<FormData>;
+// {
+//   name: string;
+//   address: {
+//     street: string;
+//     city: string;
+//     location: {
+//       lat: number;
+//       lng: number;
+//     };
+//   };
+// }
+```
+
+### Flatten：递归展平嵌套数组类型
+
+```ts
+type Flatten<T> = T extends Array<infer Item> ? Flatten<Item> : T;
+
+type F1 = Flatten<string[]>;          // string
+type F2 = Flatten<string[][]>;        // string
+type F3 = Flatten<string[][][]>;      // string
+type F4 = Flatten<number>;            // number
+```
+
+### DeepPick：深层路径选取
+
+```ts
+// 根据点号路径从嵌套对象中选取类型
+type DeepPick<T, Path extends string> =
+  Path extends `${infer Key}.${infer Rest}`
+    ? Key extends keyof T
+      ? { [K in Key]: DeepPick<T[K], Rest> }
+      : never
+    : Path extends keyof T
+    ? { [K in Path]: T[K] }
+    : never;
+
+interface State {
+  user: {
+    profile: {
+      name: string;
+      avatar: string;
+    };
+    settings: {
+      theme: string;
+      language: string;
+    };
+  };
+  posts: {
+    list: Array<{ id: number; title: string }>;
+    loading: boolean;
+  };
+}
+
+type UserName = DeepPick<State, "user.profile.name">;
+// { user: { profile: { name: string } } }
+
+type PostsLoading = DeepPick<State, "posts.loading">;
+// { posts: { loading: boolean } }
+```
+
+### DeepMutable：深度去除只读
+
+```ts
+type DeepMutable<T> = T extends Function
+  ? T
+  : T extends object
+  ? { -readonly [K in keyof T]: DeepMutable<T[K]> }
+  : T;
+
+interface FrozenState {
+  readonly user: {
+    readonly name: string;
+    readonly preferences: {
+      readonly theme: string;
+      readonly fontSize: number;
+    };
+  };
+}
+
+type MutableState = DeepMutable<FrozenState>;
+// {
+//   user: {
+//     name: string;
+//     preferences: {
+//       theme: string;
+//       fontSize: number;
+//     };
+//   };
+// }
+```
+
+## 📝 实际应用示例
+
+### 类型安全的配置合并系统
+
+```ts
+type Primitive = string | number | boolean | null | undefined | symbol | bigint;
+
+type DeepMerge<T, U> = T extends Primitive | Function
+  ? U
+  : U extends Primitive | Function
+  ? U
+  : T extends object
+  ? U extends object
+    ? {
+        [K in keyof T | keyof U]: K extends keyof U
+          ? K extends keyof T
+            ? DeepMerge<T[K], U[K]>
+            : U[K]
+          : K extends keyof T
+          ? T[K]
+          : never;
+      }
+    : U
+  : U;
+
+// 测试 DeepMerge 类型
+interface BaseTheme {
+  colors: {
+    primary: string;
+    secondary: string;
+    background: string;
+  };
+  spacing: {
+    small: number;
+    medium: number;
+    large: number;
+  };
+  typography: {
+    fontFamily: string;
+    fontSize: number;
+  };
+}
+
+interface DarkOverride {
+  colors: {
+    primary: string;
+    background: string;
+    accent: string; // 新增属性
+  };
+  spacing: {
+    xlarge: number; // 新增属性
+  };
+}
+
+type MergedTheme = DeepMerge<BaseTheme, DarkOverride>;
+// {
+//   colors: {
+//     primary: string;    // 被覆盖
+//     secondary: string;  // 保留
+//     background: string; // 被覆盖
+//     accent: string;     // 新增
+//   };
+//   spacing: {
+//     small: number;  // 保留
+//     medium: number; // 保留
+//     large: number;  // 保留
+//     xlarge: number; // 新增
+//   };
+//   typography: {
+//     fontFamily: string; // 保留
+//     fontSize: number;   // 保留
+//   };
+// }
+
+function createTheme<T extends DeepPartial<BaseTheme>>(overrides: T): DeepMerge<BaseTheme, T> {
+  const base: BaseTheme = {
+    colors: { primary: "#007bff", secondary: "#6c757d", background: "#ffffff" },
+    spacing: { small: 4, medium: 8, large: 16 },
+    typography: { fontFamily: "Inter, sans-serif", fontSize: 16 },
+  };
+  return deepMergeValues(base, overrides) as DeepMerge<BaseTheme, T>;
+}
+
+function deepMergeValues(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>
+): Record<string, unknown> {
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    const sourceValue = source[key];
+    const targetValue = target[key];
+    if (
+      sourceValue !== null &&
+      typeof sourceValue === "object" &&
+      !Array.isArray(sourceValue) &&
+      targetValue !== null &&
+      typeof targetValue === "object" &&
+      !Array.isArray(targetValue)
+    ) {
+      result[key] = deepMergeValues(
+        targetValue as Record<string, unknown>,
+        sourceValue as Record<string, unknown>
+      );
+    } else {
+      result[key] = sourceValue;
+    }
+  }
+  return result;
+}
+
+const darkTheme = createTheme({
+  colors: { primary: "#0d6efd", background: "#1a1a2e" },
+  spacing: { large: 24 },
+});
+
+console.log(darkTheme.colors.primary);    // "#0d6efd"
+console.log(darkTheme.colors.secondary);  // "#6c757d"（保留默认）
+console.log(darkTheme.colors.background); // "#1a1a2e"
+console.log(darkTheme.spacing.large);     // 24
+console.log(darkTheme.spacing.small);     // 4（保留默认）
+```
+
+### 带路径的类型安全 get/set
+
+```ts
+type PathOf<T, Prefix extends string = ""> = T extends object
+  ? {
+      [K in keyof T & string]:
+        | `${Prefix}${K}`
+        | PathOf<T[K], `${Prefix}${K}.`>;
+    }[keyof T & string]
+  : never;
+
+type GetTypeByPath<T, P extends string> =
+  P extends `${infer Key}.${infer Rest}`
+    ? Key extends keyof T
+      ? GetTypeByPath<T[Key], Rest>
+      : never
+    : P extends keyof T
+    ? T[P]
+    : never;
+
+interface Store {
+  user: {
+    name: string;
+    age: number;
+    address: {
+      city: string;
+      zip: string;
+    };
+  };
+  settings: {
+    darkMode: boolean;
+    fontSize: number;
+  };
+}
+
+function get<T, P extends PathOf<T>>(obj: T, path: P): GetTypeByPath<T, P & string> {
+  const keys = (path as string).split(".");
+  let current: unknown = obj;
+  for (const key of keys) {
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current as GetTypeByPath<T, P & string>;
+}
+
+function set<T, P extends PathOf<T>>(
+  obj: T,
+  path: P,
+  value: GetTypeByPath<T, P & string>
+): void {
+  const keys = (path as string).split(".");
+  let current: Record<string, unknown> = obj as Record<string, unknown>;
+  for (let i = 0; i < keys.length - 1; i++) {
+    current = current[keys[i]] as Record<string, unknown>;
+  }
+  current[keys[keys.length - 1]] = value;
+}
+
+const store: Store = {
+  user: { name: "Alice", age: 30, address: { city: "Shanghai", zip: "200000" } },
+  settings: { darkMode: false, fontSize: 14 },
+};
+
+const city = get(store, "user.address.city");
+// city 的类型是 string
+console.log(city); // "Shanghai"
+
+const darkMode = get(store, "settings.darkMode");
+// darkMode 的类型是 boolean
+console.log(darkMode); // false
+
+set(store, "user.address.city", "Beijing");
+console.log(get(store, "user.address.city")); // "Beijing"
+
+// ❌ 编译错误：类型不匹配
+// set(store, "user.age", "thirty");
+
+// ❌ 编译错误：路径不存在
+// get(store, "user.address.country");
+```
+
+## 🔗 相关概念
+
+- **映射类型**: `DeepPartial`、`DeepReadonly` 等的遍历基础
+- **条件类型 + infer**: 递归类型的分支判断和类型提取基础
+- **模板字面量类型**: `DeepPick` 和路径相关工具类型的字符串解析基础
+- **内置工具类型**: 自定义工具类型通常是内置类型的深层扩展
+
+## 📝 学习检查点
+
+- [ ] 能实现 `DeepPartial` 和 `DeepReadonly` 等深层递归工具类型
+- [ ] 理解 `Awaited` 的实现原理（检查 thenable 而非 Promise）
+- [ ] 掌握递归类型的设计模式和终止条件
+- [ ] 能设计类型安全的深层路径访问工具
+- [ ] 理解递归类型的深度限制和性能考虑
+
+## 🚀 下一步
+
+→ [基础类型体操](../04-type-challenges/01-basic-challenges.mdx)

@@ -1,12 +1,402 @@
 # 进阶类型体操
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍进阶类型体操的核心概念和实践方法。
+在掌握了基础类型体操后，本节将挑战更复杂的类型操作：**元组转联合类型**、**联合类型转交叉类型**、**字符串类型操作**和**深层嵌套类型处理**。这些题目需要综合运用条件类型、`infer`、递归类型和模板字面量类型，是通往 TypeScript 类型编程高手之路的必经关卡。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 元组转联合类型
+
+### 题目描述
+
+将元组类型 `[A, B, C]` 转换为联合类型 `A | B | C`。
+
+### 实现
+
+```ts
+type TupleToUnion<T extends readonly unknown[]> = T[number];
+```
+
+### 原理解析
+
+- `T[number]`：使用 `number` 索引访问元组类型，TypeScript 会返回所有可能的元素类型的联合
+- 这是最简洁的实现方式，也可以用递归实现（见下面的等价递归版本）
+
+```ts
+// 递归版本（帮助理解原理）
+type TupleToUnionRecursive<T extends readonly unknown[]> =
+  T extends [infer First, ...infer Rest]
+    ? First | TupleToUnionRecursive<Rest>
+    : never;
+```
+
+### 测试验证
+
+```ts
+type U1 = TupleToUnion<[string, number, boolean]>;
+// string | number | boolean
+
+type U2 = TupleToUnion<[1, "hello", true]>;
+// 1 | "hello" | true
+
+type U3 = TupleToUnion<[string]>;
+// string
+
+type U4 = TupleToUnion<[]>;
+// never
+
+// 实际应用：从字面量数组生成联合类型
+const httpMethods = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
+type HttpMethod = TupleToUnion<typeof httpMethods>;
+// "GET" | "POST" | "PUT" | "DELETE" | "PATCH"
+
+function handleRequest(method: HttpMethod, url: string): void {
+  console.log(`${method} ${url}`);
+}
+
+handleRequest("GET", "/api/users");     // ✅
+handleRequest("POST", "/api/users");    // ✅
+// handleRequest("INVALID", "/api");    // ❌ 编译错误
+```
+
+### 拓展：元组转对象
+
+```ts
+type TupleToObject<T extends readonly PropertyKey[]> = {
+  [K in T[number]]: K;
+};
+
+const statusCodes = ["ok", "error", "pending"] as const;
+type StatusMap = TupleToObject<typeof statusCodes>;
+// { ok: "ok"; error: "error"; pending: "pending" }
+
+const statuses: StatusMap = {
+  ok: "ok",
+  error: "error",
+  pending: "pending",
+};
+
+console.log(statuses.ok); // "ok"
+```
+
+## 🎯 联合类型转交叉类型
+
+### 题目描述
+
+将联合类型 `A | B | C` 转换为交叉类型 `A & B & C`。
+
+### 实现
+
+```ts
+type UnionToIntersection<U> =
+  (U extends unknown ? (arg: U) => void : never) extends (arg: infer I) => void
+    ? I
+    : never;
+```
+
+### 原理解析
+
+这个实现利用了两个关键的类型系统特性：
+
+1. **分布式条件类型**：`U extends unknown ? (arg: U) => void : never` 将联合类型的每个成员包装为函数参数，得到一个函数联合类型
+2. **逆变位置推断**：函数参数处于逆变位置，当从联合的函数类型 `((arg: A) => void) | ((arg: B) => void)` 中推断参数类型时，TypeScript 会取所有参数的交叉类型
+
+```
+// 推导过程（以 UnionToIntersection<{a: 1} | {b: 2}> 为例）：
+
+// 第 1 步：分布式展开
+(arg: {a: 1}) => void | (arg: {b: 2}) => void
+
+// 第 2 步：从函数联合推断参数（逆变推断取交叉）
+infer I = {a: 1} & {b: 2}
+```
+
+### 测试验证
+
+```ts
+type I1 = UnionToIntersection<{ a: number } | { b: string }>;
+// { a: number } & { b: string }
+
+type I2 = UnionToIntersection<{ x: 1 } | { y: 2 } | { z: 3 }>;
+// { x: 1 } & { y: 2 } & { z: 3 }
+
+type I3 = UnionToIntersection<((x: string) => void) | ((x: number) => void)>;
+// (x: string & number) => void → (x: never) => void
+
+// 实际应用：合并事件监听器接口
+interface ClickHandler {
+  onClick: (e: { x: number; y: number }) => void;
+}
+
+interface KeyHandler {
+  onKeyPress: (e: { key: string }) => void;
+}
+
+interface ScrollHandler {
+  onScroll: (e: { scrollY: number }) => void;
+}
+
+type AllHandlers = UnionToIntersection<ClickHandler | KeyHandler | ScrollHandler>;
+// { onClick: ...; onKeyPress: ...; onScroll: ... }
+
+const handlers: AllHandlers = {
+  onClick: (e) => console.log(`Clicked at (${e.x}, ${e.y})`),
+  onKeyPress: (e) => console.log(`Key pressed: ${e.key}`),
+  onScroll: (e) => console.log(`Scrolled to ${e.scrollY}`),
+};
+
+handlers.onClick({ x: 100, y: 200 });
+handlers.onKeyPress({ key: "Enter" });
+handlers.onScroll({ scrollY: 500 });
+```
+
+## 🎯 字符串类型操作
+
+### 题目 1：实现 Split
+
+将字符串类型按分隔符拆分为元组类型。
+
+```ts
+type Split<S extends string, Delimiter extends string> =
+  S extends `${infer Head}${Delimiter}${infer Tail}`
+    ? [Head, ...Split<Tail, Delimiter>]
+    : [S];
+
+type S1 = Split<"a.b.c", ".">;       // ["a", "b", "c"]
+type S2 = Split<"hello", ".">;        // ["hello"]
+type S3 = Split<"a-b-c-d", "-">;      // ["a", "b", "c", "d"]
+type S4 = Split<"one::two::three", "::">; // ["one", "two", "three"]
+```
+
+### 题目 2：实现 Join
+
+将字符串元组按分隔符连接为字符串类型。
+
+```ts
+type Join<T extends string[], Delimiter extends string> =
+  T extends [infer First extends string]
+    ? First
+    : T extends [infer First extends string, ...infer Rest extends string[]]
+    ? `${First}${Delimiter}${Join<Rest, Delimiter>}`
+    : "";
+
+type J1 = Join<["a", "b", "c"], ".">;  // "a.b.c"
+type J2 = Join<["hello"], "-">;          // "hello"
+type J3 = Join<[], ".">;                 // ""
+```
+
+### 题目 3：实现 CamelCase
+
+将 kebab-case 字符串转换为 camelCase。
+
+```ts
+type CamelCase<S extends string> =
+  S extends `${infer Head}-${infer Tail}`
+    ? `${Lowercase<Head>}${CamelCase<Capitalize<Tail>>}`
+    : S;
+
+type CC1 = CamelCase<"background-color">;  // "backgroundColor"
+type CC2 = CamelCase<"font-size">;          // "fontSize"
+type CC3 = CamelCase<"border-top-width">;   // "borderTopWidth"
+type CC4 = CamelCase<"color">;              // "color"
+```
+
+### 题目 4：实现 KebabCase
+
+将 camelCase 字符串转换为 kebab-case。
+
+```ts
+type KebabCase<S extends string> =
+  S extends `${infer First}${infer Rest}`
+    ? Rest extends Uncapitalize<Rest>
+      ? `${Lowercase<First>}${KebabCase<Rest>}`
+      : `${Lowercase<First>}-${KebabCase<Rest>}`
+    : S;
+
+type KC1 = KebabCase<"backgroundColor">; // "background-color"
+type KC2 = KebabCase<"fontSize">;         // "font-size"
+type KC3 = KebabCase<"borderTopWidth">;   // "border-top-width"
+type KC4 = KebabCase<"color">;            // "color"
+```
+
+### 综合应用：CSS 属性映射
+
+```ts
+type CSSProperties = "background-color" | "font-size" | "border-radius"
+  | "margin-top" | "padding-left" | "text-align" | "line-height";
+
+type CSSToJSMap = {
+  [K in CSSProperties as CamelCase<K>]: string;
+};
+// {
+//   backgroundColor: string;
+//   fontSize: string;
+//   borderRadius: string;
+//   marginTop: string;
+//   paddingLeft: string;
+//   textAlign: string;
+//   lineHeight: string;
+// }
+
+const styles: CSSToJSMap = {
+  backgroundColor: "#fff",
+  fontSize: "16px",
+  borderRadius: "4px",
+  marginTop: "10px",
+  paddingLeft: "20px",
+  textAlign: "center",
+  lineHeight: "1.5",
+};
+
+console.log(styles.backgroundColor); // "#fff"
+console.log(styles.fontSize);        // "16px"
+```
+
+## 🎯 深层嵌套类型处理
+
+### 题目 1：DeepKeyOf——获取所有嵌套路径
+
+```ts
+type DeepKeyOf<T, Prefix extends string = ""> = T extends object
+  ? {
+      [K in keyof T & string]:
+        | `${Prefix}${K}`
+        | DeepKeyOf<T[K], `${Prefix}${K}.`>;
+    }[keyof T & string]
+  : never;
+
+interface Config {
+  app: {
+    name: string;
+    version: string;
+  };
+  database: {
+    host: string;
+    port: number;
+    credentials: {
+      user: string;
+      password: string;
+    };
+  };
+}
+
+type ConfigPaths = DeepKeyOf<Config>;
+// "app" | "app.name" | "app.version"
+// | "database" | "database.host" | "database.port"
+// | "database.credentials" | "database.credentials.user"
+// | "database.credentials.password"
+```
+
+### 题目 2：DeepGet——根据路径获取嵌套类型
+
+```ts
+type DeepGet<T, Path extends string> =
+  Path extends `${infer Key}.${infer Rest}`
+    ? Key extends keyof T
+      ? DeepGet<T[Key], Rest>
+      : never
+    : Path extends keyof T
+    ? T[Path]
+    : never;
+
+type AppName = DeepGet<Config, "app.name">;
+// string
+
+type DbCredentials = DeepGet<Config, "database.credentials">;
+// { user: string; password: string }
+
+type DbPort = DeepGet<Config, "database.port">;
+// number
+```
+
+### 题目 3：DeepSet——根据路径设置嵌套类型
+
+```ts
+type DeepSet<T, Path extends string, Value> =
+  Path extends `${infer Key}.${infer Rest}`
+    ? Key extends keyof T
+      ? { [K in keyof T]: K extends Key ? DeepSet<T[K], Rest, Value> : T[K] }
+      : T
+    : Path extends keyof T
+    ? { [K in keyof T]: K extends Path ? Value : T[K] }
+    : T;
+
+// 将 database.port 的类型从 number 改为 string
+type UpdatedConfig = DeepSet<Config, "database.port", string>;
+type NewPort = DeepGet<UpdatedConfig, "database.port">; // string
+// 其他字段保持不变
+type StillString = DeepGet<UpdatedConfig, "app.name">; // string
+```
+
+### 综合应用：类型安全的配置访问器
+
+```ts
+function createConfigAccessor<T extends Record<string, unknown>>(config: T) {
+  return {
+    get<P extends DeepKeyOf<T>>(path: P): DeepGet<T, P & string> {
+      const keys = (path as string).split(".");
+      let current: unknown = config;
+      for (const key of keys) {
+        current = (current as Record<string, unknown>)[key];
+      }
+      return current as DeepGet<T, P & string>;
+    },
+
+    has<P extends DeepKeyOf<T>>(path: P): boolean {
+      const keys = (path as string).split(".");
+      let current: unknown = config;
+      for (const key of keys) {
+        if (current === null || current === undefined) return false;
+        current = (current as Record<string, unknown>)[key];
+      }
+      return current !== undefined;
+    },
+  };
+}
+
+const config: Config = {
+  app: { name: "MyApp", version: "1.0.0" },
+  database: {
+    host: "localhost",
+    port: 5432,
+    credentials: { user: "admin", password: "secret" },
+  },
+};
+
+const accessor = createConfigAccessor(config);
+
+const appName = accessor.get("app.name");
+// appName 的类型是 string
+console.log(appName); // "MyApp"
+
+const dbPort = accessor.get("database.port");
+// dbPort 的类型是 number
+console.log(dbPort); // 5432
+
+const hasPassword = accessor.has("database.credentials.password");
+console.log(hasPassword); // true
+
+// ❌ 编译错误：无效路径
+// accessor.get("database.invalid");
+```
+
+## 🔗 相关概念
+
+- **分布式条件类型**: 联合转交叉的核心机制
+- **infer + 递归**: 字符串操作和深层嵌套处理的基础
+- **模板字面量类型**: 字符串类型操作的基础设施
+- **逆变推断**: 函数参数位置的类型推断特殊行为
+
+## 📝 学习检查点
+
+- [ ] 能将元组类型转换为联合类型（理解 `T[number]` 索引访问）
+- [ ] 理解联合转交叉的原理（分布式条件类型 + 逆变推断）
+- [ ] 能实现 `Split`、`Join`、`CamelCase`、`KebabCase` 等字符串操作
+- [ ] 能实现 `DeepKeyOf`、`DeepGet` 等深层嵌套类型工具
+- [ ] 能综合运用进阶类型体操解决实际问题
+
+## 🚀 下一步
+
+→ [类型体操练习平台](./03-practice-platforms.mdx)

@@ -1,12 +1,409 @@
 # 基础类型体操
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍基础类型体操的核心概念和实践方法。
+类型体操（Type Gymnastics / Type Challenges）是指在 TypeScript 的类型系统中进行纯类型层面的编程。通过手动实现内置工具类型，你可以深入理解映射类型、条件类型和 `infer` 的工作原理，从"会用"工具类型进化到"理解底层"。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+本节将带你从零实现六个基础工具类型：`Pick`、`Omit`、`Readonly`、`Required`、`Exclude` 和 `Extract`。每个实现都附带测试用例，确保你的类型是正确的。
+
+## 🎯 实现 Pick
+
+### 题目描述
+
+实现内置的 `Pick<T, K>`——从类型 `T` 中选取属性集合 `K`，构造一个新类型。
+
+### 实现
+
+```ts
+type MyPick<T, K extends keyof T> = {
+  [P in K]: T[P];
+};
+```
+
+### 原理解析
+
+- `K extends keyof T`：约束 `K` 必须是 `T` 的键的子集
+- `[P in K]`：遍历 `K` 中的每一个键
+- `T[P]`：通过索引访问获取原始属性的类型
+
+### 测试验证
+
+```ts
+interface Todo {
+  title: string;
+  description: string;
+  completed: boolean;
+  createdAt: Date;
+}
+
+type TodoPreview = MyPick<Todo, "title" | "completed">;
+
+const todo: TodoPreview = {
+  title: "Learn TypeScript",
+  completed: false,
+};
+
+console.log(todo.title);     // "Learn TypeScript"
+console.log(todo.completed); // false
+
+// ❌ 编译错误：'description' 不在 TodoPreview 中
+// todo.description;
+
+// ❌ 编译错误：'invalid' 不是 Todo 的键
+// type Invalid = MyPick<Todo, "invalid">;
+```
+
+## 🎯 实现 Omit
+
+### 题目描述
+
+实现内置的 `Omit<T, K>`——从类型 `T` 中排除属性集合 `K`，保留剩余属性。
+
+### 实现方式一：基于 Pick + Exclude
+
+```ts
+type MyOmit<T, K extends keyof T> = MyPick<T, Exclude<keyof T, K>>;
+```
+
+### 实现方式二：使用键重映射
+
+```ts
+type MyOmit2<T, K extends keyof T> = {
+  [P in keyof T as P extends K ? never : P]: T[P];
+};
+```
+
+### 原理解析
+
+- **方式一**：先用 `Exclude<keyof T, K>` 从所有键中排除 `K`，再用 `Pick` 选取剩余的键
+- **方式二**：通过 `as` 键重映射，将属于 `K` 的键映射为 `never`（即过滤掉），保留其余键
+
+### 测试验证
+
+```ts
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  password: string;
+  createdAt: Date;
+}
+
+type PublicUser = MyOmit<User, "password">;
+
+const user: PublicUser = {
+  id: 1,
+  name: "Alice",
+  email: "alice@example.com",
+  createdAt: new Date(),
+};
+
+console.log(user.name);  // "Alice"
+console.log(user.email); // "alice@example.com"
+
+// ❌ 编译错误：'password' 已被排除
+// user.password;
+
+// 方式二同样有效
+type PublicUser2 = MyOmit2<User, "password" | "createdAt">;
+
+const user2: PublicUser2 = {
+  id: 2,
+  name: "Bob",
+  email: "bob@example.com",
+};
+
+console.log(user2.id); // 2
+```
+
+## 🎯 实现 Readonly
+
+### 题目描述
+
+实现内置的 `Readonly<T>`——将类型 `T` 的所有属性设为 `readonly`。
+
+### 实现
+
+```ts
+type MyReadonly<T> = {
+  readonly [P in keyof T]: T[P];
+};
+```
+
+### 原理解析
+
+- `readonly` 修饰符使属性变为只读
+- `[P in keyof T]`：遍历 `T` 的所有属性
+- 映射类型默认保留原始修饰符，这里在前面加上 `readonly` 修饰符
+
+### 测试验证
+
+```ts
+interface Config {
+  host: string;
+  port: number;
+  debug: boolean;
+}
+
+const config: MyReadonly<Config> = {
+  host: "localhost",
+  port: 3000,
+  debug: true,
+};
+
+console.log(config.host); // "localhost"
+console.log(config.port); // 3000
+
+// ❌ 编译错误：readonly 属性不可修改
+// config.host = "0.0.0.0";
+// config.port = 8080;
+```
+
+## 🎯 实现 Required
+
+### 题目描述
+
+实现内置的 `Required<T>`——将类型 `T` 的所有可选属性变为必选。
+
+### 实现
+
+```ts
+type MyRequired<T> = {
+  [P in keyof T]-?: T[P];
+};
+```
+
+### 原理解析
+
+- `-?` 语法表示移除可选修饰符 `?`
+- 与之对应的 `+?`（或直接写 `?`）表示添加可选修饰符
+- 同理，`-readonly` 移除只读修饰符，`+readonly`（或直接写 `readonly`）添加只读修饰符
+
+### 测试验证
+
+```ts
+interface PartialUser {
+  name?: string;
+  email?: string;
+  age?: number;
+  bio?: string;
+}
+
+type FullUser = MyRequired<PartialUser>;
+
+// ✅ 所有属性都是必选的
+const user: FullUser = {
+  name: "Alice",
+  email: "alice@example.com",
+  age: 30,
+  bio: "TypeScript developer",
+};
+
+console.log(user.name); // "Alice"
+console.log(user.bio);  // "TypeScript developer"
+
+// ❌ 编译错误：缺少必选属性 'bio'
+// const incomplete: FullUser = {
+//   name: "Bob",
+//   email: "bob@example.com",
+//   age: 25,
+// };
+```
+
+## 🎯 实现 Exclude
+
+### 题目描述
+
+实现内置的 `Exclude<T, U>`——从联合类型 `T` 中排除所有可赋值给 `U` 的成员。
+
+### 实现
+
+```ts
+type MyExclude<T, U> = T extends U ? never : T;
+```
+
+### 原理解析
+
+这是**分布式条件类型**的经典应用：
+
+- 当 `T` 是联合类型时，条件类型会自动分布到每个成员上
+- 对每个成员：如果可赋值给 `U`，则结果为 `never`（被过滤掉）；否则保留
+- `never` 在联合类型中会自动消失
+
+逐步推导 `MyExclude<"a" | "b" | "c", "a" | "c">`：
+
+```
+"a" extends "a" | "c" ? never : "a" → never
+"b" extends "a" | "c" ? never : "b" → "b"
+"c" extends "a" | "c" ? never : "c" → never
+
+结果：never | "b" | never → "b"
+```
+
+### 测试验证
+
+```ts
+type AllColors = "red" | "green" | "blue" | "yellow" | "purple";
+type WarmColors = "red" | "yellow";
+
+type CoolColors = MyExclude<AllColors, WarmColors>;
+// "green" | "blue" | "purple"
+
+// 排除 null 和 undefined
+type NullableString = string | null | undefined;
+type SafeString = MyExclude<NullableString, null | undefined>;
+// string
+
+// 从混合类型中排除特定类型
+type Mixed = string | number | boolean | (() => void);
+type NonFunction = MyExclude<Mixed, Function>;
+// string | number | boolean
+
+const color: CoolColors = "green";
+console.log(color); // "green"
+
+const safeValue: SafeString = "hello";
+console.log(safeValue.toUpperCase()); // "HELLO"
+```
+
+## 🎯 实现 Extract
+
+### 题目描述
+
+实现内置的 `Extract<T, U>`——从联合类型 `T` 中提取所有可赋值给 `U` 的成员。
+
+### 实现
+
+```ts
+type MyExtract<T, U> = T extends U ? T : never;
+```
+
+### 原理解析
+
+与 `Exclude` 刚好相反：
+
+- 对联合类型的每个成员：如果可赋值给 `U`，则保留；否则结果为 `never`（被过滤掉）
+- `Extract` 和 `Exclude` 是互补关系：`Extract<T, U>` ∪ `Exclude<T, U>` = `T`
+
+### 测试验证
+
+```ts
+type AllEvents = "click" | "scroll" | "keypress" | "mousemove" | "touchstart";
+type MouseRelated = "click" | "scroll" | "mousemove" | "mouseenter";
+
+type MouseEvents = MyExtract<AllEvents, MouseRelated>;
+// "click" | "scroll" | "mousemove"
+
+// 从混合类型中提取特定类型
+type Mixed = string | number | boolean | string[] | number[];
+type ArrayTypes = MyExtract<Mixed, unknown[]>;
+// string[] | number[]
+
+type StringOrNumber = MyExtract<Mixed, string | number>;
+// string | number
+
+const event: MouseEvents = "click";
+console.log(event); // "click"
+
+const arrays: ArrayTypes = [1, 2, 3];
+console.log(arrays.length); // 3
+```
+
+## 📝 实际应用示例
+
+### 组合运用：构建类型安全的 API 层
+
+```ts
+// 将所有基础类型体操结合起来，构建一套类型工具
+
+interface DatabaseRecord {
+  id: string;
+  createdAt: Date;
+  updatedAt: Date;
+  deletedAt: Date | null;
+  version: number;
+}
+
+interface Product extends DatabaseRecord {
+  name: string;
+  price: number;
+  description: string;
+  category: string;
+  tags: string[];
+  inStock: boolean;
+}
+
+// 自动字段：系统自动管理的字段
+type AutoFields = keyof DatabaseRecord;
+
+// 创建输入：排除自动字段
+type CreateInput = MyOmit<Product, AutoFields>;
+
+// 更新输入：排除自动字段 + 所有字段可选
+type UpdateInput = Partial<MyOmit<Product, AutoFields>>;
+
+// 列表视图：只选取需要的字段
+type ListView = MyPick<Product, "id" | "name" | "price" | "category" | "inStock">;
+
+// 不可变视图
+type ReadonlyView = MyReadonly<Product>;
+
+// 搜索条件：提取字符串字段用于全文搜索
+type StringFields = {
+  [K in keyof Product]: Product[K] extends string ? K : never;
+}[keyof Product];
+// "id" | "name" | "description" | "category"
+
+type SearchableFields = MyExtract<StringFields, keyof MyOmit<Product, AutoFields>>;
+// "name" | "description" | "category"
+
+// 验证类型的正确性
+const createInput: CreateInput = {
+  name: "TypeScript Book",
+  price: 49.99,
+  description: "Complete guide",
+  category: "Books",
+  tags: ["typescript"],
+  inStock: true,
+};
+console.log(createInput.name); // "TypeScript Book"
+
+const updateInput: UpdateInput = {
+  price: 39.99,
+  inStock: false,
+};
+console.log(updateInput.price); // 39.99
+
+const listItem: ListView = {
+  id: "prod-001",
+  name: "TypeScript Book",
+  price: 49.99,
+  category: "Books",
+  inStock: true,
+};
+console.log(`${listItem.name}: ${listItem.price}`);
+// "TypeScript Book: $49.99"
+```
+
+## 🔗 相关概念
+
+- **映射类型**: `Pick`、`Readonly`、`Required` 的底层实现依赖映射类型
+- **条件类型**: `Exclude`、`Extract` 的底层实现依赖分布式条件类型
+- **键重映射**: `Omit` 的方式二使用了 `as` 键重映射
+- **进阶类型体操**: 基于这些基础实现，可以构建更复杂的类型操作
+
+## 📝 学习检查点
+
+- [ ] 能手写 `Pick` 和 `Omit` 的实现
+- [ ] 能手写 `Readonly` 和 `Required` 的实现
+- [ ] 能手写 `Exclude` 和 `Extract` 的实现
+- [ ] 理解 `-?` 和 `-readonly` 修饰符的含义
+- [ ] 理解分布式条件类型在 `Exclude`/`Extract` 中的作用
+- [ ] 能组合运用这些基础工具类型解决实际问题
+
+## 🚀 下一步
+
+→ [进阶类型体操](./02-advanced-challenges.mdx)

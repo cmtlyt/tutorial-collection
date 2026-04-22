@@ -1,12 +1,363 @@
 # 模板字面量类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍模板字面量类型的核心概念和实践方法。
+模板字面量类型（Template Literal Types）是 TypeScript 4.1 引入的特性，它将 JavaScript 的模板字符串语法搬到了类型层面。通过模板字面量类型，你可以在类型系统中进行**字符串拼接、模式匹配和字符串变换**，构建出极为精确的类型约束。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+它与 TypeScript 内置的字符串操作类型（`Uppercase`、`Lowercase`、`Capitalize`、`Uncapitalize`）以及条件类型中的 `infer` 配合使用，可以实现强大的字符串级别类型编程。
+
+## 🎯 字符串模式匹配
+
+### 基本语法
+
+模板字面量类型使用反引号和 `${}` 插值，与 JavaScript 模板字符串的语法一致：
+
+```ts
+// 基本拼接
+type Greeting = `Hello, ${"world"}`;
+// "Hello, world"
+
+// 使用类型变量
+type EventName<T extends string> = `on${T}`;
+
+type ClickEvent = EventName<"Click">; // "onClick"
+type InputEvent = EventName<"Input">; // "onInput"
+```
+
+### 联合类型的笛卡尔积
+
+当插值位置是联合类型时，模板字面量类型会自动展开为所有可能的组合：
+
+```ts
+type Color = "red" | "blue" | "green";
+type Size = "small" | "medium" | "large";
+
+type ColoredSize = `${Color}-${Size}`;
+// "red-small" | "red-medium" | "red-large"
+// | "blue-small" | "blue-medium" | "blue-large"
+// | "green-small" | "green-medium" | "green-large"
+
+// 实际应用：CSS 类名生成
+type Direction = "top" | "right" | "bottom" | "left";
+type SpacingType = "margin" | "padding";
+type SpacingSize = "0" | "1" | "2" | "4" | "8";
+
+type SpacingClass = `${SpacingType}-${Direction}-${SpacingSize}`;
+// "margin-top-0" | "margin-top-1" | ... | "padding-left-8"
+// 共 2 × 4 × 5 = 40 种组合
+```
+
+### 多段模板
+
+```ts
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+type ApiVersion = "v1" | "v2";
+type Resource = "users" | "posts" | "comments";
+
+type ApiEndpoint = `${Uppercase<HttpMethod>} /api/${ApiVersion}/${Resource}`;
+// "GET /api/v1/users" | "GET /api/v1/posts" | ... | "DELETE /api/v2/comments"
+```
+
+## 🎯 字符串操作类型
+
+TypeScript 内置了四个字符串操作工具类型，它们是编译器内部实现的（无法通过普通的类型代码实现）：
+
+```ts
+// 转大写
+type U1 = Uppercase<"hello">;      // "HELLO"
+type U2 = Uppercase<"Hello World">; // "HELLO WORLD"
+
+// 转小写
+type L1 = Lowercase<"HELLO">;      // "hello"
+type L2 = Lowercase<"Hello World">; // "hello world"
+
+// 首字母大写
+type C1 = Capitalize<"hello">;      // "Hello"
+type C2 = Capitalize<"world">;      // "World"
+
+// 首字母小写
+type UC1 = Uncapitalize<"Hello">;   // "hello"
+type UC2 = Uncapitalize<"World">;   // "world"
+```
+
+### 与联合类型配合
+
+这些操作类型也会自动分布到联合类型的每个成员上：
+
+```ts
+type Events = "click" | "input" | "submit";
+
+type HandlerNames = `on${Capitalize<Events>}`;
+// "onClick" | "onInput" | "onSubmit"
+
+type UpperEvents = Uppercase<Events>;
+// "CLICK" | "INPUT" | "SUBMIT"
+```
+
+## 🎯 模板字面量与联合类型
+
+### 从对象类型生成事件名
+
+```ts
+interface UserProfile {
+  firstName: string;
+  lastName: string;
+  email: string;
+  age: number;
+}
+
+// 为每个属性生成 change 事件名
+type ChangeEventName<T> = {
+  [K in keyof T as `${string & K}Changed`]: (newValue: T[K]) => void;
+};
+
+type UserProfileEvents = ChangeEventName<UserProfile>;
+// {
+//   firstNameChanged: (newValue: string) => void;
+//   lastNameChanged: (newValue: string) => void;
+//   emailChanged: (newValue: string) => void;
+//   ageChanged: (newValue: number) => void;
+// }
+```
+
+### 命名风格转换
+
+```ts
+// camelCase → kebab-case（简化版，处理单个大写字母边界）
+type CamelToKebab<S extends string> =
+  S extends `${infer First}${infer Rest}`
+    ? Rest extends Uncapitalize<Rest>
+      ? `${Lowercase<First>}${CamelToKebab<Rest>}`
+      : `${Lowercase<First>}-${CamelToKebab<Rest>}`
+    : S;
+
+type K1 = CamelToKebab<"backgroundColor">; // "background-color"
+type K2 = CamelToKebab<"fontSize">;         // "font-size"
+type K3 = CamelToKebab<"color">;            // "color"
+
+// kebab-case → camelCase
+type KebabToCamel<S extends string> =
+  S extends `${infer Head}-${infer Tail}`
+    ? `${Head}${KebabToCamel<Capitalize<Tail>>}`
+    : S;
+
+type C3 = KebabToCamel<"background-color">; // "backgroundColor"
+type C4 = KebabToCamel<"font-size">;         // "fontSize"
+type C5 = KebabToCamel<"border-top-width">;  // "borderTopWidth"
+```
+
+## 🎯 模板字面量与 infer
+
+模板字面量类型与 `infer` 结合，可以对字符串进行模式匹配和解构：
+
+### 字符串解析
+
+```ts
+// 分割字符串
+type Split<S extends string, Delimiter extends string> =
+  S extends `${infer Head}${Delimiter}${infer Tail}`
+    ? [Head, ...Split<Tail, Delimiter>]
+    : [S];
+
+type Parts1 = Split<"a.b.c", ".">;     // ["a", "b", "c"]
+type Parts2 = Split<"hello", ".">;      // ["hello"]
+type Parts3 = Split<"a-b-c-d", "-">;    // ["a", "b", "c", "d"]
+
+// 连接字符串元组
+type Join<T extends string[], Delimiter extends string> =
+  T extends [infer First extends string]
+    ? First
+    : T extends [infer First extends string, ...infer Rest extends string[]]
+    ? `${First}${Delimiter}${Join<Rest, Delimiter>}`
+    : "";
+
+type Joined1 = Join<["a", "b", "c"], ".">;  // "a.b.c"
+type Joined2 = Join<["hello"], "-">;          // "hello"
+```
+
+### 字符串替换
+
+```ts
+// 替换第一个匹配
+type Replace<
+  S extends string,
+  From extends string,
+  To extends string
+> = From extends ""
+  ? S
+  : S extends `${infer Head}${From}${infer Tail}`
+  ? `${Head}${To}${Tail}`
+  : S;
+
+type R1 = Replace<"hello world", "world", "TypeScript">;
+// "hello TypeScript"
+
+// 替换所有匹配
+type ReplaceAll<
+  S extends string,
+  From extends string,
+  To extends string
+> = From extends ""
+  ? S
+  : S extends `${infer Head}${From}${infer Tail}`
+  ? ReplaceAll<`${Head}${To}${Tail}`, From, To>
+  : S;
+
+type R2 = ReplaceAll<"a-b-c-d", "-", "_">;
+// "a_b_c_d"
+```
+
+### 去除空白
+
+```ts
+type TrimLeft<S extends string> =
+  S extends `${" " | "\t" | "\n"}${infer Rest}`
+    ? TrimLeft<Rest>
+    : S;
+
+type TrimRight<S extends string> =
+  S extends `${infer Rest}${" " | "\t" | "\n"}`
+    ? TrimRight<Rest>
+    : S;
+
+type Trim<S extends string> = TrimLeft<TrimRight<S>>;
+
+type T1 = Trim<"  hello  ">;   // "hello"
+type T2 = Trim<"\n hello \t">; // "hello"
+```
+
+## 📝 实际应用示例
+
+### 类型安全的 CSS-in-JS 属性映射
+
+```ts
+// CSS 属性名到 JS 风格的转换
+type CSSProperty = "background-color" | "font-size" | "border-radius"
+  | "margin-top" | "padding-left" | "line-height" | "text-align";
+
+type CSSToJS<S extends string> =
+  S extends `${infer Head}-${infer Tail}`
+    ? `${Head}${CSSToJS<Capitalize<Tail>>}`
+    : S;
+
+type CSSProperties = {
+  [K in CSSProperty as CSSToJS<K>]: string;
+};
+
+// {
+//   backgroundColor: string;
+//   fontSize: string;
+//   borderRadius: string;
+//   marginTop: string;
+//   paddingLeft: string;
+//   lineHeight: string;
+//   textAlign: string;
+// }
+
+const styles: CSSProperties = {
+  backgroundColor: "#fff",
+  fontSize: "16px",
+  borderRadius: "4px",
+  marginTop: "10px",
+  paddingLeft: "20px",
+  lineHeight: "1.5",
+  textAlign: "center",
+};
+
+console.log(styles.backgroundColor); // "#fff"
+```
+
+### 类型安全的路径访问
+
+```ts
+// 获取嵌套对象的所有路径
+type NestedPaths<T, Prefix extends string = ""> = T extends object
+  ? {
+      [K in keyof T & string]:
+        | `${Prefix}${K}`
+        | NestedPaths<T[K], `${Prefix}${K}.`>;
+    }[keyof T & string]
+  : never;
+
+interface AppState {
+  user: {
+    name: string;
+    address: {
+      city: string;
+      zip: string;
+    };
+  };
+  settings: {
+    theme: string;
+    language: string;
+  };
+}
+
+type AllPaths = NestedPaths<AppState>;
+// "user" | "user.name" | "user.address" | "user.address.city"
+// | "user.address.zip" | "settings" | "settings.theme" | "settings.language"
+
+// 根据路径获取对应的值类型
+type GetByPath<T, Path extends string> =
+  Path extends `${infer Key}.${infer Rest}`
+    ? Key extends keyof T
+      ? GetByPath<T[Key], Rest>
+      : never
+    : Path extends keyof T
+    ? T[Path]
+    : never;
+
+type CityType = GetByPath<AppState, "user.address.city">; // string
+type UserType = GetByPath<AppState, "user">;
+// { name: string; address: { city: string; zip: string } }
+
+function getNestedValue<T, P extends NestedPaths<T>>(
+  obj: T,
+  path: P
+): GetByPath<T, P & string> {
+  const keys = (path as string).split(".");
+  let current: unknown = obj;
+  for (const key of keys) {
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current as GetByPath<T, P & string>;
+}
+
+const state: AppState = {
+  user: {
+    name: "Alice",
+    address: { city: "Shanghai", zip: "200000" },
+  },
+  settings: { theme: "dark", language: "zh-CN" },
+};
+
+const city = getNestedValue(state, "user.address.city");
+// city 的类型是 string
+console.log(city); // "Shanghai"
+
+// ❌ 编译错误：'user.address.country' 不是有效路径
+// getNestedValue(state, "user.address.country");
+```
+
+## 🔗 相关概念
+
+- **字面量类型**: 模板字面量类型是字面量类型的扩展
+- **条件类型 + infer**: 与模板字面量配合实现字符串解析
+- **映射类型 + 键重映射**: 利用模板字面量变换属性名
+- **Capitalize / Uncapitalize**: 内置的字符串操作工具类型
+
+## 📝 学习检查点
+
+- [ ] 理解模板字面量类型的基本语法
+- [ ] 理解联合类型在模板字面量中的笛卡尔积展开
+- [ ] 掌握四个内置字符串操作类型的用法
+- [ ] 能用模板字面量与 `infer` 进行字符串解析（分割、替换、去空白等）
+- [ ] 能实现命名风格转换（camelCase ↔ kebab-case）
+- [ ] 能运用模板字面量类型解决实际问题（路径访问、CSS 属性映射等）
+
+## 🚀 下一步
+
+→ [常用工具类型](../03-utility-types/01-common-utility-types.mdx)

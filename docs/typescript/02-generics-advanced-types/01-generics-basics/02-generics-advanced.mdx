@@ -1,12 +1,451 @@
 # 泛型进阶
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍泛型进阶的核心概念和实践方法。
+在掌握了泛型的基础用法后，本节将深入探讨泛型的进阶特性。你将学习多类型参数之间的关系约束、TypeScript 强大的类型推断机制、条件类型中的泛型应用，以及 `keyof` 与泛型的高级组合模式。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 多类型参数的关系约束
+
+### 类型参数之间的依赖
+
+多个类型参数之间可以互相约束，形成类型之间的依赖关系：
+
+```ts
+// K 依赖于 T：K 必须是 T 的键
+function getValues<T, K extends keyof T>(obj: T, keys: K[]): T[K][] {
+  return keys.map((key) => obj[key]);
+}
+
+const user = { name: "Alice", age: 30, email: "alice@example.com" };
+
+const values = getValues(user, ["name", "email"]);
+// 类型推断为 (string)[]
+console.log(values); // ["Alice", "alice@example.com"]
+
+// ❌ 编译错误：'address' 不在 keyof typeof user 中
+// getValues(user, ["name", "address"]);
+```
+
+### 类型参数之间的映射
+
+一个类型参数可以基于另一个类型参数构建新的类型：
+
+```ts
+function mapObject<T, U>(
+  obj: Record<string, T>,
+  transform: (value: T, key: string) => U
+): Record<string, U> {
+  const result: Record<string, U> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    result[key] = transform(value, key);
+  }
+  return result;
+}
+
+const prices = { apple: 1.5, banana: 0.8, cherry: 3.0 };
+
+// T 推断为 number，U 推断为 string
+const formatted = mapObject(prices, (price) => `${price.toFixed(2)}`);
+console.log(formatted);
+// { apple: "$1.50", banana: "$0.80", cherry: "$3.00" }
+```
+
+### 递归类型参数
+
+泛型可以引用自身来定义递归数据结构：
+
+```ts
+interface TreeNode<T> {
+  value: T;
+  children: TreeNode<T>[];
+}
+
+function findInTree<T>(
+  node: TreeNode<T>,
+  predicate: (value: T) => boolean
+): T | undefined {
+  if (predicate(node.value)) {
+    return node.value;
+  }
+  for (const child of node.children) {
+    const found = findInTree(child, predicate);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+const fileTree: TreeNode<string> = {
+  value: "root",
+  children: [
+    {
+      value: "src",
+      children: [
+        { value: "index.ts", children: [] },
+        { value: "utils.ts", children: [] },
+      ],
+    },
+    {
+      value: "docs",
+      children: [{ value: "readme.md", children: [] }],
+    },
+  ],
+};
+
+const found = findInTree(fileTree, (name) => name.endsWith(".ts"));
+console.log(found); // "index.ts"
+```
+
+## 🎯 泛型参数推断
+
+### 推断的基本规则
+
+TypeScript 会根据函数调用时传入的实参来推断泛型参数。理解推断规则能让你写出更好的泛型 API：
+
+```ts
+// 规则 1：从参数位置推断
+function first<T>(items: T[]): T | undefined {
+  return items[0];
+}
+
+const num = first([1, 2, 3]);       // T 推断为 number
+const str = first(["a", "b", "c"]); // T 推断为 string
+
+// 规则 2：从多个参数位置推断，取联合类型
+function combine<T>(a: T, b: T): T[] {
+  return [a, b];
+}
+
+const mixed = combine<string | number>("hello", 42);
+// 需要显式指定，否则报错（string 和 number 不兼容）
+
+// 规则 3：不同参数位置用不同类型参数，各自推断
+function zip<A, B>(listA: A[], listB: B[]): [A, B][] {
+  const length = Math.min(listA.length, listB.length);
+  const result: [A, B][] = [];
+  for (let i = 0; i < length; i++) {
+    result.push([listA[i], listB[i]]);
+  }
+  return result;
+}
+
+const zipped = zip([1, 2, 3], ["a", "b", "c"]);
+// A 推断为 number，B 推断为 string
+// 类型为 [number, string][]
+```
+
+### 推断与上下文类型
+
+回调函数的参数类型可以从泛型上下文中推断：
+
+```ts
+function createHandler<T>(
+  validator: (input: unknown) => T,
+  handler: (data: T) => void
+): (input: unknown) => void {
+  return (input) => {
+    const validated = validator(input);
+    handler(validated);
+  };
+}
+
+interface LoginData {
+  username: string;
+  password: string;
+}
+
+const handleLogin = createHandler(
+  // validator 的返回值推断 T 为 LoginData
+  (input): LoginData => {
+    const data = input as LoginData;
+    if (!data.username || !data.password) {
+      throw new Error("Invalid login data");
+    }
+    return data;
+  },
+  // handler 的参数 data 自动推断为 LoginData
+  (data) => {
+    console.log(`Login attempt by: ${data.username}`);
+  }
+);
+
+handleLogin({ username: "alice", password: "secret" });
+```
+
+### 利用推断简化 API
+
+好的泛型设计应该让用户尽量不需要手动指定类型参数：
+
+```ts
+// ❌ 不好的设计：用户必须手动指定类型
+function createState<T>(): { get: () => T; set: (value: T) => void } {
+  let state: T;
+  return {
+    get: () => state,
+    set: (value) => { state = value; },
+  };
+}
+// 用户被迫写：createState<number>()
+
+// ✅ 好的设计：通过初始值推断类型
+function createState2<T>(initialValue: T): { get: () => T; set: (value: T) => void } {
+  let state: T = initialValue;
+  return {
+    get: () => state,
+    set: (value) => { state = value; },
+  };
+}
+// 用户只需写：createState2(0)，T 自动推断为 number
+const counter = createState2(0);
+counter.set(42);
+console.log(counter.get()); // 42
+```
+
+## 🎯 条件类型中的泛型
+
+泛型与条件类型结合是 TypeScript 类型编程的核心能力。条件类型的语法类似三元表达式：`T extends U ? X : Y`
+
+```ts
+// 基本条件类型
+type IsString<T> = T extends string ? true : false;
+
+type A = IsString<string>;  // true
+type B = IsString<number>;  // false
+
+// 提取数组元素类型
+type ElementOf<T> = T extends (infer E)[] ? E : never;
+
+type C = ElementOf<string[]>;    // string
+type D = ElementOf<number[]>;    // number
+type E = ElementOf<string>;      // never（不是数组）
+
+// 提取 Promise 内部类型（递归版本）
+type UnwrapPromise<T> = T extends Promise<infer U> ? UnwrapPromise<U> : T;
+
+type F = UnwrapPromise<Promise<string>>;              // string
+type G = UnwrapPromise<Promise<Promise<number>>>;     // number
+type H = UnwrapPromise<string>;                        // string
+```
+
+### 分布式条件类型
+
+当条件类型作用于联合类型时，它会自动对联合类型的每个成员分别计算——这就是分布式条件类型：
+
+```ts
+type ToArray<T> = T extends unknown ? T[] : never;
+
+// 联合类型的每个成员分别应用
+type I = ToArray<string | number>;
+// 等价于 ToArray<string> | ToArray<number>
+// 即 string[] | number[]
+
+// 如果不想要分布式行为，用元组包裹
+type ToArrayNonDist<T> = [T] extends [unknown] ? T[] : never;
+
+type J = ToArrayNonDist<string | number>;
+// (string | number)[]
+```
+
+### 条件类型与函数重载的替代
+
+```ts
+// 传统方式：函数重载
+function processInput(input: string): string;
+function processInput(input: number): number;
+function processInput(input: string | number): string | number {
+  if (typeof input === "string") {
+    return input.toUpperCase();
+  }
+  return input * 2;
+}
+
+// 泛型 + 条件类型方式
+type ProcessResult<T> = T extends string ? string : T extends number ? number : never;
+
+function processInputGeneric<T extends string | number>(input: T): ProcessResult<T> {
+  if (typeof input === "string") {
+    return input.toUpperCase() as ProcessResult<T>;
+  }
+  return (input * 2) as ProcessResult<T>;
+}
+
+const resultStr = processInputGeneric("hello"); // 类型为 string
+const resultNum = processInputGeneric(21);      // 类型为 number
+```
+
+## 🎯 keyof 与泛型的高级组合
+
+### 类型安全的事件系统
+
+```ts
+interface EventMap {
+  click: { x: number; y: number };
+  input: { value: string };
+  submit: { formData: Record<string, string> };
+  resize: { width: number; height: number };
+}
+
+class TypedEventEmitter<Events extends Record<string, unknown>> {
+  private listeners = new Map<string, Set<Function>>();
+
+  on<K extends keyof Events>(
+    event: K,
+    listener: (payload: Events[K]) => void
+  ): () => void {
+    const key = event as string;
+    if (!this.listeners.has(key)) {
+      this.listeners.set(key, new Set());
+    }
+    this.listeners.get(key)!.add(listener);
+
+    // 返回取消监听的函数
+    return () => {
+      this.listeners.get(key)?.delete(listener);
+    };
+  }
+
+  emit<K extends keyof Events>(event: K, payload: Events[K]): void {
+    const key = event as string;
+    this.listeners.get(key)?.forEach((listener) => listener(payload));
+  }
+}
+
+const emitter = new TypedEventEmitter<EventMap>();
+
+// ✅ 类型安全：payload 自动推断
+emitter.on("click", (payload) => {
+  console.log(`Clicked at (${payload.x}, ${payload.y})`);
+});
+
+emitter.on("input", (payload) => {
+  console.log(`Input value: ${payload.value}`);
+});
+
+// ✅ 类型安全：emit 时检查 payload 类型
+emitter.emit("click", { x: 100, y: 200 });
+
+// ❌ 编译错误：缺少 y 属性
+// emitter.emit("click", { x: 100 });
+
+// ❌ 编译错误：'unknown-event' 不在 EventMap 中
+// emitter.emit("unknown-event", {});
+```
+
+### 类型安全的 Builder 模式
+
+```ts
+type BuilderState = Record<string, unknown>;
+
+class QueryBuilder<State extends BuilderState = {}> {
+  private state: Partial<Record<string, unknown>> = {};
+
+  where<Key extends string, Value>(
+    key: Key,
+    value: Value
+  ): QueryBuilder<State & Record<Key, Value>> {
+    this.state[key] = value;
+    return this as unknown as QueryBuilder<State & Record<Key, Value>>;
+  }
+
+  build(): State {
+    return { ...this.state } as State;
+  }
+}
+
+const query = new QueryBuilder()
+  .where("name", "Alice")
+  .where("age", 30)
+  .where("active", true)
+  .build();
+
+// query 的类型自动推断为：
+// { name: string } & { age: number } & { active: boolean }
+console.log(query.name);   // "Alice"
+console.log(query.age);    // 30
+console.log(query.active); // true
+```
+
+## 📝 实际应用示例
+
+### 类型安全的状态管理
+
+```ts
+interface StoreDefinition<
+  State extends Record<string, unknown>,
+  Getters extends Record<string, (state: State) => unknown>,
+  Actions extends Record<string, (...args: never[]) => unknown>
+> {
+  state: () => State;
+  getters: Getters;
+  actions: Actions;
+}
+
+function defineStore<
+  S extends Record<string, unknown>,
+  G extends Record<string, (state: S) => unknown>,
+  A extends Record<string, (...args: never[]) => unknown>
+>(definition: StoreDefinition<S, G, A>) {
+  const state = definition.state();
+
+  const getters = {} as { [K in keyof G]: ReturnType<G[K]> };
+  for (const [key, getter] of Object.entries(definition.getters)) {
+    Object.defineProperty(getters, key, {
+      get: () => getter(state),
+    });
+  }
+
+  return {
+    state,
+    getters,
+    actions: definition.actions,
+  };
+}
+
+const todoStore = defineStore({
+  state: () => ({
+    todos: [] as Array<{ id: number; text: string; done: boolean }>,
+    filter: "all" as "all" | "active" | "completed",
+  }),
+  getters: {
+    activeTodos: (state) => state.todos.filter((todo) => !todo.done),
+    completedCount: (state) => state.todos.filter((todo) => todo.done).length,
+  },
+  actions: {
+    addTodo(text: string) {
+      console.log(`Adding todo: ${text}`);
+    },
+    toggleTodo(id: number) {
+      console.log(`Toggling todo: ${id}`);
+    },
+  },
+});
+
+// 所有属性都有精确的类型
+console.log(todoStore.state.filter);       // "all"
+console.log(todoStore.getters.completedCount); // number
+todoStore.actions.addTodo("Learn TypeScript");
+```
+
+## 🔗 相关概念
+
+- **条件类型**: 基于类型关系进行分支判断，下一章将深入讲解
+- **映射类型**: 基于已有类型的键来创建新类型
+- **infer 关键字**: 在条件类型中提取类型的一部分
+- **分布式条件类型**: 条件类型作用于联合类型时的特殊行为
+
+## 📝 学习检查点
+
+- [ ] 能设计多类型参数之间的约束关系
+- [ ] 理解 TypeScript 的泛型推断规则
+- [ ] 能利用推断机制设计用户友好的泛型 API
+- [ ] 理解条件类型的基本语法和分布式行为
+- [ ] 掌握 `keyof` 与泛型结合的实用模式
+- [ ] 能运用泛型实现类型安全的设计模式（事件系统、Builder 等）
+
+## 🚀 下一步
+
+→ [映射类型](../02-advanced-type-operations/01-mapped-types.mdx)
