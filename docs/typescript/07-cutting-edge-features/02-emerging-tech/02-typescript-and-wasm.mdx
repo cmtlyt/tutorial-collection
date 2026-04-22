@@ -5,8 +5,473 @@
 
 ## 📚 概念介绍
 
-本节将介绍TypeScript 与 WebAssembly的核心概念和实践方法。
+WebAssembly（Wasm）是一种低级的二进制指令格式，设计用于在浏览器和服务器端高效执行。TypeScript 与 WebAssembly 的结合有两个主要方向：
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+1. **AssemblyScript** —— 一种 TypeScript 子集，可以直接编译为 WebAssembly
+2. **Wasm 类型绑定** —— 在 TypeScript 中为已有的 WebAssembly 模块编写类型安全的绑定层
+
+## 🎯 AssemblyScript
+
+### 什么是 AssemblyScript
+
+AssemblyScript 是一种专为 WebAssembly 设计的编程语言，它的语法是 TypeScript 的严格子集。你可以用类似 TypeScript 的语法编写高性能代码，然后将其编译为 WebAssembly 二进制格式。
+
+### 与 TypeScript 的核心差异
+
+AssemblyScript 看起来像 TypeScript，但底层模型完全不同：
+
+| 特性 | TypeScript | AssemblyScript |
+|------|-----------|----------------|
+| 数字类型 | 只有 `number` | `i32`、`i64`、`f32`、`f64` 等 |
+| 内存管理 | 垃圾回收 | 手动/半自动（线性内存） |
+| 字符串 | UTF-16 原生 | 需要显式编解码 |
+| 空值 | `null` / `undefined` | 引用类型可为 `null`，无 `undefined` |
+| 泛型 | 完全擦除 | 编译时特化（单态化） |
+
+### AssemblyScript 基础示例
+
+```ts
+// assembly/index.ts — AssemblyScript 源码
+
+// 使用具体的数字类型（非 TypeScript 的 number）
+export function fibonacci(n: i32): i32 {
+  if (n <= 1) return n;
+
+  let previous: i32 = 0;
+  let current: i32 = 1;
+
+  for (let i: i32 = 2; i <= n; i++) {
+    const next: i32 = previous + current;
+    previous = current;
+    current = next;
+  }
+
+  return current;
+}
+
+// 数组操作（使用 AssemblyScript 的 StaticArray）
+export function sumArray(arr: StaticArray<f64>): f64 {
+  let total: f64 = 0;
+  for (let i = 0; i < arr.length; i++) {
+    total += unchecked(arr[i]); // unchecked 跳过边界检查，提升性能
+  }
+  return total;
+}
+
+// 矩阵乘法（计算密集型任务的典型场景）
+export function matrixMultiply(
+  matrixA: StaticArray<f64>,
+  matrixB: StaticArray<f64>,
+  size: i32
+): StaticArray<f64> {
+  const result = new StaticArray<f64>(size * size);
+
+  for (let i: i32 = 0; i < size; i++) {
+    for (let j: i32 = 0; j < size; j++) {
+      let sum: f64 = 0;
+      for (let k: i32 = 0; k < size; k++) {
+        sum += unchecked(matrixA[i * size + k]) * unchecked(matrixB[k * size + j]);
+      }
+      unchecked(result[i * size + j] = sum);
+    }
+  }
+
+  return result;
+}
+```
+
+### 项目初始化与编译
+
+```bash
+# 初始化 AssemblyScript 项目
+npm init -y
+npm install --save-dev assemblyscript
+
+# 初始化 AssemblyScript 目录结构
+npx asinit .
+
+# 编译为 WebAssembly
+npx asc assembly/index.ts --outFile build/module.wasm --textFile build/module.wat --optimize
+```
+
+### 在 TypeScript 中加载 AssemblyScript 模块
+
+```js
+// src/load-wasm.js — 在 JavaScript/TypeScript 项目中加载编译好的 Wasm 模块
+
+async function loadWasmModule() {
+  const wasmBuffer = await fetch("./build/module.wasm");
+  const wasmModule = await WebAssembly.instantiate(
+    await wasmBuffer.arrayBuffer(),
+    {
+      env: {
+        abort: (message, fileName, lineNumber, columnNumber) => {
+          console.error(`Abort: ${message} at ${fileName}:${lineNumber}:${columnNumber}`);
+        },
+      },
+    }
+  );
+
+  return wasmModule.instance.exports;
+}
+
+async function main() {
+  const wasm = await loadWasmModule();
+
+  // 调用 AssemblyScript 编译的 fibonacci 函数
+  const result = wasm.fibonacci(10);
+  console.log(`fibonacci(10) = ${result}`); // 55
+
+  console.log(`fibonacci(20) = ${wasm.fibonacci(20)}`); // 6765
+  console.log(`fibonacci(30) = ${wasm.fibonacci(30)}`); // 832040
+}
+
+main();
+```
+
+### AssemblyScript 适用场景
+
+```js
+// 图像处理：逐像素操作
+// assembly/image.ts (AssemblyScript)
+//
+// export function grayscale(pixels: StaticArray<u8>, length: i32): void {
+//   for (let i: i32 = 0; i < length; i += 4) {
+//     const r = unchecked(pixels[i]);
+//     const g = unchecked(pixels[i + 1]);
+//     const b = unchecked(pixels[i + 2]);
+//     const gray: u8 = <u8>((r * 77 + g * 150 + b * 29) >> 8);
+//     unchecked(pixels[i] = gray);
+//     unchecked(pixels[i + 1] = gray);
+//     unchecked(pixels[i + 2] = gray);
+//   }
+// }
+
+// JavaScript 端调用 Wasm 图像处理
+async function processImage(imageData) {
+  const wasm = await loadWasmModule();
+
+  // 将图像数据拷贝到 Wasm 线性内存
+  const pixelCount = imageData.data.length;
+  const wasmMemory = new Uint8Array(wasm.memory.buffer);
+
+  // 拷贝像素数据
+  wasmMemory.set(imageData.data, 0);
+
+  // 调用 Wasm 函数处理
+  wasm.grayscale(0, pixelCount);
+
+  // 读回处理后的数据
+  imageData.data.set(wasmMemory.subarray(0, pixelCount));
+
+  return imageData;
+}
+```
+
+## 🎯 Wasm 类型绑定
+
+### 为什么需要类型绑定
+
+WebAssembly 模块的导出函数只有基本的数字类型（`i32`、`i64`、`f32`、`f64`），没有字符串、对象等高级类型。在 TypeScript 中使用时，我们需要编写类型绑定层来提供类型安全和友好的 API。
+
+### 手工编写类型绑定
+
+```ts
+// types/wasm-module.d.ts — 为 Wasm 模块编写类型声明
+
+interface WasmExports {
+  // 内存对象
+  memory: WebAssembly.Memory;
+
+  // 数学计算函数
+  fibonacci(n: number): number;
+  factorial(n: number): number;
+  isPrime(n: number): number; // Wasm 没有 boolean，用 0/1 表示
+
+  // 内存管理
+  allocate(size: number): number; // 返回指针
+  deallocate(pointer: number, size: number): void;
+
+  // 数组操作（基于指针）
+  sumArray(pointer: number, length: number): number;
+  sortArray(pointer: number, length: number): void;
+}
+
+interface WasmInstance {
+  instance: {
+    exports: WasmExports;
+  };
+}
+```
+
+### 类型安全的 Wasm 封装层
+
+```ts
+// src/wasm-wrapper.ts — 将底层 Wasm 调用封装为类型安全的高级 API
+
+interface WasmMathExports {
+  memory: WebAssembly.Memory;
+  fibonacci(n: number): number;
+  isPrime(n: number): number;
+  allocate(size: number): number;
+  deallocate(pointer: number, size: number): void;
+  sumArray(pointer: number, length: number): number;
+}
+
+class WasmMathModule {
+  private exports: WasmMathExports;
+
+  private constructor(exports: WasmMathExports) {
+    this.exports = exports;
+  }
+
+  static async load(wasmUrl: string): Promise<WasmMathModule> {
+    const response = await fetch(wasmUrl);
+    const wasmBuffer = await response.arrayBuffer();
+
+    const wasmModule = await WebAssembly.instantiate(wasmBuffer, {
+      env: {
+        abort: () => {
+          throw new Error("Wasm abort called");
+        },
+      },
+    });
+
+    const exports = wasmModule.instance.exports as unknown as WasmMathExports;
+    return new WasmMathModule(exports);
+  }
+
+  fibonacci(n: number): number {
+    if (!Number.isInteger(n) || n < 0) {
+      throw new RangeError(`fibonacci expects a non-negative integer, got ${n}`);
+    }
+    return this.exports.fibonacci(n);
+  }
+
+  isPrime(n: number): boolean {
+    if (!Number.isInteger(n) || n < 2) {
+      return false;
+    }
+    // 将 Wasm 的 0/1 返回值转换为 boolean
+    return this.exports.isPrime(n) !== 0;
+  }
+
+  sumArray(numbers: Float64Array): number {
+    const byteLength = numbers.byteLength;
+    const pointer = this.exports.allocate(byteLength);
+
+    try {
+      // 将数据写入 Wasm 线性内存
+      const wasmView = new Float64Array(
+        this.exports.memory.buffer,
+        pointer,
+        numbers.length
+      );
+      wasmView.set(numbers);
+
+      // 调用 Wasm 函数
+      return this.exports.sumArray(pointer, numbers.length);
+    } finally {
+      // 确保释放内存
+      this.exports.deallocate(pointer, byteLength);
+    }
+  }
+}
+```
+
+### 使用封装后的模块
+
+```js
+// src/main.js — 使用类型安全的 Wasm 模块
+
+async function demo() {
+  // 模拟 WasmMathModule（因为实际需要编译好的 .wasm 文件）
+  // 在实际项目中使用: const math = await WasmMathModule.load("./build/math.wasm");
+
+  // 直接演示封装层的设计理念
+  const wasmLikeMath = {
+    fibonacci(n) {
+      if (!Number.isInteger(n) || n < 0) {
+        throw new RangeError(`fibonacci expects a non-negative integer, got ${n}`);
+      }
+      // 纯 JS 实现作为演示
+      if (n <= 1) return n;
+      let previous = 0;
+      let current = 1;
+      for (let i = 2; i <= n; i++) {
+        const next = previous + current;
+        previous = current;
+        current = next;
+      }
+      return current;
+    },
+
+    isPrime(n) {
+      if (!Number.isInteger(n) || n < 2) return false;
+      for (let i = 2; i <= Math.sqrt(n); i++) {
+        if (n % i === 0) return false;
+      }
+      return true;
+    },
+
+    sumArray(numbers) {
+      return numbers.reduce((sum, val) => sum + val, 0);
+    },
+  };
+
+  // fibonacci
+  console.log(`fibonacci(10) = ${wasmLikeMath.fibonacci(10)}`); // 55
+  console.log(`fibonacci(20) = ${wasmLikeMath.fibonacci(20)}`); // 6765
+
+  // isPrime — 返回 boolean 而不是 0/1
+  console.log(`isPrime(17) = ${wasmLikeMath.isPrime(17)}`); // true
+  console.log(`isPrime(18) = ${wasmLikeMath.isPrime(18)}`); // false
+
+  // sumArray — 接受 Float64Array，自动处理内存
+  const numbers = new Float64Array([1.5, 2.5, 3.0, 4.0, 5.5]);
+  console.log(`sum = ${wasmLikeMath.sumArray(numbers)}`); // 16.5
+}
+
+demo();
+```
+
+### wasm-bindgen 风格的自动绑定
+
+在 Rust + wasm-bindgen 生态中，类型绑定可以自动生成。TypeScript 可以直接消费生成的 `.d.ts` 文件：
+
+```ts
+// 由 wasm-bindgen 自动生成的类型声明示例
+// pkg/image_processor.d.ts
+
+export function resize_image(
+  data: Uint8Array,
+  srcWidth: number,
+  srcHeight: number,
+  dstWidth: number,
+  dstHeight: number
+): Uint8Array;
+
+export function apply_blur(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  radius: number
+): Uint8Array;
+
+export function detect_edges(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  threshold: number
+): Uint8Array;
+
+export function init(): Promise<void>;
+```
+
+```js
+// src/image-app.js — 消费 Rust Wasm 模块的自动类型绑定
+
+// 在实际项目中：import init, { resize_image, apply_blur } from "../pkg/image_processor";
+
+// 演示消费端的代码结构
+async function processUserImage() {
+  // await init(); // 初始化 Wasm 模块
+
+  const imageFile = new Uint8Array([/* 图像字节数据 */]);
+  const sourceWidth = 1920;
+  const sourceHeight = 1080;
+
+  // 类型安全的函数调用
+  // const resized = resize_image(imageFile, sourceWidth, sourceHeight, 800, 450);
+  // const blurred = apply_blur(resized, 800, 450, 3);
+
+  console.log("图像处理完成");
+  console.log(`原始尺寸: ${sourceWidth}x${sourceHeight}`);
+  console.log(`目标尺寸: 800x450`);
+}
+
+processUserImage();
+```
+
+## 📝 实际应用示例
+
+### 综合示例：Wasm 性能对比基准测试
+
+```js
+// src/benchmark.js — 对比 JavaScript 和 Wasm 实现的性能差异
+
+function fibonacciJS(n) {
+  if (n <= 1) return n;
+  let previous = 0;
+  let current = 1;
+  for (let i = 2; i <= n; i++) {
+    const next = previous + current;
+    previous = current;
+    current = next;
+  }
+  return current;
+}
+
+function matrixMultiplyJS(matrixA, matrixB, size) {
+  const result = new Float64Array(size * size);
+  for (let i = 0; i < size; i++) {
+    for (let j = 0; j < size; j++) {
+      let sum = 0;
+      for (let k = 0; k < size; k++) {
+        sum += matrixA[i * size + k] * matrixB[k * size + j];
+      }
+      result[i * size + j] = sum;
+    }
+  }
+  return result;
+}
+
+function runBenchmark(name, fn, iterations) {
+  const start = performance.now();
+  let lastResult;
+  for (let i = 0; i < iterations; i++) {
+    lastResult = fn();
+  }
+  const elapsed = performance.now() - start;
+  console.log(`${name}: ${elapsed.toFixed(2)}ms (${iterations} iterations)`);
+  return { name, elapsed, lastResult };
+}
+
+function main() {
+  console.log("=== fibonacci(40) 基准测试 ===");
+  runBenchmark("JavaScript fibonacci", () => fibonacciJS(40), 100000);
+  // runBenchmark("Wasm fibonacci", () => wasmExports.fibonacci(40), 100000);
+
+  console.log("\n=== 64x64 矩阵乘法基准测试 ===");
+  const size = 64;
+  const matrixA = new Float64Array(size * size).map(() => Math.random());
+  const matrixB = new Float64Array(size * size).map(() => Math.random());
+
+  runBenchmark("JavaScript matmul", () => matrixMultiplyJS(matrixA, matrixB, size), 100);
+  // runBenchmark("Wasm matmul", () => wasmExports.matrixMultiply(matrixA, matrixB, size), 100);
+
+  console.log("\n提示: 解注释 Wasm 行并加载实际模块来对比性能");
+  console.log("通常在计算密集型场景中，Wasm 比纯 JavaScript 快 2-10 倍");
+}
+
+main();
+```
+
+## 🔗 相关概念
+
+- **AssemblyScript 官方文档**：[assemblyscript.org](https://www.assemblyscript.org/)
+- **wasm-bindgen**：Rust 生态中自动生成 Wasm 类型绑定的工具
+- **TypeScript 与边缘计算**：Wasm 在 Cloudflare Workers 等边缘环境中的应用
+- **SharedArrayBuffer**：在 Wasm 和 JavaScript 之间高效共享内存的 Web API
+
+## 📝 学习检查点
+
+- [ ] 理解 AssemblyScript 与 TypeScript 的核心差异（数字类型、内存管理）
+- [ ] 掌握 AssemblyScript 项目的初始化和编译流程
+- [ ] 了解如何为 Wasm 模块编写 TypeScript 类型绑定
+- [ ] 理解 Wasm 线性内存与 TypeScript 数据交换的方式
+- [ ] 知道 Wasm 的适用场景（计算密集型、图像处理、加密等）
+
+## 🚀 下一步
+
+→ [TypeScript 与边缘计算](./03-typescript-and-edge)

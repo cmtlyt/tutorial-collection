@@ -5,8 +5,1116 @@
 
 ## 📚 概念介绍
 
-本节将介绍TypeScript 编译器原理的核心概念和实践方法。
+TypeScript 编译器（`tsc`）不仅负责将 TypeScript 编译为 JavaScript，还驱动了 IDE 的智能提示、代码补全、重构等功能。理解编译器的工作原理，能帮助你编写更高效的类型定义，解读复杂的类型错误，甚至开发自己的 TypeScript 工具。本节涵盖四个方面：
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+1. **编译流程概览** —— 从源码到 JavaScript 输出的完整管线
+2. **AST 与类型检查** —— 抽象语法树的结构和类型检查器的工作方式
+3. **Language Service API** —— 驱动 IDE 体验的核心接口
+4. **编写 TypeScript 插件** —— 通过 Language Service Plugin 扩展编辑器功能
+
+## 🎯 编译流程概览
+
+### 编译管线
+
+TypeScript 编译器的工作可以分为以下阶段：
+
+```
+源码文件 (.ts/.tsx)
+    ↓
+┌─────────────┐
+│   Scanner    │  词法分析：将源码拆分为 Token 流
+│  （扫描器）   │  例如: "const x: number = 42;"
+│              │  → [const] [x] [:] [number] [=] [42] [;]
+└─────┬───────┘
+      ↓
+┌─────────────┐
+│   Parser     │  语法分析：将 Token 流构建为 AST（抽象语法树）
+│  （解析器）   │  生成 SourceFile 节点树
+└─────┬───────┘
+      ↓
+┌─────────────┐
+│   Binder     │  绑定阶段：创建 Symbol 表
+│  （绑定器）   │  将标识符与声明关联
+│              │  建立作用域链
+└─────┬───────┘
+      ↓
+┌─────────────┐
+│   Checker    │  类型检查：核心阶段
+│  （检查器）   │  类型推断、类型兼容性检查
+│              │  产生诊断信息（错误/警告）
+└─────┬───────┘
+      ↓
+┌─────────────┐
+│   Emitter    │  输出阶段：生成目标文件
+│  （发射器）   │  .js 文件 + .d.ts 声明文件
+│              │  + .js.map 源码映射文件
+└─────────────┘
+```
+
+### 用代码观察编译流程
+
+```js
+// compile-demo.js — 使用 TypeScript Compiler API 观察编译流程
+// 运行方式: node compile-demo.js（需要先 npm install typescript）
+
+const ts = require("typescript");
+
+// 1. 源码
+const sourceCode = `
+interface User {
+  name: string;
+  age: number;
+}
+
+function greet(user: User): string {
+  return \`Hello, \${user.name}! You are \${user.age} years old.\`;
+}
+
+const alice: User = { name: "Alice", age: 30 };
+console.log(greet(alice));
+`;
+
+console.log("=== 阶段 1: Scanner（词法分析） ===");
+
+// 创建 Scanner 扫描 Token
+const scanner = ts.createScanner(
+  ts.ScriptTarget.Latest,
+  /* skipTrivia */ true,
+  ts.LanguageVariant.Standard,
+  sourceCode
+);
+
+const tokens = [];
+let tokenKind = scanner.scan();
+while (tokenKind !== ts.SyntaxKind.EndOfFileToken) {
+  tokens.push({
+    kind: ts.SyntaxKind[tokenKind],
+    text: scanner.getTokenText(),
+  });
+  tokenKind = scanner.scan();
+}
+
+console.log(`共扫描到 ${tokens.length} 个 Token`);
+console.log("前 10 个 Token:");
+tokens.slice(0, 10).forEach((token) => {
+  console.log(`  ${token.kind}: "${token.text}"`);
+});
+
+console.log("\n=== 阶段 2: Parser（语法分析 → AST） ===");
+
+// 解析为 AST
+const sourceFile = ts.createSourceFile(
+  "example.ts",
+  sourceCode,
+  ts.ScriptTarget.Latest,
+  /* setParentNodes */ true
+);
+
+// 遍历 AST 顶层节点
+console.log(`AST 顶层节点数: ${sourceFile.statements.length}`);
+sourceFile.statements.forEach((statement, index) => {
+  console.log(`  [${index}] ${ts.SyntaxKind[statement.kind]}`);
+});
+
+console.log("\n=== 阶段 3-4: Binder + Checker（绑定 + 类型检查） ===");
+
+// 创建编译器程序进行完整的类型检查
+const compilerHost = ts.createCompilerHost({});
+const originalGetSourceFile = compilerHost.getSourceFile;
+compilerHost.getSourceFile = (fileName, languageVersion) => {
+  if (fileName === "example.ts") {
+    return sourceFile;
+  }
+  return originalGetSourceFile.call(compilerHost, fileName, languageVersion);
+};
+
+const program = ts.createProgram(
+  ["example.ts"],
+  { strict: true, noEmit: true },
+  compilerHost
+);
+
+const diagnostics = ts.getPreEmitDiagnostics(program);
+console.log(`诊断信息数量: ${diagnostics.length}`);
+diagnostics.forEach((diagnostic) => {
+  const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+  console.log(`  ${diagnostic.category === 1 ? "错误" : "警告"}: ${message}`);
+});
+
+if (diagnostics.length === 0) {
+  console.log("  ✅ 类型检查通过，无错误");
+}
+
+console.log("\n=== 阶段 5: Emitter（代码生成） ===");
+
+// 手动触发代码生成
+let emittedCode = "";
+const emitResult = program.emit(
+  sourceFile,
+  (fileName, text) => {
+    if (fileName.endsWith(".js")) {
+      emittedCode = text;
+    }
+  },
+  undefined,
+  false
+);
+
+console.log("生成的 JavaScript 代码:");
+console.log(emittedCode || "(noEmit 模式下不生成代码)");
+```
+
+## 🎯 AST 与类型检查
+
+### AST 节点结构
+
+```js
+// ast-explorer.js — 探索 TypeScript AST 的结构
+// 运行方式: node ast-explorer.js
+
+const ts = require("typescript");
+
+const code = `
+const greeting: string = "hello";
+const add = (a: number, b: number): number => a + b;
+`;
+
+const sourceFile = ts.createSourceFile(
+  "example.ts",
+  code,
+  ts.ScriptTarget.Latest,
+  true
+);
+
+// 递归遍历 AST 并打印树形结构
+function printAST(node, indent = 0) {
+  const padding = "  ".repeat(indent);
+  const kindName = ts.SyntaxKind[node.kind];
+
+  // 获取节点的文本（叶子节点）
+  let extra = "";
+  if (ts.isIdentifier(node)) {
+    extra = ` → "${node.text}"`;
+  } else if (ts.isStringLiteral(node)) {
+    extra = ` → "${node.text}"`;
+  } else if (ts.isNumericLiteral(node)) {
+    extra = ` → ${node.text}`;
+  }
+
+  console.log(`${padding}${kindName}${extra}`);
+
+  // 递归子节点（限制深度避免输出过多）
+  if (indent < 6) {
+    ts.forEachChild(node, (child) => printAST(child, indent + 1));
+  }
+}
+
+console.log("=== AST 树形结构 ===");
+printAST(sourceFile);
+
+console.log("\n=== 查找所有变量声明 ===");
+
+function findVariableDeclarations(node) {
+  if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+    const typeAnnotation = node.type
+      ? node.type.getText(sourceFile)
+      : "(推断)";
+    console.log(`  变量: ${node.name.text}, 类型注解: ${typeAnnotation}`);
+  }
+  ts.forEachChild(node, findVariableDeclarations);
+}
+
+findVariableDeclarations(sourceFile);
+
+console.log("\n=== 查找所有函数参数 ===");
+
+function findFunctionParameters(node) {
+  if (ts.isArrowFunction(node) || ts.isFunctionDeclaration(node)) {
+    const params = node.parameters.map((param) => {
+      const name = ts.isIdentifier(param.name) ? param.name.text : "(complex)";
+      const type = param.type ? param.type.getText(sourceFile) : "(推断)";
+      return `${name}: ${type}`;
+    });
+    console.log(`  函数参数: (${params.join(", ")})`);
+  }
+  ts.forEachChild(node, findFunctionParameters);
+}
+
+findFunctionParameters(sourceFile);
+```
+
+### 类型检查器 API
+
+```js
+// type-checker-demo.js — 使用 TypeScript 类型检查器 API
+// 运行方式: node type-checker-demo.js
+
+const ts = require("typescript");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
+
+// 创建临时文件用于类型检查
+const tempDir = os.tmpdir();
+const tempFile = path.join(tempDir, "type-check-demo.ts");
+
+const sourceCode = `
+interface User {
+  name: string;
+  age: number;
+  email?: string;
+}
+
+type ReadonlyUser = Readonly<User>;
+
+function createUser(name: string, age: number): User {
+  return { name, age };
+}
+
+const numbers = [1, 2, 3] as const;
+type NumberTuple = typeof numbers;
+
+const user = createUser("Alice", 30);
+`;
+
+fs.writeFileSync(tempFile, sourceCode);
+
+const program = ts.createProgram([tempFile], {
+  strict: true,
+  target: ts.ScriptTarget.ES2020,
+  module: ts.ModuleKind.CommonJS,
+});
+
+const checker = program.getTypeChecker();
+const sourceFile = program.getSourceFile(tempFile);
+
+if (!sourceFile) {
+  console.error("无法获取源文件");
+  process.exit(1);
+}
+
+console.log("=== 类型信息查询 ===");
+
+// 遍历所有声明，打印类型信息
+function inspectDeclarations(node) {
+  // 接口声明
+  if (ts.isInterfaceDeclaration(node)) {
+    const symbol = checker.getSymbolAtLocation(node.name);
+    if (symbol) {
+      const interfaceType = checker.getDeclaredTypeOfSymbol(symbol);
+      const properties = interfaceType.getProperties();
+      console.log(`\ninterface ${symbol.name}:`);
+      properties.forEach((prop) => {
+        const propType = checker.getTypeOfSymbolAtLocation(prop, node);
+        const typeString = checker.typeToString(propType);
+        const isOptional = prop.flags & ts.SymbolFlags.Optional;
+        console.log(`  ${prop.name}${isOptional ? "?" : ""}: ${typeString}`);
+      });
+    }
+  }
+
+  // 类型别名
+  if (ts.isTypeAliasDeclaration(node)) {
+    const symbol = checker.getSymbolAtLocation(node.name);
+    if (symbol) {
+      const aliasType = checker.getDeclaredTypeOfSymbol(symbol);
+      console.log(`\ntype ${symbol.name} = ${checker.typeToString(aliasType)}`);
+    }
+  }
+
+  // 函数声明
+  if (ts.isFunctionDeclaration(node) && node.name) {
+    const symbol = checker.getSymbolAtLocation(node.name);
+    if (symbol) {
+      const fnType = checker.getTypeOfSymbolAtLocation(symbol, node);
+      const signatures = fnType.getCallSignatures();
+      signatures.forEach((sig) => {
+        const returnType = checker.typeToString(sig.getReturnType());
+        const params = sig.parameters.map((param) => {
+          const paramType = checker.getTypeOfSymbolAtLocation(param, node);
+          return `${param.name}: ${checker.typeToString(paramType)}`;
+        });
+        console.log(`\nfunction ${symbol.name}(${params.join(", ")}): ${returnType}`);
+      });
+    }
+  }
+
+  // 变量声明
+  if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+    const symbol = checker.getSymbolAtLocation(node.name);
+    if (symbol) {
+      const varType = checker.getTypeOfSymbolAtLocation(symbol, node);
+      console.log(`\nconst ${symbol.name}: ${checker.typeToString(varType)}`);
+    }
+  }
+
+  ts.forEachChild(node, inspectDeclarations);
+}
+
+inspectDeclarations(sourceFile);
+
+// 清理临时文件
+fs.unlinkSync(tempFile);
+```
+
+### 诊断信息处理
+
+```js
+// diagnostics-demo.js — 处理 TypeScript 诊断信息
+// 运行方式: node diagnostics-demo.js
+
+const ts = require("typescript");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
+
+// 包含错误的 TypeScript 代码
+const codeWithErrors = `
+const x: number = "hello";
+const y: string = 42;
+
+interface Config {
+  host: string;
+  port: number;
+}
+
+const config: Config = {
+  host: "localhost",
+  port: "3000",
+  debug: true,
+};
+
+function add(a: number, b: number): number {
+  return a + b;
+}
+
+add(1, "2");
+`;
+
+const tempFile = path.join(os.tmpdir(), "diag-demo.ts");
+fs.writeFileSync(tempFile, codeWithErrors);
+
+const program = ts.createProgram([tempFile], {
+  strict: true,
+  target: ts.ScriptTarget.ES2020,
+  module: ts.ModuleKind.CommonJS,
+});
+
+const diagnostics = ts.getPreEmitDiagnostics(program);
+
+console.log(`=== 共发现 ${diagnostics.length} 个诊断信息 ===\n`);
+
+diagnostics.forEach((diagnostic, index) => {
+  const category = ["警告", "错误", "建议", "消息"][diagnostic.category];
+
+  let location = "未知位置";
+  if (diagnostic.file && diagnostic.start !== undefined) {
+    const { line, character } = diagnostic.file.getLineAndCharacterOfPosition(
+      diagnostic.start
+    );
+    location = `第 ${line + 1} 行，第 ${character + 1} 列`;
+  }
+
+  const message = ts.flattenDiagnosticMessageText(
+    diagnostic.messageText,
+    "\n"
+  );
+
+  console.log(`[${index + 1}] ${category} (TS${diagnostic.code})`);
+  console.log(`    位置: ${location}`);
+  console.log(`    信息: ${message}`);
+  console.log();
+});
+
+fs.unlinkSync(tempFile);
+```
+
+## 🎯 Language Service API
+
+### 概念说明
+
+TypeScript Language Service 是驱动 IDE 智能体验的核心层。它在 Compiler API 之上提供了面向编辑器的高级功能：
+
+- **代码补全**（Completions）
+- **悬停提示**（Quick Info）
+- **跳转到定义**（Go to Definition）
+- **查找引用**（Find References）
+- **重命名**（Rename）
+- **代码修复**（Code Fixes）
+- **重构**（Refactoring）
+
+### 使用 Language Service
+
+```js
+// language-service-demo.js — 演示 TypeScript Language Service
+// 运行方式: node language-service-demo.js
+
+const ts = require("typescript");
+
+// 模拟一个内存中的文件系统
+const files = {
+  "models.ts": `
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  age: number;
+}
+
+export interface Post {
+  id: string;
+  title: string;
+  content: string;
+  authorId: string;
+}
+`,
+  "app.ts": `
+import { User, Post } from "./models";
+
+function getUserDisplayName(user: User): string {
+  return user.name;
+}
+
+const currentUser: User = {
+  id: "1",
+  name: "Alice",
+  email: "alice@example.com",
+  age: 30,
+};
+
+const greeting = getUserDisplayName(currentUser);
+console.log(greeting);
+
+// 光标在 "currentUser." 后面时会触发补全
+currentUser.
+`,
+};
+
+// 创建 Language Service Host
+const serviceHost = {
+  getScriptFileNames: () => Object.keys(files),
+  getScriptVersion: () => "1",
+  getScriptSnapshot: (fileName) => {
+    const content = files[fileName];
+    if (content !== undefined) {
+      return ts.ScriptSnapshot.fromString(content);
+    }
+    // 尝试读取 lib 文件
+    try {
+      const libPath = require.resolve(`typescript/lib/${fileName}`);
+      const libContent = require("fs").readFileSync(libPath, "utf-8");
+      return ts.ScriptSnapshot.fromString(libContent);
+    } catch {
+      return undefined;
+    }
+  },
+  getCurrentDirectory: () => "/",
+  getCompilationSettings: () => ({
+    strict: true,
+    target: ts.ScriptTarget.ES2020,
+    module: ts.ModuleKind.ES2020,
+    moduleResolution: ts.ModuleResolutionKind.Node10,
+  }),
+  getDefaultLibFileName: (options) => ts.getDefaultLibFileName(options),
+  fileExists: (fileName) =>
+    files[fileName] !== undefined ||
+    ts.sys.fileExists(require.resolve(`typescript/lib/${fileName}`, { paths: ["."] }).toString()),
+  readFile: (fileName) => files[fileName],
+};
+
+const service = ts.createLanguageService(serviceHost, ts.createDocumentRegistry());
+
+// 1. 代码补全
+console.log("=== 代码补全 (currentUser. 之后) ===");
+const appContent = files["app.ts"];
+const completionPosition = appContent.lastIndexOf("currentUser.") + "currentUser.".length;
+const completions = service.getCompletionsAtPosition("app.ts", completionPosition, undefined);
+
+if (completions) {
+  console.log(`补全建议数量: ${completions.entries.length}`);
+  const memberCompletions = completions.entries
+    .filter((entry) => entry.sortText === "11")
+    .slice(0, 10);
+  memberCompletions.forEach((entry) => {
+    console.log(`  ${entry.name} (${ts.ScriptElementKind[entry.kind] || entry.kind})`);
+  });
+}
+
+// 2. 悬停信息
+console.log("\n=== 悬停信息 (getUserDisplayName) ===");
+const hoverPosition = appContent.indexOf("getUserDisplayName");
+const quickInfo = service.getQuickInfoAtPosition("app.ts", hoverPosition);
+
+if (quickInfo) {
+  const displayParts = quickInfo.displayParts?.map((p) => p.text).join("") || "";
+  console.log(`  类型信息: ${displayParts}`);
+  const docs = quickInfo.documentation?.map((d) => d.text).join("\n") || "";
+  if (docs) {
+    console.log(`  文档: ${docs}`);
+  }
+}
+
+// 3. 跳转到定义
+console.log("\n=== 跳转到定义 (User 类型) ===");
+const userRefPosition = appContent.indexOf(": User") + 2;
+const definitions = service.getDefinitionAtPosition("app.ts", userRefPosition);
+
+if (definitions) {
+  definitions.forEach((def) => {
+    console.log(`  文件: ${def.fileName}`);
+    console.log(`  位置: 第 ${def.textSpan.start} 字符起，长度 ${def.textSpan.length}`);
+  });
+}
+
+// 4. 查找引用
+console.log("\n=== 查找引用 (User) ===");
+const references = service.getReferencesAtPosition("app.ts", userRefPosition);
+
+if (references) {
+  console.log(`  共找到 ${references.length} 个引用:`);
+  references.forEach((ref) => {
+    console.log(
+      `  ${ref.fileName} (位置: ${ref.textSpan.start}, ${ref.isDefinition ? "定义" : "引用"})`
+    );
+  });
+}
+
+// 5. 诊断信息
+console.log("\n=== 语义诊断 ===");
+const semanticDiagnostics = service.getSemanticDiagnostics("app.ts");
+console.log(`  诊断数量: ${semanticDiagnostics.length}`);
+semanticDiagnostics.forEach((diag) => {
+  const message = ts.flattenDiagnosticMessageText(diag.messageText, "\n");
+  console.log(`  TS${diag.code}: ${message}`);
+});
+```
+
+## 🎯 编写 TypeScript 插件
+
+### Language Service Plugin 概念
+
+TypeScript Language Service Plugin 可以在不修改 TypeScript 编译器源码的情况下，扩展或修改 Language Service 的行为。常见的用途包括：
+
+- 为 CSS Modules 提供类名补全
+- 为 GraphQL 查询提供类型检查
+- 添加自定义诊断规则
+- 增强特定框架的模板支持
+
+### 插件结构
+
+```js
+// ts-plugin/index.js — 一个基础的 TypeScript Language Service Plugin
+// 这个插件为所有字符串字面量添加一个提示信息
+
+function init(modules) {
+  const ts = modules.typescript;
+
+  function create(info) {
+    const logger = info.project.projectService.logger;
+    logger.info("自定义 TS 插件已加载！");
+
+    // 获取原始的 Language Service
+    const proxy = Object.create(null);
+    for (const key of Object.keys(info.languageService)) {
+      const original = info.languageService[key];
+      proxy[key] = (...args) => original.apply(info.languageService, args);
+    }
+
+    // 1. 增强悬停信息：为字符串字面量添加长度提示
+    proxy.getQuickInfoAtPosition = (fileName, position) => {
+      const original = info.languageService.getQuickInfoAtPosition(
+        fileName,
+        position
+      );
+
+      const program = info.languageService.getProgram();
+      if (!program) return original;
+
+      const sourceFile = program.getSourceFile(fileName);
+      if (!sourceFile) return original;
+
+      const node = findNodeAtPosition(ts, sourceFile, position);
+
+      if (node && ts.isStringLiteral(node)) {
+        const lengthInfo = {
+          kind: ts.ScriptElementKind.string,
+          kindModifiers: "",
+          textSpan: {
+            start: node.getStart(),
+            length: node.getWidth(),
+          },
+          displayParts: original?.displayParts || [],
+          documentation: [
+            ...(original?.documentation || []),
+            {
+              text: `\n📏 字符串长度: ${node.text.length} 个字符`,
+              kind: "text",
+            },
+          ],
+        };
+        return lengthInfo;
+      }
+
+      return original;
+    };
+
+    // 2. 添加自定义诊断：警告过长的字符串
+    proxy.getSemanticDiagnostics = (fileName) => {
+      const original =
+        info.languageService.getSemanticDiagnostics(fileName) || [];
+
+      const program = info.languageService.getProgram();
+      if (!program) return original;
+
+      const sourceFile = program.getSourceFile(fileName);
+      if (!sourceFile) return original;
+
+      const customDiagnostics = [];
+
+      function visitNode(node) {
+        if (ts.isStringLiteral(node) && node.text.length > 100) {
+          customDiagnostics.push({
+            file: sourceFile,
+            start: node.getStart(),
+            length: node.getWidth(),
+            messageText: `字符串长度为 ${node.text.length}，超过了建议的 100 字符上限。考虑将其提取为常量或配置项。`,
+            category: ts.DiagnosticCategory.Warning,
+            code: 90001,
+          });
+        }
+        ts.forEachChild(node, visitNode);
+      }
+
+      visitNode(sourceFile);
+
+      return [...original, ...customDiagnostics];
+    };
+
+    // 3. 增强代码补全：在特定上下文中添加自定义补全项
+    proxy.getCompletionsAtPosition = (fileName, position, options) => {
+      const original = info.languageService.getCompletionsAtPosition(
+        fileName,
+        position,
+        options
+      );
+
+      if (!original) return original;
+
+      // 添加自定义代码片段
+      original.entries.push({
+        name: "todo-comment",
+        kind: ts.ScriptElementKind.keyword,
+        sortText: "zzz",
+        insertText: "// TODO(${1:author}): ${2:description}",
+        isSnippet: true,
+        labelDetails: {
+          description: "插入 TODO 注释模板",
+        },
+      });
+
+      return original;
+    };
+
+    return proxy;
+  }
+
+  return { create };
+}
+
+// 辅助函数：在指定位置查找 AST 节点
+function findNodeAtPosition(ts, sourceFile, position) {
+  let foundNode = undefined;
+
+  function visit(node) {
+    if (position >= node.getStart() && position < node.getEnd()) {
+      foundNode = node;
+      ts.forEachChild(node, visit);
+    }
+  }
+
+  visit(sourceFile);
+  return foundNode;
+}
+
+module.exports = init;
+```
+
+### 插件的 tsconfig 配置
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "plugins": [
+      {
+        "name": "./ts-plugin",
+        "customOption": "value"
+      }
+    ]
+  }
+}
+```
+
+### 实用插件示例：禁止使用 any 的诊断插件
+
+```js
+// ts-plugin-no-any/index.js — 检测并报告 any 类型使用的插件
+
+function init(modules) {
+  const ts = modules.typescript;
+
+  function create(info) {
+    const proxy = Object.create(null);
+    for (const key of Object.keys(info.languageService)) {
+      const original = info.languageService[key];
+      proxy[key] = (...args) => original.apply(info.languageService, args);
+    }
+
+    proxy.getSemanticDiagnostics = (fileName) => {
+      const original =
+        info.languageService.getSemanticDiagnostics(fileName) || [];
+
+      const program = info.languageService.getProgram();
+      if (!program) return original;
+
+      const sourceFile = program.getSourceFile(fileName);
+      if (!sourceFile) return original;
+
+      const checker = program.getTypeChecker();
+      const anyDiagnostics = [];
+
+      function checkForAny(node) {
+        // 检查类型注解是否为 any
+        if (ts.isTypeReferenceNode(node)) {
+          const typeName = node.typeName;
+          if (ts.isIdentifier(typeName) && typeName.text === "any") {
+            anyDiagnostics.push({
+              file: sourceFile,
+              start: node.getStart(),
+              length: node.getWidth(),
+              messageText:
+                "避免使用 'any' 类型。请使用 'unknown' 并配合类型守卫，或定义更精确的类型。",
+              category: ts.DiagnosticCategory.Warning,
+              code: 90002,
+            });
+          }
+        }
+
+        // 检查关键字 any
+        if (node.kind === ts.SyntaxKind.AnyKeyword) {
+          const parent = node.parent;
+          // 排除 catch 子句的隐式 any
+          if (!ts.isCatchClause(parent)) {
+            anyDiagnostics.push({
+              file: sourceFile,
+              start: node.getStart(),
+              length: node.getWidth(),
+              messageText:
+                "检测到 'any' 类型。建议使用 'unknown' 替代，以保持类型安全。",
+              category: ts.DiagnosticCategory.Warning,
+              code: 90002,
+            });
+          }
+        }
+
+        ts.forEachChild(node, checkForAny);
+      }
+
+      checkForAny(sourceFile);
+
+      return [...original, ...anyDiagnostics];
+    };
+
+    return proxy;
+  }
+
+  return { create };
+}
+
+module.exports = init;
+```
+
+## 📝 实际应用示例
+
+### 综合示例：代码分析工具
+
+```js
+// code-analyzer.js — 基于 TypeScript Compiler API 的代码分析工具
+// 运行方式: node code-analyzer.js
+
+const ts = require("typescript");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
+
+// 待分析的代码
+const codeToAnalyze = `
+interface ApiResponse<T> {
+  data: T;
+  status: number;
+  message: string;
+}
+
+interface User {
+  id: string;
+  name: string;
+  email: string;
+}
+
+type UserResponse = ApiResponse<User>;
+type UsersResponse = ApiResponse<User[]>;
+
+async function fetchUser(id: string): Promise<UserResponse> {
+  const response = await fetch(\`/api/users/\${id}\`);
+  return response.json();
+}
+
+async function fetchUsers(): Promise<UsersResponse> {
+  const response = await fetch("/api/users");
+  return response.json();
+}
+
+function isValidEmail(email: string): boolean {
+  return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email);
+}
+
+class UserService {
+  private baseUrl: string;
+
+  constructor(baseUrl: string) {
+    this.baseUrl = baseUrl;
+  }
+
+  async getUser(id: string): Promise<User> {
+    const response = await fetchUser(id);
+    return response.data;
+  }
+
+  async getAllUsers(): Promise<User[]> {
+    const response = await fetchUsers();
+    return response.data;
+  }
+
+  validateUser(user: User): string[] {
+    const errors: string[] = [];
+    if (!user.name || user.name.trim().length === 0) {
+      errors.push("Name is required");
+    }
+    if (!isValidEmail(user.email)) {
+      errors.push("Invalid email format");
+    }
+    return errors;
+  }
+}
+
+const service = new UserService("https://api.example.com");
+`;
+
+// 创建临时文件
+const tempFile = path.join(os.tmpdir(), "analyze-target.ts");
+fs.writeFileSync(tempFile, codeToAnalyze);
+
+const program = ts.createProgram([tempFile], {
+  strict: true,
+  target: ts.ScriptTarget.ES2020,
+  module: ts.ModuleKind.CommonJS,
+  lib: ["lib.es2020.d.ts", "lib.dom.d.ts"],
+});
+
+const checker = program.getTypeChecker();
+const sourceFile = program.getSourceFile(tempFile);
+
+if (!sourceFile) {
+  console.error("无法解析源文件");
+  process.exit(1);
+}
+
+// 分析结果
+const analysis = {
+  interfaces: [],
+  typeAliases: [],
+  functions: [],
+  classes: [],
+  complexity: { totalNodes: 0, maxDepth: 0 },
+};
+
+// 遍历并收集信息
+function analyze(node, depth = 0) {
+  analysis.complexity.totalNodes++;
+  analysis.complexity.maxDepth = Math.max(analysis.complexity.maxDepth, depth);
+
+  // 接口
+  if (ts.isInterfaceDeclaration(node)) {
+    const symbol = checker.getSymbolAtLocation(node.name);
+    if (symbol) {
+      const interfaceType = checker.getDeclaredTypeOfSymbol(symbol);
+      const properties = interfaceType.getProperties().map((prop) => {
+        const propType = checker.getTypeOfSymbolAtLocation(prop, node);
+        return {
+          name: prop.name,
+          type: checker.typeToString(propType),
+          optional: !!(prop.flags & ts.SymbolFlags.Optional),
+        };
+      });
+
+      analysis.interfaces.push({
+        name: symbol.name,
+        properties,
+        typeParameters: node.typeParameters?.map((tp) => tp.name.text) || [],
+      });
+    }
+  }
+
+  // 类型别名
+  if (ts.isTypeAliasDeclaration(node)) {
+    const symbol = checker.getSymbolAtLocation(node.name);
+    if (symbol) {
+      const aliasType = checker.getDeclaredTypeOfSymbol(symbol);
+      analysis.typeAliases.push({
+        name: symbol.name,
+        expandedType: checker.typeToString(
+          aliasType,
+          undefined,
+          ts.TypeFormatFlags.NoTruncation
+        ),
+      });
+    }
+  }
+
+  // 函数
+  if (ts.isFunctionDeclaration(node) && node.name) {
+    const symbol = checker.getSymbolAtLocation(node.name);
+    if (symbol) {
+      const fnType = checker.getTypeOfSymbolAtLocation(symbol, node);
+      const signatures = fnType.getCallSignatures();
+      signatures.forEach((sig) => {
+        analysis.functions.push({
+          name: symbol.name,
+          parameters: sig.parameters.map((param) => ({
+            name: param.name,
+            type: checker.typeToString(
+              checker.getTypeOfSymbolAtLocation(param, node)
+            ),
+          })),
+          returnType: checker.typeToString(sig.getReturnType()),
+          isAsync: !!(node.modifiers?.some(
+            (m) => m.kind === ts.SyntaxKind.AsyncKeyword
+          )),
+        });
+      });
+    }
+  }
+
+  // 类
+  if (ts.isClassDeclaration(node) && node.name) {
+    const symbol = checker.getSymbolAtLocation(node.name);
+    if (symbol) {
+      const classType = checker.getDeclaredTypeOfSymbol(symbol);
+      const methods = [];
+      const properties = [];
+
+      classType.getProperties().forEach((member) => {
+        const memberType = checker.getTypeOfSymbolAtLocation(member, node);
+        const callSignatures = memberType.getCallSignatures();
+
+        if (callSignatures.length > 0) {
+          methods.push({
+            name: member.name,
+            returnType: checker.typeToString(callSignatures[0].getReturnType()),
+            paramCount: callSignatures[0].parameters.length,
+          });
+        } else {
+          properties.push({
+            name: member.name,
+            type: checker.typeToString(memberType),
+          });
+        }
+      });
+
+      analysis.classes.push({
+        name: symbol.name,
+        methods,
+        properties,
+      });
+    }
+  }
+
+  ts.forEachChild(node, (child) => analyze(child, depth + 1));
+}
+
+analyze(sourceFile);
+
+// 输出分析报告
+console.log("╔══════════════════════════════════════╗");
+console.log("║       TypeScript 代码分析报告        ║");
+console.log("╚══════════════════════════════════════╝");
+
+console.log(`\n📊 概览`);
+console.log(`  AST 节点总数: ${analysis.complexity.totalNodes}`);
+console.log(`  最大嵌套深度: ${analysis.complexity.maxDepth}`);
+
+console.log(`\n📐 接口 (${analysis.interfaces.length} 个)`);
+analysis.interfaces.forEach((iface) => {
+  const typeParams =
+    iface.typeParameters.length > 0
+      ? `<${iface.typeParameters.join(", ")}>`
+      : "";
+  console.log(`  ${iface.name}${typeParams}`);
+  iface.properties.forEach((prop) => {
+    console.log(
+      `    ${prop.optional ? "?" : "-"} ${prop.name}: ${prop.type}`
+    );
+  });
+});
+
+console.log(`\n🏷️ 类型别名 (${analysis.typeAliases.length} 个)`);
+analysis.typeAliases.forEach((alias) => {
+  console.log(`  ${alias.name} = ${alias.expandedType}`);
+});
+
+console.log(`\n⚡ 函数 (${analysis.functions.length} 个)`);
+analysis.functions.forEach((fn) => {
+  const params = fn.parameters.map((p) => `${p.name}: ${p.type}`).join(", ");
+  const asyncTag = fn.isAsync ? "[async] " : "";
+  console.log(`  ${asyncTag}${fn.name}(${params}): ${fn.returnType}`);
+});
+
+console.log(`\n🏗️ 类 (${analysis.classes.length} 个)`);
+analysis.classes.forEach((cls) => {
+  console.log(`  ${cls.name}`);
+  cls.properties.forEach((prop) => {
+    console.log(`    属性: ${prop.name}: ${prop.type}`);
+  });
+  cls.methods.forEach((method) => {
+    console.log(
+      `    方法: ${method.name}(${method.paramCount} 个参数): ${method.returnType}`
+    );
+  });
+});
+
+// 清理临时文件
+fs.unlinkSync(tempFile);
+```
+
+## 🔗 相关概念
+
+- **类型论基础**：类型检查器内部使用的子类型判断、类型兼容性算法
+- **与其他类型系统对比**：不同编译器的类型检查策略差异
+- **AST 工具**：[TypeScript AST Viewer](https://ts-ast-viewer.com/) 在线工具
+- **ts-morph**：基于 TypeScript Compiler API 的高级封装库
+
+## 📝 学习检查点
+
+- [ ] 理解 TypeScript 编译器的五个阶段（Scanner → Parser → Binder → Checker → Emitter）
+- [ ] 掌握如何使用 Compiler API 解析和遍历 AST
+- [ ] 了解类型检查器（Checker）的核心功能和 API
+- [ ] 理解 Language Service 的架构及其在 IDE 中的作用
+- [ ] 能够编写一个基础的 Language Service Plugin
+
+## 🚀 下一步
+
+恭喜你完成了 TypeScript 学习路线的最后一个阶段！你可以：
+
+- 回顾 [学习路线图](/roadmaps/ts-learning-roadmap) 检查知识点覆盖情况
+- 阅读 TypeScript 编译器源码（[GitHub](https://github.com/microsoft/TypeScript)）
+- 尝试基于 Compiler API 开发自己的代码分析工具

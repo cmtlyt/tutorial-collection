@@ -5,8 +5,382 @@
 
 ## 📚 概念介绍
 
-本节将介绍配置新特性的核心概念和实践方法。
+TypeScript 近几个版本在 `tsconfig.json` 中引入了多项重要的编译器选项，它们优化了模块解析策略、简化了导入语法、并为 TypeScript 在新运行时中的使用铺平了道路。本节重点介绍以下四个配置项：
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+1. **verbatimModuleSyntax** —— 严格区分类型导入与值导入
+2. **moduleResolution: bundler** —— 适配现代打包器的模块解析策略
+3. **allowImportingTsExtensions** —— 允许在导入路径中使用 `.ts` 扩展名
+4. **erasableSyntaxOnly** —— 限制只使用可擦除的 TypeScript 语法（5.8+）
+
+## 🎯 verbatimModuleSyntax
+
+### 问题背景
+
+在 TypeScript 中，类型和值可以通过相同的 `import` 语句导入。编译到 JavaScript 时，TypeScript 需要判断哪些导入是"纯类型"的（可以擦除），哪些是运行时需要保留的。早期有 `importsNotUsedAsValues` 和 `preserveValueImports` 两个选项来控制这个行为，但它们互相交叉、难以理解。
+
+### 解决方案
+
+`verbatimModuleSyntax`（TypeScript 5.0+）用一个简单规则取代了上述两个选项：**你写什么，输出就是什么**。如果使用 `import type`，编译后整条语句被移除；如果使用普通 `import`，编译后保留。
+
+```json
+{
+  "compilerOptions": {
+    "verbatimModuleSyntax": true
+  }
+}
+```
+
+### 使用方式
+
+```ts
+// ✅ 纯类型导入 —— 编译后被完全移除
+import type { User, Role } from "./models";
+
+// ✅ 混合导入中标记类型 —— 编译后只保留 createUser
+import { createUser, type UserCreateInput } from "./user-service";
+
+// ❌ 错误：如果 User 只是类型，不加 type 标记会报错
+// import { User } from "./models";
+```
+
+### 编译前后对比
+
+```ts
+// === 源码 ===
+import type { Config } from "./config";
+import { loadConfig, type ConfigOptions } from "./config-loader";
+
+const config: Config = loadConfig();
+
+// === 编译输出（ESM） ===
+import { loadConfig } from "./config-loader";
+
+const config = loadConfig();
+// import type 语句被完全移除
+// ConfigOptions 的内联 type 标记也被移除
+```
+
+### 为什么推荐开启
+
+```ts
+// 没有 verbatimModuleSyntax 时，以下代码可能导致混淆：
+import { SomeEnum } from "./enums";
+
+// 如果 SomeEnum 是 const enum，在某些配置下它会被内联擦除，
+// 导致 "./enums" 这个模块在运行时完全不被加载——引发副作用丢失。
+
+// 开启 verbatimModuleSyntax 后，TypeScript 会强制你明确意图：
+import type { SomeEnum } from "./enums"; // 明确：只用类型
+// 或
+import { SomeEnum } from "./enums"; // 明确：运行时需要
+```
+
+## 🎯 moduleResolution: bundler
+
+### 问题背景
+
+TypeScript 传统的模块解析策略有两种：
+
+- **node** / **node16** / **nodenext**：模拟 Node.js 的解析规则，要求严格的文件扩展名和 `package.json` 的 `exports` 字段
+- **classic**：已弃用的旧策略
+
+然而，现代前端项目几乎都通过 **打包器**（Vite、webpack、Rspack 等）来处理模块。打包器的解析规则比 Node.js 宽松得多：它们支持省略扩展名、支持 `exports` 字段、支持路径别名等。
+
+### 解决方案
+
+`moduleResolution: "bundler"`（TypeScript 5.0+）提供了一种 **匹配打包器行为** 的解析策略：
+
+```json
+{
+  "compilerOptions": {
+    "moduleResolution": "bundler",
+    "module": "esnext"
+  }
+}
+```
+
+### 行为特点
+
+```ts
+// ✅ 可以省略扩展名（打包器会自动解析）
+import { helper } from "./utils";
+
+// ✅ 支持 package.json 的 exports 字段
+import { Button } from "my-ui-lib";
+
+// ✅ 支持 package.json 的 imports 字段（自引用）
+import { logger } from "#internal/logger";
+
+// ✅ 支持 index 文件自动解析
+import { config } from "./config"; // 解析到 ./config/index.ts
+```
+
+### 与其他策略对比
+
+```ts
+// === moduleResolution: "nodenext" ===
+// 必须写完整扩展名，否则报错
+import { helper } from "./utils.js"; // ✅ 必须 .js
+// import { helper } from "./utils";  // ❌ 报错
+
+// === moduleResolution: "bundler" ===
+// 可以省略扩展名，更贴近打包器的实际行为
+import { helper } from "./utils"; // ✅
+import { helper } from "./utils.js"; // ✅ 也可以写
+```
+
+### 适用场景
+
+| 场景 | 推荐策略 |
+|------|---------|
+| 前端项目（Vite / webpack / Rspack） | `bundler` |
+| Node.js 纯 ESM 项目 | `nodenext` |
+| 发布到 npm 的库 | `nodenext`（更严格） |
+| Deno 项目 | `bundler` 或 `nodenext` |
+
+## 🎯 allowImportingTsExtensions
+
+### 问题背景
+
+在 Deno、Bun 等原生支持 TypeScript 的运行时中，或在某些打包器配置下，你可能希望直接在导入路径中使用 `.ts` / `.tsx` 扩展名。但 TypeScript 默认不允许这样做，因为编译后的 `.js` 文件中仍然会保留 `.ts` 扩展名，导致运行时找不到文件。
+
+### 解决方案
+
+`allowImportingTsExtensions`（TypeScript 5.0+）解除了这个限制，但要求配合 `noEmit` 或 `emitDeclarationOnly` 使用（因为 TypeScript 不会重写导入路径）：
+
+```json
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "moduleResolution": "bundler",
+    "noEmit": true
+  }
+}
+```
+
+### 使用方式
+
+```ts
+// ✅ 开启后可以直接使用 .ts 扩展名导入
+import { formatDate } from "./utils/date.ts";
+import { Button } from "./components/Button.tsx";
+
+// 这在以下场景中特别有用：
+// 1. Deno 原生 TypeScript 运行时
+// 2. Bun 运行时
+// 3. 使用 ts-node/tsx 等直接运行 TypeScript 的工具
+// 4. Vite 等打包器（它们可以直接处理 .ts 文件）
+```
+
+### 典型项目配置
+
+```json
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+## 🎯 erasableSyntaxOnly
+
+### 概念说明
+
+`erasableSyntaxOnly`（TypeScript 5.8+）是一个面向未来的编译器选项。它要求你的 TypeScript 代码中 **只使用可以通过简单文本擦除就能变成合法 JavaScript 的语法**。
+
+Node.js 22.6+ 通过 `--experimental-strip-types` 支持直接运行 TypeScript 文件，但它的策略是"逐字擦除类型标注"（不做降级转换）。这意味着某些 TypeScript 特有的运行时语法（如 `enum`、`namespace`、参数属性）无法被简单擦除，需要被禁止。
+
+### 配置方式
+
+```json
+{
+  "compilerOptions": {
+    "erasableSyntaxOnly": true
+  }
+}
+```
+
+### 可擦除 vs 不可擦除
+
+```ts
+// ✅ 可擦除的语法 —— 直接删除类型标注即可
+const name: string = "hello";
+function greet(user: { name: string }): string {
+  return `Hello, ${user.name}`;
+}
+interface User {
+  id: number;
+  name: string;
+}
+type ID = string | number;
+
+// ❌ 不可擦除的语法 —— 需要代码转换，会报错
+
+// 1. enum（需要生成运行时代码）
+// enum Direction { Up, Down, Left, Right }
+
+// 2. namespace（需要生成 IIFE）
+// namespace MyApp { export const version = "1.0"; }
+
+// 3. 参数属性（需要生成构造函数赋值语句）
+// class User { constructor(public name: string) {} }
+
+// 4. 旧版 import = 语法
+// import fs = require("fs");
+```
+
+### 替代写法
+
+```ts
+// enum 的替代方案：用 const 对象 + 类型
+const Direction = {
+  Up: 0,
+  Down: 1,
+  Left: 2,
+  Right: 3,
+} as const;
+
+type Direction = (typeof Direction)[keyof typeof Direction];
+
+function move(direction: Direction) {
+  console.log(`Moving: ${direction}`);
+}
+
+move(Direction.Up); // ✅
+
+// 参数属性的替代方案：手动赋值
+class User {
+  name: string;
+  age: number;
+
+  constructor(name: string, age: number) {
+    this.name = name;
+    this.age = age;
+  }
+}
+```
+
+### 适用场景
+
+| 运行环境 | 是否需要 erasableSyntaxOnly |
+|---------|---------------------------|
+| Node.js 22.6+ `--experimental-strip-types` | ✅ 推荐开启 |
+| Deno（原生 TypeScript） | ✅ 推荐开启 |
+| 传统 tsc 编译流程 | ❌ 无需开启 |
+| 打包器（Vite / webpack） | ❌ 通常无需，打包器自行处理 |
+
+## 📝 实际应用示例
+
+### 综合示例：现代前端项目的 tsconfig.json
+
+```json
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "lib": ["esnext", "dom", "dom.iterable"],
+
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}
+```
+
+### 综合示例：Node.js 原生 TypeScript 项目
+
+```json
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
+
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+### 对应的代码风格
+
+```ts
+// 符合 erasableSyntaxOnly 的代码风格
+
+// 类型导入使用 import type
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { createServer } from "node:http";
+
+// 用 const 对象替代 enum
+const HttpStatus = {
+  OK: 200,
+  NotFound: 404,
+  ServerError: 500,
+} as const;
+
+type HttpStatus = (typeof HttpStatus)[keyof typeof HttpStatus];
+
+// 用显式赋值替代参数属性
+class AppServer {
+  private port: number;
+  private host: string;
+
+  constructor(port: number, host: string = "localhost") {
+    this.port = port;
+    this.host = host;
+  }
+
+  start(): void {
+    const server = createServer(
+      (req: IncomingMessage, res: ServerResponse) => {
+        res.writeHead(HttpStatus.OK, { "Content-Type": "text/plain" });
+        res.end("Hello from native TypeScript!");
+      }
+    );
+
+    server.listen(this.port, this.host, () => {
+      console.log(`Server running at http://${this.host}:${this.port}`);
+    });
+  }
+}
+
+const app = new AppServer(3000);
+app.start();
+```
+
+## 🔗 相关概念
+
+- **近期版本亮点**：`satisfies`、`using` 等新语法特性
+- **Node.js Type Stripping**：Node.js 原生运行 TypeScript 的能力
+- **打包器模块解析**：Vite、webpack 等工具的模块解析机制
+
+## 📝 学习检查点
+
+- [ ] 理解 `verbatimModuleSyntax` 如何简化类型导入的处理
+- [ ] 掌握 `moduleResolution: "bundler"` 与 `nodenext` 的区别及适用场景
+- [ ] 了解 `allowImportingTsExtensions` 的使用前提和限制
+- [ ] 理解 `erasableSyntaxOnly` 的设计目标和可擦除/不可擦除语法的区分
+
+## 🚀 下一步
+
+→ [TypeScript 与 AI](/typescript/07-cutting-edge-features/02-emerging-tech/01-typescript-and-ai)

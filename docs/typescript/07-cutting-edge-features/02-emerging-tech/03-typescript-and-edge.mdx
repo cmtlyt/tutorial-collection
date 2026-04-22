@@ -5,8 +5,638 @@
 
 ## 📚 概念介绍
 
-本节将介绍TypeScript 与边缘计算的核心概念和实践方法。
+边缘计算（Edge Computing）将计算推到离用户更近的位置执行，从而显著降低延迟。TypeScript 在边缘计算领域的支持日趋成熟——多个运行时和平台原生或深度集成了 TypeScript。本节介绍四个核心方向：
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+1. **Deno** —— 原生支持 TypeScript 的安全运行时
+2. **Bun** —— 追求极致性能的 JavaScript/TypeScript 运行时
+3. **Cloudflare Workers** —— 基于 V8 Isolate 的边缘函数平台
+4. **Vercel Edge Functions** —— 基于 Web API 标准的边缘计算方案
+
+## 🎯 Deno 原生 TypeScript 支持
+
+### Deno 的特点
+
+Deno 由 Node.js 创始人 Ryan Dahl 开发，从设计之初就将 TypeScript 作为一等公民：
+
+- **无需配置即可运行 `.ts` 文件**，不需要 `tsc` 编译步骤
+- **基于 URL 的模块导入**，无 `node_modules`
+- **默认安全**，需要显式授予文件系统、网络等权限
+- **内置工具链**：格式化器、测试运行器、linter、打包器
+
+### 基础示例
+
+```js
+// server.ts — 用 Deno 编写一个 HTTP 服务器
+
+// Deno 内置 HTTP 服务，无需安装第三方依赖
+Deno.serve({ port: 8000 }, async (request) => {
+  const url = new URL(request.url);
+
+  if (url.pathname === "/") {
+    return new Response("Hello from Deno!", {
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+
+  if (url.pathname === "/api/time") {
+    const now = new Date().toISOString();
+    return Response.json({ time: now, runtime: "deno" });
+  }
+
+  if (url.pathname === "/api/echo" && request.method === "POST") {
+    const body = await request.text();
+    return Response.json({ echo: body, length: body.length });
+  }
+
+  return new Response("Not Found", { status: 404 });
+});
+
+console.log("Server running on http://localhost:8000");
+
+// 运行方式: deno run --allow-net server.ts
+```
+
+### Deno 的权限模型
+
+```js
+// file-reader.ts — 演示 Deno 的权限系统
+
+async function readConfigFile(path) {
+  try {
+    const content = await Deno.readTextFile(path);
+    console.log(`文件内容 (${path}):`);
+    console.log(content);
+    return content;
+  } catch (error) {
+    if (error instanceof Deno.errors.PermissionDenied) {
+      console.error("权限被拒绝。请使用 --allow-read 标志运行。");
+    } else if (error instanceof Deno.errors.NotFound) {
+      console.error(`文件不存在: ${path}`);
+    } else {
+      throw error;
+    }
+    return null;
+  }
+}
+
+async function fetchExternalData(url) {
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+    console.log("外部数据:", data);
+    return data;
+  } catch (error) {
+    console.error("网络请求失败:", error.message);
+    return null;
+  }
+}
+
+// 运行方式（最小权限原则）:
+// deno run --allow-read=./config --allow-net=api.example.com file-reader.ts
+
+await readConfigFile("./config/app.json");
+await fetchExternalData("https://api.example.com/status");
+```
+
+### Deno 测试（内置）
+
+```js
+// math_test.ts — Deno 内置测试运行器
+
+function add(a, b) {
+  return a + b;
+}
+
+function multiply(a, b) {
+  return a * b;
+}
+
+function divide(a, b) {
+  if (b === 0) throw new Error("Division by zero");
+  return a / b;
+}
+
+// Deno.test 是内置 API，无需安装测试框架
+Deno.test("add function", () => {
+  const result = add(2, 3);
+  if (result !== 5) throw new Error(`Expected 5, got ${result}`);
+});
+
+Deno.test("multiply function", () => {
+  const result = multiply(4, 5);
+  if (result !== 20) throw new Error(`Expected 20, got ${result}`);
+});
+
+Deno.test("divide function", () => {
+  const result = divide(10, 2);
+  if (result !== 5) throw new Error(`Expected 5, got ${result}`);
+});
+
+Deno.test("divide by zero throws", () => {
+  let threw = false;
+  try {
+    divide(1, 0);
+  } catch {
+    threw = true;
+  }
+  if (!threw) throw new Error("Expected error for division by zero");
+});
+
+// 运行方式: deno test math_test.ts
+```
+
+## 🎯 Bun 运行时
+
+### Bun 的特点
+
+Bun 是一个使用 Zig 和 JavaScriptCore 引擎构建的 JavaScript/TypeScript 运行时，主打极致性能：
+
+- **极快的启动速度**，比 Node.js 快数倍
+- **内置 TypeScript 和 JSX 转译器**，无需 `tsc` 或 Babel
+- **内置打包器、测试运行器、包管理器**
+- **兼容大部分 Node.js API 和 npm 包**
+
+### HTTP 服务器
+
+```js
+// server.js — Bun 的 HTTP 服务器
+
+const server = Bun.serve({
+  port: 3000,
+
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    // 路由处理
+    if (url.pathname === "/") {
+      return new Response("Hello from Bun!", {
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+
+    if (url.pathname === "/api/info") {
+      return Response.json({
+        runtime: "bun",
+        version: Bun.version,
+        uptime: process.uptime(),
+      });
+    }
+
+    if (url.pathname === "/api/hash" && request.method === "POST") {
+      const body = await request.text();
+      // Bun 内置高性能哈希
+      const hash = Bun.hash(body);
+      return Response.json({ input: body, hash: hash.toString(16) });
+    }
+
+    return new Response("Not Found", { status: 404 });
+  },
+});
+
+console.log(`Bun server running at http://localhost:${server.port}`);
+
+// 运行方式: bun run server.js
+```
+
+### Bun 的文件操作
+
+```js
+// file-ops.js — Bun 的高性能文件 API
+
+async function fileOperationsDemo() {
+  // 写入文件（Bun.write 比 fs.writeFile 更快）
+  await Bun.write("output/hello.txt", "Hello from Bun!");
+
+  // 读取文件
+  const file = Bun.file("output/hello.txt");
+  console.log(`文件大小: ${file.size} bytes`);
+  console.log(`MIME 类型: ${file.type}`);
+
+  const content = await file.text();
+  console.log(`文件内容: ${content}`);
+
+  // 写入 JSON
+  const config = {
+    database: { host: "localhost", port: 5432 },
+    cache: { ttl: 3600 },
+  };
+  await Bun.write("output/config.json", JSON.stringify(config, null, 2));
+
+  // 读取 JSON
+  const configFile = Bun.file("output/config.json");
+  const loadedConfig = await configFile.json();
+  console.log("加载的配置:", loadedConfig);
+}
+
+fileOperationsDemo();
+```
+
+### Bun 测试运行器
+
+```js
+// math.test.js — Bun 内置测试运行器（兼容 Jest API）
+import { expect, test, describe } from "bun:test";
+
+function isPalindrome(str) {
+  const cleaned = str.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return cleaned === cleaned.split("").reverse().join("");
+}
+
+function chunkArray(array, size) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+}
+
+describe("isPalindrome", () => {
+  test("识别回文字符串", () => {
+    expect(isPalindrome("racecar")).toBe(true);
+    expect(isPalindrome("A man a plan a canal Panama")).toBe(true);
+  });
+
+  test("识别非回文字符串", () => {
+    expect(isPalindrome("hello")).toBe(false);
+    expect(isPalindrome("typescript")).toBe(false);
+  });
+
+  test("处理空字符串", () => {
+    expect(isPalindrome("")).toBe(true);
+  });
+});
+
+describe("chunkArray", () => {
+  test("按指定大小分块", () => {
+    expect(chunkArray([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+  });
+
+  test("处理空数组", () => {
+    expect(chunkArray([], 3)).toEqual([]);
+  });
+
+  test("块大小大于数组长度", () => {
+    expect(chunkArray([1, 2], 5)).toEqual([[1, 2]]);
+  });
+});
+
+// 运行方式: bun test math.test.js
+```
+
+## 🎯 Cloudflare Workers 类型
+
+### 概述
+
+Cloudflare Workers 运行在全球 300+ 个边缘节点上，使用 V8 Isolate（而非完整的 Node.js）。它遵循 Web Worker API 标准，TypeScript 支持通过 `@cloudflare/workers-types` 包提供。
+
+### Worker 基础示例
+
+```js
+// src/index.js — Cloudflare Worker
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // 路由处理
+    switch (url.pathname) {
+      case "/":
+        return new Response("Hello from Cloudflare Workers!", {
+          headers: { "Content-Type": "text/plain" },
+        });
+
+      case "/api/geo":
+        // Cloudflare 自动注入请求的地理位置信息
+        const geo = request.cf || {};
+        return Response.json({
+          country: geo.country || "unknown",
+          city: geo.city || "unknown",
+          timezone: geo.timezone || "unknown",
+          colo: geo.colo || "unknown",
+        });
+
+      case "/api/kv":
+        return await handleKV(request, env);
+
+      default:
+        return new Response("Not Found", { status: 404 });
+    }
+  },
+};
+
+async function handleKV(request, env) {
+  const url = new URL(request.url);
+  const key = url.searchParams.get("key");
+
+  if (!key) {
+    return Response.json({ error: "Missing key parameter" }, { status: 400 });
+  }
+
+  if (request.method === "GET") {
+    // 从 KV 存储读取
+    const value = await env.MY_KV.get(key);
+    if (value === null) {
+      return Response.json({ error: "Key not found" }, { status: 404 });
+    }
+    return Response.json({ key, value });
+  }
+
+  if (request.method === "PUT") {
+    const value = await request.text();
+    // 写入 KV 存储，设置 60 秒过期
+    await env.MY_KV.put(key, value, { expirationTtl: 60 });
+    return Response.json({ key, value, ttl: 60 });
+  }
+
+  return new Response("Method Not Allowed", { status: 405 });
+}
+```
+
+### wrangler.toml 配置
+
+```toml
+# wrangler.toml — Cloudflare Workers 项目配置
+
+name = "my-edge-api"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# KV 命名空间绑定
+[[kv_namespaces]]
+binding = "MY_KV"
+id = "your-kv-namespace-id"
+
+# 环境变量
+[vars]
+ENVIRONMENT = "production"
+```
+
+### TypeScript 类型定义
+
+```ts
+// src/types.ts — 为 Worker 定义环境类型
+
+interface Env {
+  MY_KV: KVNamespace;
+  ENVIRONMENT: string;
+  DB: D1Database;
+}
+
+// Cloudflare Workers 的请求对象扩展了标准 Request
+// request.cf 包含地理位置等 Cloudflare 特有信息
+interface CfProperties {
+  country: string;
+  city: string;
+  timezone: string;
+  colo: string;
+  region: string;
+  latitude: string;
+  longitude: string;
+}
+```
+
+## 🎯 Vercel Edge Functions
+
+### 概述
+
+Vercel Edge Functions 基于 Edge Runtime（V8 Isolate），遵循 Web 标准 API。它支持 TypeScript 开箱即用，并与 Next.js 深度集成。Edge Functions 适合需要低延迟的场景：地理定位重定向、A/B 测试、认证校验等。
+
+### Edge Function 基础示例
+
+```js
+// api/hello.js — Vercel Edge Function
+
+export const config = {
+  runtime: "edge",
+};
+
+export default async function handler(request) {
+  const url = new URL(request.url);
+  const name = url.searchParams.get("name") || "World";
+
+  return Response.json({
+    message: `Hello, ${name}!`,
+    timestamp: new Date().toISOString(),
+    region: request.headers.get("x-vercel-ip-country") || "unknown",
+  });
+}
+```
+
+### 地理定位重定向
+
+```js
+// middleware.js — Next.js Edge Middleware（运行在边缘）
+
+export const config = {
+  matcher: ["/", "/products/:path*"],
+};
+
+const COUNTRY_TO_LOCALE = {
+  CN: "/zh",
+  JP: "/ja",
+  KR: "/ko",
+  US: "/en",
+  GB: "/en",
+  DE: "/de",
+  FR: "/fr",
+};
+
+export default function middleware(request) {
+  const country = request.geo?.country || "US";
+  const url = new URL(request.url);
+
+  // 如果已经在本地化路径下，跳过重定向
+  const locales = Object.values(COUNTRY_TO_LOCALE);
+  const hasLocale = locales.some((locale) => url.pathname.startsWith(locale));
+
+  if (hasLocale) {
+    return undefined; // 继续正常处理
+  }
+
+  // 根据国家代码重定向到对应的本地化路径
+  const locale = COUNTRY_TO_LOCALE[country] || "/en";
+  const redirectUrl = new URL(`${locale}${url.pathname}`, request.url);
+
+  return Response.redirect(redirectUrl.toString(), 307);
+}
+```
+
+### Edge Function 实现 A/B 测试
+
+```js
+// api/ab-test.js — 基于 Cookie 的 A/B 测试
+
+export const config = {
+  runtime: "edge",
+};
+
+function getVariant(request) {
+  // 检查是否已有分组 Cookie
+  const cookies = request.headers.get("cookie") || "";
+  const match = cookies.match(/ab-variant=(\w+)/);
+  if (match) {
+    return match[1];
+  }
+  // 随机分配到 A 或 B 组
+  return Math.random() < 0.5 ? "control" : "experiment";
+}
+
+export default async function handler(request) {
+  const variant = getVariant(request);
+
+  const content =
+    variant === "experiment"
+      ? {
+          title: "全新设计",
+          buttonText: "立即体验",
+          layout: "modern",
+        }
+      : {
+          title: "经典版本",
+          buttonText: "了解更多",
+          layout: "classic",
+        };
+
+  const response = Response.json({
+    variant,
+    content,
+    timestamp: Date.now(),
+  });
+
+  // 设置分组 Cookie（7 天有效期）
+  response.headers.set(
+    "Set-Cookie",
+    `ab-variant=${variant}; Path=/; Max-Age=${7 * 24 * 60 * 60}; SameSite=Lax`
+  );
+
+  return response;
+}
+```
+
+## 📝 实际应用示例
+
+### 综合示例：跨运行时兼容的边缘服务
+
+以下代码展示如何编写一个可以同时在 Deno、Bun、Cloudflare Workers 和 Vercel Edge Functions 上运行的通用边缘服务：
+
+```js
+// src/edge-service.js — 跨运行时兼容的边缘服务
+
+// 检测当前运行时
+function detectRuntime() {
+  if (typeof Deno !== "undefined") return "deno";
+  if (typeof Bun !== "undefined") return "bun";
+  // Cloudflare Workers 和 Vercel Edge 都基于 Web API
+  // 可以通过 navigator.userAgent 或环境变量区分
+  if (typeof globalThis.caches !== "undefined" && typeof process === "undefined") {
+    return "edge-worker";
+  }
+  if (typeof process !== "undefined" && process.versions?.node) return "node";
+  return "unknown";
+}
+
+// 统一的请求处理逻辑
+async function handleRequest(request) {
+  const url = new URL(request.url);
+  const runtime = detectRuntime();
+
+  const routes = {
+    "/": () =>
+      Response.json({
+        message: "Edge Service",
+        runtime,
+        timestamp: new Date().toISOString(),
+      }),
+
+    "/api/headers": () => {
+      const headers = {};
+      request.headers.forEach((value, key) => {
+        headers[key] = value;
+      });
+      return Response.json({ headers, runtime });
+    },
+
+    "/api/echo": async () => {
+      if (request.method !== "POST") {
+        return new Response("Method Not Allowed", { status: 405 });
+      }
+      const body = await request.text();
+      return Response.json({
+        echo: body,
+        length: body.length,
+        runtime,
+      });
+    },
+
+    "/health": () =>
+      Response.json({
+        status: "healthy",
+        runtime,
+        uptime: typeof process !== "undefined" ? process.uptime() : "N/A",
+      }),
+  };
+
+  const handler = routes[url.pathname];
+  if (handler) {
+    return handler();
+  }
+
+  return new Response("Not Found", { status: 404 });
+}
+
+// === 各运行时的入口适配 ===
+
+// Deno
+// Deno.serve({ port: 8000 }, handleRequest);
+
+// Bun
+// export default { port: 3000, fetch: handleRequest };
+
+// Cloudflare Workers
+// export default { fetch: handleRequest };
+
+// Vercel Edge Functions
+// export const config = { runtime: "edge" };
+// export default handleRequest;
+
+// 演示：在 Node.js 环境下直接调用
+async function demo() {
+  const mockRequest = new Request("http://localhost:8000/", {
+    method: "GET",
+  });
+
+  const response = await handleRequest(mockRequest);
+  const data = await response.json();
+  console.log("响应:", data);
+
+  const echoRequest = new Request("http://localhost:8000/api/echo", {
+    method: "POST",
+    body: "Hello Edge!",
+  });
+
+  const echoResponse = await handleRequest(echoRequest);
+  const echoData = await echoResponse.json();
+  console.log("Echo 响应:", echoData);
+}
+
+demo();
+```
+
+## 🔗 相关概念
+
+- **Web API 标准**：`Request`、`Response`、`fetch` 等边缘运行时共用的标准 API
+- **V8 Isolate**：Cloudflare Workers 和 Vercel Edge Functions 底层的轻量级隔离机制
+- **TypeScript 配置新特性**：`moduleResolution: "bundler"` 在边缘项目中的应用
+- **TypeScript 与 WebAssembly**：Wasm 在边缘运行时中的计算加速能力
+
+## 📝 学习检查点
+
+- [ ] 了解 Deno 的原生 TypeScript 支持和权限安全模型
+- [ ] 掌握 Bun 的高性能特性和内置工具链
+- [ ] 理解 Cloudflare Workers 的 V8 Isolate 模型和 KV 存储
+- [ ] 了解 Vercel Edge Functions 的 Middleware 和 A/B 测试场景
+- [ ] 能够编写跨运行时兼容的边缘服务代码
+
+## 🚀 下一步
+
+→ [类型论基础](/typescript/07-cutting-edge-features/03-type-system-theory/01-type-theory-basics)

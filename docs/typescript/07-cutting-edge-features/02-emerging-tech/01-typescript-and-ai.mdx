@@ -5,8 +5,660 @@
 
 ## 📚 概念介绍
 
-本节将介绍TypeScript 与 AI的核心概念和实践方法。
+AI 与大语言模型（LLM）的兴起为 TypeScript 带来了全新的应用场景。TypeScript 的类型系统天然适合描述 AI 工具链中的结构化数据——从 API 请求/响应的类型定义，到 Function Calling 的参数约束，再到类型驱动的 Prompt 模板工程。本节从三个维度介绍 TypeScript 与 AI 的结合：
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+1. **AI 代码生成中的类型提示** —— 类型信息如何帮助 AI 生成更准确的代码
+2. **LLM 工具链类型定义** —— 使用 TypeScript 为 Function Calling、Agent 工具等构建类型安全的接口
+3. **类型驱动的 Prompt 工程** —— 利用类型系统约束和验证 Prompt 结构
+
+## 🎯 AI 代码生成中的类型提示
+
+### 类型信息提升 AI 代码质量
+
+AI 代码生成工具（如 GitHub Copilot、Cursor 等）依赖上下文来推断开发者意图。TypeScript 的类型定义天然提供了高密度的上下文信息，让 AI 能更准确地生成代码。
+
+### 用接口约束 AI 生成结果
+
+```ts
+// 定义清晰的类型，AI 工具能据此生成更准确的实现
+interface UserRepository {
+  findById(id: string): Promise<User | null>;
+  findByEmail(email: string): Promise<User | null>;
+  create(input: CreateUserInput): Promise<User>;
+  update(id: string, input: UpdateUserInput): Promise<User>;
+  delete(id: string): Promise<void>;
+  list(filter: UserFilter): Promise<PaginatedResult<User>>;
+}
+
+interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: "admin" | "editor" | "viewer";
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface CreateUserInput {
+  email: string;
+  name: string;
+  role: "admin" | "editor" | "viewer";
+}
+
+interface UpdateUserInput {
+  email?: string;
+  name?: string;
+  role?: "admin" | "editor" | "viewer";
+}
+
+interface UserFilter {
+  role?: "admin" | "editor" | "viewer";
+  search?: string;
+  page: number;
+  pageSize: number;
+}
+
+interface PaginatedResult<T> {
+  data: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+```
+
+### 类型注释增强 AI 理解
+
+```ts
+/**
+ * 重试策略配置
+ * AI 工具会参考 JSDoc 描述来理解每个字段的语义
+ */
+interface RetryConfig {
+  /** 最大重试次数，默认 3 */
+  maxRetries: number;
+  /** 初始延迟时间（毫秒），默认 1000 */
+  initialDelayMs: number;
+  /** 退避倍数，每次重试延迟 = initialDelayMs * backoffMultiplier^attempt */
+  backoffMultiplier: number;
+  /** 最大延迟时间（毫秒），防止指数退避导致延迟过大 */
+  maxDelayMs: number;
+  /** 触发重试的错误判断函数 */
+  shouldRetry: (error: unknown) => boolean;
+}
+
+function createRetryExecutor(config: RetryConfig) {
+  return async function execute<T>(operation: () => Promise<T>): Promise<T> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+
+        if (attempt === config.maxRetries || !config.shouldRetry(error)) {
+          throw error;
+        }
+
+        const delay = Math.min(
+          config.initialDelayMs * Math.pow(config.backoffMultiplier, attempt),
+          config.maxDelayMs
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw lastError;
+  };
+}
+
+// 使用示例
+const retryExecutor = createRetryExecutor({
+  maxRetries: 3,
+  initialDelayMs: 1000,
+  backoffMultiplier: 2,
+  maxDelayMs: 10000,
+  shouldRetry: (error) =>
+    error instanceof Error && error.message.includes("ECONNRESET"),
+});
+
+async function fetchData() {
+  const result = await retryExecutor(() =>
+    fetch("https://api.example.com/data").then((res) => res.json())
+  );
+  console.log(result);
+}
+
+fetchData();
+```
+
+## 🎯 LLM 工具链类型定义
+
+### Function Calling 类型系统
+
+LLM 的 Function Calling 能力允许模型调用外部函数。TypeScript 可以为这些函数定义严格的类型约束，确保 LLM 返回的参数结构正确：
+
+```ts
+// 定义工具参数和返回值的类型
+interface ToolDefinition<TParams, TResult> {
+  name: string;
+  description: string;
+  parameters: JsonSchema<TParams>;
+  execute: (params: TParams) => Promise<TResult>;
+}
+
+// JSON Schema 类型映射（简化版）
+type JsonSchema<T> = {
+  type: string;
+  properties: {
+    [K in keyof T]: {
+      type: string;
+      description: string;
+      enum?: readonly string[];
+    };
+  };
+  required: (keyof T)[];
+};
+
+// 天气查询工具
+interface WeatherParams {
+  city: string;
+  unit: "celsius" | "fahrenheit";
+}
+
+interface WeatherResult {
+  temperature: number;
+  unit: string;
+  description: string;
+  humidity: number;
+}
+
+const weatherTool: ToolDefinition<WeatherParams, WeatherResult> = {
+  name: "get_weather",
+  description: "获取指定城市的当前天气信息",
+  parameters: {
+    type: "object",
+    properties: {
+      city: { type: "string", description: "城市名称" },
+      unit: {
+        type: "string",
+        description: "温度单位",
+        enum: ["celsius", "fahrenheit"],
+      },
+    },
+    required: ["city", "unit"],
+  },
+  async execute(params) {
+    // 模拟天气 API 调用
+    console.log(`查询 ${params.city} 的天气，单位: ${params.unit}`);
+    return {
+      temperature: 22,
+      unit: params.unit === "celsius" ? "°C" : "°F",
+      description: "晴朗",
+      humidity: 45,
+    };
+  },
+};
+```
+
+### 类型安全的 Agent 工具注册
+
+```ts
+// 工具注册表：通过泛型约束实现类型安全
+class ToolRegistry {
+  private tools = new Map<string, ToolDefinition<any, any>>();
+
+  register<TParams, TResult>(tool: ToolDefinition<TParams, TResult>): void {
+    this.tools.set(tool.name, tool);
+  }
+
+  async invoke(name: string, params: unknown): Promise<unknown> {
+    const tool = this.tools.get(name);
+    if (!tool) {
+      throw new Error(`Tool not found: ${name}`);
+    }
+    return tool.execute(params);
+  }
+
+  listTools(): Array<{ name: string; description: string }> {
+    return Array.from(this.tools.values()).map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+    }));
+  }
+}
+
+// 数据库查询工具
+interface DbQueryParams {
+  sql: string;
+  database: string;
+}
+
+interface DbQueryResult {
+  rows: Record<string, unknown>[];
+  rowCount: number;
+}
+
+const dbQueryTool: ToolDefinition<DbQueryParams, DbQueryResult> = {
+  name: "query_database",
+  description: "执行 SQL 查询并返回结果",
+  parameters: {
+    type: "object",
+    properties: {
+      sql: { type: "string", description: "SQL 查询语句" },
+      database: { type: "string", description: "目标数据库名称" },
+    },
+    required: ["sql", "database"],
+  },
+  async execute(params) {
+    console.log(`在 ${params.database} 上执行: ${params.sql}`);
+    return {
+      rows: [{ id: 1, name: "Alice" }, { id: 2, name: "Bob" }],
+      rowCount: 2,
+    };
+  },
+};
+
+// 注册并使用
+const registry = new ToolRegistry();
+registry.register(weatherTool);
+registry.register(dbQueryTool);
+
+console.log("已注册工具:", registry.listTools());
+
+async function demo() {
+  const weatherResult = await registry.invoke("get_weather", {
+    city: "北京",
+    unit: "celsius",
+  });
+  console.log("天气结果:", weatherResult);
+
+  const dbResult = await registry.invoke("query_database", {
+    sql: "SELECT * FROM users LIMIT 10",
+    database: "main",
+  });
+  console.log("查询结果:", dbResult);
+}
+
+demo();
+```
+
+### 结构化输出类型约束
+
+```ts
+// 约束 LLM 输出的结构化数据
+interface LLMStructuredOutput<T> {
+  parse(rawOutput: string): T;
+  schema: object;
+}
+
+// 情感分析输出
+interface SentimentAnalysis {
+  sentiment: "positive" | "negative" | "neutral";
+  confidence: number;
+  keywords: string[];
+  summary: string;
+}
+
+function createOutputParser<T>(
+  validator: (data: unknown) => data is T,
+  schema: object
+): LLMStructuredOutput<T> {
+  return {
+    schema,
+    parse(rawOutput: string): T {
+      const parsed = JSON.parse(rawOutput);
+      if (!validator(parsed)) {
+        throw new Error("LLM 输出不符合预期结构");
+      }
+      return parsed;
+    },
+  };
+}
+
+function isSentimentAnalysis(data: unknown): data is SentimentAnalysis {
+  if (typeof data !== "object" || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  return (
+    typeof obj.sentiment === "string" &&
+    ["positive", "negative", "neutral"].includes(obj.sentiment) &&
+    typeof obj.confidence === "number" &&
+    obj.confidence >= 0 &&
+    obj.confidence <= 1 &&
+    Array.isArray(obj.keywords) &&
+    obj.keywords.every((k) => typeof k === "string") &&
+    typeof obj.summary === "string"
+  );
+}
+
+const sentimentParser = createOutputParser<SentimentAnalysis>(
+  isSentimentAnalysis,
+  {
+    type: "object",
+    properties: {
+      sentiment: { type: "string", enum: ["positive", "negative", "neutral"] },
+      confidence: { type: "number", minimum: 0, maximum: 1 },
+      keywords: { type: "array", items: { type: "string" } },
+      summary: { type: "string" },
+    },
+    required: ["sentiment", "confidence", "keywords", "summary"],
+  }
+);
+
+// 模拟解析 LLM 输出
+const rawLLMOutput = JSON.stringify({
+  sentiment: "positive",
+  confidence: 0.92,
+  keywords: ["excellent", "recommend", "satisfied"],
+  summary: "用户对产品体验非常满意",
+});
+
+const result = sentimentParser.parse(rawLLMOutput);
+console.log(`情感: ${result.sentiment}, 置信度: ${result.confidence}`);
+console.log(`关键词: ${result.keywords.join(", ")}`);
+```
+
+## 🎯 类型驱动的 Prompt 工程
+
+### Prompt 模板类型化
+
+```ts
+// 类型安全的 Prompt 模板系统
+type ExtractVariables<T extends string> =
+  T extends `${string}{{${infer Var}}}${infer Rest}`
+    ? Var | ExtractVariables<Rest>
+    : never;
+
+type PromptVariables<T extends string> = {
+  [K in ExtractVariables<T>]: string;
+};
+
+function createPrompt<const T extends string>(template: T) {
+  return {
+    template,
+    fill(variables: PromptVariables<T>): string {
+      let result: string = template;
+      for (const [key, value] of Object.entries(variables)) {
+        result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value as string);
+      }
+      return result;
+    },
+  };
+}
+
+// 使用示例
+const codeReviewPrompt = createPrompt(
+  `请对以下 {{language}} 代码进行 Code Review：
+
+\`\`\`{{language}}
+{{code}}
+\`\`\`
+
+请从以下角度评审：
+1. {{aspect1}}
+2. {{aspect2}}
+3. {{aspect3}}
+
+输出格式：JSON`
+);
+
+const filledPrompt = codeReviewPrompt.fill({
+  language: "typescript",
+  code: "function add(a: number, b: number) { return a + b; }",
+  aspect1: "代码可读性",
+  aspect2: "类型安全性",
+  aspect3: "性能优化建议",
+});
+
+console.log(filledPrompt);
+```
+
+### 对话消息类型系统
+
+```ts
+// 构建类型安全的对话消息
+type Role = "system" | "user" | "assistant" | "tool";
+
+interface BaseMessage {
+  role: Role;
+  content: string;
+}
+
+interface SystemMessage extends BaseMessage {
+  role: "system";
+}
+
+interface UserMessage extends BaseMessage {
+  role: "user";
+}
+
+interface AssistantMessage extends BaseMessage {
+  role: "assistant";
+  toolCalls?: ToolCall[];
+}
+
+interface ToolMessage extends BaseMessage {
+  role: "tool";
+  toolCallId: string;
+}
+
+interface ToolCall {
+  id: string;
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+type ChatMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage;
+
+// 类型安全的对话构建器
+class ConversationBuilder {
+  private messages: ChatMessage[] = [];
+
+  system(content: string): this {
+    this.messages.push({ role: "system", content });
+    return this;
+  }
+
+  user(content: string): this {
+    this.messages.push({ role: "user", content });
+    return this;
+  }
+
+  assistant(content: string, toolCalls?: ToolCall[]): this {
+    this.messages.push({ role: "assistant", content, toolCalls });
+    return this;
+  }
+
+  tool(toolCallId: string, content: string): this {
+    this.messages.push({ role: "tool", toolCallId, content });
+    return this;
+  }
+
+  build(): ChatMessage[] {
+    if (this.messages.length === 0) {
+      throw new Error("对话不能为空");
+    }
+    return [...this.messages];
+  }
+}
+
+// 构建对话
+const conversation = new ConversationBuilder()
+  .system("你是一个专业的代码审查助手。")
+  .user("请帮我审查这段 TypeScript 代码。")
+  .assistant("好的，我来看看这段代码。需要查看代码内容。", [
+    {
+      id: "call_001",
+      function: {
+        name: "read_file",
+        arguments: JSON.stringify({ path: "src/index.ts" }),
+      },
+    },
+  ])
+  .tool("call_001", "function main() { console.log('hello'); }")
+  .assistant("这段代码功能简单，建议添加类型注解和错误处理。")
+  .build();
+
+console.log("对话消息数:", conversation.length);
+conversation.forEach((msg) => {
+  console.log(`[${msg.role}]: ${msg.content.substring(0, 50)}...`);
+});
+```
+
+## 📝 实际应用示例
+
+### 综合示例：类型安全的 AI 聊天客户端
+
+```ts
+// 完整的类型安全 AI 聊天客户端
+
+interface ChatCompletionConfig {
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  topP: number;
+  tools?: ToolDefinition<any, any>[];
+}
+
+interface ChatCompletionResponse {
+  id: string;
+  choices: Array<{
+    index: number;
+    message: AssistantMessage;
+    finishReason: "stop" | "tool_calls" | "length";
+  }>;
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+}
+
+class AIChatClient {
+  private config: ChatCompletionConfig;
+  private conversationBuilder: ConversationBuilder;
+  private toolRegistry: ToolRegistry;
+
+  constructor(config: ChatCompletionConfig) {
+    this.config = config;
+    this.conversationBuilder = new ConversationBuilder();
+    this.toolRegistry = new ToolRegistry();
+
+    if (config.tools) {
+      config.tools.forEach((tool) => this.toolRegistry.register(tool));
+    }
+  }
+
+  setSystemPrompt(prompt: string): void {
+    this.conversationBuilder.system(prompt);
+  }
+
+  async chat(userMessage: string): Promise<string> {
+    this.conversationBuilder.user(userMessage);
+
+    // 模拟 API 调用
+    const response = await this.simulateAPICall(
+      this.conversationBuilder.build()
+    );
+
+    const assistantMessage = response.choices[0].message;
+
+    // 处理工具调用
+    if (
+      response.choices[0].finishReason === "tool_calls" &&
+      assistantMessage.toolCalls
+    ) {
+      this.conversationBuilder.assistant(
+        assistantMessage.content,
+        assistantMessage.toolCalls
+      );
+
+      for (const toolCall of assistantMessage.toolCalls) {
+        const toolResult = await this.toolRegistry.invoke(
+          toolCall.function.name,
+          JSON.parse(toolCall.function.arguments)
+        );
+        this.conversationBuilder.tool(
+          toolCall.id,
+          JSON.stringify(toolResult)
+        );
+      }
+
+      // 再次调用获取最终回复
+      const finalResponse = await this.simulateAPICall(
+        this.conversationBuilder.build()
+      );
+      const finalMessage = finalResponse.choices[0].message;
+      this.conversationBuilder.assistant(finalMessage.content);
+      return finalMessage.content;
+    }
+
+    this.conversationBuilder.assistant(assistantMessage.content);
+    return assistantMessage.content;
+  }
+
+  private async simulateAPICall(
+    messages: ChatMessage[]
+  ): Promise<ChatCompletionResponse> {
+    console.log(`发送 ${messages.length} 条消息到 ${this.config.model}`);
+    return {
+      id: `chatcmpl-${Date.now()}`,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: `收到您的消息。当前对话共 ${messages.length} 条消息。`,
+          },
+          finishReason: "stop",
+        },
+      ],
+      usage: {
+        promptTokens: messages.reduce((sum, m) => sum + m.content.length, 0),
+        completionTokens: 50,
+        totalTokens:
+          messages.reduce((sum, m) => sum + m.content.length, 0) + 50,
+      },
+    };
+  }
+}
+
+// 使用示例
+async function main() {
+  const client = new AIChatClient({
+    model: "gpt-4",
+    temperature: 0.7,
+    maxTokens: 2048,
+    topP: 1,
+    tools: [weatherTool],
+  });
+
+  client.setSystemPrompt("你是一个有用的助手，可以帮助查询天气信息。");
+
+  const response = await client.chat("你好，请介绍一下你自己。");
+  console.log("AI 回复:", response);
+}
+
+main();
+```
+
+## 🔗 相关概念
+
+- **Zod 运行时校验**：常用于验证 LLM 返回的 JSON 结构
+- **tRPC 端到端类型安全**：类似的类型安全 API 设计理念
+- **条件类型与模板字面量类型**：Prompt 模板类型化的底层技术
+
+## 📝 学习检查点
+
+- [ ] 理解类型信息如何帮助 AI 工具生成更准确的代码
+- [ ] 掌握 Function Calling 的类型安全定义方式
+- [ ] 了解如何构建类型化的 Prompt 模板系统
+- [ ] 能够设计类型安全的 LLM 工具注册和调用链
+
+## 🚀 下一步
+
+→ [TypeScript 与 WebAssembly](./02-typescript-and-wasm)

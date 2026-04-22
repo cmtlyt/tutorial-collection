@@ -5,8 +5,712 @@
 
 ## 📚 概念介绍
 
-本节将介绍类型论基础的核心概念和实践方法。
+理解 TypeScript 类型系统背后的理论基础，能帮助你更好地预测类型检查器的行为、理解看似"奇怪"的类型错误，并写出更精确的类型定义。本节从三个核心维度展开：
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+1. **子类型与协变/逆变** —— 类型之间的"兼容"关系及其在泛型中的表现
+2. **结构化类型 vs 名义类型** —— TypeScript 的类型兼容性判定策略
+3. **类型可靠性（Soundness）** —— TypeScript 有意识地在可靠性与实用性之间做的权衡
+
+## 🎯 子类型与协变/逆变
+
+### 什么是子类型
+
+子类型（Subtyping）描述的是类型之间的"可替代"关系。如果类型 `A` 是类型 `B` 的子类型（记作 `A <: B`），那么在任何需要 `B` 的地方都可以安全地使用 `A`。
+
+```ts
+// Dog 是 Animal 的子类型：Dog 拥有 Animal 的所有属性，还有额外的属性
+interface Animal {
+  name: string;
+  age: number;
+}
+
+interface Dog extends Animal {
+  breed: string;
+}
+
+function feedAnimal(animal: Animal): void {
+  console.log(`Feeding ${animal.name}, age ${animal.age}`);
+}
+
+const myDog: Dog = { name: "Buddy", age: 3, breed: "Labrador" };
+
+// ✅ Dog 是 Animal 的子类型，可以在需要 Animal 的地方使用 Dog
+feedAnimal(myDog);
+```
+
+### 协变（Covariance）
+
+协变指的是：如果 `A <: B`，那么 `F<A> <: F<B>`——容器的子类型关系与元素的方向一致。
+
+在 TypeScript 中，**数组类型**和**只读属性**是协变的：
+
+```ts
+interface Animal {
+  name: string;
+}
+
+interface Cat extends Animal {
+  purrs: boolean;
+}
+
+// 数组是协变的：Cat[] 可以赋值给 Animal[]
+const cats: Cat[] = [
+  { name: "Whiskers", purrs: true },
+  { name: "Felix", purrs: false },
+];
+
+// ✅ Cat[] 可以赋值给 readonly Animal[]
+const animals: readonly Animal[] = cats;
+console.log(animals[0].name); // "Whiskers"
+
+// 函数返回值也是协变的
+type AnimalFactory = () => Animal;
+type CatFactory = () => Cat;
+
+const makeCat: CatFactory = () => ({ name: "Kitty", purrs: true });
+// ✅ CatFactory 可以赋值给 AnimalFactory（返回值协变）
+const makeAnimal: AnimalFactory = makeCat;
+console.log(makeAnimal().name); // "Kitty"
+```
+
+### 逆变（Contravariance）
+
+逆变是协变的反向：如果 `A <: B`，那么 `F<B> <: F<A>`——容器的子类型关系与元素方向相反。
+
+在 TypeScript 中，**函数参数**（在 `strictFunctionTypes` 模式下）是逆变的：
+
+```ts
+interface Animal {
+  name: string;
+}
+
+interface Cat extends Animal {
+  purrs: boolean;
+}
+
+// 函数参数是逆变的
+type AnimalHandler = (animal: Animal) => void;
+type CatHandler = (cat: Cat) => void;
+
+const handleAnimal: AnimalHandler = (animal) => {
+  console.log(`Handling animal: ${animal.name}`);
+};
+
+// ✅ AnimalHandler 可以赋值给 CatHandler（参数逆变）
+// 因为能处理所有 Animal 的函数，当然也能处理 Cat
+const handleCat: CatHandler = handleAnimal;
+handleCat({ name: "Whiskers", purrs: true });
+
+// ❌ 反过来不行：CatHandler 不能赋值给 AnimalHandler
+// 因为 CatHandler 可能访问 cat.purrs，但传入的 Animal 不一定有 purrs
+const specificHandler: CatHandler = (cat) => {
+  console.log(`Cat ${cat.name} purrs: ${cat.purrs}`);
+};
+// const wrongHandler: AnimalHandler = specificHandler; // 错误！
+```
+
+### 不变（Invariance）
+
+不变意味着既不协变也不逆变。在 TypeScript 中，可变（mutable）对象的属性理论上应该是不变的，但 TypeScript 实际上将其视为协变（这是有意的不可靠性）：
+
+```ts
+interface Box<T> {
+  value: T;
+}
+
+interface Animal {
+  name: string;
+}
+
+interface Cat extends Animal {
+  purrs: boolean;
+}
+
+// TypeScript 实际上允许这样做（协变），但理论上不安全
+const catBox: Box<Cat> = { value: { name: "Whiskers", purrs: true } };
+const animalBox: Box<Animal> = catBox; // ✅ TypeScript 允许
+
+// 如果 Box 是可变的，这可能导致运行时问题：
+// animalBox.value = { name: "Fido" }; // 缺少 purrs 属性
+// console.log(catBox.value.purrs); // 运行时：undefined
+
+// 使用 in/out 修饰符可以显式声明型变方向（TypeScript 4.7+）
+interface ReadonlyBox<out T> {
+  readonly value: T;
+}
+
+interface WriteOnlyBox<in T> {
+  set(value: T): void;
+}
+
+interface InvariantBox<in out T> {
+  value: T;
+}
+```
+
+### 实际应用：理解事件回调的类型
+
+```ts
+interface BaseEvent {
+  type: string;
+  timestamp: number;
+}
+
+interface ClickEvent extends BaseEvent {
+  type: "click";
+  x: number;
+  y: number;
+}
+
+interface KeyEvent extends BaseEvent {
+  type: "key";
+  key: string;
+  code: string;
+}
+
+// 事件处理器：参数逆变
+type EventListener<T extends BaseEvent> = (event: T) => void;
+
+function addListener<T extends BaseEvent>(
+  type: string,
+  listener: EventListener<T>
+): void {
+  console.log(`Added listener for ${type}`);
+  // 模拟触发
+  const mockEvent = { type, timestamp: Date.now() } as T;
+  listener(mockEvent);
+}
+
+// 通用处理器可以作为特定事件的处理器（逆变）
+const generalHandler: EventListener<BaseEvent> = (event) => {
+  console.log(`Event: ${event.type} at ${event.timestamp}`);
+};
+
+// ✅ 通用处理器可以处理 ClickEvent（参数逆变）
+addListener<ClickEvent>("click", generalHandler as EventListener<ClickEvent>);
+
+// 专用处理器
+const clickHandler: EventListener<ClickEvent> = (event) => {
+  console.log(`Click at (${event.x}, ${event.y})`);
+};
+
+addListener<ClickEvent>("click", clickHandler);
+```
+
+## 🎯 结构化类型 vs 名义类型
+
+### 结构化类型（Structural Typing）
+
+TypeScript 采用结构化类型系统：两个类型是否兼容，取决于它们的 **结构（属性和方法）**，而非名称或声明位置。
+
+```ts
+interface Point2D {
+  x: number;
+  y: number;
+}
+
+interface Vector2D {
+  x: number;
+  y: number;
+}
+
+// Point2D 和 Vector2D 结构相同，所以互相兼容
+const point: Point2D = { x: 1, y: 2 };
+const vector: Vector2D = point; // ✅ 结构兼容
+
+function printCoords(coord: Point2D): void {
+  console.log(`(${coord.x}, ${coord.y})`);
+}
+
+printCoords(vector); // ✅ Vector2D 的结构满足 Point2D 的要求
+
+// 即使没有显式声明类型关系，只要结构匹配就兼容
+class Pixel {
+  constructor(
+    public x: number,
+    public y: number,
+    public color: string
+  ) {}
+}
+
+const pixel = new Pixel(10, 20, "red");
+printCoords(pixel); // ✅ Pixel 有 x 和 y，结构满足 Point2D
+```
+
+### 名义类型（Nominal Typing）
+
+在 Java、C#、Rust 等语言中，类型兼容性由名称决定：即使两个类型结构完全相同，如果名称不同就不兼容。
+
+TypeScript 原生不支持名义类型，但可以通过品牌类型（Branded Types）模拟：
+
+```ts
+// 使用品牌类型模拟名义类型
+type Brand<T, B extends string> = T & { readonly __brand: B };
+
+type USD = Brand<number, "USD">;
+type EUR = Brand<number, "EUR">;
+type Meters = Brand<number, "Meters">;
+type Kilometers = Brand<number, "Kilometers">;
+
+function usd(amount: number): USD {
+  return amount as USD;
+}
+
+function eur(amount: number): EUR {
+  return amount as EUR;
+}
+
+function meters(value: number): Meters {
+  return value as Meters;
+}
+
+function kilometers(value: number): Kilometers {
+  return value as Kilometers;
+}
+
+function addUSD(a: USD, b: USD): USD {
+  return (a + b) as USD;
+}
+
+function convertMetersToKilometers(m: Meters): Kilometers {
+  return (m / 1000) as Kilometers;
+}
+
+const price1 = usd(10);
+const price2 = usd(20);
+const total = addUSD(price1, price2); // ✅
+
+const euroPrice = eur(15);
+// addUSD(price1, euroPrice); // ❌ 类型错误：EUR 不能赋值给 USD
+
+const distance = meters(5000);
+const km = convertMetersToKilometers(distance); // ✅
+
+// convertMetersToKilometers(kilometers(5)); // ❌ 类型错误：Kilometers 不能赋值给 Meters
+console.log(`Total: ${total}, Distance: ${km}km`);
+```
+
+### 结构化类型的优势与陷阱
+
+```ts
+// 优势：鸭子类型让代码更灵活
+interface Printable {
+  toString(): string;
+}
+
+function print(item: Printable): void {
+  console.log(item.toString());
+}
+
+// 所有有 toString 的对象都可以传入，无需显式 implements
+print("hello"); // ✅
+print(42); // ✅
+print({ toString: () => "custom object" }); // ✅
+
+// 陷阱：多余属性检查只在对象字面量上生效
+interface Config {
+  host: string;
+  port: number;
+}
+
+// ❌ 对象字面量有多余属性检查
+// const config1: Config = { host: "localhost", port: 3000, debug: true };
+
+// ✅ 通过变量赋值绕过多余属性检查
+const rawConfig = { host: "localhost", port: 3000, debug: true };
+const config2: Config = rawConfig; // 不报错！
+
+// ✅ 使用 satisfies 既检查结构又保留字面量类型
+const config3 = {
+  host: "localhost",
+  port: 3000,
+  // debug: true, // ❌ 如果 uncomment，satisfies 会报错
+} satisfies Config;
+
+console.log(`${config2.host}:${config2.port}`);
+console.log(`${config3.host}:${config3.port}`);
+```
+
+### 用 unique symbol 实现更强的名义类型
+
+```ts
+// 使用 unique symbol 作为品牌标记（比字符串品牌更安全）
+declare const UserIdBrand: unique symbol;
+declare const OrderIdBrand: unique symbol;
+
+type UserId = number & { readonly [UserIdBrand]: typeof UserIdBrand };
+type OrderId = number & { readonly [OrderIdBrand]: typeof OrderIdBrand };
+
+function createUserId(id: number): UserId {
+  return id as UserId;
+}
+
+function createOrderId(id: number): OrderId {
+  return id as OrderId;
+}
+
+function fetchUser(id: UserId): void {
+  console.log(`Fetching user with ID: ${id}`);
+}
+
+function fetchOrder(id: OrderId): void {
+  console.log(`Fetching order with ID: ${id}`);
+}
+
+const userId = createUserId(1);
+const orderId = createOrderId(1);
+
+fetchUser(userId); // ✅
+fetchOrder(orderId); // ✅
+
+// fetchUser(orderId); // ❌ 类型错误
+// fetchOrder(userId); // ❌ 类型错误
+// fetchUser(1);       // ❌ 类型错误：number 不能赋值给 UserId
+```
+
+## 🎯 类型可靠性（Soundness）
+
+### 什么是类型可靠性
+
+一个类型系统是**可靠的（Sound）**，意味着：如果类型检查器说一个表达式的类型是 `T`，那么在运行时它的值一定是 `T` 类型的。换句话说，可靠的类型系统 **不会遗漏任何类型错误**。
+
+TypeScript 的设计哲学是：**实用性优先于理论上的完美**。它有意在某些场景中牺牲可靠性，换取更好的开发体验。
+
+### TypeScript 中的不可靠场景
+
+```ts
+// 1. 数组的协变赋值（不安全）
+interface Animal {
+  name: string;
+}
+
+interface Cat extends Animal {
+  meow(): void;
+}
+
+const cats: Cat[] = [
+  { name: "Whiskers", meow() { console.log("Meow!"); } },
+];
+
+// TypeScript 允许这种赋值（协变），但可能导致运行时问题
+const animals: Animal[] = cats;
+animals.push({ name: "Fido" }); // 运行时：向 cats 数组添加了一个不是 Cat 的对象
+// cats[1].meow(); // 运行时错误：cats[1].meow is not a function
+
+// 2. 类型断言（绕过类型检查）
+const value: unknown = "hello";
+const num = value as number; // TypeScript 允许，但运行时 num 是字符串
+console.log(typeof num); // "string"，不是 "number"
+
+// 3. any 类型（完全关闭类型检查）
+function processData(data: any): string {
+  return data.name.toUpperCase(); // 没有任何类型检查
+}
+
+// processData(42); // 运行时错误，但编译时不报错
+
+// 4. 对象索引访问
+interface StringMap {
+  [key: string]: string;
+}
+
+const map: StringMap = { hello: "world" };
+const missing: string = map["nonexistent"]; // TypeScript 认为类型是 string
+console.log(missing); // undefined，不是 string！
+
+// 推荐开启 noUncheckedIndexedAccess 来缓解此问题
+```
+
+### TypeScript 如何缓解不可靠性
+
+```ts
+// 1. 严格模式选项
+// tsconfig.json: "strict": true 会启用以下所有选项
+// - strictNullChecks: null 和 undefined 必须显式处理
+// - strictFunctionTypes: 函数参数逆变检查
+// - noImplicitAny: 禁止隐式 any
+// - strictPropertyInitialization: 类属性必须在构造函数中初始化
+
+// 2. noUncheckedIndexedAccess：索引访问返回 T | undefined
+// 开启后：
+// const map: Record<string, string> = { a: "hello" };
+// const val = map["b"]; // 类型是 string | undefined，必须检查
+
+// 3. exactOptionalPropertyTypes：区分 undefined 和缺失属性
+interface FormData {
+  name: string;
+  nickname?: string; // 可选：允许缺失，但不允许显式设为 undefined
+}
+
+// 开启 exactOptionalPropertyTypes 后：
+// const form1: FormData = { name: "Alice" }; // ✅
+// const form1: FormData = { name: "Alice", nickname: undefined }; // ❌
+
+// 4. 穷尽性检查
+type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "rectangle"; width: number; height: number }
+  | { kind: "triangle"; base: number; height: number };
+
+function calculateArea(shape: Shape): number {
+  switch (shape.kind) {
+    case "circle":
+      return Math.PI * shape.radius ** 2;
+    case "rectangle":
+      return shape.width * shape.height;
+    case "triangle":
+      return (shape.base * shape.height) / 2;
+    default: {
+      // 穷尽性检查：如果遗漏了某个分支，这里会编译报错
+      const exhaustiveCheck: never = shape;
+      throw new Error(`Unhandled shape: ${JSON.stringify(exhaustiveCheck)}`);
+    }
+  }
+}
+
+console.log(calculateArea({ kind: "circle", radius: 5 })); // 78.54
+console.log(calculateArea({ kind: "rectangle", width: 4, height: 6 })); // 24
+console.log(calculateArea({ kind: "triangle", base: 3, height: 8 })); // 12
+```
+
+### 推荐的安全实践
+
+```ts
+// 1. 用 unknown 替代 any
+function safeParseJSON(text: string): unknown {
+  return JSON.parse(text);
+}
+
+// 配合类型守卫使用
+function isUser(data: unknown): data is { name: string; age: number } {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "name" in data &&
+    typeof (data as Record<string, unknown>).name === "string" &&
+    "age" in data &&
+    typeof (data as Record<string, unknown>).age === "number"
+  );
+}
+
+const parsed = safeParseJSON('{"name":"Alice","age":30}');
+if (isUser(parsed)) {
+  console.log(`User: ${parsed.name}, Age: ${parsed.age}`); // 类型安全
+}
+
+// 2. 使用 Zod 等运行时校验库桥接编译时和运行时类型安全
+// import { z } from "zod";
+// const UserSchema = z.object({
+//   name: z.string(),
+//   age: z.number().int().positive(),
+// });
+// type User = z.infer<typeof UserSchema>;
+// const user = UserSchema.parse(parsed); // 运行时校验 + 类型推断
+
+// 3. 避免类型断言，优先使用类型收窄
+function getLength(value: string | number): number {
+  // ❌ 不推荐
+  // return (value as string).length;
+
+  // ✅ 推荐：类型收窄
+  if (typeof value === "string") {
+    return value.length;
+  }
+  return value.toString().length;
+}
+
+console.log(getLength("hello")); // 5
+console.log(getLength(42)); // 2
+```
+
+## 📝 实际应用示例
+
+### 综合示例：类型安全的状态机
+
+```ts
+// 利用子类型、穷尽性检查和品牌类型构建类型安全的状态机
+
+type Brand<T, B extends string> = T & { readonly __brand: B };
+type StateId = Brand<string, "StateId">;
+
+function stateId(id: string): StateId {
+  return id as StateId;
+}
+
+interface StateDefinition<TContext> {
+  onEnter?: (context: TContext) => void;
+  onExit?: (context: TContext) => void;
+}
+
+interface TransitionDefinition<TContext> {
+  from: StateId;
+  to: StateId;
+  guard?: (context: TContext) => boolean;
+  action?: (context: TContext) => void;
+}
+
+class StateMachine<TContext> {
+  private currentState: StateId;
+  private states: Map<StateId, StateDefinition<TContext>>;
+  private transitions: Map<string, TransitionDefinition<TContext>>;
+  private context: TContext;
+
+  constructor(
+    initialState: StateId,
+    context: TContext,
+    states: Map<StateId, StateDefinition<TContext>>,
+    transitions: TransitionDefinition<TContext>[]
+  ) {
+    this.currentState = initialState;
+    this.context = context;
+    this.states = states;
+    this.transitions = new Map();
+
+    for (const transition of transitions) {
+      const key = `${transition.from}->${transition.to}`;
+      this.transitions.set(key, transition);
+    }
+
+    // 触发初始状态的 onEnter
+    const initialDef = this.states.get(initialState);
+    initialDef?.onEnter?.(this.context);
+  }
+
+  getCurrentState(): StateId {
+    return this.currentState;
+  }
+
+  getContext(): Readonly<TContext> {
+    return this.context;
+  }
+
+  transition(targetState: StateId): boolean {
+    const key = `${this.currentState}->${targetState}`;
+    const transitionDef = this.transitions.get(key);
+
+    if (!transitionDef) {
+      console.warn(
+        `No transition defined: ${this.currentState} -> ${targetState}`
+      );
+      return false;
+    }
+
+    // 检查守卫条件
+    if (transitionDef.guard && !transitionDef.guard(this.context)) {
+      console.warn(`Guard blocked transition: ${key}`);
+      return false;
+    }
+
+    // 退出当前状态
+    const currentDef = this.states.get(this.currentState);
+    currentDef?.onExit?.(this.context);
+
+    // 执行转换动作
+    transitionDef.action?.(this.context);
+
+    // 进入新状态
+    this.currentState = targetState;
+    const newDef = this.states.get(targetState);
+    newDef?.onEnter?.(this.context);
+
+    return true;
+  }
+}
+
+// 定义订单状态机
+interface OrderContext {
+  orderId: string;
+  totalAmount: number;
+  paidAmount: number;
+  cancelReason: string;
+}
+
+const STATES = {
+  PENDING: stateId("pending"),
+  PAID: stateId("paid"),
+  SHIPPED: stateId("shipped"),
+  DELIVERED: stateId("delivered"),
+  CANCELLED: stateId("cancelled"),
+} as const;
+
+const orderStates = new Map<StateId, StateDefinition<OrderContext>>([
+  [STATES.PENDING, { onEnter: (ctx) => console.log(`订单 ${ctx.orderId} 已创建`) }],
+  [STATES.PAID, { onEnter: (ctx) => console.log(`订单 ${ctx.orderId} 已支付 ${ctx.paidAmount}`) }],
+  [STATES.SHIPPED, { onEnter: (ctx) => console.log(`订单 ${ctx.orderId} 已发货`) }],
+  [STATES.DELIVERED, { onEnter: (ctx) => console.log(`订单 ${ctx.orderId} 已送达`) }],
+  [STATES.CANCELLED, { onEnter: (ctx) => console.log(`订单 ${ctx.orderId} 已取消: ${ctx.cancelReason}`) }],
+]);
+
+const orderTransitions: TransitionDefinition<OrderContext>[] = [
+  {
+    from: STATES.PENDING,
+    to: STATES.PAID,
+    guard: (ctx) => ctx.paidAmount >= ctx.totalAmount,
+    action: (ctx) => console.log(`支付确认: ${ctx.paidAmount}`),
+  },
+  {
+    from: STATES.PAID,
+    to: STATES.SHIPPED,
+  },
+  {
+    from: STATES.SHIPPED,
+    to: STATES.DELIVERED,
+  },
+  {
+    from: STATES.PENDING,
+    to: STATES.CANCELLED,
+    action: (ctx) => { ctx.cancelReason = ctx.cancelReason || "用户取消"; },
+  },
+  {
+    from: STATES.PAID,
+    to: STATES.CANCELLED,
+    action: (ctx) => {
+      ctx.cancelReason = ctx.cancelReason || "退款取消";
+      console.log(`退款 ${ctx.paidAmount}`);
+    },
+  },
+];
+
+// 使用状态机
+const order = new StateMachine<OrderContext>(
+  STATES.PENDING,
+  { orderId: "ORD-001", totalAmount: 99.99, paidAmount: 0, cancelReason: "" },
+  orderStates,
+  orderTransitions
+);
+
+console.log(`当前状态: ${order.getCurrentState()}`);
+
+// 尝试未支付就进入 PAID 状态（守卫会拦截）
+order.getContext();
+const context = order.getContext() as OrderContext;
+context.paidAmount = 50; // 支付不足
+order.transition(STATES.PAID); // Guard blocked
+
+context.paidAmount = 99.99; // 足额支付
+order.transition(STATES.PAID); // ✅
+
+order.transition(STATES.SHIPPED); // ✅
+order.transition(STATES.DELIVERED); // ✅
+
+console.log(`最终状态: ${order.getCurrentState()}`);
+```
+
+## 🔗 相关概念
+
+- **条件类型与映射类型**：协变/逆变在条件类型推断中的应用
+- **泛型约束**：子类型关系在 `extends` 约束中的体现
+- **TypeScript 编译器原理**：类型检查器如何实现子类型判断
+- **与其他类型系统对比**：Rust、Haskell 等语言对可靠性的不同取舍
+
+## 📝 学习检查点
+
+- [ ] 理解子类型关系（`A <: B`）的含义
+- [ ] 掌握协变、逆变、不变的区别，并能在实际代码中识别
+- [ ] 理解 TypeScript 结构化类型系统的工作方式
+- [ ] 能使用品牌类型（Branded Types）模拟名义类型
+- [ ] 了解 TypeScript 在可靠性方面的有意取舍及其缓解措施
+
+## 🚀 下一步
+
+→ [与其他类型系统对比](./02-type-system-comparison)

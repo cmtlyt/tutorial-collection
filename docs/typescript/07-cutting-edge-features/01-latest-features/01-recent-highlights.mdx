@@ -5,8 +5,590 @@
 
 ## 📚 概念介绍
 
-本节将介绍近期版本亮点的核心概念和实践方法。
+TypeScript 近几个大版本（4.9 ~ 5.8）引入了一系列强力特性，在类型安全性、开发体验和运行时资源管理等维度都有显著改善。本节将逐一介绍以下五大亮点：
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+1. **satisfies 操作符** —— 在不丢失推断类型的前提下校验值是否匹配某类型
+2. **const 类型参数** —— 让泛型推断自动保留字面量类型
+3. **using 声明与显式资源管理** —— 基于 TC39 Explicit Resource Management 提案的自动清理机制
+4. **NoInfer 工具类型** —— 阻止 TypeScript 在特定位置推断类型
+5. **装饰器（TC39 Stage 3）** —— 标准化装饰器语法
+
+## 🎯 satisfies 操作符
+
+### 问题场景
+
+在 TypeScript 中，我们经常面临一个两难选择：使用类型注解（`const x: Type = ...`）可以进行类型校验，但会丢失字面量推断；而直接赋值（`const x = ...`）保留推断，但无法校验是否满足某个约束。
+
+```js
+// 方式一：类型注解 —— 校验通过，但丢失了字面量信息
+/** @type {Record<string, string | number>} */
+const config1 = {
+  width: 100,
+  color: "red",
+};
+// config1.width 的类型是 string | number，而不是 100
+
+// 方式二：直接赋值 —— 保留字面量，但无法校验结构
+const config2 = {
+  width: 100,
+  color: "red",
+  typo: true, // 不会报错，无法发现拼写问题
+};
+```
+
+### satisfies 的解决方案
+
+`satisfies` 在 **不改变推断类型** 的前提下，验证表达式是否满足某个类型：
+
+```js
+type ColorConfig = Record<string, string | number>;
+
+const config = {
+  width: 100,
+  color: "red",
+} satisfies ColorConfig;
+
+// config.width 的类型是 100（保留了字面量类型）
+// config.color 的类型是 "red"（保留了字面量类型）
+
+// 如果添加了不符合约束的字段，编译时就会报错：
+const badConfig = {
+  width: 100,
+  color: true, // ❌ 错误：boolean 不能赋值给 string | number
+} satisfies ColorConfig;
+```
+
+### 实际应用：路由配置
+
+```js
+/** @typedef {{ path: string; component: string; exact?: boolean }} Route */
+
+const routes = /** @type {const} */ ([
+  { path: "/", component: "Home", exact: true },
+  { path: "/about", component: "About" },
+  { path: "/users/:id", component: "UserDetail" },
+]) satisfies readonly Route[];
+
+// routes[0].path 的类型是 "/"，而不是 string
+// 可以用于构建类型安全的路由跳转
+
+/** @typedef {typeof routes[number]["path"]} RoutePath */
+// RoutePath = "/" | "/about" | "/users/:id"
+
+/**
+ * @param {RoutePath} path
+ */
+function navigate(path) {
+  console.log(`Navigating to ${path}`);
+}
+
+navigate("/"); // ✅
+navigate("/about"); // ✅
+// navigate("/nonexistent"); // ❌ 编译错误
+```
+
+## 🎯 const 类型参数
+
+### 问题场景
+
+在泛型函数中，TypeScript 默认会将传入的字面量值"拓宽"为基本类型：
+
+```js
+/**
+ * @template T
+ * @param {T} value
+ * @returns {T}
+ */
+function identity(value) {
+  return value;
+}
+
+const result = identity("hello");
+// result 的类型是 string，而不是 "hello"
+
+const arr = identity([1, 2, 3]);
+// arr 的类型是 number[]，而不是 [1, 2, 3]
+```
+
+### const 类型参数的解决方案
+
+通过在类型参数前添加 `const` 修饰符，TypeScript 会自动将推断结果保留为字面量类型（等价于在调用处使用 `as const`）：
+
+```ts
+function createRoute<const T extends readonly string[]>(paths: T): T {
+  return paths;
+}
+
+const routes = createRoute(["/home", "/about", "/contact"]);
+// routes 的类型是 readonly ["/home", "/about", "/contact"]
+// 而不是 string[]
+```
+
+### 实际应用：类型安全的事件系统
+
+```ts
+type EventHandler<T> = (payload: T) => void;
+
+function defineEvents<const T extends Record<string, unknown>>(
+  schema: T
+): {
+  on: <K extends keyof T>(event: K, handler: EventHandler<T[K]>) => void;
+  emit: <K extends keyof T>(event: K, payload: T[K]) => void;
+} {
+  const handlers = new Map<keyof T, Set<EventHandler<any>>>();
+
+  return {
+    on(event, handler) {
+      if (!handlers.has(event)) {
+        handlers.set(event, new Set());
+      }
+      handlers.get(event)!.add(handler);
+    },
+    emit(event, payload) {
+      handlers.get(event)?.forEach((handler) => handler(payload));
+    },
+  };
+}
+
+const bus = defineEvents({
+  login: { userId: "" as string, timestamp: 0 as number },
+  logout: { reason: "" as string },
+  error: { code: 0 as number, message: "" as string },
+});
+
+bus.on("login", (payload) => {
+  // payload 类型自动推断为 { userId: string; timestamp: number }
+  console.log(payload.userId);
+});
+
+bus.emit("login", { userId: "abc", timestamp: Date.now() }); // ✅
+// bus.emit("login", { userId: 123 }); // ❌ 类型不匹配
+```
+
+## 🎯 using 声明与显式资源管理
+
+### 概念说明
+
+`using` 声明基于 TC39 的 **Explicit Resource Management** 提案（Stage 3），提供了类似 C# `using`、Python `with`、Java `try-with-resources` 的自动资源清理能力。当变量离开作用域时，会自动调用 `Symbol.dispose`（同步）或 `Symbol.asyncDispose`（异步）方法。
+
+> **注意**：`using` 需要 TypeScript 5.2+ 以及运行时或 polyfill 对 `Symbol.dispose` 的支持。
+
+### 基本用法
+
+```ts
+class FileHandle {
+  private name: string;
+
+  constructor(name: string) {
+    this.name = name;
+    console.log(`打开文件: ${name}`);
+  }
+
+  read(): string {
+    return `${this.name} 的内容`;
+  }
+
+  [Symbol.dispose](): void {
+    console.log(`关闭文件: ${this.name}`);
+  }
+}
+
+function readConfig() {
+  using file = new FileHandle("config.json");
+  const content = file.read();
+  console.log(content);
+  // 函数结束时自动调用 file[Symbol.dispose]()
+}
+
+readConfig();
+// 输出：
+// 打开文件: config.json
+// config.json 的内容
+// 关闭文件: config.json
+```
+
+### 异步资源管理
+
+```ts
+class DatabaseConnection {
+  private url: string;
+
+  constructor(url: string) {
+    this.url = url;
+  }
+
+  static async connect(url: string): Promise<DatabaseConnection> {
+    const connection = new DatabaseConnection(url);
+    console.log(`已连接: ${url}`);
+    return connection;
+  }
+
+  async query(sql: string): Promise<string[]> {
+    console.log(`执行查询: ${sql}`);
+    return ["row1", "row2"];
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    console.log(`断开连接: ${this.url}`);
+  }
+}
+
+async function fetchUsers() {
+  await using db = await DatabaseConnection.connect("postgres://localhost/mydb");
+  const users = await db.query("SELECT * FROM users");
+  console.log(users);
+  // 函数结束时自动调用 await db[Symbol.asyncDispose]()
+}
+
+fetchUsers();
+```
+
+### DisposableStack 组合模式
+
+```ts
+function createTestContext() {
+  const stack = new DisposableStack();
+
+  const mockServer = stack.use({
+    port: 3000,
+    [Symbol.dispose]() {
+      console.log("关闭 mock server");
+    },
+  });
+
+  const tempDir = stack.use({
+    path: "/tmp/test-abc",
+    [Symbol.dispose]() {
+      console.log("清理临时目录");
+    },
+  });
+
+  stack.defer(() => {
+    console.log("最终清理动作");
+  });
+
+  return { mockServer, tempDir, [Symbol.dispose]: () => stack.dispose() };
+}
+
+{
+  using ctx = createTestContext();
+  console.log(`Mock server on port: ${ctx.mockServer.port}`);
+  console.log(`Temp dir: ${ctx.tempDir.path}`);
+}
+// 离开块作用域后自动清理
+// 输出：
+// 最终清理动作
+// 清理临时目录
+// 关闭 mock server
+```
+
+## 🎯 NoInfer 工具类型
+
+### 问题场景
+
+当泛型函数有多个参数位置可以推断同一个类型参数时，TypeScript 会综合所有位置的信息。这有时会导致非预期的宽泛推断：
+
+```ts
+function createFSM<S extends string>(config: {
+  initial: S;
+  states: S[];
+}) {
+  return config;
+}
+
+// TypeScript 综合推断 S = "idle" | "loading" | "success" | "oops"
+// "oops" 也被纳入了推断，而我们希望 initial 只能从 states 中选
+const machine = createFSM({
+  initial: "oops", // 没有报错！
+  states: ["idle", "loading", "success"],
+});
+```
+
+### NoInfer 的解决方案
+
+`NoInfer<T>` 阻止 TypeScript 在被包裹的位置进行推断，强制类型参数只从其他位置推断：
+
+```ts
+function createFSM<S extends string>(config: {
+  initial: NoInfer<S>;
+  states: S[];
+}) {
+  return config;
+}
+
+const machine = createFSM({
+  initial: "idle", // ✅ 只能从 states 中选
+  states: ["idle", "loading", "success"],
+});
+
+const badMachine = createFSM({
+  initial: "oops", // ❌ 错误："oops" 不能赋值给 "idle" | "loading" | "success"
+  states: ["idle", "loading", "success"],
+});
+```
+
+### 实际应用：默认值约束
+
+```ts
+function createSelector<T, K extends keyof T>(
+  options: T[],
+  defaultKey: NoInfer<K>,
+  getKey: (item: T) => K
+): T {
+  const defaultItem = options.find((item) => getKey(item) === defaultKey);
+  if (!defaultItem) throw new Error(`Key not found: ${String(defaultKey)}`);
+  return defaultItem;
+}
+
+const users = [
+  { id: "u1", name: "Alice" },
+  { id: "u2", name: "Bob" },
+];
+
+const selected = createSelector(users, "u1", (user) => user.id); // ✅
+// createSelector(users, "u999", (user) => user.id); // ❌ "u999" 不在推断的联合类型中
+```
+
+## 🎯 装饰器（TC39 Stage 3）
+
+### 概念说明
+
+TypeScript 5.0 实现了 TC39 Stage 3 标准装饰器提案，无需开启 `experimentalDecorators` 即可使用。标准装饰器与旧版实验性装饰器的 API 不同，它基于一套全新的装饰器协议。
+
+### 类方法装饰器
+
+```ts
+function log(
+  originalMethod: (...args: any[]) => any,
+  context: ClassMethodDecoratorContext
+) {
+  const methodName = String(context.name);
+
+  return function (this: any, ...args: any[]) {
+    console.log(`调用 ${methodName}，参数:`, args);
+    const result = originalMethod.call(this, ...args);
+    console.log(`${methodName} 返回:`, result);
+    return result;
+  };
+}
+
+class Calculator {
+  @log
+  add(a: number, b: number): number {
+    return a + b;
+  }
+
+  @log
+  multiply(a: number, b: number): number {
+    return a * b;
+  }
+}
+
+const calc = new Calculator();
+calc.add(2, 3);
+// 调用 add，参数: [2, 3]
+// add 返回: 5
+
+calc.multiply(4, 5);
+// 调用 multiply，参数: [4, 5]
+// multiply 返回: 20
+```
+
+### 类装饰器
+
+```ts
+function sealed(
+  constructor: new (...args: any[]) => any,
+  context: ClassDecoratorContext
+) {
+  Object.seal(constructor);
+  Object.seal(constructor.prototype);
+}
+
+@sealed
+class AppConfig {
+  readonly apiUrl = "https://api.example.com";
+  readonly timeout = 5000;
+}
+```
+
+### 访问器装饰器
+
+```ts
+function clamp(min: number, max: number) {
+  return function <This, Value extends number>(
+    accessor: ClassAccessorDecoratorTarget<This, Value>,
+    context: ClassAccessorDecoratorContext<This, Value>
+  ): ClassAccessorDecoratorResult<This, Value> {
+    return {
+      set(value: Value) {
+        const clamped = Math.max(min, Math.min(max, value)) as Value;
+        accessor.set.call(this, clamped);
+      },
+      get() {
+        return accessor.get.call(this);
+      },
+    };
+  };
+}
+
+class Slider {
+  @clamp(0, 100)
+  accessor value: number = 50;
+}
+
+const slider = new Slider();
+console.log(slider.value); // 50
+
+slider.value = 150;
+console.log(slider.value); // 100（被钳制）
+
+slider.value = -10;
+console.log(slider.value); // 0（被钳制）
+```
+
+### 实际应用：自动绑定 + 缓存组合
+
+```ts
+function autobind(
+  originalMethod: (...args: any[]) => any,
+  context: ClassMethodDecoratorContext
+) {
+  context.addInitializer(function (this: any) {
+    this[context.name] = originalMethod.bind(this);
+  });
+  return originalMethod;
+}
+
+function memoize(
+  originalMethod: (...args: any[]) => any,
+  context: ClassMethodDecoratorContext
+) {
+  const cache = new Map<string, any>();
+
+  return function (this: any, ...args: any[]) {
+    const key = JSON.stringify(args);
+    if (cache.has(key)) {
+      return cache.get(key);
+    }
+    const result = originalMethod.call(this, ...args);
+    cache.set(key, result);
+    return result;
+  };
+}
+
+class MathService {
+  @autobind
+  @memoize
+  fibonacci(n: number): number {
+    if (n <= 1) return n;
+    return this.fibonacci(n - 1) + this.fibonacci(n - 2);
+  }
+}
+
+const service = new MathService();
+const handler = service.fibonacci; // 已自动绑定，无需 .bind(service)
+console.log(handler(10)); // 55
+console.log(handler(10)); // 55（来自缓存）
+```
+
+## 📝 实际应用示例
+
+### 综合示例：类型安全的配置管理器
+
+```ts
+function validate(
+  originalMethod: (...args: any[]) => any,
+  context: ClassMethodDecoratorContext
+) {
+  return function (this: any, ...args: any[]) {
+    console.log(`校验中: ${String(context.name)}`);
+    return originalMethod.call(this, ...args);
+  };
+}
+
+type Theme = "light" | "dark" | "system";
+type Language = "en" | "zh" | "ja";
+
+interface AppSettings {
+  theme: Theme;
+  language: Language;
+  fontSize: number;
+  notifications: boolean;
+}
+
+const defaultSettings = {
+  theme: "system",
+  language: "en",
+  fontSize: 14,
+  notifications: true,
+} satisfies AppSettings;
+
+// defaultSettings.theme 的类型是 "system"（字面量），而非 Theme
+
+function createSettingsManager<const T extends AppSettings>(defaults: T) {
+  type SettingKey = keyof T;
+
+  class SettingsManager {
+    private settings: T;
+
+    constructor() {
+      this.settings = { ...defaults };
+    }
+
+    @validate
+    get<K extends SettingKey>(key: K): T[K] {
+      return this.settings[key];
+    }
+
+    @validate
+    set<K extends SettingKey>(key: K, value: NoInfer<T[K]>): void {
+      this.settings[key] = value;
+    }
+
+    toJSON(): T {
+      return { ...this.settings };
+    }
+
+    [Symbol.dispose](): void {
+      console.log("保存设置到磁盘...");
+      console.log(JSON.stringify(this.settings, null, 2));
+    }
+  }
+
+  return new SettingsManager();
+}
+
+function applySettings() {
+  using manager = createSettingsManager(defaultSettings);
+
+  const currentTheme = manager.get("theme"); // 类型是 "system"
+  console.log(`当前主题: ${currentTheme}`);
+
+  manager.set("fontSize", 16);
+  manager.set("language", "zh");
+
+  console.log(manager.toJSON());
+  // 作用域结束后自动保存
+}
+
+applySettings();
+```
+
+## 🔗 相关概念
+
+- **TypeScript 配置新特性**：`verbatimModuleSyntax`、`moduleResolution: bundler` 等新编译器选项
+- **类型体操**：`satisfies` 和 `NoInfer` 与条件类型、映射类型的组合使用
+- **TC39 提案流程**：了解 JavaScript 新特性从提案到标准的演进过程
+
+## 📝 学习检查点
+
+- [ ] 理解 `satisfies` 操作符与类型注解的区别
+- [ ] 掌握 `const` 类型参数在泛型推断中的作用
+- [ ] 了解 `using` 声明的同步和异步资源管理方式
+- [ ] 理解 `NoInfer` 阻止推断的使用场景
+- [ ] 掌握标准装饰器（Stage 3）的方法装饰器、类装饰器和访问器装饰器用法
+
+## 🚀 下一步
+
+→ [配置新特性](./02-config-new-features)

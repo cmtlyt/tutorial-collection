@@ -5,8 +5,785 @@
 
 ## 📚 概念介绍
 
-本节将介绍与其他类型系统对比的核心概念和实践方法。
+了解其他语言的类型系统，有助于理解 TypeScript 类型系统的设计取舍，并从中借鉴先进理念。本节将 TypeScript 分别与三个代表性类型系统进行对比：
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+1. **Rust 类型系统** —— 所有权、生命周期与零成本抽象
+2. **Haskell 类型系统** —— 纯函数式语言的类型推断与高阶类型
+3. **Flow vs TypeScript** —— 两个 JavaScript 类型检查器的路线之争
+
+## 🎯 Rust 类型系统
+
+### 核心差异概览
+
+| 特性 | TypeScript | Rust |
+|------|-----------|------|
+| 类型检查时机 | 编译时（可选） | 编译时（强制） |
+| 类型可靠性 | 不完全可靠（有意的不可靠） | 完全可靠（Sound） |
+| 类型兼容策略 | 结构化类型 | 名义类型（通过 trait） |
+| 空值处理 | `null` / `undefined` + `strictNullChecks` | `Option<T>`（无 null） |
+| 错误处理 | 异常（try/catch） | `Result<T, E>`（无异常） |
+| 内存管理 | 垃圾回收 | 所有权 + 借用检查器 |
+| 泛型 | 类型擦除 | 单态化（零成本） |
+
+### 空值处理对比
+
+```ts
+// === TypeScript：null / undefined ===
+function findUser(id: string): { name: string; email: string } | null {
+  const users: Record<string, { name: string; email: string }> = {
+    u1: { name: "Alice", email: "alice@example.com" },
+  };
+  return users[id] ?? null;
+}
+
+const user = findUser("u1");
+// 需要手动检查 null
+if (user !== null) {
+  console.log(user.name); // 类型收窄后可以安全访问
+}
+
+// 可选链简化
+console.log(findUser("u2")?.name ?? "未找到");
+```
+
+```rust
+// === Rust 等价代码（伪代码，用于对比理解） ===
+// fn find_user(id: &str) -> Option<User> {
+//     let users = HashMap::from([
+//         ("u1", User { name: "Alice".into(), email: "alice@example.com".into() }),
+//     ]);
+//     users.get(id).cloned()
+// }
+//
+// match find_user("u1") {
+//     Some(user) => println!("{}", user.name),  // 编译器保证 user 一定存在
+//     None => println!("未找到"),
+// }
+//
+// // 或者用 if let
+// if let Some(user) = find_user("u1") {
+//     println!("{}", user.name);
+// }
+```
+
+### TypeScript 中模拟 Rust 的 Result 类型
+
+```ts
+// 在 TypeScript 中实现 Rust 风格的 Result 类型
+
+type Result<T, E> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: E };
+
+function ok<T>(value: T): Result<T, never> {
+  return { ok: true, value };
+}
+
+function err<E>(error: E): Result<never, E> {
+  return { ok: false, error };
+}
+
+// 使用 Result 替代 try/catch
+function parseJSON(text: string): Result<unknown, Error> {
+  try {
+    return ok(JSON.parse(text));
+  } catch (error) {
+    return err(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+function parseInt(text: string): Result<number, string> {
+  const num = Number(text);
+  if (Number.isNaN(num)) {
+    return err(`"${text}" 不是有效的数字`);
+  }
+  if (!Number.isInteger(num)) {
+    return err(`"${text}" 不是整数`);
+  }
+  return ok(num);
+}
+
+// 链式操作：模拟 Rust 的 and_then / map
+function mapResult<T, U, E>(
+  result: Result<T, E>,
+  fn: (value: T) => U
+): Result<U, E> {
+  if (result.ok) {
+    return ok(fn(result.value));
+  }
+  return result;
+}
+
+function flatMapResult<T, U, E>(
+  result: Result<T, E>,
+  fn: (value: T) => Result<U, E>
+): Result<U, E> {
+  if (result.ok) {
+    return fn(result.value);
+  }
+  return result;
+}
+
+// 使用示例
+const jsonResult = parseJSON('{"age": "25"}');
+
+if (jsonResult.ok) {
+  const data = jsonResult.value as Record<string, string>;
+  const ageResult = parseInt(data.age);
+
+  if (ageResult.ok) {
+    console.log(`年龄: ${ageResult.value}`); // 25
+  } else {
+    console.error(`解析年龄失败: ${ageResult.error}`);
+  }
+} else {
+  console.error(`JSON 解析失败: ${jsonResult.error.message}`);
+}
+
+// 链式用法
+const result = flatMapResult(
+  parseJSON('{"count": "42"}'),
+  (data) => parseInt((data as Record<string, string>).count)
+);
+
+const doubled = mapResult(result, (n) => n * 2);
+console.log(doubled.ok ? `结果: ${doubled.value}` : `错误: ${doubled.error}`);
+// 结果: 84
+```
+
+### Rust 的 trait 与 TypeScript 的 interface
+
+```ts
+// Rust 用 trait 定义行为，TypeScript 用 interface 定义结构
+// 关键区别：Rust 的 trait 需要显式 impl，TypeScript 的 interface 是结构化匹配
+
+// TypeScript：结构化类型——不需要声明"实现了某个接口"
+interface Displayable {
+  display(): string;
+}
+
+function showItem(item: Displayable): void {
+  console.log(item.display());
+}
+
+// 任何有 display() 方法的对象都可以使用，无需 implements
+const point = {
+  x: 10,
+  y: 20,
+  display(): string {
+    return `Point(${this.x}, ${this.y})`;
+  },
+};
+
+showItem(point); // ✅ 结构匹配即可
+
+// Rust 等价（需要显式 impl）：
+// trait Display {
+//     fn display(&self) -> String;
+// }
+//
+// struct Point { x: i32, y: i32 }
+//
+// impl Display for Point {  // 必须显式实现
+//     fn display(&self) -> String {
+//         format!("Point({}, {})", self.x, self.y)
+//     }
+// }
+
+// TypeScript 中也可以用 class + implements 模拟名义类型的感觉
+class Circle implements Displayable {
+  constructor(private radius: number) {}
+
+  display(): string {
+    return `Circle(r=${this.radius})`;
+  }
+}
+
+showItem(new Circle(5)); // ✅
+```
+
+## 🎯 Haskell 类型系统
+
+### 核心差异概览
+
+| 特性 | TypeScript | Haskell |
+|------|-----------|---------|
+| 类型推断范围 | 局部推断（函数签名通常需要注解） | 全局推断（Hindley-Milner） |
+| 副作用 | 不受类型系统约束 | 通过 IO Monad 跟踪 |
+| 高阶类型 | 不支持 | 支持（Kind system） |
+| 类型类 | 无（用泛型约束模拟） | 原生支持（Type Class） |
+| 代数数据类型 | 联合类型 + 接口模拟 | 原生 ADT |
+| 惰性求值 | 否（严格求值） | 默认惰性求值 |
+
+### Haskell 的类型类 vs TypeScript 的泛型约束
+
+```ts
+// Haskell 的类型类 (Type Class)：
+// class Eq a where
+//   (==) :: a -> a -> Bool
+//
+// class Eq a => Ord a where
+//   compare :: a -> a -> Ordering
+
+// TypeScript 用 interface + 泛型约束模拟
+interface Eq<T> {
+  equals(other: T): boolean;
+}
+
+interface Ord<T> extends Eq<T> {
+  compareTo(other: T): -1 | 0 | 1;
+}
+
+class Money implements Ord<Money> {
+  constructor(
+    private amount: number,
+    private currency: string
+  ) {}
+
+  equals(other: Money): boolean {
+    return this.amount === other.amount && this.currency === other.currency;
+  }
+
+  compareTo(other: Money): -1 | 0 | 1 {
+    if (this.currency !== other.currency) {
+      throw new Error("Cannot compare different currencies");
+    }
+    if (this.amount < other.amount) return -1;
+    if (this.amount > other.amount) return 1;
+    return 0;
+  }
+
+  toString(): string {
+    return `${this.currency} ${this.amount.toFixed(2)}`;
+  }
+}
+
+// 泛型函数约束：要求参数实现 Ord 接口
+function maximum<T extends Ord<T>>(items: T[]): T {
+  if (items.length === 0) {
+    throw new Error("Empty array");
+  }
+
+  let max = items[0];
+  for (let i = 1; i < items.length; i++) {
+    if (items[i].compareTo(max) > 0) {
+      max = items[i];
+    }
+  }
+  return max;
+}
+
+function sorted<T extends Ord<T>>(items: T[]): T[] {
+  return [...items].sort((a, b) => a.compareTo(b));
+}
+
+const prices = [
+  new Money(29.99, "USD"),
+  new Money(9.99, "USD"),
+  new Money(49.99, "USD"),
+  new Money(19.99, "USD"),
+];
+
+console.log(`最贵: ${maximum(prices)}`); // USD 49.99
+console.log(`排序: ${sorted(prices).map(String).join(", ")}`);
+// USD 9.99, USD 19.99, USD 29.99, USD 49.99
+```
+
+### Haskell 的 Maybe/Either vs TypeScript 的联合类型
+
+```ts
+// Haskell:
+// data Maybe a = Nothing | Just a
+// data Either a b = Left a | Right b
+
+// TypeScript 用联合类型 + 可辨识联合模拟
+
+// Maybe 等价物
+type Maybe<T> =
+  | { readonly tag: "nothing" }
+  | { readonly tag: "just"; readonly value: T };
+
+const nothing: Maybe<never> = { tag: "nothing" };
+
+function just<T>(value: T): Maybe<T> {
+  return { tag: "just", value };
+}
+
+function mapMaybe<T, U>(maybe: Maybe<T>, fn: (value: T) => U): Maybe<U> {
+  if (maybe.tag === "just") {
+    return just(fn(maybe.value));
+  }
+  return nothing;
+}
+
+function flatMapMaybe<T, U>(
+  maybe: Maybe<T>,
+  fn: (value: T) => Maybe<U>
+): Maybe<U> {
+  if (maybe.tag === "just") {
+    return fn(maybe.value);
+  }
+  return nothing;
+}
+
+function withDefault<T>(maybe: Maybe<T>, defaultValue: T): T {
+  if (maybe.tag === "just") {
+    return maybe.value;
+  }
+  return defaultValue;
+}
+
+// 使用示例：安全的属性访问链
+interface UserProfile {
+  name: string;
+  address?: {
+    city: string;
+    zip?: string;
+  };
+}
+
+function getCity(user: UserProfile): Maybe<string> {
+  if (user.address) {
+    return just(user.address.city);
+  }
+  return nothing;
+}
+
+function getZip(user: UserProfile): Maybe<string> {
+  if (user.address?.zip) {
+    return just(user.address.zip);
+  }
+  return nothing;
+}
+
+const userWithAddress: UserProfile = {
+  name: "Alice",
+  address: { city: "Beijing", zip: "100000" },
+};
+
+const userWithoutAddress: UserProfile = {
+  name: "Bob",
+};
+
+const city1 = getCity(userWithAddress);
+console.log(`城市: ${withDefault(city1, "未知")}`); // 城市: Beijing
+
+const city2 = getCity(userWithoutAddress);
+console.log(`城市: ${withDefault(city2, "未知")}`); // 城市: 未知
+
+// 链式操作
+const upperCity = mapMaybe(getCity(userWithAddress), (c) => c.toUpperCase());
+console.log(`大写城市: ${withDefault(upperCity, "N/A")}`); // 大写城市: BEIJING
+```
+
+### 高阶类型（Higher-Kinded Types）的缺失
+
+```ts
+// Haskell 原生支持高阶类型：
+// class Functor f where
+//   fmap :: (a -> b) -> f a -> f b
+//
+// 这里 f 是一个类型构造器（如 Maybe、List），不是具体类型
+
+// TypeScript 不支持高阶类型，但可以用模式匹配技巧模拟
+
+// 方案一：用接口映射模拟 HKT
+interface TypeMap<T> {
+  array: T[];
+  maybe: Maybe<T>;
+  promise: Promise<T>;
+}
+
+type TypeName = keyof TypeMap<unknown>;
+
+// 模拟 Functor：为每种"容器"定义 map 操作
+interface Functor<F extends TypeName> {
+  map<A, B>(fa: TypeMap<A>[F], fn: (a: A) => B): TypeMap<B>[F];
+}
+
+const arrayFunctor: Functor<"array"> = {
+  map<A, B>(fa: A[], fn: (a: A) => B): B[] {
+    return fa.map(fn);
+  },
+};
+
+const maybeFunctor: Functor<"maybe"> = {
+  map<A, B>(fa: Maybe<A>, fn: (a: A) => B): Maybe<B> {
+    return mapMaybe(fa, fn);
+  },
+};
+
+// 使用
+const numbers = [1, 2, 3, 4, 5];
+const doubled = arrayFunctor.map(numbers, (n) => n * 2);
+console.log("doubled:", doubled); // [2, 4, 6, 8, 10]
+
+const maybeNum = just(42);
+const maybeStr = maybeFunctor.map(maybeNum, (n) => `value: ${n}`);
+console.log("maybe:", withDefault(maybeStr, "empty")); // value: 42
+```
+
+## 🎯 Flow vs TypeScript
+
+### 历史背景
+
+Flow 是 Facebook（Meta）于 2014 年推出的 JavaScript 静态类型检查器，与 TypeScript 几乎同时期出现。两者的设计目标相似——为 JavaScript 添加类型安全，但在技术路线和社区发展上走向了截然不同的方向。
+
+### 核心设计差异
+
+| 特性 | TypeScript | Flow |
+|------|-----------|------|
+| 定位 | 超集语言（需要编译） | 类型检查器（注解可擦除） |
+| 类型可靠性 | 实用性优先，有意的不可靠 | 更追求可靠性 |
+| 工具链 | 自带编译器（tsc） | 依赖 Babel 转译 |
+| IDE 支持 | 极好（VSCode 原生集成） | 较弱 |
+| 社区生态 | 极大（DefinitelyTyped） | 较小 |
+| 类型推断 | 局部推断 | 更激进的推断 |
+| 维护状态 | 活跃迭代 | Meta 内部使用为主 |
+
+### 语法差异对比
+
+```ts
+// === TypeScript 语法 ===
+
+// 可选参数
+function greet(name: string, greeting?: string): string {
+  return `${greeting ?? "Hello"}, ${name}!`;
+}
+
+// 只读数组
+function sum(numbers: readonly number[]): number {
+  return numbers.reduce((acc, n) => acc + n, 0);
+}
+
+// 类型断言
+const element = document.getElementById("app") as HTMLDivElement;
+
+// 枚举
+const Direction = {
+  Up: "UP",
+  Down: "DOWN",
+  Left: "LEFT",
+  Right: "RIGHT",
+} as const;
+type Direction = (typeof Direction)[keyof typeof Direction];
+
+// 类型守卫
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+console.log(greet("Alice")); // Hello, Alice!
+console.log(greet("Bob", "Hi")); // Hi, Bob!
+console.log(sum([1, 2, 3, 4, 5])); // 15
+
+if (isString("test")) {
+  console.log("Is string"); // Is string
+}
+```
+
+```js
+// === Flow 等价语法（仅供对比参考） ===
+
+// // @flow
+//
+// // 可选参数（使用 ? 在类型前）
+// function greet(name: string, greeting?: string): string {
+//   return `${greeting ?? "Hello"}, ${name}!`;
+// }
+//
+// // 只读数组（使用 $ReadOnlyArray）
+// function sum(numbers: $ReadOnlyArray<number>): number {
+//   return numbers.reduce((acc, n) => acc + n, 0);
+// }
+//
+// // 类型断言（使用括号语法）
+// const element = (document.getElementById("app"): HTMLDivElement);
+//
+// // 不透明类型（Opaque Types）—— Flow 的名义类型方案
+// opaque type UserID = string;
+// opaque type OrderID = string;
+//
+// // 精确对象类型（默认精确）
+// type User = {| name: string, age: number |};
+//
+// // 类型守卫（Flow 使用 %checks）
+// function isString(value: mixed): boolean %checks {
+//   return typeof value === "string";
+// }
+```
+
+### TypeScript 的优势
+
+```ts
+// 1. 声明文件生态（DefinitelyTyped）
+// 几乎所有流行的 npm 包都有 TypeScript 类型定义
+// npm install @types/lodash @types/express @types/react
+
+// 2. 强大的类型编程能力
+// TypeScript 的条件类型、映射类型等是图灵完备的
+
+type DeepReadonly<T> = T extends (infer U)[]
+  ? ReadonlyArray<DeepReadonly<U>>
+  : T extends object
+    ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+    : T;
+
+interface MutableConfig {
+  database: {
+    host: string;
+    port: number;
+    credentials: {
+      user: string;
+      password: string;
+    };
+  };
+  features: string[];
+}
+
+// DeepReadonly 递归地将所有属性变为只读
+type ImmutableConfig = DeepReadonly<MutableConfig>;
+
+const config: ImmutableConfig = {
+  database: {
+    host: "localhost",
+    port: 5432,
+    credentials: { user: "admin", password: "secret" },
+  },
+  features: ["auth", "logging"],
+};
+
+// config.database.port = 3306;  // ❌ 编译错误：只读属性
+// config.features.push("cache"); // ❌ 编译错误：只读数组
+
+console.log(`DB: ${config.database.host}:${config.database.port}`);
+console.log(`Features: ${config.features.join(", ")}`);
+
+// 3. 模板字面量类型
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+type ApiPath = `/api/${string}`;
+type Endpoint = `${HttpMethod} ${ApiPath}`;
+
+const endpoint1: Endpoint = "GET /api/users"; // ✅
+const endpoint2: Endpoint = "POST /api/orders"; // ✅
+// const endpoint3: Endpoint = "PATCH /api/users"; // ❌ PATCH 不在 HttpMethod 中
+
+function registerRoute(endpoint: Endpoint, handler: () => void): void {
+  console.log(`Registered: ${endpoint}`);
+  handler();
+}
+
+registerRoute("GET /api/users", () => console.log("Listing users"));
+registerRoute("DELETE /api/orders", () => console.log("Deleting orders"));
+```
+
+### Flow 曾经的优势（现已被 TypeScript 追赶或超越）
+
+```ts
+// Flow 早期有一些 TypeScript 后来才支持的特性：
+
+// 1. 精确对象类型 —— TypeScript 通过 satisfies + 多余属性检查实现类似效果
+interface ExactUser {
+  name: string;
+  age: number;
+}
+
+const user = {
+  name: "Alice",
+  age: 30,
+  // extra: true, // satisfies 会报错
+} satisfies ExactUser;
+
+// 2. 不透明类型 —— TypeScript 通过品牌类型模拟
+type UserId = string & { readonly __brand: "UserId" };
+type OrderId = string & { readonly __brand: "OrderId" };
+
+function createUserId(id: string): UserId {
+  return id as UserId;
+}
+
+function createOrderId(id: string): OrderId {
+  return id as OrderId;
+}
+
+function fetchUserById(id: UserId): void {
+  console.log(`Fetching user: ${id}`);
+}
+
+const userId = createUserId("u123");
+const orderId = createOrderId("o456");
+
+fetchUserById(userId); // ✅
+// fetchUserById(orderId); // ❌ 类型错误
+// fetchUserById("raw-string"); // ❌ 类型错误
+
+// 3. 更严格的类型推断 —— TypeScript 通过 strict 系列选项逐步追赶
+// TypeScript 现在有：strictNullChecks, strictFunctionTypes,
+// noUncheckedIndexedAccess, exactOptionalPropertyTypes 等
+```
+
+## 📝 实际应用示例
+
+### 综合示例：从 Rust/Haskell 借鉴的 TypeScript 模式
+
+```ts
+// 综合运用从其他类型系统借鉴的模式
+
+// Result 类型（借鉴 Rust）
+type Result<T, E> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: E };
+
+function ok<T>(value: T): Result<T, never> {
+  return { ok: true, value };
+}
+
+function err<E>(error: E): Result<never, E> {
+  return { ok: false, error };
+}
+
+// Pipeline 操作（借鉴 Haskell 的 Monad 链）
+class Pipeline<T, E> {
+  private constructor(private result: Result<T, E>) {}
+
+  static of<T>(value: T): Pipeline<T, never> {
+    return new Pipeline(ok(value));
+  }
+
+  static fromResult<T, E>(result: Result<T, E>): Pipeline<T, E> {
+    return new Pipeline(result);
+  }
+
+  map<U>(fn: (value: T) => U): Pipeline<U, E> {
+    if (this.result.ok) {
+      return new Pipeline(ok(fn(this.result.value)));
+    }
+    return new Pipeline(this.result as Result<never, E>);
+  }
+
+  flatMap<U, E2>(fn: (value: T) => Result<U, E2>): Pipeline<U, E | E2> {
+    if (this.result.ok) {
+      return new Pipeline(fn(this.result.value));
+    }
+    return new Pipeline(this.result as Result<never, E | E2>);
+  }
+
+  recover(fn: (error: E) => T): Pipeline<T, never> {
+    if (!this.result.ok) {
+      return new Pipeline(ok(fn(this.result.error)));
+    }
+    return new Pipeline(this.result as Result<T, never>);
+  }
+
+  unwrap(): T {
+    if (this.result.ok) {
+      return this.result.value;
+    }
+    throw new Error(`Unwrap failed: ${String(this.result.error)}`);
+  }
+
+  unwrapOr(defaultValue: T): T {
+    if (this.result.ok) {
+      return this.result.value;
+    }
+    return defaultValue;
+  }
+
+  toResult(): Result<T, E> {
+    return this.result;
+  }
+}
+
+// 品牌类型（借鉴 Rust/Haskell 的 newtype）
+type Email = string & { readonly __brand: "Email" };
+
+function validateEmail(input: string): Result<Email, string> {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(input)) {
+    return err(`无效的邮箱地址: ${input}`);
+  }
+  return ok(input as Email);
+}
+
+function normalizeEmail(email: Email): Email {
+  return email.toLowerCase().trim() as Email;
+}
+
+// 完整的数据处理管道
+interface RawUserInput {
+  email: string;
+  age: string;
+  name: string;
+}
+
+function parseAge(input: string): Result<number, string> {
+  const age = Number(input);
+  if (Number.isNaN(age)) return err(`无效的年龄: ${input}`);
+  if (age < 0 || age > 150) return err(`年龄超出范围: ${age}`);
+  if (!Number.isInteger(age)) return err(`年龄必须是整数: ${input}`);
+  return ok(age);
+}
+
+function processUserInput(raw: RawUserInput): Result<
+  { email: Email; age: number; name: string },
+  string
+> {
+  const emailResult = validateEmail(raw.email);
+  if (!emailResult.ok) return emailResult;
+
+  const ageResult = parseAge(raw.age);
+  if (!ageResult.ok) return ageResult;
+
+  const normalizedEmail = normalizeEmail(emailResult.value);
+
+  return ok({
+    email: normalizedEmail,
+    age: ageResult.value,
+    name: raw.name.trim(),
+  });
+}
+
+// 使用 Pipeline 风格
+const pipelineResult = Pipeline.of({ email: "Alice@Example.COM", age: "28", name: " Alice " })
+  .flatMap((raw) => processUserInput(raw))
+  .map((user) => ({
+    ...user,
+    displayName: `${user.name} (${user.age})`,
+  }))
+  .toResult();
+
+if (pipelineResult.ok) {
+  console.log(`用户: ${pipelineResult.value.displayName}`);
+  console.log(`邮箱: ${pipelineResult.value.email}`);
+} else {
+  console.error(`处理失败: ${pipelineResult.error}`);
+}
+
+// 错误恢复
+const recoveredName = Pipeline.of("invalid-email")
+  .flatMap((email) => validateEmail(email))
+  .map((email) => normalizeEmail(email))
+  .recover((error) => "fallback@example.com" as Email)
+  .unwrap();
+
+console.log(`恢复后的邮箱: ${recoveredName}`);
+```
+
+## 🔗 相关概念
+
+- **类型论基础**：协变/逆变、结构化类型等理论基础
+- **TypeScript 编译器原理**：TypeScript 类型检查器的内部实现
+- **条件类型与映射类型**：TypeScript 类型编程的核心能力
+- **品牌类型（Branded Types）**：在 TypeScript 中模拟名义类型
+
+## 📝 学习检查点
+
+- [ ] 理解 TypeScript（结构化类型）与 Rust（名义类型）的核心差异
+- [ ] 能够在 TypeScript 中实现 Rust 风格的 Result 类型
+- [ ] 了解 Haskell 类型类与 TypeScript 泛型约束的对应关系
+- [ ] 理解高阶类型（HKT）的概念及 TypeScript 中的模拟方式
+- [ ] 了解 Flow 与 TypeScript 的历史背景和设计取舍差异
+
+## 🚀 下一步
+
+→ [TypeScript 编译器原理](./03-compiler-internals)
