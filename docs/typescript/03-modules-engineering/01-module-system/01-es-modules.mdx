@@ -5,8 +5,401 @@
 
 ## 📚 概念介绍
 
-本节将介绍ES Modules的核心概念和实践方法。
+ES Modules（ESM）是 JavaScript 官方的模块化标准，也是 TypeScript 推荐的模块组织方式。通过 `import` 和 `export` 关键字，我们可以将代码拆分为独立的模块，每个模块拥有自己的作用域，避免全局命名污染。
 
-:::tip
-本文档正在编写中，敬请期待。
+TypeScript 在 ES Modules 的基础上增加了**类型导入/导出**的能力，让模块系统在类型层面也能清晰地表达依赖关系。
+
+## 🎯 命名导出与命名导入
+
+命名导出允许一个模块导出多个值，导入时需要使用对应的名称。
+
+### 基本用法
+
+```ts
+// math-utils.ts —— 命名导出
+export function add(a: number, b: number): number {
+  return a + b
+}
+
+export function multiply(a: number, b: number): number {
+  return a * b
+}
+
+export const PI = 3.141592653589793
+```
+
+```ts
+// app.ts —— 命名导入
+import { add, multiply, PI } from './math-utils'
+
+console.log(add(2, 3))        // 5
+console.log(multiply(4, 5))   // 20
+console.log(PI)                // 3.141592653589793
+```
+
+### 重命名导入与导出
+
+当导入的名称与当前模块冲突时，可以使用 `as` 关键字重命名：
+
+```ts
+// string-utils.ts
+function format(input: string): string {
+  return input.trim().toLowerCase()
+}
+
+// 导出时重命名
+export { format as formatString }
+```
+
+```ts
+// app.ts —— 导入时重命名
+import { formatString as normalize } from './string-utils'
+
+console.log(normalize('  Hello World  ')) // "hello world"
+```
+
+### 整体导入
+
+使用 `* as` 将模块的所有导出收集到一个命名空间对象中：
+
+```ts
+// app.ts
+import * as MathUtils from './math-utils'
+
+console.log(MathUtils.add(1, 2))    // 3
+console.log(MathUtils.PI)           // 3.141592653589793
+```
+
+## 🎯 默认导出与默认导入
+
+每个模块可以有一个默认导出，导入时可以使用任意名称。
+
+```ts
+// logger.ts —— 默认导出
+export default class Logger {
+  private prefix: string
+
+  constructor(prefix: string) {
+    this.prefix = prefix
+  }
+
+  log(message: string): void {
+    console.log(`[${this.prefix}] ${message}`)
+  }
+
+  error(message: string): void {
+    console.error(`[${this.prefix}] ERROR: ${message}`)
+  }
+}
+```
+
+```ts
+// app.ts —— 默认导入（名称可以任意）
+import AppLogger from './logger'
+
+const logger = new AppLogger('App')
+logger.log('Application started')   // [App] Application started
+logger.error('Something went wrong') // [App] ERROR: Something went wrong
+```
+
+### 默认导出与命名导出混合使用
+
+```ts
+// http-client.ts
+export default class HttpClient {
+  async get(url: string): Promise<Response> {
+    return fetch(url)
+  }
+}
+
+export interface RequestConfig {
+  timeout: number
+  headers: Record<string, string>
+}
+
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
+```
+
+```ts
+// app.ts —— 同时导入默认导出和命名导出
+import HttpClient, { RequestConfig, HttpMethod } from './http-client'
+
+const client = new HttpClient()
+const config: RequestConfig = { timeout: 5000, headers: {} }
+const method: HttpMethod = 'GET'
+```
+
+:::tip 实践建议
+社区中对默认导出存在争议。命名导出的优势在于**自动补全更友好**、**重构时更安全**。建议在大型项目中优先使用命名导出。
 :::
+
+## 🎯 类型导入与类型导出
+
+TypeScript 提供了 `import type` 和 `export type` 语法，明确标识仅用于类型检查的导入。这些导入在编译后会被完全擦除，不会产生任何运行时代码。
+
+### import type 语法
+
+```ts
+// types.ts
+export interface User {
+  id: number
+  name: string
+  email: string
+}
+
+export type Role = 'admin' | 'editor' | 'viewer'
+
+export function createUser(name: string, email: string): User {
+  return { id: Date.now(), name, email }
+}
+```
+
+```ts
+// user-service.ts —— 仅导入类型
+import type { User, Role } from './types'
+import { createUser } from './types'
+
+function assignRole(user: User, role: Role): void {
+  console.log(`Assigned ${role} to ${user.name}`)
+}
+
+const user = createUser('Alice', 'alice@example.com')
+assignRole(user, 'admin')
+```
+
+### 内联类型导入
+
+TypeScript 4.5+ 支持在普通 `import` 语句中使用 `type` 修饰符标记某些导入为纯类型：
+
+```ts
+// 混合导入：createUser 是值，User 和 Role 是类型
+import { createUser, type User, type Role } from './types'
+
+function greetUser(user: User): string {
+  return `Hello, ${user.name}!`
+}
+
+const newUser = createUser('Bob', 'bob@example.com')
+console.log(greetUser(newUser)) // "Hello, Bob!"
+```
+
+### export type 语法
+
+```ts
+// models.ts
+interface InternalConfig {
+  dbHost: string
+  dbPort: number
+  secretKey: string
+}
+
+// 仅导出类型，不导出值
+export type { InternalConfig }
+
+// 导出时重命名
+export type PublicConfig = Pick<InternalConfig, 'dbHost' | 'dbPort'>
+```
+
+:::warning 为什么要使用 import type？
+1. **编译产物更干净**：纯类型导入不会生成运行时 `require` 或 `import` 语句
+2. **避免循环依赖**：类型导入不参与运行时模块加载，不会触发循环依赖问题
+3. **意图更明确**：让其他开发者一眼看出哪些是类型依赖、哪些是值依赖
+4. **配合 `verbatimModuleSyntax`**：开启此选项后，TypeScript 要求所有纯类型导入必须使用 `import type`
+:::
+
+## 🎯 动态导入
+
+动态导入 `import()` 返回一个 Promise，允许在运行时按需加载模块。这是代码分割和懒加载的基础。
+
+### 基本用法
+
+```ts
+// heavy-module.ts
+export function processLargeDataset(data: number[]): number {
+  return data.reduce((sum, value) => sum + value, 0)
+}
+```
+
+```ts
+// app.ts —— 动态导入
+async function handleDataProcessing(data: number[]): Promise<void> {
+  // 仅在需要时才加载模块
+  const { processLargeDataset } = await import('./heavy-module')
+  const result = processLargeDataset(data)
+  console.log(`Processing result: ${result}`)
+}
+
+handleDataProcessing([1, 2, 3, 4, 5])
+```
+
+### 条件导入
+
+```ts
+// app.ts
+async function loadLocale(language: string): Promise<Record<string, string>> {
+  switch (language) {
+    case 'zh':
+      return (await import('./locales/zh')).default
+    case 'ja':
+      return (await import('./locales/ja')).default
+    default:
+      return (await import('./locales/en')).default
+  }
+}
+
+loadLocale('zh').then(messages => {
+  console.log(messages)
+})
+```
+
+### 动态导入的类型推断
+
+TypeScript 能够自动推断动态导入的模块类型：
+
+```ts
+// TypeScript 会自动推断 module 的类型
+async function demo(): Promise<void> {
+  const mathModule = await import('./math-utils')
+  //    ^? typeof import('./math-utils')
+
+  // mathModule.add、mathModule.multiply、mathModule.PI 都有正确的类型
+  console.log(mathModule.add(1, 2))
+}
+
+demo()
+```
+
+## 🎯 重新导出（Re-exports）
+
+重新导出用于创建模块的**聚合入口文件**（barrel file），简化外部导入路径。
+
+```ts
+// models/user.ts
+export interface User {
+  id: number
+  name: string
+}
+
+// models/product.ts
+export interface Product {
+  id: number
+  title: string
+  price: number
+}
+
+// models/order.ts
+export interface Order {
+  id: number
+  userId: number
+  products: Product[]
+}
+```
+
+```ts
+// models/index.ts —— 聚合导出
+export { User } from './user'
+export { Product } from './product'
+export { Order } from './order'
+
+// 也可以重新导出所有内容
+// export * from './user'
+
+// 重命名后导出
+// export { User as AppUser } from './user'
+```
+
+```ts
+// app.ts —— 从统一入口导入
+import { User, Product, Order } from './models'
+
+const user: User = { id: 1, name: 'Alice' }
+const product: Product = { id: 1, title: 'Book', price: 29.99 }
+const order: Order = { id: 1, userId: user.id, products: [product] }
+
+console.log(order)
+```
+
+:::caution barrel file 的权衡
+barrel file 虽然简化了导入路径，但在大型项目中可能导致**tree-shaking 失效**和**构建变慢**。如果你使用 Vite 或 Rspack 等现代构建工具，建议评估 barrel file 对打包体积的影响。
+:::
+
+## 📝 实际应用示例
+
+### 模块化的用户管理系统
+
+```ts
+// types/user.ts
+export interface User {
+  id: string
+  username: string
+  email: string
+  createdAt: Date
+}
+
+export type CreateUserInput = Omit<User, 'id' | 'createdAt'>
+```
+
+```ts
+// utils/id-generator.ts
+export function generateId(): string {
+  return Math.random().toString(36).substring(2, 11)
+}
+```
+
+```ts
+// services/user-service.ts
+import type { User, CreateUserInput } from '../types/user'
+import { generateId } from '../utils/id-generator'
+
+const users: Map<string, User> = new Map()
+
+export function createUser(input: CreateUserInput): User {
+  const user: User = {
+    id: generateId(),
+    username: input.username,
+    email: input.email,
+    createdAt: new Date(),
+  }
+  users.set(user.id, user)
+  return user
+}
+
+export function getUserById(id: string): User | undefined {
+  return users.get(id)
+}
+
+export function listUsers(): User[] {
+  return Array.from(users.values())
+}
+```
+
+```ts
+// main.ts
+import { createUser, getUserById, listUsers } from './services/user-service'
+
+const alice = createUser({ username: 'alice', email: 'alice@example.com' })
+const bob = createUser({ username: 'bob', email: 'bob@example.com' })
+
+console.log('Created:', alice)
+console.log('Found:', getUserById(alice.id))
+console.log('All users:', listUsers())
+```
+
+## 🔗 相关概念
+
+- **[模块解析](./02-module-resolution.mdx)**：了解 TypeScript 如何查找和定位模块文件
+- **[命名空间](./03-namespaces.mdx)**：TypeScript 的另一种代码组织方式（现已不推荐）
+- **[声明文件基础](../02-declaration-files/01-declaration-basics.mdx)**：为非 TypeScript 模块提供类型信息
+
+## 📚 学习检查点
+
+- [ ] 理解命名导出和默认导出的区别及使用场景
+- [ ] 能够使用 `import type` 进行纯类型导入
+- [ ] 理解内联类型导入（`import { type T }` ）的用法
+- [ ] 掌握动态导入 `import()` 的异步加载模式
+- [ ] 能够使用重新导出创建聚合入口文件
+- [ ] 理解 barrel file 的优缺点
+
+## 🚀 下一步
+
+→ [模块解析](./02-module-resolution.mdx)

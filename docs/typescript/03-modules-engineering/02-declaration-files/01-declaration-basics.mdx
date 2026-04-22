@@ -5,8 +5,341 @@
 
 ## 📚 概念介绍
 
-本节将介绍声明文件基础的核心概念和实践方法。
+声明文件（`.d.ts`）是 TypeScript 的核心机制之一，它为 JavaScript 代码提供**类型描述**，让 TypeScript 编译器能够理解那些没有用 TypeScript 编写的代码的类型信息。
 
-:::tip
-本文档正在编写中，敬请期待。
+你可以把声明文件理解为一份"类型说明书"：它不包含任何实现逻辑，只描述模块、函数、类、变量等的类型签名。这使得 TypeScript 能够与大量现有的 JavaScript 生态系统无缝协作。
+
+## 🎯 .d.ts 文件的作用
+
+### 声明文件的本质
+
+声明文件只包含类型信息，不包含实现代码：
+
+```ts
+// math.d.ts —— 声明文件
+export declare function add(a: number, b: number): number
+export declare function multiply(a: number, b: number): number
+export declare const PI: number
+```
+
+对比实际的实现文件：
+
+```ts
+// math.ts —— 实现文件
+export function add(a: number, b: number): number {
+  return a + b
+}
+
+export function multiply(a: number, b: number): number {
+  return a * b
+}
+
+export const PI = 3.141592653589793
+```
+
+声明文件告诉 TypeScript："这些函数和变量存在，它们的类型是这样的"，但不需要提供具体实现。
+
+### 何时需要声明文件
+
+1. **使用没有类型定义的 npm 包**：有些 JavaScript 包没有自带类型
+2. **引入通过 `<script>` 标签加载的全局库**：需要告诉 TypeScript 全局变量的类型
+3. **项目中混合使用 JavaScript 和 TypeScript**：为 JS 文件提供类型
+4. **发布 TypeScript 库**：生成 `.d.ts` 文件供消费者使用
+
+## 🎯 declare 关键字
+
+`declare` 关键字告诉 TypeScript 编译器："这个东西在运行时存在，但我不在这里定义它的实现"。
+
+### 声明变量
+
+```ts
+// env.d.ts
+declare const __DEV__: boolean
+declare const __VERSION__: string
+declare const __BUILD_TIME__: number
+```
+
+```ts
+// app.ts —— 可以直接使用声明的变量
+if (__DEV__) {
+  console.log(`Version: ${__VERSION__}, Built at: ${__BUILD_TIME__}`)
+}
+```
+
+### 声明函数
+
+```ts
+// analytics.d.ts
+declare function trackEvent(
+  category: string,
+  action: string,
+  label?: string,
+  value?: number
+): void
+
+declare function trackPageView(path: string): void
+```
+
+```ts
+// app.ts
+trackEvent('Button', 'Click', 'Submit Form')
+trackPageView('/home')
+```
+
+### 声明类
+
+```ts
+// legacy-sdk.d.ts
+declare class EventEmitter {
+  on(event: string, listener: (...args: unknown[]) => void): this
+  off(event: string, listener: (...args: unknown[]) => void): this
+  emit(event: string, ...args: unknown[]): boolean
+  once(event: string, listener: (...args: unknown[]) => void): this
+}
+```
+
+```ts
+// app.ts
+const emitter = new EventEmitter()
+emitter.on('data', (payload) => {
+  console.log('Received:', payload)
+})
+emitter.emit('data', { message: 'hello' })
+```
+
+### 声明枚举
+
+```ts
+// constants.d.ts
+declare enum LogLevel {
+  Debug = 0,
+  Info = 1,
+  Warn = 2,
+  Error = 3,
+}
+```
+
+## 🎯 全局声明与模块声明
+
+### 全局声明
+
+全局声明在 `.d.ts` 文件中不使用 `import` 或 `export` 时自动生效，声明的类型在整个项目中可用：
+
+```ts
+// global.d.ts —— 没有 import/export，自动成为全局声明
+interface Window {
+  __APP_CONFIG__: {
+    apiBaseUrl: string
+    featureFlags: Record<string, boolean>
+  }
+}
+
+declare function gtag(
+  command: 'config' | 'event',
+  targetId: string,
+  params?: Record<string, unknown>
+): void
+```
+
+```ts
+// app.ts —— 直接使用全局声明的类型
+const apiUrl = window.__APP_CONFIG__.apiBaseUrl
+gtag('event', 'page_view', { page_path: '/home' })
+```
+
+### 模块声明
+
+使用 `declare module` 为特定模块提供类型：
+
+```ts
+// modules.d.ts
+
+// 为 CSS 模块提供类型
+declare module '*.css' {
+  const classes: Record<string, string>
+  export default classes
+}
+
+// 为图片文件提供类型
+declare module '*.png' {
+  const src: string
+  export default src
+}
+
+declare module '*.svg' {
+  const src: string
+  export default src
+}
+
+// 为 JSON 文件提供类型
+declare module '*.json' {
+  const value: Record<string, unknown>
+  export default value
+}
+```
+
+```ts
+// app.ts
+import styles from './app.css'
+import logo from './logo.png'
+
+console.log(styles.container) // string (CSS 类名)
+console.log(logo)             // string (图片路径)
+```
+
+### declare global
+
+当文件中已经有 `import` 或 `export`（即已经是模块）时，需要使用 `declare global` 来添加全局声明：
+
+```ts
+// augment.d.ts
+export {} // 使文件成为模块
+
+declare global {
+  interface Array<T> {
+    customFirst(): T | undefined
+  }
+
+  interface Window {
+    myGlobalApi: {
+      version: string
+      init(config: Record<string, unknown>): void
+    }
+  }
+}
+```
+
+```ts
+// polyfill.ts —— 实现全局扩展
+Array.prototype.customFirst = function <T>(this: T[]): T | undefined {
+  return this.length > 0 ? this[0] : undefined
+}
+
+const items = [1, 2, 3]
+console.log(items.customFirst()) // 1
+
+const empty: number[] = []
+console.log(empty.customFirst()) // undefined
+```
+
+## 🎯 三斜线指令
+
+三斜线指令（Triple-Slash Directives）是 TypeScript 早期的依赖声明方式，以特殊注释形式出现在文件顶部：
+
+### 引用类型声明文件
+
+```ts
+/// <reference path="./legacy-types.d.ts" />
+
+// 现在可以使用 legacy-types.d.ts 中声明的类型
+```
+
+### 引用类型包
+
+```ts
+/// <reference types="node" />
+
+// 现在可以使用 @types/node 中的类型
+const buffer = Buffer.from('hello')
+```
+
+### 引用 lib
+
+```ts
+/// <reference lib="es2020" />
+/// <reference lib="dom" />
+
+// 确保这些标准库的类型可用
+const entries = Object.fromEntries([['key', 'value']])
+```
+
+:::tip 现代替代方案
+在使用 ES Modules 的现代项目中，三斜线指令很少使用。大多数场景可以通过以下方式替代：
+- `import type` 替代 `/// <reference path="..." />`
+- `tsconfig.json` 的 `types` 配置替代 `/// <reference types="..." />`
+- `tsconfig.json` 的 `lib` 配置替代 `/// <reference lib="..." />`
+
+三斜线指令主要出现在 `.d.ts` 声明文件和一些老项目中。
 :::
+
+## 📝 实际应用示例
+
+### 为项目添加环境变量类型
+
+```ts
+// env.d.ts —— Vite 项目的环境变量类型声明
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_API_BASE_URL: string
+  readonly VITE_APP_TITLE: string
+  readonly VITE_ENABLE_ANALYTICS: string
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}
+```
+
+```ts
+// config.ts —— 类型安全地使用环境变量
+const config = {
+  apiBaseUrl: import.meta.env.VITE_API_BASE_URL,
+  appTitle: import.meta.env.VITE_APP_TITLE,
+  enableAnalytics: import.meta.env.VITE_ENABLE_ANALYTICS === 'true',
+} as const
+
+console.log(`API: ${config.apiBaseUrl}`)
+console.log(`Title: ${config.appTitle}`)
+console.log(`Analytics: ${config.enableAnalytics}`)
+```
+
+### 为全局注入的变量提供类型
+
+```ts
+// runtime.d.ts
+export {}
+
+declare global {
+  // 构建工具注入的全局常量
+  const __APP_VERSION__: string
+  const __GIT_HASH__: string
+  const __IS_PRODUCTION__: boolean
+
+  // 第三方 SDK 挂载的全局对象
+  interface Window {
+    dataLayer: Array<Record<string, unknown>>
+    fbq: (action: string, event: string, params?: Record<string, unknown>) => void
+  }
+}
+```
+
+```ts
+// app.ts
+console.log(`App v${__APP_VERSION__} (${__GIT_HASH__})`)
+
+if (__IS_PRODUCTION__) {
+  window.dataLayer.push({ event: 'app_loaded' })
+  window.fbq('track', 'PageView')
+}
+```
+
+## 🔗 相关概念
+
+- **[为第三方库编写声明](./02-third-party-declarations.mdx)**：学习如何为没有类型定义的库编写声明文件
+- **[声明文件发布](./03-declaration-publishing.mdx)**：如何打包和发布声明文件
+- **[命名空间](../01-module-system/03-namespaces.mdx)**：命名空间在声明文件中的使用
+- **[编译选项](../03-tsconfig-deep-dive/01-compiler-options.mdx)**：`typeRoots`、`types` 等相关配置
+
+## 📚 学习检查点
+
+- [ ] 理解 `.d.ts` 文件的作用和使用场景
+- [ ] 掌握 `declare` 关键字的各种用法（变量、函数、类、枚举）
+- [ ] 区分全局声明和模块声明
+- [ ] 理解 `declare global` 的使用场景
+- [ ] 了解三斜线指令及其现代替代方案
+- [ ] 能够为项目的环境变量和全局对象编写类型声明
+
+## 🚀 下一步
+
+→ [为第三方库编写声明](./02-third-party-declarations.mdx)

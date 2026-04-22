@@ -5,8 +5,445 @@
 
 ## 📚 概念介绍
 
-本节将介绍代码质量工具的核心概念和实践方法。
+代码质量工具帮助团队维护一致的代码风格、发现潜在的代码问题，并自动化格式规范。在 TypeScript 项目中，最常用的代码质量工具有：
 
-:::tip
-本文档正在编写中，敬请期待。
+- **ESLint + typescript-eslint**：代码规则检查（linting）
+- **Prettier**：代码格式化（formatting）
+- **Biome**：新一代一体化工具（ESLint + Prettier 的替代方案）
+
+理解这些工具的分工和配合方式，是构建规范化 TypeScript 项目的关键。
+
+## 🎯 ESLint + typescript-eslint
+
+[ESLint](https://eslint.org/) 是 JavaScript/TypeScript 最流行的代码检查工具。通过 [typescript-eslint](https://typescript-eslint.io/)，ESLint 可以理解 TypeScript 语法并利用类型信息进行更深层次的检查。
+
+### 安装与配置
+
+```bash
+# 安装依赖
+npm install -D eslint @eslint/js typescript-eslint
+```
+
+ESLint v9+ 使用扁平化配置文件（Flat Config）：
+
+```ts
+// eslint.config.js
+import eslint from '@eslint/js'
+import tseslint from 'typescript-eslint'
+
+export default tseslint.config(
+  eslint.configs.recommended,
+  ...tseslint.configs.recommended,
+  {
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      // 禁止使用 any 类型
+      '@typescript-eslint/no-explicit-any': 'warn',
+
+      // 要求函数显式声明返回类型（仅导出函数）
+      '@typescript-eslint/explicit-module-boundary-types': 'error',
+
+      // 禁止未使用的变量（允许下划线前缀）
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
+
+      // 优先使用 interface 而非 type alias
+      '@typescript-eslint/consistent-type-definitions': ['error', 'interface'],
+
+      // 强制使用 import type
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        { prefer: 'type-imports' },
+      ],
+    },
+  },
+  {
+    // 忽略特定目录
+    ignores: ['dist/', 'node_modules/', '*.config.js'],
+  }
+)
+```
+
+### 常用规则解析
+
+```ts
+// ❌ @typescript-eslint/no-explicit-any
+// function parse(data: any): any { return data }
+
+// ✅ 使用具体类型或 unknown
+function parse(data: unknown): Record<string, unknown> {
+  if (typeof data === 'object' && data !== null) {
+    return data as Record<string, unknown>
+  }
+  return {}
+}
+
+// ❌ @typescript-eslint/consistent-type-imports
+// import { User } from './types'  // User 仅用于类型
+
+// ✅ 使用 import type
+import type { User } from './types'
+
+// ❌ @typescript-eslint/no-floating-promises
+// async function fetchData(): Promise<void> { /* ... */ }
+// fetchData()  // 未处理的 Promise
+
+// ✅ 显式处理 Promise
+async function fetchData(): Promise<string> {
+  return 'data'
+}
+
+void fetchData()
+// 或
+fetchData().catch(console.error)
+```
+
+### 类型感知规则
+
+typescript-eslint 的**类型感知规则（Type-Aware Rules）**利用 TypeScript 的类型信息进行更深层的检查：
+
+```ts
+// eslint.config.js —— 启用 strictTypeChecked 获得最严格的类型感知检查
+import eslint from '@eslint/js'
+import tseslint from 'typescript-eslint'
+
+export default tseslint.config(
+  eslint.configs.recommended,
+  ...tseslint.configs.strictTypeChecked,
+  ...tseslint.configs.stylisticTypeChecked,
+  {
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  }
+)
+```
+
+类型感知规则示例：
+
+```ts
+// @typescript-eslint/no-floating-promises —— 需要类型信息
+async function loadUser(): Promise<string> {
+  return 'Alice'
+}
+
+// ❌ 浮动 Promise（未 await 也未 catch）
+// loadUser()
+
+// ✅ 正确处理
+const userName = await loadUser()
+console.log(userName)
+
+// @typescript-eslint/no-unnecessary-condition —— 需要类型信息
+function processValue(value: string): string {
+  // ❌ value 类型是 string，永远不会是 null
+  // if (value !== null) { return value }
+
+  // ✅ 无需多余的检查
+  return value.trim()
+}
+
+console.log(parse({}))
+console.log(processValue('hello'))
+```
+
+### 运行 ESLint
+
+```json
+// package.json
+{
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  }
+}
+```
+
+## 🎯 Prettier 格式化
+
+[Prettier](https://prettier.io/) 是一个**固执己见的代码格式化工具**——它不关心代码逻辑，只负责让代码"看起来整齐"。
+
+### 安装与配置
+
+```bash
+npm install -D prettier
+```
+
+```json
+// .prettierrc
+{
+  "semi": false,
+  "singleQuote": true,
+  "tabWidth": 2,
+  "trailingComma": "all",
+  "printWidth": 100,
+  "arrowParens": "always",
+  "endOfLine": "lf"
+}
+```
+
+```
+// .prettierignore
+dist
+node_modules
+pnpm-lock.yaml
+*.min.js
+```
+
+### 运行 Prettier
+
+```json
+// package.json
+{
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  }
+}
+```
+
+### ESLint 与 Prettier 配合
+
+ESLint 和 Prettier 有功能重叠（都能处理格式问题），需要正确配合以避免冲突：
+
+```bash
+# 安装 eslint-config-prettier，关闭 ESLint 中与 Prettier 冲突的规则
+npm install -D eslint-config-prettier
+```
+
+```ts
+// eslint.config.js
+import eslint from '@eslint/js'
+import tseslint from 'typescript-eslint'
+import prettierConfig from 'eslint-config-prettier'
+
+export default tseslint.config(
+  eslint.configs.recommended,
+  ...tseslint.configs.recommended,
+  prettierConfig,  // 放在最后，覆盖冲突的格式规则
+  {
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  }
+)
+```
+
+:::tip 分工明确
+- **ESLint**：负责**代码质量**（逻辑问题、最佳实践）
+- **Prettier**：负责**代码格式**（缩进、分号、引号）
+- **eslint-config-prettier**：关闭 ESLint 中与 Prettier 冲突的格式规则
 :::
+
+## 🎯 Biome（ESLint + Prettier 替代方案）
+
+[Biome](https://biomejs.dev/) 是一个用 Rust 编写的一体化工具链，同时提供代码检查和格式化功能，速度比 ESLint + Prettier 快数十倍。
+
+### 安装与配置
+
+```bash
+# 安装
+npm install -D @biomejs/biome
+
+# 初始化配置
+npx biome init
+```
+
+```json
+// biome.json
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.0/schema.json",
+  "organizeImports": {
+    "enabled": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "complexity": {
+        "noExtraBooleanCast": "error",
+        "useSimplifiedLogicExpression": "warn"
+      },
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error",
+        "useExhaustiveDependencies": "warn"
+      },
+      "style": {
+        "useConst": "error",
+        "noNonNullAssertion": "warn",
+        "useImportType": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "warn"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "asNeeded",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
+  },
+  "files": {
+    "ignore": ["dist", "node_modules"]
+  }
+}
+```
+
+### 运行 Biome
+
+```json
+// package.json
+{
+  "scripts": {
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "check": "biome check .",
+    "check:fix": "biome check --write ."
+  }
+}
+```
+
+### Biome vs ESLint + Prettier
+
+| 特性 | ESLint + Prettier | Biome |
+|------|-------------------|-------|
+| 性能 | 较慢 | ⚡ 极快（Rust 实现） |
+| 配置复杂度 | 高（多工具配合） | 低（单一配置文件） |
+| TypeScript 支持 | 通过 typescript-eslint | 内置 |
+| 类型感知规则 | ✅ 丰富 | ⚠️ 有限（不读取类型信息） |
+| 生态系统 | 极丰富（数千个插件） | 较少（快速发展中） |
+| 社区成熟度 | 非常成熟 | 较新但活跃 |
+
+:::tip 如何选择？
+- **选 ESLint + Prettier**：需要类型感知规则、需要特定 ESLint 插件（如 eslint-plugin-react）
+- **选 Biome**：追求速度和简单配置、新项目、不依赖特定 ESLint 插件
+:::
+
+## 📝 实际应用示例
+
+### 完整的 ESLint + Prettier 配置
+
+```json
+// package.json
+{
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run lint && tsc --noEmit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^9.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}
+```
+
+### 完整的 Biome 配置
+
+```json
+// package.json
+{
+  "scripts": {
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "check": "biome check . && tsc --noEmit",
+    "check:fix": "biome check --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "typescript": "^5.5.0"
+  }
+}
+```
+
+### Git Hooks 集成
+
+使用 `lint-staged` 和 `husky` 在提交时自动检查：
+
+```bash
+npm install -D husky lint-staged
+npx husky init
+```
+
+```json
+// package.json
+{
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,mdx,css}": [
+      "prettier --write"
+    ]
+  }
+}
+```
+
+```bash
+# .husky/pre-commit
+npx lint-staged
+```
+
+如果使用 Biome：
+
+```json
+// package.json
+{
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,json,css}": [
+      "biome check --write --no-errors-on-unmatched"
+    ]
+  }
+}
+```
+
+## 🔗 相关概念
+
+- **[常用构建工具](./01-build-tool-integration.mdx)**：构建工具与代码质量工具的配合
+- **[编译选项](../03-tsconfig-deep-dive/01-compiler-options.mdx)**：`strict` 选项提供的编译时检查
+- **[类型检查选项](../03-tsconfig-deep-dive/02-type-checking-options.mdx)**：TypeScript 内置的类型检查能力
+
+## 📚 学习检查点
+
+- [ ] 能够为 TypeScript 项目配置 ESLint + typescript-eslint
+- [ ] 理解类型感知规则（Type-Aware Rules）的配置和价值
+- [ ] 掌握 Prettier 的配置和与 ESLint 的分工
+- [ ] 了解 Biome 的优势和适用场景
+- [ ] 能够根据项目需求选择 ESLint + Prettier 或 Biome
+- [ ] 掌握 Git Hooks 与代码质量工具的集成方式
+
+## 🚀 下一步
+
+恭喜你完成了第三阶段「模块化与工程配置」的全部学习！你已经掌握了 TypeScript 项目工程化的核心知识。
+
+→ 继续进入 **第四阶段：TypeScript 与框架集成**

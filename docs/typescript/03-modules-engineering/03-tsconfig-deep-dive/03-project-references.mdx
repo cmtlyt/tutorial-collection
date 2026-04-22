@@ -5,8 +5,396 @@
 
 ## 📚 概念介绍
 
-本节将介绍项目引用的核心概念和实践方法。
+随着项目规模增长，单一的 `tsconfig.json` 可能无法满足需求——不同目录可能需要不同的编译配置，编译速度也会越来越慢。TypeScript 的**项目引用（Project References）**允许你将一个大项目拆分为多个相互依赖的子项目，每个子项目有自己的 `tsconfig.json`，TypeScript 会按依赖顺序构建并缓存结果。
 
-:::tip
-本文档正在编写中，敬请期待。
+项目引用的核心优势：
+- **增量编译**：只重新编译发生变化的子项目
+- **逻辑隔离**：不同子项目可以有不同的编译配置
+- **加速构建**：利用缓存跳过未变更的部分
+
+## 🎯 composite 项目
+
+要让一个 TypeScript 项目成为可被引用的子项目，需要开启 `composite` 选项：
+
+```json
+// packages/shared/tsconfig.json
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"]
+}
+```
+
+`composite: true` 会自动启用以下行为：
+
+1. **强制开启 `declaration`**：必须生成 `.d.ts` 文件，供引用方使用
+2. **强制设置 `rootDir`**：如果未设置，默认为 `tsconfig.json` 所在目录
+3. **生成 `.tsBuildInfo` 文件**：记录编译状态，用于增量编译
+4. **所有源文件必须被 `include` 或 `files` 覆盖**
+
+```ts
+// packages/shared/src/index.ts
+export interface User {
+  id: string
+  name: string
+  email: string
+}
+
+export function formatUserName(user: User): string {
+  return `${user.name} <${user.email}>`
+}
+
+export function generateId(): string {
+  return Math.random().toString(36).substring(2, 11)
+}
+```
+
+## 🎯 references 配置
+
+在父项目或依赖方的 `tsconfig.json` 中，使用 `references` 声明对其他子项目的依赖：
+
+```json
+// packages/api/tsconfig.json
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "references": [
+    { "path": "../shared" }
+  ],
+  "include": ["src/**/*"]
+}
+```
+
+```ts
+// packages/api/src/user-service.ts
+import { User, formatUserName, generateId } from '../../shared/src/index'
+
+export function createUser(name: string, email: string): User {
+  return {
+    id: generateId(),
+    name,
+    email,
+  }
+}
+
+export function describeUser(user: User): string {
+  return `User: ${formatUserName(user)}`
+}
+
+const user = createUser('Alice', 'alice@example.com')
+console.log(describeUser(user)) // "User: Alice <alice@example.com>"
+```
+
+### 顶层 tsconfig.json
+
+在项目根目录创建一个"解决方案"级别的 `tsconfig.json`，引用所有子项目：
+
+```json
+// tsconfig.json（项目根目录）
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/api" },
+    { "path": "./packages/web" }
+  ]
+}
+```
+
+:::tip files: [] 的作用
+顶层 `tsconfig.json` 本身不编译任何文件（`files: []`），它只作为构建入口，告诉 TypeScript 需要构建哪些子项目。
 :::
+
+## 🎯 增量编译（incremental）
+
+### tsBuildInfo 文件
+
+开启 `composite` 或 `incremental` 后，TypeScript 会生成 `.tsBuildInfo` 文件，记录上次编译的状态：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  }
+}
+```
+
+`.tsBuildInfo` 文件包含：
+- 文件哈希值（判断文件是否变更）
+- 编译选项快照（判断配置是否变更）
+- 依赖关系图（判断是否需要级联重编译）
+
+### composite vs incremental
+
+| 特性 | `incremental` | `composite` |
+|------|--------------|-------------|
+| 增量编译 | ✅ | ✅ |
+| 生成 `.tsBuildInfo` | ✅ | ✅ |
+| 强制生成 `.d.ts` | ❌ | ✅ |
+| 可被其他项目引用 | ❌ | ✅ |
+| 使用场景 | 单项目加速 | 多项目拆分 |
+
+```json
+// 单项目只需加速编译 —— 使用 incremental
+{
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  }
+}
+
+// 多项目中的子项目 —— 使用 composite
+// {
+//   "compilerOptions": {
+//     "composite": true
+//   }
+// }
+```
+
+### 使用 tsc --build 构建
+
+项目引用需要使用 `tsc --build`（简写 `tsc -b`）来构建，它会自动按依赖顺序编译所有子项目：
+
+```bash
+# 构建所有子项目（从根目录）
+tsc --build
+
+# 构建指定子项目及其依赖
+tsc --build packages/api
+
+# 强制全量重新构建
+tsc --build --force
+
+# 清理构建产物
+tsc --build --clean
+
+# 显示构建详情（调试用）
+tsc --build --verbose
+```
+
+`tsc --build` 与普通 `tsc` 的区别：
+
+- 自动识别 `references` 并按依赖顺序构建
+- 利用 `.tsBuildInfo` 跳过未变更的子项目
+- 检测循环依赖并报错
+
+## 📝 实际应用示例
+
+### Monorepo 项目结构
+
+```
+my-project/
+├── tsconfig.json                  ← 解决方案级配置
+├── packages/
+│   ├── shared/                    ← 共享类型和工具
+│   │   ├── tsconfig.json
+│   │   └── src/
+│   │       ├── index.ts
+│   │       ├── types.ts
+│   │       └── utils.ts
+│   ├── api/                       ← 后端服务
+│   │   ├── tsconfig.json
+│   │   └── src/
+│   │       ├── index.ts
+│   │       └── routes.ts
+│   └── web/                       ← 前端应用
+│       ├── tsconfig.json
+│       └── src/
+│           ├── index.ts
+│           └── app.ts
+```
+
+```json
+// tsconfig.json（根目录）
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/api" },
+    { "path": "./packages/web" }
+  ]
+}
+```
+
+```json
+// packages/shared/tsconfig.json
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"]
+}
+```
+
+```json
+// packages/api/tsconfig.json
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "esModuleInterop": true
+  },
+  "references": [
+    { "path": "../shared" }
+  ],
+  "include": ["src/**/*"]
+}
+```
+
+```json
+// packages/web/tsconfig.json
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "jsx": "react-jsx",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"]
+  },
+  "references": [
+    { "path": "../shared" }
+  ],
+  "include": ["src/**/*"]
+}
+```
+
+### 共享类型的代码
+
+```ts
+// packages/shared/src/types.ts
+export interface ApiResponse<T> {
+  success: boolean
+  data: T
+  error?: string
+  timestamp: number
+}
+
+export interface PaginationParams {
+  page: number
+  pageSize: number
+}
+
+export interface PaginatedData<T> {
+  items: T[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+}
+```
+
+```ts
+// packages/shared/src/utils.ts
+import type { PaginatedData, PaginationParams } from './types'
+
+export function createPaginatedResponse<T>(
+  items: T[],
+  total: number,
+  params: PaginationParams
+): PaginatedData<T> {
+  return {
+    items,
+    total,
+    page: params.page,
+    pageSize: params.pageSize,
+    totalPages: Math.ceil(total / params.pageSize),
+  }
+}
+
+export function formatTimestamp(date: Date): string {
+  return date.toISOString()
+}
+```
+
+```ts
+// packages/shared/src/index.ts
+export type { ApiResponse, PaginationParams, PaginatedData } from './types'
+export { createPaginatedResponse, formatTimestamp } from './utils'
+```
+
+```ts
+// packages/api/src/routes.ts
+import type { ApiResponse, PaginationParams, PaginatedData } from '../../shared/src/index'
+import { createPaginatedResponse } from '../../shared/src/index'
+
+interface Product {
+  id: string
+  name: string
+  price: number
+}
+
+const allProducts: Product[] = [
+  { id: '1', name: 'Widget', price: 9.99 },
+  { id: '2', name: 'Gadget', price: 19.99 },
+  { id: '3', name: 'Doohickey', price: 29.99 },
+  { id: '4', name: 'Thingamajig', price: 39.99 },
+  { id: '5', name: 'Whatchamacallit', price: 49.99 },
+]
+
+export function getProducts(
+  params: PaginationParams
+): ApiResponse<PaginatedData<Product>> {
+  const startIndex = (params.page - 1) * params.pageSize
+  const pageItems = allProducts.slice(startIndex, startIndex + params.pageSize)
+
+  return {
+    success: true,
+    data: createPaginatedResponse(pageItems, allProducts.length, params),
+    timestamp: Date.now(),
+  }
+}
+
+const result = getProducts({ page: 1, pageSize: 2 })
+console.log(result.data.items)      // 前2个产品
+console.log(result.data.totalPages) // 3
+```
+
+## 🔗 相关概念
+
+- **[编译选项](./01-compiler-options.mdx)**：`outDir`、`rootDir`、`declaration` 等基础配置
+- **[类型检查选项](./02-type-checking-options.mdx)**：不同子项目可以使用不同的严格级别
+- **[声明文件发布](../02-declaration-files/03-declaration-publishing.mdx)**：`composite` 与声明文件生成的关系
+- **[常用构建工具](../04-build-tools/01-build-tool-integration.mdx)**：打包工具与项目引用的配合
+
+## 📚 学习检查点
+
+- [ ] 理解 `composite` 选项的作用和它强制开启的行为
+- [ ] 掌握 `references` 的配置方式和依赖关系声明
+- [ ] 理解 `incremental` 与 `composite` 的区别
+- [ ] 了解 `.tsBuildInfo` 文件的作用
+- [ ] 掌握 `tsc --build` 的使用方式和常用参数
+- [ ] 能够为 Monorepo 项目配置项目引用
+
+## 🚀 下一步
+
+→ [常用构建工具](../04-build-tools/01-build-tool-integration.mdx)

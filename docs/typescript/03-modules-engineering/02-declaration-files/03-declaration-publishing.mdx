@@ -5,8 +5,442 @@
 
 ## 📚 概念介绍
 
-本节将介绍声明文件发布的核心概念和实践方法。
+当你开发了一个 TypeScript 库并准备发布到 npm 时，你需要确保消费者能够获得正确的类型声明。声明文件的发布策略直接影响到库的使用体验——好的类型声明能让消费者享受到完整的类型检查和编辑器智能提示。
+
+本节将介绍声明文件的生成方式、`package.json` 中的类型相关字段配置，以及不同的声明文件打包策略。
+
+## 🎯 types / typings 字段
+
+`package.json` 中的 `types`（或 `typings`）字段告诉 TypeScript 编译器去哪里查找库的类型声明入口文件。
+
+### 基本配置
+
+```json
+// package.json
+{
+  "name": "my-utils-lib",
+  "version": "1.0.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts"
+}
+```
+
+TypeScript 的查找逻辑：
+
+1. 首先检查 `package.json` 的 `types` 或 `typings` 字段
+2. 如果没有，查找包根目录下的 `index.d.ts`
+3. 如果还没有，查看 `main` 字段指向的 `.js` 文件同级的 `.d.ts` 文件
+
+### types 与 typings 的区别
+
+```json
+// 两者完全等价，types 是更现代的写法
+{ "types": "./dist/index.d.ts" }
+{ "typings": "./dist/index.d.ts" }
+```
 
 :::tip
-本文档正在编写中，敬请期待。
+推荐使用 `types` 字段，`typings` 是历史遗留的别名。
 :::
+
+## 🎯 typeRoots 与 types 配置
+
+在 `tsconfig.json` 中，`typeRoots` 和 `types` 控制哪些全局类型声明被包含。
+
+### typeRoots
+
+指定声明文件的根目录列表：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "typeRoots": [
+      "./node_modules/@types",
+      "./custom-typings"
+    ]
+  }
+}
+```
+
+默认值是 `["./node_modules/@types"]`。如果你有自定义的全局类型声明目录，需要同时列出默认目录：
+
+```
+project/
+├── custom-typings/
+│   └── analytics/
+│       └── index.d.ts    ← 自定义全局类型
+├── node_modules/
+│   └── @types/
+│       └── node/
+│           └── index.d.ts
+└── tsconfig.json
+```
+
+### types
+
+限制只包含指定的全局类型包（从 `typeRoots` 目录中选择）：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    // 只包含 @types/node 和 @types/jest，忽略其他 @types 包
+    "types": ["node", "jest"]
+  }
+}
+```
+
+:::warning 重要区别
+- **不设置 `types`**：自动包含 `typeRoots` 下的所有类型包
+- **设置为空数组 `[]`**：不包含任何全局类型包
+- **设置为具体值**：只包含列出的类型包
+
+`types` 只影响全局类型的自动包含，不影响通过 `import` 显式引入的类型。
+:::
+
+## 🎯 声明文件打包策略
+
+### 策略一：TypeScript 编译器自动生成
+
+最直接的方式，通过 `tsc` 编译时自动生成 `.d.ts` 文件：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "declaration": true,
+    "declarationDir": "./dist/types",
+    "emitDeclarationOnly": false,
+    "outDir": "./dist"
+  },
+  "include": ["src/**/*"]
+}
+```
+
+```json
+// package.json
+{
+  "name": "my-lib",
+  "version": "1.0.0",
+  "main": "./dist/index.js",
+  "types": "./dist/types/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  }
+}
+```
+
+生成的目录结构：
+
+```
+dist/
+├── index.js
+├── utils.js
+└── types/
+    ├── index.d.ts
+    └── utils.d.ts
+```
+
+### 策略二：仅生成声明文件
+
+当你使用其他工具（esbuild、Rspack 等）构建 JavaScript 时，可以用 `tsc` 只生成声明文件：
+
+```json
+// tsconfig.build.json
+{
+  "compilerOptions": {
+    "declaration": true,
+    "declarationDir": "./dist",
+    "emitDeclarationOnly": true
+  },
+  "include": ["src/**/*"]
+}
+```
+
+```json
+// package.json
+{
+  "scripts": {
+    "build:js": "esbuild src/index.ts --outdir=dist --format=esm",
+    "build:types": "tsc -p tsconfig.build.json",
+    "build": "npm run build:js && npm run build:types"
+  }
+}
+```
+
+### 策略三：使用打包工具生成
+
+现代打包工具如 `tsup`、`unbuild` 可以同时处理 JavaScript 打包和声明文件生成：
+
+```ts
+// tsup.config.ts（使用 tsup）
+import { defineConfig } from 'tsup'
+
+export default defineConfig({
+  entry: ['src/index.ts'],
+  format: ['esm', 'cjs'],
+  dts: true,
+  splitting: false,
+  clean: true,
+  outDir: 'dist',
+})
+```
+
+```json
+// package.json
+{
+  "scripts": {
+    "build": "tsup"
+  }
+}
+```
+
+## 🎯 package.json exports 与类型
+
+现代 npm 包推荐使用 `exports` 字段精确控制包的导出入口，同时为每个入口指定类型声明文件：
+
+### 基本 exports 配置
+
+```json
+// package.json
+{
+  "name": "my-lib",
+  "version": "2.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./utils": {
+      "types": "./dist/utils.d.ts",
+      "import": "./dist/utils.mjs",
+      "require": "./dist/utils.cjs"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts"
+}
+```
+
+:::warning types 条件必须放在最前面
+在 `exports` 的条件导出中，`"types"` 条件**必须放在第一位**，否则 TypeScript 可能无法正确解析类型。
+:::
+
+### 消费者使用方式
+
+```ts
+// 导入主入口
+import { something } from 'my-lib'
+
+// 导入子路径
+import { formatDate } from 'my-lib/utils'
+
+// 仅导入类型
+import type { Config } from 'my-lib/types'
+```
+
+### 双格式发布（ESM + CJS）
+
+为同时支持 ESM 和 CJS 消费者，需要分别生成对应的声明文件：
+
+```json
+// package.json
+{
+  "name": "dual-format-lib",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  }
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的库发布配置
+
+```json
+// package.json —— 一个完整的 TypeScript 库配置
+{
+  "name": "@example/data-utils",
+  "version": "1.0.0",
+  "description": "Type-safe data utility functions",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./array": {
+      "types": "./dist/array.d.ts",
+      "import": "./dist/array.mjs",
+      "require": "./dist/array.cjs"
+    },
+    "./object": {
+      "types": "./dist/object.d.ts",
+      "import": "./dist/object.mjs",
+      "require": "./dist/object.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0"
+  }
+}
+```
+
+```ts
+// tsup.config.ts
+import { defineConfig } from 'tsup'
+
+export default defineConfig({
+  entry: {
+    index: 'src/index.ts',
+    array: 'src/array.ts',
+    object: 'src/object.ts',
+  },
+  format: ['esm', 'cjs'],
+  dts: true,
+  clean: true,
+  splitting: false,
+  sourcemap: true,
+})
+```
+
+```ts
+// src/index.ts —— 库的主入口
+export { unique, chunk, flatten } from './array'
+export { pick, omit, deepMerge } from './object'
+export type { DeepPartial, Prettify } from './types'
+```
+
+```ts
+// src/array.ts —— 数组工具函数
+export function unique<T>(array: T[]): T[] {
+  return [...new Set(array)]
+}
+
+export function chunk<T>(array: T[], size: number): T[][] {
+  const result: T[][] = []
+  for (let i = 0; i < array.length; i += size) {
+    result.push(array.slice(i, i + size))
+  }
+  return result
+}
+
+export function flatten<T>(array: (T | T[])[]): T[] {
+  return array.flat() as T[]
+}
+```
+
+```ts
+// src/object.ts —— 对象工具函数
+export function pick<T extends Record<string, unknown>, K extends keyof T>(
+  obj: T,
+  keys: K[]
+): Pick<T, K> {
+  const result = {} as Pick<T, K>
+  for (const key of keys) {
+    if (key in obj) {
+      result[key] = obj[key]
+    }
+  }
+  return result
+}
+
+export function omit<T extends Record<string, unknown>, K extends keyof T>(
+  obj: T,
+  keys: K[]
+): Omit<T, K> {
+  const result = { ...obj }
+  for (const key of keys) {
+    delete result[key]
+  }
+  return result as Omit<T, K>
+}
+
+export function deepMerge<T extends Record<string, unknown>>(
+  target: T,
+  source: Partial<T>
+): T {
+  const result = { ...target }
+  for (const key of Object.keys(source) as Array<keyof T>) {
+    const sourceValue = source[key]
+    const targetValue = result[key]
+    if (
+      sourceValue &&
+      typeof sourceValue === 'object' &&
+      !Array.isArray(sourceValue) &&
+      targetValue &&
+      typeof targetValue === 'object' &&
+      !Array.isArray(targetValue)
+    ) {
+      result[key] = deepMerge(
+        targetValue as Record<string, unknown>,
+        sourceValue as Record<string, unknown>
+      ) as T[keyof T]
+    } else if (sourceValue !== undefined) {
+      result[key] = sourceValue as T[keyof T]
+    }
+  }
+  return result
+}
+```
+
+```ts
+// src/types.ts —— 公共类型
+export type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends Record<string, unknown>
+    ? DeepPartial<T[K]>
+    : T[K]
+}
+
+export type Prettify<T> = {
+  [K in keyof T]: T[K]
+} & {}
+```
+
+## 🔗 相关概念
+
+- **[声明文件基础](./01-declaration-basics.mdx)**：`.d.ts` 文件的基本写法
+- **[为第三方库编写声明](./02-third-party-declarations.mdx)**：为缺少类型的库编写声明
+- **[编译选项](../03-tsconfig-deep-dive/01-compiler-options.mdx)**：`declaration`、`declarationDir` 等编译选项
+- **[常用构建工具](../04-build-tools/01-build-tool-integration.mdx)**：tsup、unbuild 等打包工具的使用
+
+## 📚 学习检查点
+
+- [ ] 理解 `types`/`typings` 字段在 `package.json` 中的作用
+- [ ] 掌握 `typeRoots` 和 `types` 在 `tsconfig.json` 中的配置方式
+- [ ] 了解三种声明文件生成策略（tsc 生成、仅生成声明、打包工具生成）
+- [ ] 理解 `package.json` 的 `exports` 字段与类型条件导出
+- [ ] 能够为双格式（ESM + CJS）库正确配置类型声明
+- [ ] 掌握完整的 TypeScript 库发布配置流程
+
+## 🚀 下一步
+
+→ [编译选项](../03-tsconfig-deep-dive/01-compiler-options.mdx)

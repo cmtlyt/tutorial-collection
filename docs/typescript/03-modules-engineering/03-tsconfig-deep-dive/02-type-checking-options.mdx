@@ -5,8 +5,440 @@
 
 ## 📚 概念介绍
 
-本节将介绍类型检查选项的核心概念和实践方法。
+TypeScript 的核心价值在于**静态类型检查**——在代码运行之前就发现潜在的错误。`tsconfig.json` 中有一系列选项可以精细控制类型检查的严格程度。
+
+本节将逐一讲解最重要的类型检查选项，用具体的代码示例展示每个选项能捕获什么样的错误，帮助你理解为什么应该开启它们。
+
+## 🎯 strictNullChecks
+
+这是 `strict` 系列中最重要的选项。开启后，`null` 和 `undefined` 不再是所有类型的子类型，必须显式处理可能为空的情况。
+
+### 关闭时的危险
+
+```ts
+// strictNullChecks: false（不推荐）
+function getUser(id: number): { name: string } | null {
+  if (id === 0) return null
+  return { name: 'Alice' }
+}
+
+const user = getUser(0)
+// 不报错！但运行时会抛出 TypeError: Cannot read properties of null
+console.log(user.name)
+```
+
+### 开启后的安全保障
+
+```ts
+// strictNullChecks: true ✅
+function getUser(id: number): { name: string } | null {
+  if (id === 0) return null
+  return { name: 'Alice' }
+}
+
+const user = getUser(0)
+
+// ❌ 编译错误：user 可能为 null
+// console.log(user.name)
+
+// ✅ 方式一：类型守卫
+if (user !== null) {
+  console.log(user.name)
+}
+
+// ✅ 方式二：可选链
+console.log(user?.name)
+
+// ✅ 方式三：空值合并
+console.log(user?.name ?? 'Unknown')
+```
+
+### 处理数组方法的返回值
+
+```ts
+const numbers = [1, 2, 3, 4, 5]
+
+// Array.find 的返回值可能是 undefined
+const found = numbers.find(n => n > 10)
+//    ^? number | undefined
+
+// ❌ 编译错误
+// const doubled = found * 2
+
+// ✅ 先检查
+if (found !== undefined) {
+  const doubled = found * 2
+  console.log(doubled)
+}
+
+// Map.get 的返回值也可能是 undefined
+const userMap = new Map<string, { name: string }>()
+userMap.set('a', { name: 'Alice' })
+
+const mapUser = userMap.get('b')
+//    ^? { name: string } | undefined
+
+console.log(mapUser?.name ?? 'Not found')
+```
+
+## 🎯 strictFunctionTypes
+
+开启后，函数参数类型使用**逆变（contravariant）**检查，而不是更宽松的**双变（bivariant）**检查。
+
+```ts
+// strictFunctionTypes: true ✅
+interface Animal {
+  name: string
+}
+
+interface Dog extends Animal {
+  breed: string
+}
+
+type AnimalHandler = (animal: Animal) => void
+type DogHandler = (dog: Dog) => void
+
+const handleAnimal: AnimalHandler = (animal) => {
+  console.log(animal.name)
+}
+
+const handleDog: DogHandler = (dog) => {
+  console.log(dog.breed) // 访问了 Dog 特有的属性
+}
+
+// ✅ AnimalHandler 可以赋值给 DogHandler？
+// 不行！handleAnimal 不知道如何处理 Dog.breed
+// ❌ 编译错误
+// const handler: DogHandler = handleAnimal
+
+// ✅ DogHandler 不能赋值给 AnimalHandler
+// 因为 AnimalHandler 可能收到一个不是 Dog 的 Animal
+// ❌ 编译错误
+// const handler2: AnimalHandler = handleDog
+
+// ✅ 正确的用法
+const safeHandler: AnimalHandler = (animal) => {
+  console.log(animal.name)
+}
+
+safeHandler({ name: 'Buddy' })
+safeHandler({ name: 'Rex', breed: 'Labrador' } as Dog)
+```
+
+## 🎯 noImplicitAny
+
+禁止变量和参数隐式推断为 `any` 类型。这能避免因缺少类型注解而导致的类型检查"漏洞"。
+
+```ts
+// noImplicitAny: true ✅
+
+// ❌ 编译错误：参数 a 和 b 隐式具有 any 类型
+// function add(a, b) { return a + b }
+
+// ✅ 显式标注参数类型
+function add(a: number, b: number): number {
+  return a + b
+}
+
+// ❌ 编译错误：变量 data 隐式具有 any 类型
+// const parsed = JSON.parse('{"name":"Alice"}')
+// parsed.whatever  // 不报错，因为 parsed 是 any
+
+// ✅ 使用类型断言或类型守卫
+interface UserData {
+  name: string
+  age: number
+}
+
+const parsed: unknown = JSON.parse('{"name":"Alice","age":30}')
+
+function isUserData(value: unknown): value is UserData {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'name' in value &&
+    'age' in value
+  )
+}
+
+if (isUserData(parsed)) {
+  console.log(parsed.name) // 类型安全
+  console.log(parsed.age)
+}
+
+console.log(add(1, 2)) // 3
+```
+
+## 🎯 noUncheckedIndexedAccess
+
+开启后，通过索引签名访问属性时，返回类型会自动包含 `undefined`。这是一个非常实用但不属于 `strict` 的选项。
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true
+  }
+}
+```
+
+```ts
+// noUncheckedIndexedAccess: true ✅
+interface Config {
+  [key: string]: string
+}
+
+const config: Config = {
+  apiUrl: 'https://api.example.com',
+  appName: 'MyApp',
+}
+
+// 类型是 string | undefined，而不是 string
+const apiUrl = config['apiUrl']
+//    ^? string | undefined
+
+// ❌ 编译错误
+// console.log(apiUrl.toUpperCase())
+
+// ✅ 需要先检查
+if (apiUrl !== undefined) {
+  console.log(apiUrl.toUpperCase())
+}
+
+// 数组也受影响
+const items = ['a', 'b', 'c']
+const first = items[0]
+//    ^? string | undefined
+
+// ❌ 编译错误
+// console.log(first.toUpperCase())
+
+// ✅ 安全访问
+if (first !== undefined) {
+  console.log(first.toUpperCase()) // "A"
+}
+```
 
 :::tip
-本文档正在编写中，敬请期待。
+`noUncheckedIndexedAccess` 不属于 `strict` 的子选项，需要单独开启。它在处理字典类型（`Record<string, T>`）和数组时特别有价值，能防止越界访问导致的运行时错误。
 :::
+
+## 🎯 exactOptionalPropertyTypes
+
+开启后，可选属性不再自动包含 `undefined` 作为可赋值的值。你必须在类型中显式声明 `| undefined` 才能赋值 `undefined`。
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "exactOptionalPropertyTypes": true
+  }
+}
+```
+
+```ts
+// exactOptionalPropertyTypes: true ✅
+interface Settings {
+  theme?: 'light' | 'dark'         // 可选，但如果提供则必须是 'light' 或 'dark'
+  fontSize?: number                 // 可选，但如果提供则必须是 number
+  nickname?: string | undefined     // 显式允许 undefined
+}
+
+// ✅ 不提供可选属性
+const settings1: Settings = {}
+
+// ✅ 提供有效值
+const settings2: Settings = { theme: 'dark', fontSize: 14 }
+
+// ❌ 编译错误：不能将 undefined 赋值给 'light' | 'dark'
+// const settings3: Settings = { theme: undefined }
+
+// ✅ nickname 显式声明了 | undefined，可以赋值 undefined
+const settings4: Settings = { nickname: undefined }
+
+console.log(settings1, settings2, settings4)
+```
+
+这个选项的价值在于区分"属性不存在"和"属性存在但值为 undefined"：
+
+```ts
+function applySettings(settings: Settings): void {
+  if ('theme' in settings) {
+    // 开启 exactOptionalPropertyTypes 后
+    // 这里 settings.theme 的类型是 'light' | 'dark'
+    // 而不是 'light' | 'dark' | undefined
+    console.log(`Theme: ${settings.theme}`)
+  }
+}
+
+applySettings({ theme: 'light' })
+```
+
+## 🎯 其他实用的类型检查选项
+
+### noUnusedLocals 与 noUnusedParameters
+
+```json
+{
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  }
+}
+```
+
+```ts
+// noUnusedLocals: true
+function calculate(input: number): number {
+  // ❌ 编译错误：unused 声明了但未使用
+  // const unused = 42
+
+  const result = input * 2
+  return result
+}
+
+// noUnusedParameters: true
+// ❌ 编译错误：参数 unusedParam 声明了但未使用
+// function greet(name: string, unusedParam: number): string {
+
+// ✅ 用下划线前缀标记有意不使用的参数
+function greet(name: string, _unusedParam: number): string {
+  return `Hello, ${name}!`
+}
+
+console.log(calculate(5))   // 10
+console.log(greet('Alice', 0)) // "Hello, Alice!"
+```
+
+### noFallthroughCasesInSwitch
+
+```ts
+// noFallthroughCasesInSwitch: true
+type Status = 'pending' | 'active' | 'inactive'
+
+function getStatusLabel(status: Status): string {
+  switch (status) {
+    case 'pending':
+      return '待处理'
+    case 'active':
+      return '活跃'
+    case 'inactive':
+      return '未激活'
+    // 穷尽检查：如果漏掉了某个 case，编译器会报错
+  }
+}
+
+console.log(getStatusLabel('active')) // "活跃"
+```
+
+### forceConsistentCasingInFileNames
+
+```json
+{
+  "compilerOptions": {
+    "forceConsistentCasingInFileNames": true
+  }
+}
+```
+
+```ts
+// 假设文件名是 UserService.ts
+
+// ❌ 在大小写敏感的系统上会出错
+// import { UserService } from './userservice'
+
+// ✅ 大小写必须与文件名完全一致
+// import { UserService } from './UserService'
+```
+
+## 📝 实际应用示例
+
+### 推荐的严格配置
+
+```json
+// tsconfig.json —— 推荐的最严格配置
+{
+  "compilerOptions": {
+    "strict": true,
+
+    // strict 之外的额外严格选项
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // 代码质量
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    // 其他编译选项
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true
+  }
+}
+```
+
+### 渐进式迁移策略
+
+从 JavaScript 迁移到 TypeScript 时，可以逐步开启严格选项：
+
+```json
+// 阶段 1：最低限度的类型检查
+{
+  "compilerOptions": {
+    "strict": false,
+    "allowJs": true,
+    "checkJs": false
+  }
+}
+
+// 阶段 2：开启基本严格检查
+// {
+//   "compilerOptions": {
+//     "strict": false,
+//     "noImplicitAny": true,
+//     "strictNullChecks": true
+//   }
+// }
+
+// 阶段 3：开启完整严格模式
+// {
+//   "compilerOptions": {
+//     "strict": true,
+//     "noUncheckedIndexedAccess": true
+//   }
+// }
+```
+
+:::tip 渐进式迁移的优先级
+建议按以下顺序逐步开启：
+1. `noImplicitAny` — 消除隐式 any，收益最大
+2. `strictNullChecks` — 强制处理 null/undefined
+3. `strict: true` — 开启所有严格检查
+4. `noUncheckedIndexedAccess` — 索引访问安全
+5. `exactOptionalPropertyTypes` — 可选属性精确化
+:::
+
+## 🔗 相关概念
+
+- **[编译选项](./01-compiler-options.mdx)**：`target`、`module` 等基础编译选项
+- **[项目引用](./03-project-references.mdx)**：多项目配置中的类型检查
+- **[ES Modules](../01-module-system/01-es-modules.mdx)**：模块系统中的类型导入
+
+## 📚 学习检查点
+
+- [ ] 理解 `strictNullChecks` 如何防止空值访问错误
+- [ ] 理解 `strictFunctionTypes` 的函数参数逆变检查
+- [ ] 掌握 `noImplicitAny` 的作用和应对方式
+- [ ] 了解 `noUncheckedIndexedAccess` 对索引访问的影响
+- [ ] 理解 `exactOptionalPropertyTypes` 对可选属性的精确约束
+- [ ] 能够制定从宽松到严格的渐进式迁移策略
+
+## 🚀 下一步
+
+→ [项目引用](./03-project-references.mdx)

@@ -5,8 +5,326 @@
 
 ## 📚 概念介绍
 
-本节将介绍模块解析的核心概念和实践方法。
+当你在 TypeScript 中写下 `import { something } from './module'` 时，编译器需要弄清楚 `'./module'` 到底指向哪个文件——这个过程就是**模块解析（Module Resolution）**。
 
-:::tip
-本文档正在编写中，敬请期待。
+TypeScript 提供了多种模块解析策略，不同策略决定了编译器在文件系统中查找模块的方式。选择正确的策略对项目的模块组织、路径别名和第三方库类型支持至关重要。
+
+## 🎯 moduleResolution 策略
+
+TypeScript 的 `moduleResolution` 选项控制模块解析行为。目前主要有以下几种策略：
+
+### node（Node.js 传统策略）
+
+模拟 Node.js 的 CommonJS 模块解析逻辑，是早期 TypeScript 项目的默认选择：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "moduleResolution": "node"
+  }
+}
+```
+
+**解析流程（以 `import { foo } from './bar'` 为例）**：
+
+1. 查找 `./bar.ts`
+2. 查找 `./bar.tsx`
+3. 查找 `./bar.d.ts`
+4. 查找 `./bar/package.json` 中的 `types` 或 `main` 字段
+5. 查找 `./bar/index.ts`
+6. 查找 `./bar/index.tsx`
+7. 查找 `./bar/index.d.ts`
+
+**非相对路径（以 `import { foo } from 'bar'` 为例）**：
+
+TypeScript 会从当前目录开始，逐级向上查找 `node_modules`：
+
+```
+/project/src/node_modules/bar.ts
+/project/src/node_modules/bar/package.json (types)
+/project/src/node_modules/bar/index.ts
+/project/node_modules/bar.ts
+/project/node_modules/bar/package.json (types)
+/project/node_modules/bar/index.ts
+...向上继续查找
+```
+
+### bundler（现代打包器策略）
+
+TypeScript 5.0+ 引入的策略，适用于使用 Vite、Rspack、esbuild 等现代打包器的项目：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "moduleResolution": "bundler"
+  }
+}
+```
+
+`bundler` 策略的特点：
+
+- 支持 `package.json` 的 `exports` 和 `imports` 字段
+- 允许导入时省略扩展名
+- 支持 `package.json` 的 `types` 条件导出
+- 不要求 ESM 导入必须带扩展名
+
+```ts
+// bundler 策略下，以下写法都合法
+import { utils } from './utils'        // 省略扩展名 ✅
+import { config } from './config.js'   // 带扩展名 ✅
+import { helper } from 'my-lib'       // 支持 exports 字段 ✅
+```
+
+### nodenext / node16（Node.js ESM 策略）
+
+严格遵循 Node.js 的 ESM 模块解析规则：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext"
+  }
+}
+```
+
+关键约束：
+
+```ts
+// ❌ 错误：ESM 中必须带扩展名
+import { foo } from './utils'
+
+// ✅ 正确：必须使用 .js 扩展名（即使源文件是 .ts）
+import { foo } from './utils.js'
+```
+
+:::tip 如何选择？
+- **使用打包器（Vite、Rspack、Webpack）**：选择 `bundler`
+- **Node.js 原生 ESM 项目**：选择 `nodenext`
+- **传统 Node.js CommonJS 项目**：选择 `node`
 :::
+
+## 🎯 路径映射（paths）
+
+`paths` 选项允许你定义模块路径的别名，避免冗长的相对路径。
+
+### 基本配置
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@components/*": ["src/components/*"],
+      "@utils/*": ["src/utils/*"],
+      "@types/*": ["src/types/*"]
+    }
+  }
+}
+```
+
+### 使用路径别名
+
+```ts
+// 不使用别名 —— 深层嵌套时路径很难维护
+import { UserService } from '../../../services/user-service'
+import { formatDate } from '../../../utils/date'
+import type { User } from '../../../types/user'
+
+// 使用别名 —— 清晰且不受目录层级影响
+import { UserService } from '@/services/user-service'
+import { formatDate } from '@utils/date'
+import type { User } from '@types/user'
+```
+
+### 多路径回退
+
+`paths` 支持数组形式的多路径回退，TypeScript 会按顺序查找：
+
+```json
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "config": ["./config/production.ts", "./config/default.ts"]
+    }
+  }
+}
+```
+
+:::warning 重要提示
+`paths` 仅影响 TypeScript 的**类型检查**，不会改变编译产物中的导入路径。你需要在打包工具中配置对应的 `alias`（如 Vite 的 `resolve.alias`、Rspack 的 `resolve.alias`）来确保运行时也能正确解析。
+:::
+
+## 🎯 baseUrl 配置
+
+`baseUrl` 设置非相对模块导入的根目录：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "baseUrl": "./src"
+  }
+}
+```
+
+```ts
+// 设置 baseUrl 为 ./src 后
+// 可以直接从 src 目录开始导入
+import { UserService } from 'services/user-service'
+// 等价于 import { UserService } from './src/services/user-service'
+```
+
+:::caution 关于 baseUrl 的建议
+在现代项目中，推荐使用 `paths` 配合明确的前缀（如 `@/`）而非单独使用 `baseUrl`。单独使用 `baseUrl` 可能导致非相对导入与 `node_modules` 中的包名冲突。
+:::
+
+## 🎯 声明文件查找规则
+
+当 TypeScript 导入一个 npm 包时，它按以下顺序查找类型声明：
+
+### 查找流程
+
+```ts
+import { something } from 'my-library'
+```
+
+1. **package.json 的 `types` 或 `typings` 字段**：
+
+```json
+// node_modules/my-library/package.json
+{
+  "name": "my-library",
+  "types": "./dist/index.d.ts"
+}
+```
+
+2. **package.json 的 `exports` 条件导出**（`bundler` / `nodenext` 策略）：
+
+```json
+// node_modules/my-library/package.json
+{
+  "name": "my-library",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  }
+}
+```
+
+3. **包根目录的 `index.d.ts`**：
+
+```
+node_modules/my-library/index.d.ts
+```
+
+4. **@types 包**（DefinitelyTyped）：
+
+```
+node_modules/@types/my-library/index.d.ts
+```
+
+### typeRoots 与 types 配置
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    // 指定声明文件的根目录（默认 node_modules/@types）
+    "typeRoots": ["./node_modules/@types", "./custom-types"],
+
+    // 只包含指定的类型包（不设置则包含 typeRoots 下的所有）
+    "types": ["node", "jest"]
+  }
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的项目路径配置
+
+```json
+// tsconfig.json —— 一个典型的现代前端项目配置
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@components/*": ["src/components/*"],
+      "@hooks/*": ["src/hooks/*"],
+      "@utils/*": ["src/utils/*"],
+      "@services/*": ["src/services/*"],
+      "@types/*": ["src/types/*"]
+    }
+  },
+  "include": ["src/**/*"]
+}
+```
+
+```ts
+// vite.config.ts —— 打包工具中配置相同的别名
+import { defineConfig } from 'vite'
+import path from 'path'
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, 'src'),
+      '@components': path.resolve(__dirname, 'src/components'),
+      '@hooks': path.resolve(__dirname, 'src/hooks'),
+      '@utils': path.resolve(__dirname, 'src/utils'),
+      '@services': path.resolve(__dirname, 'src/services'),
+      '@types': path.resolve(__dirname, 'src/types'),
+    },
+  },
+})
+```
+
+```ts
+// src/pages/user-profile.ts —— 使用路径别名的模块导入
+import type { User } from '@types/user'
+import { UserService } from '@services/user-service'
+import { formatDate } from '@utils/date'
+
+async function renderUserProfile(userId: string): Promise<void> {
+  const userService = new UserService()
+  const user: User = await userService.getById(userId)
+
+  console.log(`Name: ${user.name}`)
+  console.log(`Joined: ${formatDate(user.createdAt)}`)
+}
+
+renderUserProfile('user-001')
+```
+
+## 🔗 相关概念
+
+- **[ES Modules](./01-es-modules.mdx)**：模块导入导出的基本语法
+- **[命名空间](./03-namespaces.mdx)**：TypeScript 的命名空间机制
+- **[编译选项](../03-tsconfig-deep-dive/01-compiler-options.mdx)**：`tsconfig.json` 中 `module` 和 `moduleResolution` 的详细说明
+- **[声明文件基础](../02-declaration-files/01-declaration-basics.mdx)**：声明文件的编写与使用
+
+## 📚 学习检查点
+
+- [ ] 理解 `node`、`bundler`、`nodenext` 三种模块解析策略的区别
+- [ ] 能够根据项目场景选择合适的 `moduleResolution`
+- [ ] 掌握 `paths` 路径映射的配置方法
+- [ ] 理解 `baseUrl` 的作用和注意事项
+- [ ] 了解 TypeScript 查找声明文件的完整流程
+- [ ] 知道 `paths` 仅影响类型检查，需要在打包工具中配置对应的 `alias`
+
+## 🚀 下一步
+
+→ [命名空间](./03-namespaces.mdx)

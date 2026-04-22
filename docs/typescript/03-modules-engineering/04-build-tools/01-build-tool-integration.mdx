@@ -5,8 +5,413 @@
 
 ## 📚 概念介绍
 
-本节将介绍常用构建工具的核心概念和实践方法。
+TypeScript 代码不能直接在浏览器或 Node.js 中运行，需要先编译为 JavaScript。除了 TypeScript 官方的 `tsc` 编译器外，社区发展出了多种构建工具，它们在编译速度、打包能力和开发体验上各有特色。
+
+本节将介绍最常用的 TypeScript 构建工具，帮助你根据项目需求选择合适的方案。
+
+## 🎯 tsc 直接编译
+
+`tsc` 是 TypeScript 官方编译器，支持完整的类型检查和代码生成。
+
+### 基本使用
+
+```bash
+# 使用项目中的 tsconfig.json 编译
+npx tsc
+
+# 编译并监听文件变化
+npx tsc --watch
+
+# 只做类型检查，不生成文件
+npx tsc --noEmit
+
+# 使用指定的配置文件
+npx tsc -p tsconfig.build.json
+```
+
+### 项目配置
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "declaration": true,
+    "sourceMap": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["**/*.test.ts"]
+}
+```
+
+```json
+// package.json
+{
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+### 适用场景
+
+- **Node.js 库和应用**：不需要打包，直接运行编译后的文件
+- **仅做类型检查**：结合其他打包工具使用 `tsc --noEmit`
+- **生成声明文件**：使用 `tsc --emitDeclarationOnly` 只生成 `.d.ts`
+
+:::tip tsc 的局限
+`tsc` 只负责 TypeScript → JavaScript 的编译，不处理代码打包、Tree-shaking、CSS 处理等。对于前端项目，通常需要搭配打包工具使用。
+:::
+
+## 🎯 ts-node / tsx 运行时执行
+
+这类工具允许你直接运行 `.ts` 文件，跳过手动编译步骤，非常适合开发和脚本场景。
+
+### tsx（推荐）
+
+`tsx` 是基于 esbuild 的 TypeScript 运行器，速度快且零配置：
+
+```bash
+# 安装
+npm install -D tsx
+
+# 直接运行 TypeScript 文件
+npx tsx src/index.ts
+
+# 监听模式
+npx tsx watch src/index.ts
+```
+
+```json
+// package.json
+{
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  }
+}
+```
+
+```ts
+// src/index.ts —— 直接运行，无需编译
+interface ServerConfig {
+  port: number
+  host: string
+}
+
+const config: ServerConfig = {
+  port: 3000,
+  host: 'localhost',
+}
+
+console.log(`Server starting at http://${config.host}:${config.port}`)
+```
+
+### ts-node
+
+`ts-node` 是更成熟的方案，支持更多配置选项：
+
+```bash
+# 安装
+npm install -D ts-node
+
+# 运行
+npx ts-node src/index.ts
+
+# 使用 SWC 加速（推荐）
+npm install -D @swc/core @swc/helpers
+npx ts-node --swc src/index.ts
+```
+
+```json
+// tsconfig.json —— ts-node 配置
+{
+  "compilerOptions": {
+    "module": "CommonJS",
+    "esModuleInterop": true
+  },
+  "ts-node": {
+    "swc": true,
+    "transpileOnly": true
+  }
+}
+```
+
+### tsx vs ts-node
+
+| 特性 | tsx | ts-node |
+|------|-----|---------|
+| 底层引擎 | esbuild | TypeScript / SWC |
+| 速度 | ⚡ 非常快 | 🐢 较慢（SWC 模式较快） |
+| 零配置 | ✅ | ❌ 需要配置 |
+| ESM 支持 | ✅ 原生支持 | ⚠️ 需要额外配置 |
+| 类型检查 | ❌ 不做 | ✅ 可选开启 |
+| 推荐场景 | 开发、脚本 | 需要运行时类型检查 |
 
 :::tip
-本文档正在编写中，敬请期待。
+对于大多数场景，推荐使用 `tsx`——它更快、更简单。如果你需要运行时类型检查，使用 `ts-node`（不带 `transpileOnly`）。
 :::
+
+## 🎯 esbuild 与 TypeScript
+
+[esbuild](https://esbuild.github.io/) 是用 Go 编写的极速 JavaScript/TypeScript 打包器，编译速度比 `tsc` 快 10-100 倍。
+
+### 基本使用
+
+```bash
+# 安装
+npm install -D esbuild
+
+# 编译单个文件
+npx esbuild src/index.ts --outfile=dist/index.js --bundle --platform=node
+
+# 编译为 ESM 格式
+npx esbuild src/index.ts --outfile=dist/index.mjs --format=esm --bundle
+```
+
+### API 方式使用
+
+```ts
+// build.ts
+import { build } from 'esbuild'
+
+await build({
+  entryPoints: ['src/index.ts'],
+  bundle: true,
+  outdir: 'dist',
+  platform: 'node',
+  target: 'node18',
+  format: 'esm',
+  sourcemap: true,
+  minify: process.env.NODE_ENV === 'production',
+})
+
+console.log('Build completed!')
+```
+
+```json
+// package.json
+{
+  "scripts": {
+    "build:js": "esbuild src/index.ts --outdir=dist --bundle --platform=node --format=esm",
+    "build:types": "tsc --emitDeclarationOnly",
+    "build": "npm run build:js && npm run build:types"
+  }
+}
+```
+
+:::warning esbuild 的类型处理
+esbuild **不做类型检查**——它只是剥离类型注解并转译代码。你需要配合 `tsc --noEmit` 做类型检查。这也是 esbuild 极快的原因之一。
+:::
+
+## 🎯 Vite 与 TypeScript
+
+[Vite](https://vite.dev/) 是现代前端构建工具，基于原生 ES Modules，开发时使用 esbuild 转译 TypeScript，生产构建使用 Rollup。
+
+### 创建 Vite + TypeScript 项目
+
+```bash
+# 创建项目
+npm create vite@latest my-app -- --template react-ts
+
+# 安装依赖
+cd my-app
+npm install
+```
+
+### Vite 的 TypeScript 配置
+
+```json
+// tsconfig.json —— Vite 项目推荐配置
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src/**/*", "vite-env.d.ts"]
+}
+```
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path'
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, 'src'),
+    },
+  },
+})
+```
+
+关键要点：
+
+- **`noEmit: true`**：Vite 负责编译，`tsc` 只做类型检查
+- **`isolatedModules: true`**：确保每个文件可独立编译（esbuild 要求）
+- **`moduleResolution: "bundler"`**：匹配 Vite 的模块解析行为
+
+## 🎯 Rspack / Webpack 与 TypeScript
+
+### Rspack
+
+[Rspack](https://rspack.dev/) 是基于 Rust 的高性能打包工具，兼容 Webpack 生态：
+
+```ts
+// rspack.config.ts
+import { defineConfig } from '@rspack/cli'
+
+export default defineConfig({
+  entry: './src/index.ts',
+  resolve: {
+    extensions: ['.ts', '.tsx', '.js', '.jsx'],
+    alias: {
+      '@': './src',
+    },
+  },
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: {
+          loader: 'builtin:swc-loader',
+          options: {
+            jsc: {
+              parser: {
+                syntax: 'typescript',
+                tsx: true,
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+})
+```
+
+### Webpack
+
+对于使用 Webpack 的项目，推荐使用 `ts-loader` 或 `babel-loader` 处理 TypeScript：
+
+```ts
+// webpack.config.ts
+import path from 'path'
+import { Configuration } from 'webpack'
+
+const config: Configuration = {
+  entry: './src/index.ts',
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: 'ts-loader',
+        exclude: /node_modules/,
+      },
+    ],
+  },
+  resolve: {
+    extensions: ['.tsx', '.ts', '.js'],
+  },
+  output: {
+    filename: 'bundle.js',
+    path: path.resolve(__dirname, 'dist'),
+  },
+}
+
+export default config
+```
+
+## 📝 实际应用示例
+
+### 工具选择决策表
+
+| 场景 | 推荐工具 | 原因 |
+|------|---------|------|
+| 现代前端应用 | Vite | 快速 HMR、开箱即用 |
+| 大型前端应用 | Rspack | Webpack 兼容 + Rust 性能 |
+| Node.js 应用 | tsc + tsx | 简单直接 |
+| npm 库 | tsup (基于 esbuild) | 多格式输出、声明文件 |
+| 开发脚本 | tsx | 零配置直接运行 |
+| Monorepo | tsc --build | 项目引用、增量编译 |
+| 类型检查 CI | tsc --noEmit | 官方工具、最准确 |
+
+### 常见组合方案
+
+```json
+// package.json —— 前端项目
+{
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+```json
+// package.json —— Node.js 项目
+{
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+```json
+// package.json —— npm 库
+{
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  }
+}
+```
+
+## 🔗 相关概念
+
+- **[代码质量工具](./02-code-quality-tools.mdx)**：ESLint、Prettier 等代码质量保障工具
+- **[编译选项](../03-tsconfig-deep-dive/01-compiler-options.mdx)**：不同构建工具需要的 tsconfig 配置
+- **[项目引用](../03-tsconfig-deep-dive/03-project-references.mdx)**：`tsc --build` 在 Monorepo 中的应用
+- **[声明文件发布](../02-declaration-files/03-declaration-publishing.mdx)**：配合构建工具生成声明文件
+
+## 📚 学习检查点
+
+- [ ] 理解 `tsc` 编译器的基本用法和局限性
+- [ ] 掌握 `tsx` 和 `ts-node` 的区别与使用场景
+- [ ] 了解 esbuild 的优势和"不做类型检查"的特性
+- [ ] 能够为 Vite 项目配置正确的 TypeScript 选项
+- [ ] 了解 Rspack / Webpack 处理 TypeScript 的方式
+- [ ] 能够根据项目场景选择合适的构建工具组合
+
+## 🚀 下一步
+
+→ [代码质量工具](./02-code-quality-tools.mdx)

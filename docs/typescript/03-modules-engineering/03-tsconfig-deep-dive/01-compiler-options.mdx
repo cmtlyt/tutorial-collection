@@ -5,8 +5,403 @@
 
 ## 📚 概念介绍
 
-本节将介绍编译选项的核心概念和实践方法。
+`tsconfig.json` 是 TypeScript 项目的核心配置文件，其中 `compilerOptions` 决定了 TypeScript 编译器的行为。本节将深入讲解最重要的编译选项，帮助你理解每个选项解决的问题以及如何根据项目场景做出选择。
 
-:::tip
-本文档正在编写中，敬请期待。
+## 🎯 target 与 lib
+
+### target
+
+`target` 指定编译后的 JavaScript 目标版本。TypeScript 会将高版本语法降级为目标版本支持的语法：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2020"
+  }
+}
+```
+
+不同 `target` 的影响示例：
+
+```ts
+// 源代码
+const greeting = `Hello, ${'World'}!`
+const hasValue = undefined ?? 'default'
+
+class Animal {
+  #name: string
+  constructor(name: string) {
+    this.#name = name
+  }
+}
+```
+
+- **target: "ES2020"**：`??`（空值合并）和私有字段 `#name` 保持原样
+- **target: "ES2015"**：`??` 会被编译为三元表达式，`#name` 会被编译为 WeakMap
+- **target: "ES5"**：`class` 会被编译为构造函数，模板字符串编译为字符串拼接
+
+常见 `target` 选择：
+
+| target | 适用场景 |
+|--------|---------|
+| `ES5` | 需要兼容 IE11（已很少见） |
+| `ES2015` / `ES6` | 兼容较老的浏览器 |
+| `ES2020` | 现代浏览器、Node.js 14+ |
+| `ES2022` | Node.js 18+、现代浏览器 |
+| `ESNext` | 使用打包工具二次编译时 |
+
+### lib
+
+`lib` 指定编译时可用的标准库类型声明。它不影响编译产物，只影响类型检查时哪些全局 API 可用：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"]
+  }
+}
+```
+
+```ts
+// lib 包含 "DOM" 时，以下代码类型正确
+const element = document.getElementById('app')
+//    ^? HTMLElement | null
+
+const entries = new Map([['a', 1]]).entries()
+// lib 包含 "DOM.Iterable" 时，Map 可迭代
+
+// lib 包含 "ES2020" 时，Promise.allSettled 可用
+const results = await Promise.allSettled([
+  fetch('/api/a'),
+  fetch('/api/b'),
+])
+```
+
+常见 `lib` 组合：
+
+```json
+// 浏览器项目
+{ "lib": ["ES2020", "DOM", "DOM.Iterable"] }
+
+// Node.js 项目（不需要 DOM）
+{ "lib": ["ES2020"] }
+
+// 需要最新 API 类型
+{ "lib": ["ESNext", "DOM", "DOM.Iterable"] }
+```
+
+:::tip target 与 lib 的关系
+设置 `target` 时，TypeScript 会自动设置默认的 `lib`。例如 `target: "ES2020"` 默认 `lib: ["ES2020", "DOM", "DOM.Iterable"]`。只有当你需要覆盖默认值时才需要显式设置 `lib`。
 :::
+
+## 🎯 module 与 moduleResolution
+
+### module
+
+`module` 指定编译后代码使用的模块系统：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "module": "ESNext"
+  }
+}
+```
+
+同一段代码在不同 `module` 下的编译结果：
+
+```ts
+// 源代码
+import { readFile } from 'fs/promises'
+export async function loadConfig(path: string): Promise<string> {
+  return readFile(path, 'utf-8')
+}
+```
+
+- **module: "ESNext"** → 保持 `import`/`export` 语法不变
+- **module: "CommonJS"** → 编译为 `require()`/`module.exports`
+- **module: "NodeNext"** → 根据 `package.json` 的 `type` 字段决定
+
+常见选择：
+
+| module | 适用场景 |
+|--------|---------|
+| `ESNext` | 使用打包工具（Vite、Rspack） |
+| `CommonJS` | 传统 Node.js 项目 |
+| `NodeNext` | 现代 Node.js（ESM 原生支持） |
+
+### moduleResolution
+
+`moduleResolution` 控制模块查找策略（详见 [模块解析](../01-module-system/02-module-resolution.mdx)）：
+
+```json
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  }
+}
+```
+
+**module 与 moduleResolution 的推荐搭配**：
+
+| 场景 | module | moduleResolution |
+|------|--------|-----------------|
+| Vite / Rspack 项目 | `ESNext` | `bundler` |
+| Node.js ESM 项目 | `NodeNext` | `nodenext` |
+| Node.js CJS 项目 | `CommonJS` | `node` |
+
+## 🎯 strict 系列选项
+
+`strict: true` 是一个"总开关"，它同时开启以下所有严格检查选项：
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "strict": true
+    // 等价于同时开启以下所有选项：
+    // "strictNullChecks": true,
+    // "strictFunctionTypes": true,
+    // "strictBindCallApply": true,
+    // "strictPropertyInitialization": true,
+    // "noImplicitAny": true,
+    // "noImplicitThis": true,
+    // "alwaysStrict": true,
+    // "useUnknownInCatchVariables": true
+  }
+}
+```
+
+每个选项的作用（详细内容见 [类型检查选项](./02-type-checking-options.mdx)）：
+
+```ts
+// strictNullChecks —— null 和 undefined 不再是所有类型的子类型
+function getLength(str: string | null): number {
+  // ❌ strict 模式下报错：str 可能为 null
+  // return str.length
+
+  // ✅ 需要先检查
+  if (str === null) return 0
+  return str.length
+}
+
+// noImplicitAny —— 禁止隐式 any
+// ❌ 报错：参数 x 隐式具有 any 类型
+// function double(x) { return x * 2 }
+
+// ✅ 需要显式标注类型
+function double(x: number): number { return x * 2 }
+
+console.log(getLength('hello'))  // 5
+console.log(getLength(null))     // 0
+console.log(double(21))          // 42
+```
+
+:::tip 强烈建议
+新项目务必开启 `strict: true`。它能在编译时捕获大量潜在的运行时错误。对于从 JavaScript 迁移的项目，可以逐步开启各个子选项。
+:::
+
+## 🎯 esModuleInterop 与 allowSyntheticDefaultImports
+
+### 问题背景
+
+许多 npm 包（如 `express`、`react`）使用 CommonJS 的 `module.exports` 导出，它们没有"默认导出"的概念。在 TypeScript 中直接用 `import express from 'express'` 会报错。
+
+### esModuleInterop
+
+开启后，TypeScript 会在编译时生成辅助代码，使 CommonJS 模块可以像 ES Module 一样使用默认导入：
+
+```json
+{
+  "compilerOptions": {
+    "esModuleInterop": true
+  }
+}
+```
+
+```ts
+// ❌ 不开启 esModuleInterop 时
+import * as express from 'express' // 必须用 * as
+
+// ✅ 开启 esModuleInterop 后
+import express from 'express'      // 可以使用默认导入
+
+const app = express()
+app.get('/', (req, res) => {
+  res.send('Hello World')
+})
+```
+
+### allowSyntheticDefaultImports
+
+仅影响类型检查，不影响编译产物。开启 `esModuleInterop` 时会自动开启此选项：
+
+```json
+{
+  "compilerOptions": {
+    // 当使用外部打包工具处理模块时
+    // 只需要类型检查层面的兼容
+    "allowSyntheticDefaultImports": true
+  }
+}
+```
+
+:::tip 何时使用哪个？
+- **tsc 直接编译**：使用 `esModuleInterop: true`（影响类型检查和编译产物）
+- **使用打包工具（Vite、Rspack）**：只需 `allowSyntheticDefaultImports: true`（打包工具自行处理模块兼容）
+:::
+
+## 🎯 其他重要编译选项
+
+### 路径与输出
+
+```json
+{
+  "compilerOptions": {
+    "rootDir": "./src",          // 源文件根目录
+    "outDir": "./dist",          // 输出目录
+    "baseUrl": ".",              // 非相对模块导入的基准路径
+    "paths": {                   // 路径映射
+      "@/*": ["src/*"]
+    },
+    "declaration": true,         // 生成 .d.ts 声明文件
+    "declarationDir": "./dist/types", // 声明文件输出目录
+    "sourceMap": true,           // 生成 source map
+    "declarationMap": true       // 声明文件的 source map
+  }
+}
+```
+
+### 模块互操作
+
+```json
+{
+  "compilerOptions": {
+    "isolatedModules": true,       // 确保每个文件可以独立编译
+    "verbatimModuleSyntax": true,  // 严格的模块语法（TS 5.0+）
+    "resolveJsonModule": true,     // 允许导入 JSON 文件
+    "allowJs": true,               // 允许编译 JavaScript 文件
+    "checkJs": false               // 是否对 JS 文件进行类型检查
+  }
+}
+```
+
+### skipLibCheck
+
+```json
+{
+  "compilerOptions": {
+    "skipLibCheck": true  // 跳过声明文件的类型检查
+  }
+}
+```
+
+:::tip skipLibCheck 的作用
+开启 `skipLibCheck` 可以显著加快编译速度，因为它跳过了 `node_modules` 中所有 `.d.ts` 文件的类型检查。在大型项目中几乎是必备选项。只有当你需要调试第三方库的类型问题时，才需要关闭它。
+:::
+
+## 📝 实际应用示例
+
+### 现代前端项目配置
+
+```json
+// tsconfig.json —— Vite + React 项目
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+### Node.js 后端项目配置
+
+```json
+// tsconfig.json —— Node.js ESM 项目
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}
+```
+
+### TypeScript 库项目配置
+
+```json
+// tsconfig.json —— npm 包
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationDir": "./dist/types",
+    "emitDeclarationOnly": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "sourceMap": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}
+```
+
+## 🔗 相关概念
+
+- **[类型检查选项](./02-type-checking-options.mdx)**：`strict` 系列选项的详细解析
+- **[项目引用](./03-project-references.mdx)**：`composite` 和 `references` 配置
+- **[模块解析](../01-module-system/02-module-resolution.mdx)**：`moduleResolution` 策略的详细说明
+- **[声明文件发布](../02-declaration-files/03-declaration-publishing.mdx)**：`declaration`、`declarationDir` 的使用
+
+## 📚 学习检查点
+
+- [ ] 理解 `target` 和 `lib` 的区别与联系
+- [ ] 能够为不同场景选择合适的 `module` 和 `moduleResolution` 搭配
+- [ ] 理解 `strict: true` 开启的所有子选项
+- [ ] 掌握 `esModuleInterop` 和 `allowSyntheticDefaultImports` 的区别
+- [ ] 能够为前端、后端、库项目编写合适的 `tsconfig.json`
+- [ ] 理解 `isolatedModules`、`skipLibCheck`、`verbatimModuleSyntax` 等选项的作用
+
+## 🚀 下一步
+
+→ [类型检查选项](./02-type-checking-options.mdx)

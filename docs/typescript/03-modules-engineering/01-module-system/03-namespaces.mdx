@@ -5,8 +5,317 @@
 
 ## 📚 概念介绍
 
-本节将介绍命名空间的核心概念和实践方法。
+命名空间（Namespace）是 TypeScript 早期提供的一种代码组织方式，用于将相关的类型、函数和变量分组到一个逻辑容器中，避免全局命名冲突。
 
-:::tip
-本文档正在编写中，敬请期待。
+在 ES Modules 成为标准之前，命名空间是 TypeScript 组织代码的主要方式。如今，**ES Modules 已经是推荐的模块化方案**，命名空间主要用于以下场景：
+- 为全局库编写声明文件
+- 声明合并（Declaration Merging）
+- 维护遗留的 TypeScript 项目
+
+:::tip 核心建议
+在新项目中，优先使用 ES Modules 而不是命名空间。本节的学习目的是让你能够理解和维护使用命名空间的代码。
 :::
+
+## 🎯 命名空间声明
+
+### 基本语法
+
+使用 `namespace` 关键字声明命名空间，内部成员需要使用 `export` 才能被外部访问：
+
+```ts
+namespace Validation {
+  // 导出的成员可以从外部访问
+  export interface Validator {
+    validate(value: string): boolean
+  }
+
+  // 未导出的成员是命名空间的私有成员
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+  export class EmailValidator implements Validator {
+    validate(value: string): boolean {
+      return emailRegex.test(value)
+    }
+  }
+
+  export class MinLengthValidator implements Validator {
+    constructor(private minLength: number) {}
+
+    validate(value: string): boolean {
+      return value.length >= this.minLength
+    }
+  }
+}
+
+// 使用命名空间中的成员
+const emailValidator = new Validation.EmailValidator()
+const lengthValidator = new Validation.MinLengthValidator(8)
+
+console.log(emailValidator.validate('test@example.com'))  // true
+console.log(emailValidator.validate('invalid'))            // false
+console.log(lengthValidator.validate('short'))             // false
+console.log(lengthValidator.validate('long-enough-string')) // true
+```
+
+### 嵌套命名空间
+
+命名空间可以嵌套，形成层次结构：
+
+```ts
+namespace App {
+  export namespace Models {
+    export interface User {
+      id: number
+      name: string
+    }
+
+    export interface Product {
+      id: number
+      title: string
+      price: number
+    }
+  }
+
+  export namespace Services {
+    export function getUser(id: number): Models.User {
+      return { id, name: `User ${id}` }
+    }
+
+    export function getProduct(id: number): Models.Product {
+      return { id, title: `Product ${id}`, price: 9.99 }
+    }
+  }
+}
+
+const user = App.Services.getUser(1)
+const product = App.Services.getProduct(1)
+
+console.log(user)    // { id: 1, name: "User 1" }
+console.log(product) // { id: 1, title: "Product 1", price: 9.99 }
+```
+
+## 🎯 命名空间合并
+
+TypeScript 允许同名的命名空间自动合并，这在扩展已有定义时非常有用：
+
+```ts
+namespace StringUtils {
+  export function capitalize(str: string): string {
+    return str.charAt(0).toUpperCase() + str.slice(1)
+  }
+}
+
+// 同名命名空间会自动合并
+namespace StringUtils {
+  export function reverse(str: string): string {
+    return str.split('').reverse().join('')
+  }
+
+  export function truncate(str: string, maxLength: number): string {
+    if (str.length <= maxLength) return str
+    return str.slice(0, maxLength) + '...'
+  }
+}
+
+// 两个声明中的成员都可以访问
+console.log(StringUtils.capitalize('hello'))       // "Hello"
+console.log(StringUtils.reverse('hello'))          // "olleh"
+console.log(StringUtils.truncate('hello world', 5)) // "hello..."
+```
+
+### 命名空间与类的合并
+
+命名空间可以与类合并，为类添加静态成员：
+
+```ts
+class Album {
+  label: Album.AlbumLabel
+
+  constructor(label: Album.AlbumLabel) {
+    this.label = label
+  }
+
+  describe(): string {
+    return `Album on ${this.label.name} label`
+  }
+}
+
+namespace Album {
+  export interface AlbumLabel {
+    name: string
+    country: string
+  }
+
+  export function createLabel(name: string, country: string): AlbumLabel {
+    return { name, country }
+  }
+}
+
+const label = Album.createLabel('Universal', 'US')
+const album = new Album(label)
+console.log(album.describe()) // "Album on Universal label"
+```
+
+### 命名空间与枚举的合并
+
+```ts
+enum Color {
+  Red = 'RED',
+  Green = 'GREEN',
+  Blue = 'BLUE',
+}
+
+namespace Color {
+  export function fromHex(hex: string): Color | undefined {
+    const hexMap: Record<string, Color> = {
+      '#FF0000': Color.Red,
+      '#00FF00': Color.Green,
+      '#0000FF': Color.Blue,
+    }
+    return hexMap[hex.toUpperCase()]
+  }
+
+  export function toHex(color: Color): string {
+    const colorMap: Record<Color, string> = {
+      [Color.Red]: '#FF0000',
+      [Color.Green]: '#00FF00',
+      [Color.Blue]: '#0000FF',
+    }
+    return colorMap[color]
+  }
+}
+
+const color = Color.fromHex('#FF0000')
+console.log(color)                      // "RED"
+console.log(Color.toHex(Color.Blue))    // "#0000FF"
+```
+
+## 🎯 命名空间 vs 模块
+
+| 特性 | 命名空间（Namespace） | 模块（ES Modules） |
+|------|----------------------|-------------------|
+| 标准 | TypeScript 特有 | ECMAScript 标准 |
+| 作用域 | 全局或嵌套 | 文件级别 |
+| 依赖管理 | 手动管理加载顺序 | 自动管理依赖 |
+| Tree-shaking | 不支持 | 支持 |
+| 代码分割 | 不支持 | 支持（动态导入） |
+| 编辑器支持 | 一般 | 优秀（自动导入等） |
+| 推荐度 | 仅在特定场景使用 | ✅ 推荐 |
+
+### 命名空间的合理使用场景
+
+```ts
+// ✅ 场景1：为全局库扩展类型声明
+declare namespace Express {
+  interface Request {
+    userId?: string
+    sessionId?: string
+  }
+}
+
+// ✅ 场景2：在声明文件中组织类型
+declare namespace API {
+  interface Response<T> {
+    code: number
+    data: T
+    message: string
+  }
+
+  interface PaginatedResponse<T> extends Response<T[]> {
+    total: number
+    page: number
+    pageSize: number
+  }
+}
+```
+
+```ts
+// ❌ 不推荐：在普通代码中使用命名空间代替模块
+namespace MyApp {
+  export function doSomething(): void {
+    console.log('doing something')
+  }
+}
+
+// ✅ 推荐：使用 ES Modules
+// my-app.ts
+export function doSomething(): void {
+  console.log('doing something')
+}
+```
+
+## 📝 实际应用示例
+
+### 为全局库编写类型声明
+
+这是命名空间最常见的实际用途——在 `.d.ts` 文件中为没有类型定义的全局库提供类型：
+
+```ts
+// global.d.ts —— 假设页面通过 <script> 标签引入了一个图表库
+declare namespace ChartLib {
+  interface ChartOptions {
+    type: 'line' | 'bar' | 'pie'
+    title: string
+    width: number
+    height: number
+    data: DataPoint[]
+  }
+
+  interface DataPoint {
+    label: string
+    value: number
+    color?: string
+  }
+
+  interface ChartInstance {
+    render(): void
+    update(data: DataPoint[]): void
+    destroy(): void
+  }
+
+  function createChart(
+    container: HTMLElement,
+    options: ChartOptions
+  ): ChartInstance
+}
+```
+
+```ts
+// app.ts —— 使用全局声明的类型
+const container = document.getElementById('chart-container')
+
+if (container) {
+  const chart = ChartLib.createChart(container, {
+    type: 'bar',
+    title: 'Monthly Sales',
+    width: 800,
+    height: 400,
+    data: [
+      { label: 'Jan', value: 120, color: '#4CAF50' },
+      { label: 'Feb', value: 150, color: '#2196F3' },
+      { label: 'Mar', value: 90, color: '#FF9800' },
+    ],
+  })
+
+  chart.render()
+}
+```
+
+## 🔗 相关概念
+
+- **[ES Modules](./01-es-modules.mdx)**：推荐的现代模块化方案
+- **[模块解析](./02-module-resolution.mdx)**：TypeScript 如何查找模块文件
+- **[声明文件基础](../02-declaration-files/01-declaration-basics.mdx)**：`.d.ts` 文件中使用命名空间的更多示例
+- **[为第三方库编写声明](../02-declaration-files/02-third-party-declarations.mdx)**：命名空间在声明合并中的应用
+
+## 📚 学习检查点
+
+- [ ] 理解命名空间的声明语法和成员访问方式
+- [ ] 掌握命名空间合并的机制（同名合并、与类/枚举合并）
+- [ ] 清楚命名空间与 ES Modules 的区别
+- [ ] 知道命名空间的合理使用场景（全局声明文件、声明合并）
+- [ ] 理解为什么现代项目推荐使用 ES Modules 而非命名空间
+
+## 🚀 下一步
+
+→ [声明文件基础](../02-declaration-files/01-declaration-basics.mdx)

@@ -5,8 +5,473 @@
 
 ## 📚 概念介绍
 
-本节将介绍为第三方库编写声明的核心概念和实践方法。
+在 TypeScript 项目中使用第三方 JavaScript 库时，我们需要类型声明来获得类型检查和编辑器智能提示。大多数流行的库要么自带类型声明，要么可以通过 DefinitelyTyped（`@types/*`）获取。
 
-:::tip
-本文档正在编写中，敬请期待。
+但总有一些场景需要你手动编写声明文件：
+- 使用的库没有类型定义，DefinitelyTyped 上也没有
+- 需要扩展已有库的类型定义（如给 Express 的 Request 添加自定义字段）
+- 使用了公司内部的 JavaScript SDK
+
+## 🎯 DefinitelyTyped（@types/*）
+
+[DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped) 是一个社区维护的类型声明仓库，为数万个 npm 包提供类型定义。
+
+### 安装与使用
+
+```bash
+# 安装第三方库
+npm install lodash
+
+# 安装对应的类型声明
+npm install -D @types/lodash
+```
+
+安装后无需额外配置，TypeScript 会自动识别 `node_modules/@types` 下的类型声明：
+
+```ts
+import { groupBy, sortBy, uniq } from 'lodash'
+
+const data = [
+  { name: 'Alice', age: 30 },
+  { name: 'Bob', age: 25 },
+  { name: 'Charlie', age: 30 },
+]
+
+const grouped = groupBy(data, 'age')
+//    ^? Record<string, Array<{ name: string; age: number }>>
+
+const sorted = sortBy(data, ['age', 'name'])
+//    ^? Array<{ name: string; age: number }>
+
+const ages = uniq(data.map(d => d.age))
+//    ^? number[]
+
+console.log(grouped)
+console.log(sorted)
+console.log(ages)
+```
+
+### 查找类型声明
+
+判断一个库是否有类型声明的方法：
+
+1. **自带类型**：检查库的 `package.json` 是否有 `types` 或 `typings` 字段
+2. **DefinitelyTyped**：尝试安装 `@types/包名`，或在 [TypeSearch](https://www.typescriptlang.org/dt/search) 上搜索
+3. **都没有**：需要自己编写声明文件
+
+## 🎯 模块声明（declare module）
+
+### 为整个模块编写声明
+
+假设你使用了一个没有类型声明的工具库 `string-toolkit`：
+
+```ts
+// types/string-toolkit.d.ts
+declare module 'string-toolkit' {
+  /** 将字符串转换为驼峰命名 */
+  export function camelCase(str: string): string
+
+  /** 将字符串转换为短横线命名 */
+  export function kebabCase(str: string): string
+
+  /** 将字符串转换为蛇形命名 */
+  export function snakeCase(str: string): string
+
+  /** 截断字符串并添加省略号 */
+  export function truncate(str: string, maxLength: number): string
+
+  /** 默认导出一个工具集对象 */
+  const toolkit: {
+    camelCase: typeof camelCase
+    kebabCase: typeof kebabCase
+    snakeCase: typeof snakeCase
+    truncate: typeof truncate
+  }
+
+  export default toolkit
+}
+```
+
+```ts
+// app.ts —— 现在可以类型安全地使用这个库
+import { camelCase, kebabCase } from 'string-toolkit'
+
+console.log(camelCase('hello-world'))  // "helloWorld"
+console.log(kebabCase('helloWorld'))   // "hello-world"
+```
+
+### 快速声明（跳过类型检查）
+
+如果暂时不需要详细的类型，可以使用通配符声明快速跳过类型错误：
+
+```ts
+// types/untyped-modules.d.ts
+
+// 将整个模块声明为 any 类型
+declare module 'legacy-utils'
+
+// 使用通配符匹配一类模块
+declare module '*.vue' {
+  import { DefineComponent } from 'vue'
+  const component: DefineComponent<object, object, unknown>
+  export default component
+}
+```
+
+:::warning
+通配符声明虽然能消除编译错误，但会失去类型检查的保护。建议仅作为临时方案，尽快补充完整的类型声明。
 :::
+
+### 为带有子路径的模块编写声明
+
+有些库通过子路径导出不同的功能：
+
+```ts
+// types/analytics-sdk.d.ts
+declare module 'analytics-sdk' {
+  export interface AnalyticsConfig {
+    appId: string
+    debug?: boolean
+    sampleRate?: number
+  }
+
+  export function init(config: AnalyticsConfig): void
+  export function destroy(): void
+}
+
+declare module 'analytics-sdk/tracker' {
+  export interface EventData {
+    category: string
+    action: string
+    label?: string
+    value?: number
+  }
+
+  export function trackEvent(data: EventData): void
+  export function trackPageView(path: string): void
+}
+
+declare module 'analytics-sdk/user' {
+  export function setUserId(id: string): void
+  export function setUserProperties(props: Record<string, unknown>): void
+}
+```
+
+```ts
+// app.ts
+import { init } from 'analytics-sdk'
+import { trackEvent } from 'analytics-sdk/tracker'
+import { setUserId } from 'analytics-sdk/user'
+
+init({ appId: 'my-app', debug: true })
+setUserId('user-123')
+trackEvent({ category: 'Button', action: 'Click', label: 'Submit' })
+```
+
+## 🎯 全局变量声明（declare global）
+
+### 扩展 Express Request
+
+这是最常见的声明合并场景之一——为 Express 的 `Request` 对象添加自定义属性：
+
+```ts
+// types/express.d.ts
+import { User } from '../models/user'
+
+declare global {
+  namespace Express {
+    interface Request {
+      /** 通过认证中间件注入的当前用户 */
+      user?: User
+      /** 请求的唯一追踪 ID */
+      requestId: string
+    }
+  }
+}
+
+export {}
+```
+
+```ts
+// models/user.ts
+export interface User {
+  id: string
+  username: string
+  email: string
+  role: 'admin' | 'user'
+}
+```
+
+```ts
+// middleware/auth.ts
+import { Request, Response, NextFunction } from 'express'
+
+function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // req.user 现在有正确的类型
+  if (!req.user) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  console.log(`User ${req.user.username} authenticated`)
+  console.log(`Request ID: ${req.requestId}`)
+  next()
+}
+
+export { authMiddleware }
+```
+
+### 扩展 Window 对象
+
+```ts
+// types/window.d.ts
+export {}
+
+declare global {
+  interface Window {
+    // 第三方 SDK
+    Sentry: {
+      init(config: { dsn: string; environment: string }): void
+      captureException(error: Error): void
+      captureMessage(message: string): void
+    }
+
+    // 应用运行时配置
+    __RUNTIME_CONFIG__: {
+      apiEndpoint: string
+      cdnPrefix: string
+      region: string
+    }
+  }
+}
+```
+
+```ts
+// sentry-init.ts
+window.Sentry.init({
+  dsn: 'https://example@sentry.io/123',
+  environment: 'production',
+})
+
+try {
+  throw new Error('Test error')
+} catch (error) {
+  if (error instanceof Error) {
+    window.Sentry.captureException(error)
+  }
+}
+```
+
+## 🎯 声明合并（Declaration Merging）
+
+TypeScript 允许多个同名声明自动合并，这是扩展第三方库类型的基础。
+
+### 接口合并
+
+```ts
+// 同名 interface 会自动合并
+interface Animal {
+  name: string
+}
+
+interface Animal {
+  age: number
+}
+
+interface Animal {
+  breed?: string
+}
+
+// 等价于：
+// interface Animal {
+//   name: string
+//   age: number
+//   breed?: string
+// }
+
+const dog: Animal = {
+  name: 'Rex',
+  age: 3,
+  breed: 'Labrador',
+}
+
+console.log(dog) // { name: "Rex", age: 3, breed: "Labrador" }
+```
+
+### 模块增强（Module Augmentation）
+
+使用 `declare module` 扩展已有模块的类型：
+
+```ts
+// types/axios-extensions.d.ts
+import 'axios'
+
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** 自定义：是否在请求失败时自动重试 */
+    retry?: boolean
+    /** 自定义：最大重试次数 */
+    retryCount?: number
+    /** 自定义：重试延迟（毫秒） */
+    retryDelay?: number
+  }
+
+  interface AxiosResponse {
+    /** 自定义：请求耗时（毫秒） */
+    duration?: number
+  }
+}
+
+export {}
+```
+
+```ts
+// http-client.ts
+import axios from 'axios'
+
+const client = axios.create({
+  baseURL: 'https://api.example.com',
+  timeout: 10000,
+  // 使用扩展的配置
+  retry: true,
+  retryCount: 3,
+  retryDelay: 1000,
+})
+
+async function fetchData(): Promise<void> {
+  const response = await client.get('/data')
+
+  // 使用扩展的属性
+  if (response.duration) {
+    console.log(`Request took ${response.duration}ms`)
+  }
+
+  console.log(response.data)
+}
+
+fetchData()
+```
+
+## 📝 实际应用示例
+
+### 为内部 JavaScript SDK 编写完整声明
+
+假设公司有一个内部的 JavaScript 支付 SDK：
+
+```ts
+// types/internal-payment-sdk.d.ts
+declare module '@internal/payment-sdk' {
+  /** 支付方式 */
+  type PaymentMethod = 'alipay' | 'wechat' | 'credit-card' | 'bank-transfer'
+
+  /** 货币类型 */
+  type Currency = 'CNY' | 'USD' | 'EUR' | 'JPY'
+
+  /** SDK 初始化配置 */
+  interface PaymentConfig {
+    merchantId: string
+    environment: 'sandbox' | 'production'
+    currency?: Currency
+    locale?: string
+    onReady?: () => void
+    onError?: (error: PaymentError) => void
+  }
+
+  /** 支付错误 */
+  interface PaymentError {
+    code: string
+    message: string
+    details?: Record<string, unknown>
+  }
+
+  /** 支付请求参数 */
+  interface PaymentRequest {
+    orderId: string
+    amount: number
+    currency?: Currency
+    method: PaymentMethod
+    description?: string
+    metadata?: Record<string, string>
+  }
+
+  /** 支付结果 */
+  interface PaymentResult {
+    transactionId: string
+    orderId: string
+    status: 'success' | 'pending' | 'failed'
+    amount: number
+    currency: Currency
+    paidAt?: Date
+  }
+
+  /** 支付 SDK 类 */
+  class PaymentSDK {
+    constructor(config: PaymentConfig)
+    pay(request: PaymentRequest): Promise<PaymentResult>
+    query(transactionId: string): Promise<PaymentResult>
+    refund(transactionId: string, amount?: number): Promise<PaymentResult>
+    destroy(): void
+  }
+
+  export { PaymentSDK, PaymentConfig, PaymentRequest, PaymentResult, PaymentError, PaymentMethod, Currency }
+  export default PaymentSDK
+}
+```
+
+```ts
+// checkout.ts —— 使用类型安全的 SDK
+import PaymentSDK from '@internal/payment-sdk'
+import type { PaymentRequest, PaymentResult } from '@internal/payment-sdk'
+
+const sdk = new PaymentSDK({
+  merchantId: 'merchant-001',
+  environment: 'production',
+  currency: 'CNY',
+  onReady: () => console.log('SDK ready'),
+  onError: (error) => console.error(`SDK error: ${error.code} - ${error.message}`),
+})
+
+async function processPayment(): Promise<PaymentResult> {
+  const request: PaymentRequest = {
+    orderId: 'order-20260422-001',
+    amount: 99.99,
+    method: 'alipay',
+    description: 'Premium subscription',
+    metadata: { userId: 'user-123' },
+  }
+
+  const result = await sdk.pay(request)
+
+  if (result.status === 'success') {
+    console.log(`Payment successful! Transaction: ${result.transactionId}`)
+  } else if (result.status === 'pending') {
+    console.log('Payment is pending, will check later...')
+    const updated = await sdk.query(result.transactionId)
+    console.log(`Updated status: ${updated.status}`)
+  }
+
+  return result
+}
+
+processPayment()
+```
+
+## 🔗 相关概念
+
+- **[声明文件基础](./01-declaration-basics.mdx)**：`declare` 关键字和 `.d.ts` 文件的基础知识
+- **[声明文件发布](./03-declaration-publishing.mdx)**：如何将声明文件打包发布到 npm
+- **[命名空间](../01-module-system/03-namespaces.mdx)**：命名空间在声明合并中的应用
+- **[编译选项](../03-tsconfig-deep-dive/01-compiler-options.mdx)**：`typeRoots` 和 `types` 配置
+
+## 📚 学习检查点
+
+- [ ] 了解 DefinitelyTyped 和 `@types/*` 的安装使用
+- [ ] 掌握 `declare module` 为第三方模块编写类型声明
+- [ ] 能够使用 `declare global` 扩展全局类型（Window、Express 等）
+- [ ] 理解声明合并（Declaration Merging）的工作机制
+- [ ] 能够使用模块增强（Module Augmentation）扩展已有库的类型
+- [ ] 能够为内部 JavaScript SDK 编写完整的类型声明文件
+
+## 🚀 下一步
+
+→ [声明文件发布](./03-declaration-publishing.mdx)
