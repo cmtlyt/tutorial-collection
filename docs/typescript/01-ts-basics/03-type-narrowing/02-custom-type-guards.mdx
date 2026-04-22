@@ -1,12 +1,429 @@
 # 自定义类型守卫
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍自定义类型守卫的核心概念和实践方法。
+前一节介绍了 TypeScript 内置的类型收窄技术（`typeof`、`instanceof`、`in` 等）。但在实际开发中，我们经常需要更复杂的判断逻辑来收窄类型。TypeScript 提供了 `is` 关键字（类型谓词）和 `asserts` 关键字（断言函数）两种方式来创建自定义类型守卫。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 is 关键字（Type Predicates）
+
+### 基本语法
+
+类型谓词使用 `参数名 is 类型` 作为函数的返回类型：
+
+```ts
+interface Fish {
+  name: string;
+  swim(): void;
+}
+
+interface Bird {
+  name: string;
+  fly(): void;
+}
+
+// 类型谓词：pet is Fish
+function isFish(pet: Fish | Bird): pet is Fish {
+  return "swim" in pet;
+}
+
+function move(pet: Fish | Bird): void {
+  if (isFish(pet)) {
+    // TypeScript 知道 pet 是 Fish
+    pet.swim();
+  } else {
+    // TypeScript 知道 pet 是 Bird
+    pet.fly();
+  }
+}
+
+const nemo: Fish = { name: "Nemo", swim: () => console.log("Swimming!") };
+const tweety: Bird = { name: "Tweety", fly: () => console.log("Flying!") };
+
+move(nemo);  // Swimming!
+move(tweety); // Flying!
+```
+
+### 为什么需要 is 关键字
+
+如果不使用 `is`，TypeScript 不会在调用方进行类型收窄：
+
+```ts
+interface Circle {
+  kind: "circle";
+  radius: number;
+}
+
+interface Rectangle {
+  kind: "rectangle";
+  width: number;
+  height: number;
+}
+
+type Shape = Circle | Rectangle;
+
+// ❌ 仅返回 boolean，不会收窄类型
+function isCircleSimple(shape: Shape): boolean {
+  return shape.kind === "circle";
+}
+
+// ✅ 使用 is，能在调用方收窄类型
+function isCircle(shape: Shape): shape is Circle {
+  return shape.kind === "circle";
+}
+
+function getArea(shape: Shape): number {
+  if (isCircleSimple(shape)) {
+    // shape 仍然是 Shape，无法访问 radius
+    // return Math.PI * shape.radius ** 2;  // 编译错误
+    return 0;
+  }
+
+  if (isCircle(shape)) {
+    // shape 被收窄为 Circle
+    return Math.PI * shape.radius ** 2;
+  }
+
+  // shape 被收窄为 Rectangle
+  return shape.width * shape.height;
+}
+```
+
+### 与数组方法结合
+
+类型谓词在数组过滤中特别有用：
+
+```ts
+interface User {
+  id: number;
+  name: string;
+  email: string | null;
+}
+
+// 使用类型谓词过滤空值
+function hasEmail(user: User): user is User & { email: string } {
+  return user.email !== null;
+}
+
+const users: User[] = [
+  { id: 1, name: "Alice", email: "alice@example.com" },
+  { id: 2, name: "Bob", email: null },
+  { id: 3, name: "Charlie", email: "charlie@example.com" },
+];
+
+// 不使用类型谓词：usersWithEmail 类型为 User[]
+const filteredBasic = users.filter((user) => user.email !== null);
+// filteredBasic[0].email 仍然是 string | null
+
+// 使用类型谓词：类型被正确收窄
+const usersWithEmail = users.filter(hasEmail);
+// usersWithEmail 的类型为 (User & { email: string })[]
+usersWithEmail.forEach((user) => {
+  console.log(user.email.toUpperCase()); // 安全访问，不需要空值检查
+});
+// "ALICE@EXAMPLE.COM"
+// "CHARLIE@EXAMPLE.COM"
+
+// 通用的非空过滤器
+function isNotNull<T>(value: T | null | undefined): value is T {
+  return value != null;
+}
+
+const values = [1, null, 2, undefined, 3, null];
+const nonNullValues = values.filter(isNotNull);
+// nonNullValues 的类型为 number[]
+console.log(nonNullValues); // [1, 2, 3]
+```
+
+### 复杂的类型守卫
+
+```ts
+interface TextResponse {
+  type: "text";
+  content: string;
+}
+
+interface ImageResponse {
+  type: "image";
+  url: string;
+  width: number;
+  height: number;
+}
+
+interface ErrorResponse {
+  type: "error";
+  code: number;
+  message: string;
+}
+
+type ApiResponse = TextResponse | ImageResponse | ErrorResponse;
+
+function isTextResponse(response: ApiResponse): response is TextResponse {
+  return response.type === "text";
+}
+
+function isImageResponse(response: ApiResponse): response is ImageResponse {
+  return response.type === "image" && typeof response.url === "string";
+}
+
+function isErrorResponse(response: ApiResponse): response is ErrorResponse {
+  return response.type === "error";
+}
+
+function processResponse(response: ApiResponse): string {
+  if (isErrorResponse(response)) {
+    return `Error ${response.code}: ${response.message}`;
+  }
+  if (isImageResponse(response)) {
+    return `Image: ${response.url} (${response.width}×${response.height})`;
+  }
+  if (isTextResponse(response)) {
+    return `Text: ${response.content}`;
+  }
+  const unreachable: never = response;
+  return unreachable;
+}
+
+console.log(processResponse({ type: "text", content: "Hello" }));
+// "Text: Hello"
+console.log(processResponse({ type: "image", url: "pic.jpg", width: 800, height: 600 }));
+// "Image: pic.jpg (800×600)"
+console.log(processResponse({ type: "error", code: 404, message: "Not Found" }));
+// "Error 404: Not Found"
+```
+
+## 🛡️ asserts 关键字（Assertion Functions）
+
+### 基本语法
+
+断言函数使用 `asserts 参数名 is 类型` 作为返回类型。如果函数正常返回（没有抛出异常），TypeScript 就会在后续代码中收窄类型：
+
+```ts
+function assertIsString(value: unknown): asserts value is string {
+  if (typeof value !== "string") {
+    throw new Error(`Expected string, got ${typeof value}`);
+  }
+}
+
+function processInput(input: unknown): string {
+  assertIsString(input);
+  // 此处 input 已被收窄为 string
+  return input.toUpperCase();
+}
+
+console.log(processInput("hello")); // "HELLO"
+// processInput(42);  // 运行时抛出 Error: Expected string, got number
+```
+
+### asserts 条件断言
+
+也可以不指定类型，只断言条件为真：
+
+```ts
+function assert(condition: boolean, message: string): asserts condition {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+function divide(a: number, b: number): number {
+  assert(b !== 0, "Division by zero");
+  // 此处 TypeScript 知道 b 不是 0（虽然类型层面仍是 number）
+  return a / b;
+}
+
+console.log(divide(10, 3)); // 3.3333...
+// divide(10, 0);  // 运行时抛出 Error: Division by zero
+```
+
+### 实际应用：表单验证
+
+```ts
+interface RawFormData {
+  name: unknown;
+  age: unknown;
+  email: unknown;
+}
+
+interface ValidatedFormData {
+  name: string;
+  age: number;
+  email: string;
+}
+
+function assertValidFormData(data: RawFormData): asserts data is ValidatedFormData {
+  if (typeof data.name !== "string" || data.name.length === 0) {
+    throw new Error("Name must be a non-empty string");
+  }
+  if (typeof data.age !== "number" || data.age < 0 || data.age > 150) {
+    throw new Error("Age must be a number between 0 and 150");
+  }
+  if (typeof data.email !== "string" || !data.email.includes("@")) {
+    throw new Error("Email must be a valid email address");
+  }
+}
+
+function processForm(rawData: RawFormData): string {
+  assertValidFormData(rawData);
+  // rawData 已被收窄为 ValidatedFormData
+  return `${rawData.name} (${rawData.age}) - ${rawData.email}`;
+}
+
+console.log(processForm({ name: "Alice", age: 28, email: "alice@test.com" }));
+// "Alice (28) - alice@test.com"
+```
+
+## ⚖️ is vs asserts 的选择
+
+| 特性 | `is`（类型谓词） | `asserts`（断言函数） |
+|------|------------------|----------------------|
+| 返回值 | 返回 `boolean` | 不返回值（或抛异常） |
+| 使用方式 | 在 `if` 条件中 | 作为独立语句 |
+| 失败行为 | 返回 `false`，进入 else 分支 | 抛出异常 |
+| 适用场景 | 需要分支处理 | 前置断言、守卫子句 |
+
+```ts
+interface Admin {
+  role: "admin";
+  permissions: string[];
+}
+
+interface Guest {
+  role: "guest";
+}
+
+type User = Admin | Guest;
+
+// is：适合分支处理
+function isAdmin(user: User): user is Admin {
+  return user.role === "admin";
+}
+
+// asserts：适合前置校验
+function assertAdmin(user: User): asserts user is Admin {
+  if (user.role !== "admin") {
+    throw new Error("Access denied: admin role required");
+  }
+}
+
+// 使用 is
+function showDashboard(user: User): string {
+  if (isAdmin(user)) {
+    return `Admin panel: ${user.permissions.join(", ")}`;
+  }
+  return "Guest view";
+}
+
+// 使用 asserts
+function deleteRecord(user: User, recordId: number): string {
+  assertAdmin(user); // 非 admin 直接抛异常
+  return `Record ${recordId} deleted by admin with permissions: ${user.permissions.join(", ")}`;
+}
+```
+
+## 📝 实际应用示例
+
+### 类型安全的配置解析器
+
+```ts
+interface DatabaseConfig {
+  host: string;
+  port: number;
+  database: string;
+  ssl: boolean;
+}
+
+interface ServerConfig {
+  host: string;
+  port: number;
+  cors: boolean;
+}
+
+interface AppConfig {
+  database: DatabaseConfig;
+  server: ServerConfig;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertString(value: unknown, fieldName: string): asserts value is string {
+  if (typeof value !== "string") {
+    throw new Error(`${fieldName} must be a string, got ${typeof value}`);
+  }
+}
+
+function assertNumber(value: unknown, fieldName: string): asserts value is number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    throw new Error(`${fieldName} must be a number`);
+  }
+}
+
+function assertBoolean(value: unknown, fieldName: string): asserts value is boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${fieldName} must be a boolean, got ${typeof value}`);
+  }
+}
+
+function parseConfig(raw: unknown): AppConfig {
+  if (!isRecord(raw)) {
+    throw new Error("Config must be an object");
+  }
+
+  if (!isRecord(raw.database)) {
+    throw new Error("database config must be an object");
+  }
+
+  if (!isRecord(raw.server)) {
+    throw new Error("server config must be an object");
+  }
+
+  const db = raw.database;
+  assertString(db.host, "database.host");
+  assertNumber(db.port, "database.port");
+  assertString(db.database, "database.database");
+  assertBoolean(db.ssl, "database.ssl");
+
+  const srv = raw.server;
+  assertString(srv.host, "server.host");
+  assertNumber(srv.port, "server.port");
+  assertBoolean(srv.cors, "server.cors");
+
+  return {
+    database: { host: db.host, port: db.port, database: db.database, ssl: db.ssl },
+    server: { host: srv.host, port: srv.port, cors: srv.cors },
+  };
+}
+
+const rawConfig = {
+  database: { host: "localhost", port: 5432, database: "myapp", ssl: false },
+  server: { host: "0.0.0.0", port: 3000, cors: true },
+};
+
+const config = parseConfig(rawConfig);
+console.log(`DB: ${config.database.host}:${config.database.port}/${config.database.database}`);
+// "DB: localhost:5432/myapp"
+console.log(`Server: ${config.server.host}:${config.server.port}`);
+// "Server: 0.0.0.0:3000"
+```
+
+## 🔗 相关概念
+
+- **[类型收窄技术](./01-narrowing-techniques.mdx)**：内置的类型收窄方式
+- **[可辨识联合](./03-discriminated-unions.mdx)**：结合标签字段实现更优雅的类型收窄
+- **[基础类型系统](../01-getting-started/02-basic-types.mdx)**：`unknown` 类型与类型守卫的配合
+
+## 📚 学习检查点
+
+- [ ] 理解为什么需要自定义类型守卫（返回 `boolean` 无法收窄类型）
+- [ ] 掌握 `is` 关键字的语法和使用场景
+- [ ] 能够编写类型谓词并配合 `Array.filter` 使用
+- [ ] 掌握 `asserts` 关键字的语法和使用场景
+- [ ] 理解 `is` 和 `asserts` 的区别和选择标准
+
+## 🚀 下一步
+
+→ [可辨识联合](./03-discriminated-unions.mdx)

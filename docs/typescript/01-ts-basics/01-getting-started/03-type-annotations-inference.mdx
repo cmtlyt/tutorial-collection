@@ -1,12 +1,367 @@
 # 类型注解与类型推断
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍类型注解与类型推断的核心概念和实践方法。
+TypeScript 的类型系统既支持**显式标注**（类型注解），也支持**自动推导**（类型推断）。理解这两者的平衡是写出既类型安全又简洁优雅代码的关键。本节将深入讲解类型注解的使用方式、类型推断的工作机制，以及类型拓宽与收窄的核心概念。
+
+## 🎯 变量类型注解
+
+### 基本语法
+
+类型注解使用 `: Type` 语法，写在变量名之后：
+
+```ts
+// 显式类型注解
+const username: string = "Alice";
+let age: number = 28;
+let isActive: boolean = true;
+
+// 复杂类型注解
+const scores: number[] = [90, 85, 92];
+const user: { name: string; age: number } = { name: "Bob", age: 25 };
+```
+
+### 何时需要显式注解
+
+并非所有变量都需要类型注解。以下是推荐的实践原则：
+
+```ts
+// ✅ 不需要注解：初始值已经明确类型，TypeScript 可以推断
+const name = "Alice";        // 推断为 string
+const count = 42;            // 推断为 number
+const items = [1, 2, 3];    // 推断为 number[]
+
+// ✅ 需要注解：延迟赋值
+let username: string;
+username = getUserName();
+
+// ✅ 需要注解：初始值无法表达完整类型
+let id: string | number = "abc";
+id = 123; // 如果不注解，初始推断为 string，后面赋值 number 会报错
+
+// ✅ 需要注解：空数组
+const results: string[] = [];
+results.push("hello");
+
+// ❌ 不必要的冗余注解
+const message: string = "hello"; // 多余，TypeScript 已能推断
+```
+
+## 🔧 函数参数与返回值类型
+
+### 参数类型注解
+
+函数参数**必须**添加类型注解，因为 TypeScript 无法从函数定义中推断参数类型：
+
+```ts
+// 参数类型是必须的
+function greet(name: string, greeting: string): string {
+  return `${greeting}, ${name}!`;
+}
+
+// 箭头函数
+const add = (a: number, b: number): number => a + b;
+
+console.log(greet("Alice", "Hello")); // "Hello, Alice!"
+console.log(add(3, 5));               // 8
+```
+
+### 返回值类型
+
+返回值类型通常可以被推断，但在以下场景推荐显式标注：
+
+```ts
+// ✅ 推荐：公共 API 或导出函数，显式标注返回值
+export function calculateTax(amount: number, rate: number): number {
+  return amount * rate;
+}
+
+// ✅ 推荐：返回类型复杂时，显式标注提高可读性
+function parseConfig(raw: string): { host: string; port: number; debug: boolean } {
+  const parsed = JSON.parse(raw);
+  return {
+    host: parsed.host ?? "localhost",
+    port: parsed.port ?? 3000,
+    debug: parsed.debug ?? false,
+  };
+}
+
+// ✅ 可省略：简单的内部函数，返回值可被推断
+function double(n: number) {
+  return n * 2; // TypeScript 推断返回 number
+}
+```
+
+### 回调函数的上下文推断
+
+当回调函数的类型已被外层函数定义时，参数类型可以省略：
+
+```ts
+const numbers = [1, 2, 3, 4, 5];
+
+// ✅ 不需要为回调参数添加类型注解
+// TypeScript 从 Array.map 的定义中推断 num 是 number
+const doubled = numbers.map((num) => num * 2);
+
+// ✅ filter 的回调同理
+const evens = numbers.filter((num) => num % 2 === 0);
+
+// ✅ addEventListener 的回调也能推断事件类型
+document.addEventListener("click", (event) => {
+  // event 被推断为 MouseEvent
+  console.log(event.clientX, event.clientY);
+});
+```
+
+## 🧠 类型推断机制
+
+### 基本推断
+
+TypeScript 根据赋值的初始值自动推断变量类型：
+
+```ts
+// 基本类型推断
+let message = "hello";     // string
+let count = 42;            // number
+let isReady = false;       // boolean
+let items = [1, 2, 3];    // number[]
+let mixed = [1, "two"];   // (string | number)[]
+
+// 对象字面量推断
+let user = {
+  name: "Alice",   // string
+  age: 28,         // number
+  hobbies: ["reading", "coding"], // string[]
+};
+// 推断为 { name: string; age: number; hobbies: string[] }
+```
+
+### 最佳公共类型
+
+当推断数组类型时，TypeScript 会寻找所有元素的**最佳公共类型**：
+
+```ts
+// TypeScript 会推断出联合类型
+const mixed = [1, "hello", true];
+// 推断为 (string | number | boolean)[]
+
+// 类层级的最佳公共类型
+class Animal {
+  name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
+}
+class Dog extends Animal {
+  breed: string;
+  constructor(name: string, breed: string) {
+    super(name);
+    this.breed = breed;
+  }
+}
+class Cat extends Animal {
+  indoor: boolean;
+  constructor(name: string, indoor: boolean) {
+    super(name);
+    this.indoor = indoor;
+  }
+}
+
+const pets = [new Dog("Rex", "Labrador"), new Cat("Whiskers", true)];
+// 推断为 (Dog | Cat)[]
+// 注意：不会自动推断为 Animal[]，除非显式注解
+```
+
+### 上下文类型推断
+
+TypeScript 根据值所处的位置（上下文）来推断类型：
+
+```ts
+// 事件处理器的上下文类型
+window.onmousedown = (event) => {
+  // event 被推断为 MouseEvent（由 onmousedown 的类型定义决定）
+  console.log(event.button);
+};
+
+// 赋值目标提供上下文
+type StringTransformer = (input: string) => string;
+
+// transformer 的参数类型由 StringTransformer 推断
+const transformer: StringTransformer = (input) => {
+  return input.toUpperCase(); // input 被推断为 string
+};
+
+console.log(transformer("hello")); // "HELLO"
+```
+
+## 📐 类型拓宽（Widening）
+
+类型拓宽是 TypeScript 将字面量类型自动扩展为更宽泛类型的行为：
+
+### let vs const 的推断差异
+
+```ts
+// const 声明：推断为字面量类型（不拓宽）
+const greeting = "hello";  // 类型是 "hello"（字面量类型）
+const count = 42;          // 类型是 42（字面量类型）
+const flag = true;         // 类型是 true（字面量类型）
+
+// let 声明：推断为拓宽后的类型
+let message = "hello";    // 类型是 string（拓宽了）
+let number = 42;          // 类型是 number（拓宽了）
+let active = true;        // 类型是 boolean（拓宽了）
+```
+
+### 使用 as const 阻止拓宽
+
+`as const` 断言可以将值的类型收窄为最具体的字面量类型：
+
+```ts
+// 对象的 as const
+const config = {
+  host: "localhost",
+  port: 3000,
+  debug: true,
+} as const;
+// 类型为 { readonly host: "localhost"; readonly port: 3000; readonly debug: true }
+
+// 数组的 as const
+const colors = ["red", "green", "blue"] as const;
+// 类型为 readonly ["red", "green", "blue"]
+// 而不是 string[]
+
+// 在函数参数中的应用
+function setDirection(direction: "up" | "down" | "left" | "right") {
+  console.log(`Moving ${direction}`);
+}
+
+const direction = "up" as const;
+setDirection(direction); // 正常工作
+
+// 如果不用 as const：
+// let dir = "up";
+// setDirection(dir);  // 编译错误：string 不能赋值给 "up" | "down" | "left" | "right"
+```
+
+## 📏 类型收窄（Narrowing）
+
+类型收窄是类型拓宽的反向操作——通过条件判断将宽泛的类型缩小为更具体的类型：
+
+```ts
+function processValue(value: string | number | boolean): string {
+  // 此时 value 的类型是 string | number | boolean
+
+  if (typeof value === "string") {
+    // 收窄为 string
+    return value.toUpperCase();
+  }
+
+  if (typeof value === "number") {
+    // 收窄为 number
+    return value.toFixed(2);
+  }
+
+  // 收窄为 boolean
+  return value ? "yes" : "no";
+}
+
+console.log(processValue("hello"));  // "HELLO"
+console.log(processValue(3.14159));  // "3.14"
+console.log(processValue(true));     // "yes"
+```
+
+### 赋值收窄
+
+```ts
+let value: string | number;
+
+value = "hello";
+// 此时 value 的类型被收窄为 string
+console.log(value.toUpperCase()); // "HELLO"
+
+value = 42;
+// 此时 value 的类型被收窄为 number
+console.log(value.toFixed(2)); // "42.00"
+```
 
 :::tip
-本文档正在编写中，敬请期待。
+类型收窄是一个非常重要的主题，下一章节 [类型收窄技术](../03-type-narrowing/01-narrowing-techniques.mdx) 将会深入讲解所有收窄技术。
 :::
+
+## 📝 实际应用示例
+
+### API 响应处理
+
+```ts
+interface ApiSuccess {
+  status: "success";
+  data: {
+    users: Array<{ id: number; name: string; email: string }>;
+    total: number;
+  };
+}
+
+interface ApiError {
+  status: "error";
+  message: string;
+  code: number;
+}
+
+type ApiResponse = ApiSuccess | ApiError;
+
+function handleResponse(response: ApiResponse): string {
+  if (response.status === "success") {
+    // TypeScript 推断 response 为 ApiSuccess
+    const userNames = response.data.users
+      .map((user) => user.name)
+      .join(", ");
+    return `Found ${response.data.total} users: ${userNames}`;
+  }
+
+  // TypeScript 推断 response 为 ApiError
+  return `Error ${response.code}: ${response.message}`;
+}
+
+const successResponse: ApiResponse = {
+  status: "success",
+  data: {
+    users: [
+      { id: 1, name: "Alice", email: "alice@example.com" },
+      { id: 2, name: "Bob", email: "bob@example.com" },
+    ],
+    total: 2,
+  },
+};
+
+const errorResponse: ApiResponse = {
+  status: "error",
+  message: "Unauthorized",
+  code: 401,
+};
+
+console.log(handleResponse(successResponse));
+// "Found 2 users: Alice, Bob"
+console.log(handleResponse(errorResponse));
+// "Error 401: Unauthorized"
+```
+
+## 🔗 相关概念
+
+- **[基础类型系统](./02-basic-types.mdx)**：TypeScript 提供的所有基础类型
+- **[类型收窄技术](../03-type-narrowing/01-narrowing-techniques.mdx)**：深入学习各种类型收窄方式
+
+## 📚 学习检查点
+
+- [ ] 理解何时需要显式类型注解、何时可以依赖类型推断
+- [ ] 能够为函数参数和返回值添加正确的类型注解
+- [ ] 理解上下文类型推断的工作方式
+- [ ] 理解 `let` 和 `const` 对类型推断的影响（类型拓宽）
+- [ ] 掌握 `as const` 断言的用法和场景
+- [ ] 理解类型收窄的基本概念
+
+## 🚀 下一步
+
+→ [函数类型](../02-functions-objects/01-function-types.mdx)

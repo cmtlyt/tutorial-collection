@@ -1,12 +1,366 @@
 # 对象类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍对象类型的核心概念和实践方法。
+对象是 JavaScript 中最常用的数据结构，TypeScript 通过接口（Interface）和类型注解为对象提供了强大的类型定义能力。本节将介绍接口定义、可选属性、只读属性、索引签名和接口继承等核心概念。
+
+## 🎯 接口（Interface）定义
+
+接口是 TypeScript 中描述对象形状（shape）的主要方式：
+
+```ts
+// 定义一个用户接口
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+// 对象必须完全匹配接口定义的形状
+const user: User = {
+  id: 1,
+  name: "Alice",
+  email: "alice@example.com",
+};
+
+// 编译错误示例：
+// const badUser: User = { id: 1, name: "Bob" };
+// 缺少属性 "email"
+
+// 编译错误示例：
+// const badUser2: User = { id: 1, name: "Bob", email: "bob@test.com", age: 25 };
+// 对象字面量不能有接口中未声明的额外属性
+
+// 函数参数使用接口类型
+function greetUser(user: User): string {
+  return `Hello, ${user.name}! Your email is ${user.email}.`;
+}
+
+console.log(greetUser(user));
+// "Hello, Alice! Your email is alice@example.com."
+```
+
+## 🔧 可选属性与只读属性
+
+### 可选属性
+
+使用 `?` 标记可选属性：
+
+```ts
+interface Product {
+  id: number;
+  name: string;
+  price: number;
+  description?: string;  // 可选
+  tags?: string[];        // 可选
+}
+
+// 不提供可选属性也可以
+const basicProduct: Product = {
+  id: 1,
+  name: "TypeScript Handbook",
+  price: 29.99,
+};
+
+// 提供可选属性
+const detailedProduct: Product = {
+  id: 2,
+  name: "Advanced TypeScript",
+  price: 49.99,
+  description: "Deep dive into TypeScript type system",
+  tags: ["typescript", "programming", "advanced"],
+};
+
+// 使用可选属性时需要检查是否存在
+function getProductSummary(product: Product): string {
+  let summary = `${product.name} - ${product.price}`;
+  if (product.description) {
+    summary += ` | ${product.description}`;
+  }
+  if (product.tags && product.tags.length > 0) {
+    summary += ` [${product.tags.join(", ")}]`;
+  }
+  return summary;
+}
+
+console.log(getProductSummary(basicProduct));
+// "TypeScript Handbook - $29.99"
+console.log(getProductSummary(detailedProduct));
+// "Advanced TypeScript - $49.99 | Deep dive into TypeScript type system [typescript, programming, advanced]"
+```
+
+### 只读属性
+
+使用 `readonly` 修饰符禁止属性被修改：
+
+```ts
+interface Config {
+  readonly host: string;
+  readonly port: number;
+  readonly debug: boolean;
+}
+
+const config: Config = {
+  host: "localhost",
+  port: 3000,
+  debug: true,
+};
+
+// config.host = "0.0.0.0";  // 编译错误：无法为 "host" 赋值，因为它是只读属性
+
+// readonly 只在 TypeScript 编译时检查，不影响运行时
+// 对于嵌套对象，readonly 只保护第一层
+interface AppState {
+  readonly user: {
+    name: string;
+    settings: {
+      theme: string;
+    };
+  };
+}
+
+const state: AppState = {
+  user: {
+    name: "Alice",
+    settings: { theme: "dark" },
+  },
+};
+
+// state.user = { ... };  // 编译错误：user 是只读的
+state.user.name = "Bob";  // 这是合法的！readonly 不会深层保护
+state.user.settings.theme = "light"; // 也是合法的
+```
 
 :::tip
-本文档正在编写中，敬请期待。
+如果需要深层只读，可以使用后续章节介绍的 `Readonly<T>` 工具类型或自定义 `DeepReadonly` 类型。
 :::
+
+## 🗂️ 索引签名（Index Signatures）
+
+当对象的属性名不确定时，可以使用索引签名来描述动态属性：
+
+```ts
+// 字符串索引签名
+interface StringDictionary {
+  [key: string]: string;
+}
+
+const translations: StringDictionary = {
+  hello: "你好",
+  goodbye: "再见",
+  thanks: "谢谢",
+};
+
+translations["welcome"] = "欢迎"; // 动态添加属性
+
+// 数字索引签名
+interface NumberArray {
+  [index: number]: string;
+}
+
+const fruits: NumberArray = {
+  0: "apple",
+  1: "banana",
+  2: "cherry",
+};
+
+// 混合固定属性和索引签名
+interface UserPreferences {
+  theme: "light" | "dark";
+  language: string;
+  [key: string]: string; // 索引签名的值类型必须兼容所有固定属性的值类型
+}
+
+const preferences: UserPreferences = {
+  theme: "dark",
+  language: "zh-CN",
+  fontSize: "14px",
+  customColor: "#ff6600",
+};
+
+// Record 工具类型是索引签名的简洁替代
+const scores: Record<string, number> = {
+  alice: 95,
+  bob: 87,
+  charlie: 92,
+};
+```
+
+### 索引签名的限制
+
+```ts
+interface StrictMap {
+  [key: string]: number | string;
+  name: string;   // 合法：string 是 number | string 的子类型
+  count: number;  // 合法：number 是 number | string 的子类型
+  // active: boolean; // 编译错误：boolean 不是 number | string 的子类型
+}
+```
+
+## 🔗 接口继承（extends）
+
+接口可以通过 `extends` 关键字继承其他接口：
+
+```ts
+// 基础接口
+interface Entity {
+  id: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// 继承单个接口
+interface User extends Entity {
+  name: string;
+  email: string;
+}
+
+// 继承多个接口
+interface Auditable {
+  createdBy: string;
+  updatedBy: string;
+}
+
+interface BlogPost extends Entity, Auditable {
+  title: string;
+  content: string;
+  published: boolean;
+}
+
+const post: BlogPost = {
+  id: 1,
+  createdAt: new Date("2026-01-01"),
+  updatedAt: new Date("2026-04-22"),
+  createdBy: "alice",
+  updatedBy: "bob",
+  title: "Learning TypeScript",
+  content: "TypeScript is a typed superset of JavaScript...",
+  published: true,
+};
+
+console.log(`Post "${post.title}" by ${post.createdBy}`);
+// Post "Learning TypeScript" by alice
+```
+
+### 接口合并（Declaration Merging）
+
+同名接口会自动合并，这是接口区别于 type 的一个重要特性：
+
+```ts
+interface Window {
+  appVersion: string;
+}
+
+interface Window {
+  appName: string;
+}
+
+// 合并后等价于：
+// interface Window {
+//   appVersion: string;
+//   appName: string;
+// }
+
+// 常见用途：扩展第三方库的类型
+declare global {
+  interface Window {
+    __APP_CONFIG__: {
+      apiUrl: string;
+      debug: boolean;
+    };
+  }
+}
+
+// 现在可以安全地访问 window.__APP_CONFIG__
+```
+
+## 📝 实际应用示例
+
+### 电商商品管理系统
+
+```ts
+interface Category {
+  id: number;
+  name: string;
+  parentId?: number;
+}
+
+interface ProductImage {
+  url: string;
+  alt: string;
+  isPrimary: boolean;
+}
+
+interface BaseProduct {
+  readonly sku: string;
+  name: string;
+  price: number;
+  category: Category;
+}
+
+interface DetailedProduct extends BaseProduct {
+  description: string;
+  images: ProductImage[];
+  specifications: Record<string, string>;
+  stock: number;
+  isActive: boolean;
+}
+
+function formatProductCard(product: DetailedProduct): string {
+  const primaryImage = product.images.find((img) => img.isPrimary);
+  const specEntries = Object.entries(product.specifications)
+    .map(([key, value]) => `  ${key}: ${value}`)
+    .join("\n");
+
+  return [
+    `📦 ${product.name} (SKU: ${product.sku})`,
+    `💰 Price: ${product.price.toFixed(2)}`,
+    `📁 Category: ${product.category.name}`,
+    `🖼️ Image: ${primaryImage?.alt ?? "No primary image"}`,
+    `📋 Specs:\n${specEntries}`,
+    `📊 Stock: ${product.stock} | Active: ${product.isActive}`,
+  ].join("\n");
+}
+
+const laptop: DetailedProduct = {
+  sku: "LAPTOP-001",
+  name: 'Pro Laptop 16"',
+  price: 1999.99,
+  category: { id: 1, name: "Electronics" },
+  description: "High-performance laptop for professionals",
+  images: [
+    { url: "/images/laptop-front.jpg", alt: "Laptop front view", isPrimary: true },
+    { url: "/images/laptop-side.jpg", alt: "Laptop side view", isPrimary: false },
+  ],
+  specifications: {
+    CPU: "M3 Pro",
+    RAM: "32GB",
+    Storage: "1TB SSD",
+    Display: '16" Retina',
+  },
+  stock: 50,
+  isActive: true,
+};
+
+console.log(formatProductCard(laptop));
+```
+
+## 🔗 相关概念
+
+- **[函数类型](./01-function-types.mdx)**：函数参数中常用对象类型
+- **[类型别名](./03-type-aliases.mdx)**：type 与 interface 的区别和选择
+
+## 📚 学习检查点
+
+- [ ] 能够使用 interface 定义对象类型
+- [ ] 理解可选属性和只读属性的使用场景
+- [ ] 掌握索引签名的语法和限制
+- [ ] 理解接口继承和多继承的用法
+- [ ] 了解接口合并（声明合并）的机制和用途
+
+## 🚀 下一步
+
+→ [类型别名](./03-type-aliases.mdx)

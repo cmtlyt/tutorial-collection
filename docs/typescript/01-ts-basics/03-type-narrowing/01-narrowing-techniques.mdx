@@ -1,12 +1,408 @@
 # 类型收窄技术
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍类型收窄技术的核心概念和实践方法。
+类型收窄（Narrowing）是 TypeScript 最强大的特性之一。当一个变量的类型是联合类型时，TypeScript 能够通过控制流分析（Control Flow Analysis），根据条件判断自动将类型缩小为更具体的类型。本节将介绍所有内置的类型收窄技术。
 
-:::tip
-本文档正在编写中，敬请期待。
+## 🎯 typeof 类型守卫
+
+`typeof` 是最常用的类型收窄方式，适用于原始类型的判断：
+
+```ts
+function formatValue(value: string | number | boolean): string {
+  if (typeof value === "string") {
+    // 收窄为 string
+    return `"${value}"`;
+  }
+  if (typeof value === "number") {
+    // 收窄为 number
+    return value.toFixed(2);
+  }
+  // 收窄为 boolean
+  return value ? "TRUE" : "FALSE";
+}
+
+console.log(formatValue("hello"));  // '"hello"'
+console.log(formatValue(3.14159));  // "3.14"
+console.log(formatValue(true));     // "TRUE"
+```
+
+### typeof 能识别的类型
+
+`typeof` 返回值对应的 TypeScript 类型：
+
+| typeof 返回值 | TypeScript 收窄为 |
+|--------------|-------------------|
+| `"string"` | `string` |
+| `"number"` | `number` |
+| `"boolean"` | `boolean` |
+| `"bigint"` | `bigint` |
+| `"symbol"` | `symbol` |
+| `"undefined"` | `undefined` |
+| `"object"` | `object`（注意：包括 `null`） |
+| `"function"` | `Function` |
+
+:::caution
+`typeof null === "object"` 是 JavaScript 的历史遗留问题。如果联合类型中包含 `null`，不能仅靠 `typeof === "object"` 来收窄。
 :::
+
+```ts
+function processInput(value: string | number | null | undefined): string {
+  if (typeof value === "undefined") {
+    return "undefined";
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return value.toUpperCase();
+  }
+  return value.toFixed(0);
+}
+
+console.log(processInput(undefined)); // "undefined"
+console.log(processInput(null));      // "null"
+console.log(processInput("hello"));   // "HELLO"
+console.log(processInput(42));        // "42"
+```
+
+## 🔍 instanceof 类型守卫
+
+`instanceof` 用于判断一个值是否是某个类的实例，适用于类类型的收窄：
+
+```ts
+class HttpError {
+  constructor(
+    public statusCode: number,
+    public message: string
+  ) {}
+}
+
+class ValidationError {
+  constructor(
+    public field: string,
+    public message: string
+  ) {}
+}
+
+function handleError(error: HttpError | ValidationError | Error): string {
+  if (error instanceof HttpError) {
+    // 收窄为 HttpError
+    return `HTTP ${error.statusCode}: ${error.message}`;
+  }
+  if (error instanceof ValidationError) {
+    // 收窄为 ValidationError
+    return `Validation failed on "${error.field}": ${error.message}`;
+  }
+  // 收窄为 Error
+  return `Unexpected error: ${error.message}`;
+}
+
+console.log(handleError(new HttpError(404, "Not Found")));
+// "HTTP 404: Not Found"
+console.log(handleError(new ValidationError("email", "Invalid format")));
+// 'Validation failed on "email": Invalid format'
+console.log(handleError(new Error("Something went wrong")));
+// "Unexpected error: Something went wrong"
+```
+
+### 内置类型的 instanceof 检查
+
+```ts
+function processData(data: Date | RegExp | Map<string, number>): string {
+  if (data instanceof Date) {
+    return `Date: ${data.toISOString()}`;
+  }
+  if (data instanceof RegExp) {
+    return `Pattern: ${data.source}, Flags: ${data.flags}`;
+  }
+  // 收窄为 Map<string, number>
+  const entries = Array.from(data.entries())
+    .map(([key, value]) => `${key}=${value}`)
+    .join(", ");
+  return `Map: {${entries}}`;
+}
+
+console.log(processData(new Date("2026-04-22")));
+// "Date: 2026-04-22T00:00:00.000Z"
+console.log(processData(/hello/gi));
+// "Pattern: hello, Flags: gi"
+console.log(processData(new Map([["a", 1], ["b", 2]])));
+// "Map: {a=1, b=2}"
+```
+
+## 🔑 in 操作符收窄
+
+`in` 操作符检查对象是否包含某个属性，非常适合区分不同的对象类型：
+
+```ts
+interface Dog {
+  breed: string;
+  bark(): string;
+}
+
+interface Cat {
+  color: string;
+  purr(): string;
+}
+
+interface Bird {
+  wingspan: number;
+  sing(): string;
+}
+
+type Pet = Dog | Cat | Bird;
+
+function describePet(pet: Pet): string {
+  if ("bark" in pet) {
+    // 收窄为 Dog
+    return `Dog (${pet.breed}): ${pet.bark()}`;
+  }
+  if ("purr" in pet) {
+    // 收窄为 Cat
+    return `Cat (${pet.color}): ${pet.purr()}`;
+  }
+  // 收窄为 Bird
+  return `Bird (wingspan: ${pet.wingspan}cm): ${pet.sing()}`;
+}
+
+const myDog: Dog = { breed: "Labrador", bark: () => "Woof!" };
+const myCat: Cat = { color: "orange", purr: () => "Purrrr~" };
+const myBird: Bird = { wingspan: 30, sing: () => "Tweet!" };
+
+console.log(describePet(myDog));  // "Dog (Labrador): Woof!"
+console.log(describePet(myCat));  // "Cat (orange): Purrrr~"
+console.log(describePet(myBird)); // "Bird (wingspan: 30cm): Tweet!"
+```
+
+## ⚖️ 等值收窄（Equality Narrowing）
+
+使用 `===`、`!==`、`==`、`!=` 进行等值比较也能触发类型收窄：
+
+```ts
+function compareValues(a: string | number, b: string | boolean): string {
+  if (a === b) {
+    // a 和 b 都被收窄为 string（唯一的公共类型）
+    return a.toUpperCase();
+  }
+  return `Different: ${a}, ${b}`;
+}
+
+// 用于排除 null 和 undefined
+function processNullable(value: string | null | undefined): string {
+  // == null 同时检查 null 和 undefined
+  if (value == null) {
+    return "empty";
+  }
+  // 收窄为 string
+  return value.toUpperCase();
+}
+
+console.log(processNullable(null));      // "empty"
+console.log(processNullable(undefined)); // "empty"
+console.log(processNullable("hello"));   // "HELLO"
+
+// 与字面量类型的等值比较
+type Status = "active" | "inactive" | "suspended";
+
+function getStatusLabel(status: Status): string {
+  if (status === "active") {
+    return "✅ Active";
+  }
+  if (status === "inactive") {
+    return "⏸️ Inactive";
+  }
+  // status 被收窄为 "suspended"
+  return "🚫 Suspended";
+}
+```
+
+## ✅ 真值收窄（Truthiness Narrowing）
+
+TypeScript 能通过真值检查排除 `null`、`undefined`、`0`、`""`、`NaN` 和 `false`：
+
+```ts
+function printLength(value: string | null | undefined): void {
+  if (value) {
+    // 排除了 null、undefined 和空字符串
+    console.log(`Length: ${value.length}`);
+  } else {
+    console.log("No value provided");
+  }
+}
+
+printLength("hello");    // "Length: 5"
+printLength(null);       // "No value provided"
+printLength(undefined);  // "No value provided"
+printLength("");         // "No value provided"（注意：空字符串也被排除了）
+
+// 更精确的空值检查：使用 != null 替代真值检查
+function printLengthPrecise(value: string | null | undefined): void {
+  if (value != null) {
+    // 只排除 null 和 undefined，保留空字符串
+    console.log(`Length: ${value.length}`);
+  } else {
+    console.log("No value provided");
+  }
+}
+
+printLengthPrecise("");  // "Length: 0"（空字符串被保留了）
+
+// 数组的真值收窄
+function processItems(items?: string[]): string {
+  if (!items || items.length === 0) {
+    return "No items";
+  }
+  // items 被收窄为 string[]，且已知非空
+  return items.join(", ");
+}
+
+console.log(processItems());          // "No items"
+console.log(processItems([]));        // "No items"
+console.log(processItems(["a", "b"])); // "a, b"
+```
+
+:::caution
+真值收窄可能会意外排除有效值（如 `0`、`""` 和 `false`）。当这些值在业务中是合法的时，应使用更精确的检查方式。
+:::
+
+## 🔄 控制流分析
+
+TypeScript 的控制流分析能跟踪变量在不同分支中的类型变化：
+
+```ts
+function processValue(value: string | number | null): string {
+  // 此处 value 类型为 string | number | null
+
+  if (value === null) {
+    return "null value";
+  }
+  // 此处 value 类型为 string | number（null 已排除）
+
+  if (typeof value === "string") {
+    return `String: ${value.toUpperCase()}`;
+  }
+  // 此处 value 类型为 number（string 也已排除）
+
+  return `Number: ${value.toFixed(2)}`;
+}
+
+// 赋值分析
+function example(): void {
+  let value: string | number;
+
+  value = "hello";
+  // value 类型为 string
+  console.log(value.toUpperCase());
+
+  value = 42;
+  // value 类型为 number
+  console.log(value.toFixed(2));
+}
+
+// 提前返回（守卫子句）模式
+function processUser(user: { name: string; age?: number; email?: string }): string {
+  if (!user.name) {
+    return "Invalid user: name is required";
+  }
+
+  if (user.age === undefined) {
+    return `${user.name} (age unknown)`;
+  }
+
+  if (user.email === undefined) {
+    return `${user.name}, age ${user.age} (no email)`;
+  }
+
+  // 此处 name, age, email 全部非空
+  return `${user.name}, age ${user.age}, ${user.email}`;
+}
+```
+
+## 📝 实际应用示例
+
+### 表单字段验证器
+
+```ts
+type FieldValue = string | number | boolean | null;
+
+interface ValidationRule {
+  type: "required" | "minLength" | "maxLength" | "range" | "pattern";
+  params?: Record<string, unknown>;
+  message: string;
+}
+
+function validateField(value: FieldValue, rules: ValidationRule[]): string[] {
+  const errors: string[] = [];
+
+  for (const rule of rules) {
+    if (rule.type === "required") {
+      if (value === null || value === undefined) {
+        errors.push(rule.message);
+        continue;
+      }
+      if (typeof value === "string" && value.trim() === "") {
+        errors.push(rule.message);
+      }
+    }
+
+    if (rule.type === "minLength" && typeof value === "string") {
+      const minLength = rule.params?.min as number;
+      if (value.length < minLength) {
+        errors.push(rule.message);
+      }
+    }
+
+    if (rule.type === "range" && typeof value === "number") {
+      const min = rule.params?.min as number;
+      const max = rule.params?.max as number;
+      if (value < min || value > max) {
+        errors.push(rule.message);
+      }
+    }
+
+    if (rule.type === "pattern" && typeof value === "string") {
+      const pattern = rule.params?.pattern as string;
+      if (!new RegExp(pattern).test(value)) {
+        errors.push(rule.message);
+      }
+    }
+  }
+
+  return errors;
+}
+
+const emailRules: ValidationRule[] = [
+  { type: "required", message: "Email is required" },
+  { type: "minLength", params: { min: 5 }, message: "Email is too short" },
+  { type: "pattern", params: { pattern: "^[^@]+@[^@]+$" }, message: "Invalid email format" },
+];
+
+console.log(validateField("", emailRules));
+// ["Email is required", "Email is too short", "Invalid email format"]
+console.log(validateField("a@b", emailRules));
+// ["Email is too short"]
+console.log(validateField("alice@example.com", emailRules));
+// []
+```
+
+## 🔗 相关概念
+
+- **[类型注解与类型推断](../01-getting-started/03-type-annotations-inference.mdx)**：类型收窄建立在类型推断的基础上
+- **[自定义类型守卫](./02-custom-type-guards.mdx)**：使用 `is` 和 `asserts` 关键字创建自定义收窄逻辑
+- **[可辨识联合](./03-discriminated-unions.mdx)**：结合联合类型和类型收窄的高级模式
+
+## 📚 学习检查点
+
+- [ ] 掌握 `typeof` 类型守卫的使用和局限性
+- [ ] 掌握 `instanceof` 类型守卫的使用场景
+- [ ] 能够使用 `in` 操作符区分不同的对象类型
+- [ ] 理解等值收窄和真值收窄的工作方式
+- [ ] 理解 TypeScript 控制流分析的基本原理
+
+## 🚀 下一步
+
+→ [自定义类型守卫](./02-custom-type-guards.mdx)

@@ -1,12 +1,436 @@
 # 可辨识联合
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍可辨识联合的核心概念和实践方法。
+可辨识联合（Discriminated Unions），也称为标签联合（Tagged Unions）或代数数据类型（ADT），是 TypeScript 中最强大的类型模式之一。它通过一个共有的**标签字段**（discriminant）来区分联合类型中的不同成员，使 TypeScript 能够在每个分支中自动收窄类型。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 标签字段设计
+
+### 基本模式
+
+可辨识联合由三个要素组成：
+1. 多个类型的**联合**
+2. 每个类型都有一个**相同名称的属性**（标签字段）
+3. 标签字段的值是**不同的字面量类型**
+
+```ts
+// 标签字段：kind
+interface Circle {
+  kind: "circle";
+  radius: number;
+}
+
+interface Rectangle {
+  kind: "rectangle";
+  width: number;
+  height: number;
+}
+
+interface Triangle {
+  kind: "triangle";
+  base: number;
+  height: number;
+}
+
+type Shape = Circle | Rectangle | Triangle;
+
+function getArea(shape: Shape): number {
+  switch (shape.kind) {
+    case "circle":
+      // shape 自动收窄为 Circle
+      return Math.PI * shape.radius ** 2;
+    case "rectangle":
+      // shape 自动收窄为 Rectangle
+      return shape.width * shape.height;
+    case "triangle":
+      // shape 自动收窄为 Triangle
+      return (shape.base * shape.height) / 2;
+  }
+}
+
+console.log(getArea({ kind: "circle", radius: 5 }));          // 78.54
+console.log(getArea({ kind: "rectangle", width: 4, height: 6 })); // 24
+console.log(getArea({ kind: "triangle", base: 3, height: 8 }));   // 12
+```
+
+### 标签字段的命名习惯
+
+常见的标签字段命名：
+
+```ts
+// kind（最常见）
+interface ClickEvent { kind: "click"; x: number; y: number }
+interface KeyEvent { kind: "key"; key: string }
+
+// type
+interface TextNode { type: "text"; content: string }
+interface ImageNode { type: "image"; src: string }
+
+// status
+interface Pending { status: "pending" }
+interface Fulfilled { status: "fulfilled"; value: unknown }
+interface Rejected { status: "rejected"; reason: Error }
+
+// tag
+interface Add { tag: "add"; value: number }
+interface Remove { tag: "remove"; index: number }
+```
+
+### 数字和布尔标签
+
+标签字段不仅可以是字符串字面量，也可以是数字或布尔字面量：
+
+```ts
+interface HttpOk {
+  statusCode: 200;
+  body: string;
+}
+
+interface HttpNotFound {
+  statusCode: 404;
+  message: string;
+}
+
+interface HttpServerError {
+  statusCode: 500;
+  error: Error;
+}
+
+type HttpResponse = HttpOk | HttpNotFound | HttpServerError;
+
+function handleResponse(response: HttpResponse): string {
+  switch (response.statusCode) {
+    case 200:
+      return `Success: ${response.body}`;
+    case 404:
+      return `Not Found: ${response.message}`;
+    case 500:
+      return `Server Error: ${response.error.message}`;
+  }
+}
+
+console.log(handleResponse({ statusCode: 200, body: "OK" }));
+// "Success: OK"
+console.log(handleResponse({ statusCode: 404, message: "Page not found" }));
+// "Not Found: Page not found"
+```
+
+## ✅ 穷尽性检查（Exhaustiveness Checking）
+
+穷尽性检查确保 `switch/case` 或 `if/else` 处理了联合类型中的每一种情况，避免遗漏。
+
+### 使用 never 进行穷尽性检查
+
+```ts
+interface Square {
+  kind: "square";
+  size: number;
+}
+
+interface Circle {
+  kind: "circle";
+  radius: number;
+}
+
+interface Triangle {
+  kind: "triangle";
+  base: number;
+  height: number;
+}
+
+type Shape = Square | Circle | Triangle;
+
+function getPerimeter(shape: Shape): number {
+  switch (shape.kind) {
+    case "square":
+      return 4 * shape.size;
+    case "circle":
+      return 2 * Math.PI * shape.radius;
+    case "triangle":
+      // 简化处理，假设等边三角形
+      return 3 * shape.base;
+    default: {
+      // 如果所有情况都已处理，shape 的类型是 never
+      const exhaustiveCheck: never = shape;
+      return exhaustiveCheck;
+    }
+  }
+}
+```
+
+### 新增类型时的编译时保护
+
+穷尽性检查的最大价值在于：**当联合类型新增成员时，所有未处理的地方都会产生编译错误**：
+
+```ts
+// 假设后来新增了 Pentagon 类型
+interface Pentagon {
+  kind: "pentagon";
+  side: number;
+}
+
+// 更新联合类型
+// type Shape = Square | Circle | Triangle | Pentagon;
+
+// 此时 getPerimeter 函数的 default 分支会产生编译错误：
+// "Type 'Pentagon' is not assignable to type 'never'"
+// 提醒开发者需要处理新增的 Pentagon 类型
+```
+
+### 使用辅助函数封装穷尽检查
+
+```ts
+function assertNever(value: never, message?: string): never {
+  throw new Error(message ?? `Unexpected value: ${JSON.stringify(value)}`);
+}
+
+type Action =
+  | { type: "INCREMENT"; amount: number }
+  | { type: "DECREMENT"; amount: number }
+  | { type: "RESET" };
+
+function reducer(state: number, action: Action): number {
+  switch (action.type) {
+    case "INCREMENT":
+      return state + action.amount;
+    case "DECREMENT":
+      return state - action.amount;
+    case "RESET":
+      return 0;
+    default:
+      return assertNever(action);
+  }
+}
+
+console.log(reducer(10, { type: "INCREMENT", amount: 5 })); // 15
+console.log(reducer(10, { type: "DECREMENT", amount: 3 })); // 7
+console.log(reducer(10, { type: "RESET" }));                 // 0
+```
+
+## 🔄 switch/case 模式
+
+`switch/case` 是处理可辨识联合的最佳方式：
+
+```ts
+interface TextMessage {
+  type: "text";
+  content: string;
+}
+
+interface ImageMessage {
+  type: "image";
+  url: string;
+  caption?: string;
+}
+
+interface VideoMessage {
+  type: "video";
+  url: string;
+  duration: number;
+}
+
+interface FileMessage {
+  type: "file";
+  filename: string;
+  size: number;
+}
+
+type ChatMessage = TextMessage | ImageMessage | VideoMessage | FileMessage;
+
+function renderMessage(message: ChatMessage): string {
+  switch (message.type) {
+    case "text":
+      return `💬 ${message.content}`;
+    case "image": {
+      const caption = message.caption ? ` - ${message.caption}` : "";
+      return `🖼️ [Image: ${message.url}${caption}]`;
+    }
+    case "video":
+      return `🎥 [Video: ${message.url}, ${message.duration}s]`;
+    case "file":
+      return `📎 [File: ${message.filename}, ${(message.size / 1024).toFixed(1)}KB]`;
+  }
+}
+
+const messages: ChatMessage[] = [
+  { type: "text", content: "Hello everyone!" },
+  { type: "image", url: "photo.jpg", caption: "Sunset view" },
+  { type: "video", url: "clip.mp4", duration: 30 },
+  { type: "file", filename: "report.pdf", size: 204800 },
+];
+
+messages.forEach((message) => {
+  console.log(renderMessage(message));
+});
+// 💬 Hello everyone!
+// 🖼️ [Image: photo.jpg - Sunset view]
+// 🎥 [Video: clip.mp4, 30s]
+// 📎 [File: report.pdf, 200.0KB]
+```
+
+### 使用 if/else 替代 switch
+
+在某些场景下，`if/else` 可能更适合（例如需要复合条件判断时）：
+
+```ts
+type Result<T> =
+  | { success: true; data: T }
+  | { success: false; error: string };
+
+function processResult<T>(result: Result<T>, transform: (data: T) => string): string {
+  if (result.success) {
+    return `✅ ${transform(result.data)}`;
+  }
+  return `❌ ${result.error}`;
+}
+
+const okResult: Result<number[]> = { success: true, data: [1, 2, 3] };
+const errResult: Result<number[]> = { success: false, error: "Network timeout" };
+
+console.log(processResult(okResult, (data) => data.join(", ")));
+// "✅ 1, 2, 3"
+console.log(processResult(errResult, (data) => data.join(", ")));
+// "❌ Network timeout"
+```
+
+## 📝 实际应用示例
+
+### 状态机：订单流程
+
+```ts
+interface OrderDraft {
+  status: "draft";
+  items: Array<{ name: string; price: number; quantity: number }>;
+}
+
+interface OrderPending {
+  status: "pending";
+  items: Array<{ name: string; price: number; quantity: number }>;
+  orderId: string;
+  submittedAt: Date;
+}
+
+interface OrderPaid {
+  status: "paid";
+  orderId: string;
+  totalAmount: number;
+  paidAt: Date;
+  paymentMethod: string;
+}
+
+interface OrderShipped {
+  status: "shipped";
+  orderId: string;
+  trackingNumber: string;
+  shippedAt: Date;
+}
+
+interface OrderCompleted {
+  status: "completed";
+  orderId: string;
+  completedAt: Date;
+  rating?: number;
+}
+
+interface OrderCancelled {
+  status: "cancelled";
+  orderId: string;
+  cancelledAt: Date;
+  reason: string;
+}
+
+type Order =
+  | OrderDraft
+  | OrderPending
+  | OrderPaid
+  | OrderShipped
+  | OrderCompleted
+  | OrderCancelled;
+
+function getOrderSummary(order: Order): string {
+  switch (order.status) {
+    case "draft": {
+      const total = order.items.reduce(
+        (sum, item) => sum + item.price * item.quantity,
+        0
+      );
+      return `📝 Draft order with ${order.items.length} items, total: ${total.toFixed(2)}`;
+    }
+    case "pending":
+      return `⏳ Order ${order.orderId} pending since ${order.submittedAt.toLocaleDateString()}`;
+    case "paid":
+      return `💳 Order ${order.orderId} paid ${order.totalAmount.toFixed(2)} via ${order.paymentMethod}`;
+    case "shipped":
+      return `🚚 Order ${order.orderId} shipped, tracking: ${order.trackingNumber}`;
+    case "completed": {
+      const ratingStr = order.rating ? ` ⭐ ${order.rating}/5` : "";
+      return `✅ Order ${order.orderId} completed${ratingStr}`;
+    }
+    case "cancelled":
+      return `❌ Order ${order.orderId} cancelled: ${order.reason}`;
+  }
+}
+
+function getAvailableActions(order: Order): string[] {
+  switch (order.status) {
+    case "draft":
+      return ["submit", "add_item", "remove_item"];
+    case "pending":
+      return ["pay", "cancel"];
+    case "paid":
+      return ["ship", "refund"];
+    case "shipped":
+      return ["confirm_delivery"];
+    case "completed":
+      return ["rate", "reorder"];
+    case "cancelled":
+      return ["reorder"];
+  }
+}
+
+const draftOrder: Order = {
+  status: "draft",
+  items: [
+    { name: "TypeScript Book", price: 39.99, quantity: 1 },
+    { name: "Mechanical Keyboard", price: 149.99, quantity: 1 },
+  ],
+};
+
+const shippedOrder: Order = {
+  status: "shipped",
+  orderId: "ORD-001",
+  trackingNumber: "TRK-ABC123",
+  shippedAt: new Date("2026-04-20"),
+};
+
+console.log(getOrderSummary(draftOrder));
+// "📝 Draft order with 2 items, total: $189.98"
+console.log(getAvailableActions(draftOrder));
+// ["submit", "add_item", "remove_item"]
+
+console.log(getOrderSummary(shippedOrder));
+// "🚚 Order ORD-001 shipped, tracking: TRK-ABC123"
+console.log(getAvailableActions(shippedOrder));
+// ["confirm_delivery"]
+```
+
+## 🔗 相关概念
+
+- **[类型别名](../02-functions-objects/03-type-aliases.mdx)**：联合类型和字面量类型的基础
+- **[类型收窄技术](./01-narrowing-techniques.mdx)**：各种类型收窄方式的基础
+- **[自定义类型守卫](./02-custom-type-guards.mdx)**：为复杂判断逻辑创建类型守卫
+
+## 📚 学习检查点
+
+- [ ] 理解可辨识联合的三个要素（联合、公共标签字段、字面量类型）
+- [ ] 能够设计合理的标签字段
+- [ ] 掌握穷尽性检查的实现方式（`never` 类型）
+- [ ] 理解穷尽性检查在新增类型时的编译时保护作用
+- [ ] 能够使用可辨识联合建模状态机和业务流程
+
+## 🚀 下一步
+
+→ [类基础](../04-classes-oop/01-class-basics.mdx)

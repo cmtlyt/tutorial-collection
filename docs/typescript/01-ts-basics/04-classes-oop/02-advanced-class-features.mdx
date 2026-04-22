@@ -1,12 +1,615 @@
 # 类的高级特性
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍类的高级特性的核心概念和实践方法。
+在掌握了类的基础语法后，本节将介绍 TypeScript 类的高级特性：抽象类、接口实现、静态成员、参数属性和存取器。这些特性能帮助你构建更灵活、更规范的面向对象架构。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 抽象类（Abstract Classes）
+
+抽象类是不能被直接实例化的类，它作为基类为子类定义统一的接口和共享逻辑：
+
+```ts
+abstract class Shape {
+  abstract name: string;
+
+  // 抽象方法：子类必须实现
+  abstract getArea(): number;
+  abstract getPerimeter(): number;
+
+  // 具体方法：子类直接继承
+  describe(): string {
+    return `${this.name}: area = ${this.getArea().toFixed(2)}, perimeter = ${this.getPerimeter().toFixed(2)}`;
+  }
+}
+
+class Circle extends Shape {
+  name = "Circle";
+
+  constructor(private radius: number) {
+    super();
+  }
+
+  getArea(): number {
+    return Math.PI * this.radius ** 2;
+  }
+
+  getPerimeter(): number {
+    return 2 * Math.PI * this.radius;
+  }
+}
+
+class Rectangle extends Shape {
+  name = "Rectangle";
+
+  constructor(
+    private width: number,
+    private height: number
+  ) {
+    super();
+  }
+
+  getArea(): number {
+    return this.width * this.height;
+  }
+
+  getPerimeter(): number {
+    return 2 * (this.width + this.height);
+  }
+}
+
+// const shape = new Shape();  // 编译错误：无法创建抽象类的实例
+
+const circle = new Circle(5);
+console.log(circle.describe());
+// "Circle: area = 78.54, perimeter = 31.42"
+
+const rect = new Rectangle(4, 6);
+console.log(rect.describe());
+// "Rectangle: area = 24.00, perimeter = 20.00"
+
+// 抽象类可以作为类型使用
+function printShapes(shapes: Shape[]): void {
+  shapes.forEach((shape) => console.log(shape.describe()));
+}
+
+printShapes([circle, rect]);
+```
+
+### 抽象类 vs 接口
+
+```ts
+// 抽象类：可以包含实现逻辑和状态
+abstract class BaseRepository<T> {
+  protected items: T[] = [];
+
+  // 抽象方法：子类必须实现
+  abstract findById(id: string): T | undefined;
+
+  // 具体方法：所有子类共享
+  getAll(): T[] {
+    return [...this.items];
+  }
+
+  getCount(): number {
+    return this.items.length;
+  }
+}
+
+// 接口：只定义形状，不包含任何实现
+interface Serializable {
+  serialize(): string;
+  deserialize(data: string): void;
+}
+
+// 一个类可以继承一个抽象类 + 实现多个接口
+interface HasId {
+  id: string;
+}
+
+class UserRepository extends BaseRepository<HasId & { name: string }> implements Serializable {
+  findById(id: string) {
+    return this.items.find((item) => item.id === id);
+  }
+
+  addUser(id: string, name: string): void {
+    this.items.push({ id, name });
+  }
+
+  serialize(): string {
+    return JSON.stringify(this.items);
+  }
+
+  deserialize(data: string): void {
+    this.items = JSON.parse(data);
+  }
+}
+
+const repo = new UserRepository();
+repo.addUser("1", "Alice");
+repo.addUser("2", "Bob");
+console.log(repo.getCount());         // 2
+console.log(repo.findById("1"));      // { id: "1", name: "Alice" }
+console.log(repo.serialize());        // '[{"id":"1","name":"Alice"},{"id":"2","name":"Bob"}]'
+```
+
+## 🔌 类实现接口（implements）
+
+使用 `implements` 关键字强制类遵循接口定义的契约：
+
+```ts
+interface Printable {
+  print(): string;
+}
+
+interface Loggable {
+  log(level: string): void;
+}
+
+// 实现多个接口
+class Document implements Printable, Loggable {
+  constructor(
+    private title: string,
+    private content: string
+  ) {}
+
+  print(): string {
+    return `=== ${this.title} ===\n${this.content}`;
+  }
+
+  log(level: string): void {
+    console.log(`[${level}] Document: ${this.title}`);
+  }
+}
+
+const doc = new Document("Meeting Notes", "Discuss TypeScript migration plan.");
+console.log(doc.print());
+// === Meeting Notes ===
+// Discuss TypeScript migration plan.
+doc.log("INFO");
+// [INFO] Document: Meeting Notes
+```
+
+### 接口定义与类实现的完整示例
+
+```ts
+interface EventEmitter<EventMap extends Record<string, unknown>> {
+  on<K extends keyof EventMap>(event: K, handler: (data: EventMap[K]) => void): void;
+  off<K extends keyof EventMap>(event: K, handler: (data: EventMap[K]) => void): void;
+  emit<K extends keyof EventMap>(event: K, data: EventMap[K]): void;
+}
+
+interface AppEvents {
+  login: { userId: string; timestamp: Date };
+  logout: { userId: string };
+  error: { message: string; code: number };
+}
+
+class AppEventBus implements EventEmitter<AppEvents> {
+  private handlers: Map<string, Array<(data: unknown) => void>> = new Map();
+
+  on<K extends keyof AppEvents>(event: K, handler: (data: AppEvents[K]) => void): void {
+    const existing = this.handlers.get(event as string) ?? [];
+    existing.push(handler as (data: unknown) => void);
+    this.handlers.set(event as string, existing);
+  }
+
+  off<K extends keyof AppEvents>(event: K, handler: (data: AppEvents[K]) => void): void {
+    const existing = this.handlers.get(event as string) ?? [];
+    const index = existing.indexOf(handler as (data: unknown) => void);
+    if (index !== -1) {
+      existing.splice(index, 1);
+    }
+  }
+
+  emit<K extends keyof AppEvents>(event: K, data: AppEvents[K]): void {
+    const handlers = this.handlers.get(event as string) ?? [];
+    handlers.forEach((handler) => handler(data));
+  }
+}
+
+const bus = new AppEventBus();
+
+bus.on("login", (data) => {
+  console.log(`User ${data.userId} logged in at ${data.timestamp.toISOString()}`);
+});
+
+bus.on("error", (data) => {
+  console.log(`Error ${data.code}: ${data.message}`);
+});
+
+bus.emit("login", { userId: "user-001", timestamp: new Date() });
+bus.emit("error", { message: "Connection timeout", code: 408 });
+```
+
+## 📊 静态成员（Static Members）
+
+静态成员属于类本身而非实例，通过类名直接访问：
+
+```ts
+class MathUtils {
+  static readonly PI = 3.14159265358979;
+  static readonly E = 2.71828182845905;
+
+  static clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  static lerp(start: number, end: number, ratio: number): number {
+    return start + (end - start) * MathUtils.clamp(ratio, 0, 1);
+  }
+
+  static randomInt(min: number, max: number): number {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+}
+
+console.log(MathUtils.PI);              // 3.14159265358979
+console.log(MathUtils.clamp(15, 0, 10)); // 10
+console.log(MathUtils.lerp(0, 100, 0.5)); // 50
+console.log(MathUtils.randomInt(1, 6));  // 1~6 之间的随机整数
+```
+
+### 静态工厂 + 私有构造函数（单例模式）
+
+```ts
+class Logger {
+  private static instance: Logger | null = null;
+  private logs: string[] = [];
+
+  private constructor(private prefix: string) {}
+
+  static getInstance(prefix: string = "APP"): Logger {
+    if (!Logger.instance) {
+      Logger.instance = new Logger(prefix);
+    }
+    return Logger.instance;
+  }
+
+  info(message: string): void {
+    const entry = `[${this.prefix}] INFO: ${message}`;
+    this.logs.push(entry);
+    console.log(entry);
+  }
+
+  error(message: string): void {
+    const entry = `[${this.prefix}] ERROR: ${message}`;
+    this.logs.push(entry);
+    console.error(entry);
+  }
+
+  getHistory(): string[] {
+    return [...this.logs];
+  }
+}
+
+const logger1 = Logger.getInstance("MyApp");
+const logger2 = Logger.getInstance(); // 返回同一个实例
+
+console.log(logger1 === logger2); // true
+
+logger1.info("Application started");
+// [MyApp] INFO: Application started
+logger2.error("Something went wrong");
+// [MyApp] ERROR: Something went wrong
+
+console.log(logger1.getHistory().length); // 2
+```
+
+### 静态代码块
+
+TypeScript 支持 ES2022 的静态代码块，用于复杂的静态初始化：
+
+```ts
+class AppConfig {
+  static readonly environment: string;
+  static readonly debug: boolean;
+  static readonly apiBaseUrl: string;
+
+  static {
+    const env = process.env.NODE_ENV ?? "development";
+    AppConfig.environment = env;
+    AppConfig.debug = env !== "production";
+    AppConfig.apiBaseUrl = env === "production"
+      ? "https://api.example.com"
+      : "http://localhost:3000";
+  }
+}
+
+console.log(`Env: ${AppConfig.environment}, Debug: ${AppConfig.debug}`);
+console.log(`API: ${AppConfig.apiBaseUrl}`);
+```
+
+## ⚡ 参数属性（Parameter Properties）
+
+参数属性是 TypeScript 的语法糖，在构造函数参数前添加修饰符可以自动声明并初始化同名属性：
+
+```ts
+// 传统写法
+class UserVerbose {
+  public name: string;
+  private age: number;
+  readonly email: string;
+
+  constructor(name: string, age: number, email: string) {
+    this.name = name;
+    this.age = age;
+    this.email = email;
+  }
+}
+
+// 参数属性写法：更简洁
+class User {
+  constructor(
+    public name: string,
+    private age: number,
+    readonly email: string
+  ) {}
+
+  getInfo(): string {
+    return `${this.name}, age ${this.age}, ${this.email}`;
+  }
+}
+
+const user = new User("Alice", 28, "alice@example.com");
+console.log(user.name);     // "Alice"（public 可访问）
+console.log(user.email);    // "alice@example.com"（readonly 可读）
+// user.age;                // 编译错误：private
+// user.email = "new@test.com"; // 编译错误：readonly
+
+console.log(user.getInfo()); // "Alice, age 28, alice@example.com"
+```
+
+### 混合使用参数属性和普通属性
+
+```ts
+class Product {
+  readonly createdAt: Date = new Date();
+  private soldCount: number = 0;
+
+  constructor(
+    readonly sku: string,
+    public name: string,
+    private basePrice: number
+  ) {}
+
+  sell(quantity: number): void {
+    this.soldCount += quantity;
+  }
+
+  getCurrentPrice(): number {
+    // 卖得越多折扣越大
+    const discount = Math.min(this.soldCount * 0.01, 0.3);
+    return this.basePrice * (1 - discount);
+  }
+
+  getSummary(): string {
+    return `[${this.sku}] ${this.name}: ${this.getCurrentPrice().toFixed(2)} (sold: ${this.soldCount})`;
+  }
+}
+
+const product = new Product("TS-BOOK-001", "TypeScript in Action", 49.99);
+product.sell(10);
+console.log(product.getSummary());
+// "[TS-BOOK-001] TypeScript in Action: $44.99 (sold: 10)"
+product.sell(20);
+console.log(product.getSummary());
+// "[TS-BOOK-001] TypeScript in Action: $34.99 (sold: 30)"
+```
+
+## 🔄 存取器（Getters / Setters）
+
+TypeScript 支持 `get` 和 `set` 关键字定义属性的存取器，用于在读写属性时添加逻辑：
+
+```ts
+class Temperature {
+  private celsius: number;
+
+  constructor(celsius: number) {
+    this.celsius = celsius;
+  }
+
+  // Getter：像访问属性一样读取
+  get fahrenheit(): number {
+    return this.celsius * 9 / 5 + 32;
+  }
+
+  // Setter：像赋值属性一样写入
+  set fahrenheit(value: number) {
+    this.celsius = (value - 32) * 5 / 9;
+  }
+
+  get kelvin(): number {
+    return this.celsius + 273.15;
+  }
+
+  set kelvin(value: number) {
+    this.celsius = value - 273.15;
+  }
+
+  toString(): string {
+    return `${this.celsius.toFixed(1)}°C / ${this.fahrenheit.toFixed(1)}°F / ${this.kelvin.toFixed(1)}K`;
+  }
+}
+
+const temp = new Temperature(100);
+console.log(temp.toString());      // "100.0°C / 212.0°F / 373.1K"
+
+temp.fahrenheit = 32;
+console.log(temp.toString());      // "0.0°C / 32.0°F / 273.1K"
+
+temp.kelvin = 0;
+console.log(temp.toString());      // "-273.1°C / -459.7°F / 0.0K"
+```
+
+### 用存取器实现数据校验
+
+```ts
+class UserProfile {
+  private _name: string = "";
+  private _age: number = 0;
+  private _email: string = "";
+
+  get name(): string {
+    return this._name;
+  }
+
+  set name(value: string) {
+    const trimmed = value.trim();
+    if (trimmed.length < 2) {
+      throw new Error("Name must be at least 2 characters");
+    }
+    if (trimmed.length > 50) {
+      throw new Error("Name must be at most 50 characters");
+    }
+    this._name = trimmed;
+  }
+
+  get age(): number {
+    return this._age;
+  }
+
+  set age(value: number) {
+    if (!Number.isInteger(value) || value < 0 || value > 150) {
+      throw new Error("Age must be an integer between 0 and 150");
+    }
+    this._age = value;
+  }
+
+  get email(): string {
+    return this._email;
+  }
+
+  set email(value: string) {
+    if (!value.includes("@")) {
+      throw new Error("Invalid email format");
+    }
+    this._email = value.toLowerCase().trim();
+  }
+
+  toString(): string {
+    return `${this._name} (${this._age}) <${this._email}>`;
+  }
+}
+
+const profile = new UserProfile();
+profile.name = "Alice";
+profile.age = 28;
+profile.email = "Alice@Example.COM";
+
+console.log(profile.toString());
+// "Alice (28) <alice@example.com>"
+
+// profile.name = "A";   // 抛出 Error: Name must be at least 2 characters
+// profile.age = -1;     // 抛出 Error: Age must be an integer between 0 and 150
+// profile.email = "bad"; // 抛出 Error: Invalid email format
+```
+
+### 只读存取器（只有 getter 没有 setter）
+
+```ts
+class Vector2D {
+  constructor(
+    public x: number,
+    public y: number
+  ) {}
+
+  // 只有 getter，没有 setter —— 计算属性
+  get magnitude(): number {
+    return Math.sqrt(this.x ** 2 + this.y ** 2);
+  }
+
+  get normalized(): Vector2D {
+    const mag = this.magnitude;
+    if (mag === 0) return new Vector2D(0, 0);
+    return new Vector2D(this.x / mag, this.y / mag);
+  }
+
+  add(other: Vector2D): Vector2D {
+    return new Vector2D(this.x + other.x, this.y + other.y);
+  }
+
+  toString(): string {
+    return `(${this.x.toFixed(2)}, ${this.y.toFixed(2)})`;
+  }
+}
+
+const velocity = new Vector2D(3, 4);
+console.log(velocity.magnitude);            // 5
+console.log(velocity.normalized.toString()); // "(0.60, 0.80)"
+
+const acceleration = new Vector2D(1, 0);
+const result = velocity.add(acceleration);
+console.log(result.toString());             // "(4.00, 4.00)"
+```
+
+## 📝 实际应用示例
+
+### 可观察属性（简单版响应式系统）
+
+```ts
+type Listener<T> = (newValue: T, oldValue: T) => void;
+
+class Observable<T> {
+  private listeners: Array<Listener<T>> = [];
+  private _value: T;
+
+  constructor(initialValue: T) {
+    this._value = initialValue;
+  }
+
+  get value(): T {
+    return this._value;
+  }
+
+  set value(newValue: T) {
+    const oldValue = this._value;
+    this._value = newValue;
+    this.listeners.forEach((listener) => listener(newValue, oldValue));
+  }
+
+  subscribe(listener: Listener<T>): () => void {
+    this.listeners.push(listener);
+    // 返回取消订阅函数
+    return () => {
+      const index = this.listeners.indexOf(listener);
+      if (index !== -1) {
+        this.listeners.splice(index, 1);
+      }
+    };
+  }
+}
+
+const counter = new Observable(0);
+
+const unsubscribe = counter.subscribe((newVal, oldVal) => {
+  console.log(`Counter changed: ${oldVal} → ${newVal}`);
+});
+
+counter.value = 1; // "Counter changed: 0 → 1"
+counter.value = 5; // "Counter changed: 1 → 5"
+
+unsubscribe();
+counter.value = 10; // 不会触发回调（已取消订阅）
+console.log(counter.value); // 10
+```
+
+## 🔗 相关概念
+
+- **[类基础](./01-class-basics.mdx)**：属性声明、构造函数和访问修饰符
+- **[类与类型的关系](./03-classes-and-types.mdx)**：结构化类型系统与类的关系
+- **[对象类型](../02-functions-objects/02-object-types.mdx)**：接口定义与继承
+
+## 📚 学习检查点
+
+- [ ] 理解抽象类的作用和使用场景，能区分抽象类与接口
+- [ ] 掌握 `implements` 关键字实现接口的方式
+- [ ] 理解静态成员和静态方法的用途
+- [ ] 掌握参数属性的简洁写法
+- [ ] 能够使用 getter/setter 实现计算属性和数据校验
+
+## 🚀 下一步
+
+→ [类与类型的关系](./03-classes-and-types.mdx)

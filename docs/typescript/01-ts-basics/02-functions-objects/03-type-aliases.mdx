@@ -1,12 +1,383 @@
 # 类型别名
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍类型别名的核心概念和实践方法。
+类型别名（Type Alias）使用 `type` 关键字为类型创建一个新名称。它可以为任何类型命名——从简单的原始类型到复杂的联合类型和交叉类型。本节将详细对比 `type` 与 `interface` 的区别，并深入讲解联合类型、交叉类型和字面量类型。
+
+## 🎯 type 与 interface 的区别
+
+### 基本语法
+
+```ts
+// type 可以定义任何类型的别名
+type UserID = number;
+type UserName = string;
+type Coordinate = [number, number];
+type Callback = (data: string) => void;
+
+// interface 只能定义对象形状
+interface User {
+  id: UserID;
+  name: UserName;
+}
+```
+
+### 核心区别对比
+
+```ts
+// 1. type 支持联合类型和交叉类型，interface 不支持
+type Status = "active" | "inactive" | "suspended";
+type Result = Success | Failure; // 联合
+
+// 2. interface 支持声明合并，type 不支持
+interface Animal {
+  name: string;
+}
+interface Animal {
+  age: number;
+}
+// Animal 现在同时拥有 name 和 age
+
+type Pet = {
+  name: string;
+};
+// type Pet = { age: number };  // 编译错误：标识符 "Pet" 重复
+
+// 3. interface 使用 extends 继承，type 使用交叉类型（&）组合
+interface Shape {
+  color: string;
+}
+interface Circle extends Shape {
+  radius: number;
+}
+
+type ShapeType = {
+  color: string;
+};
+type CircleType = ShapeType & {
+  radius: number;
+};
+
+// 4. type 可以为原始类型、元组、联合类型等命名，interface 不行
+type StringOrNumber = string | number;
+type Point = [number, number];
+type Nullable<T> = T | null;
+```
+
+### 如何选择
+
+| 场景 | 推荐 |
+|------|------|
+| 定义对象形状 / 公共 API | `interface` |
+| 联合类型 / 交叉类型 | `type` |
+| 原始类型别名 | `type` |
+| 元组类型 | `type` |
+| 需要声明合并（扩展第三方库） | `interface` |
+| 函数类型 | 都可以，`type` 更简洁 |
+| 映射类型 / 条件类型 | `type` |
 
 :::tip
-本文档正在编写中，敬请期待。
+一个简单的经验法则：**默认使用 `interface`，当 `interface` 无法表达时使用 `type`**。
 :::
+
+## 🔀 联合类型（Union Types）
+
+联合类型表示一个值可以是多种类型之一，使用 `|` 连接：
+
+```ts
+// 基本联合类型
+type StringOrNumber = string | number;
+
+function formatId(id: StringOrNumber): string {
+  if (typeof id === "string") {
+    return id.toUpperCase();
+  }
+  return id.toString().padStart(6, "0");
+}
+
+console.log(formatId("abc")); // "ABC"
+console.log(formatId(42));    // "000042"
+
+// 联合类型在实际场景中的应用
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+type ResponseStatus = 200 | 201 | 400 | 404 | 500;
+
+interface ApiRequest {
+  url: string;
+  method: HttpMethod;
+  body?: unknown;
+}
+
+function sendRequest(request: ApiRequest): void {
+  console.log(`${request.method} ${request.url}`);
+}
+
+sendRequest({ url: "/api/users", method: "GET" });
+sendRequest({ url: "/api/users", method: "POST", body: { name: "Alice" } });
+// sendRequest({ url: "/api/users", method: "REMOVE" });
+// 编译错误："REMOVE" 不可赋给 HttpMethod
+```
+
+### 联合类型与共有属性
+
+联合类型的值只能访问所有成员类型**共有的**属性和方法：
+
+```ts
+interface Bird {
+  fly(): void;
+  layEggs(): void;
+}
+
+interface Fish {
+  swim(): void;
+  layEggs(): void;
+}
+
+type Pet = Bird | Fish;
+
+function interactWithPet(pet: Pet): void {
+  pet.layEggs(); // 正常：layEggs 是共有方法
+  // pet.fly();  // 编译错误：Fish 没有 fly 方法
+  // pet.swim(); // 编译错误：Bird 没有 swim 方法
+
+  // 需要通过类型收窄来访问特定方法
+  if ("fly" in pet) {
+    pet.fly(); // 收窄为 Bird
+  } else {
+    pet.swim(); // 收窄为 Fish
+  }
+}
+```
+
+## 🔗 交叉类型（Intersection Types）
+
+交叉类型使用 `&` 将多个类型合并为一个类型，结果类型必须同时满足所有成员类型的要求：
+
+```ts
+// 基本交叉类型
+interface HasName {
+  name: string;
+}
+
+interface HasAge {
+  age: number;
+}
+
+interface HasEmail {
+  email: string;
+}
+
+type Person = HasName & HasAge & HasEmail;
+
+const person: Person = {
+  name: "Alice",
+  age: 28,
+  email: "alice@example.com",
+};
+
+// 交叉类型常用于 mixin 模式
+interface Timestamped {
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface SoftDeletable {
+  deletedAt: Date | null;
+  isDeleted: boolean;
+}
+
+type UserRecord = HasName & HasEmail & Timestamped & SoftDeletable;
+
+const userRecord: UserRecord = {
+  name: "Bob",
+  email: "bob@example.com",
+  createdAt: new Date("2026-01-01"),
+  updatedAt: new Date("2026-04-22"),
+  deletedAt: null,
+  isDeleted: false,
+};
+
+console.log(`${userRecord.name} created at ${userRecord.createdAt.toISOString()}`);
+```
+
+### 交叉类型的冲突
+
+当交叉的类型存在同名属性但类型不兼容时，会产生 `never` 类型：
+
+```ts
+type A = { value: string };
+type B = { value: number };
+
+type C = A & B;
+// C 的 value 属性类型为 string & number = never
+// 实际上无法创建 C 类型的值
+
+// 正确的做法：确保交叉的类型不冲突
+type WithStringId = { id: string; name: string };
+type WithMetadata = { id: string; metadata: Record<string, unknown> };
+
+type FullRecord = WithStringId & WithMetadata;
+// id 属性类型相同（string），所以没有冲突
+```
+
+## 📌 字面量类型（Literal Types）
+
+字面量类型表示一个精确的值，而不是宽泛的类型：
+
+```ts
+// 字符串字面量类型
+type Direction = "north" | "south" | "east" | "west";
+
+function move(direction: Direction, steps: number): string {
+  return `Moving ${steps} steps ${direction}`;
+}
+
+console.log(move("north", 3)); // "Moving 3 steps north"
+// move("up", 1);  // 编译错误："up" 不可赋给 Direction
+
+// 数字字面量类型
+type DiceRoll = 1 | 2 | 3 | 4 | 5 | 6;
+
+function rollDice(): DiceRoll {
+  return (Math.floor(Math.random() * 6) + 1) as DiceRoll;
+}
+
+// 布尔字面量类型
+type True = true;
+type False = false;
+
+// 字面量类型组合实现精确的配置类型
+interface ButtonConfig {
+  size: "small" | "medium" | "large";
+  variant: "primary" | "secondary" | "danger";
+  disabled: boolean;
+  rounded: boolean;
+}
+
+function createButton(config: ButtonConfig): string {
+  const classes = [
+    `btn-${config.size}`,
+    `btn-${config.variant}`,
+    config.disabled ? "btn-disabled" : "",
+    config.rounded ? "btn-rounded" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return `<button class="${classes}">Click me</button>`;
+}
+
+console.log(
+  createButton({
+    size: "medium",
+    variant: "primary",
+    disabled: false,
+    rounded: true,
+  })
+);
+// <button class="btn-medium btn-primary btn-rounded">Click me</button>
+```
+
+### 模板字面量类型（预览）
+
+TypeScript 还支持基于模板字符串的字面量类型：
+
+```ts
+type EventName = "click" | "focus" | "blur";
+type EventHandler = `on${Capitalize<EventName>}`;
+// "onClick" | "onFocus" | "onBlur"
+
+type CssProperty = "margin" | "padding";
+type CssDirection = "top" | "right" | "bottom" | "left";
+type CssSpacingProperty = `${CssProperty}-${CssDirection}`;
+// "margin-top" | "margin-right" | ... | "padding-left"
+```
+
+:::tip
+模板字面量类型是一个强大的高级特性，将在 [模板字面量类型](../../02-generics-advanced-types/02-advanced-type-operations/03-template-literal-types.mdx) 章节中详细讲解。
+:::
+
+## 📝 实际应用示例
+
+### 状态管理中的类型设计
+
+```ts
+// 使用联合类型定义应用状态
+type LoadingState = {
+  status: "loading";
+};
+
+type SuccessState<T> = {
+  status: "success";
+  data: T;
+};
+
+type ErrorState = {
+  status: "error";
+  error: string;
+};
+
+type AsyncState<T> = LoadingState | SuccessState<T> | ErrorState;
+
+// 用户列表的异步状态
+interface UserProfile {
+  id: number;
+  name: string;
+  avatar: string;
+}
+
+type UserListState = AsyncState<UserProfile[]>;
+
+function renderUserList(state: UserListState): string {
+  switch (state.status) {
+    case "loading":
+      return "Loading users...";
+    case "success":
+      return state.data.map((user) => `👤 ${user.name}`).join("\n");
+    case "error":
+      return `❌ Error: ${state.error}`;
+  }
+}
+
+const loadingState: UserListState = { status: "loading" };
+console.log(renderUserList(loadingState));
+// "Loading users..."
+
+const successState: UserListState = {
+  status: "success",
+  data: [
+    { id: 1, name: "Alice", avatar: "alice.png" },
+    { id: 2, name: "Bob", avatar: "bob.png" },
+  ],
+};
+console.log(renderUserList(successState));
+// "👤 Alice"
+// "👤 Bob"
+
+const errorState: UserListState = {
+  status: "error",
+  error: "Network timeout",
+};
+console.log(renderUserList(errorState));
+// "❌ Error: Network timeout"
+```
+
+## 🔗 相关概念
+
+- **[对象类型](./02-object-types.mdx)**：interface 的详细用法
+- **[可辨识联合](../03-type-narrowing/03-discriminated-unions.mdx)**：联合类型与类型收窄的结合
+- **[类型收窄技术](../03-type-narrowing/01-narrowing-techniques.mdx)**：如何安全地使用联合类型
+
+## 📚 学习检查点
+
+- [ ] 理解 `type` 和 `interface` 的区别，能在合适场景选择使用
+- [ ] 掌握联合类型的定义和共有属性的访问规则
+- [ ] 掌握交叉类型的组合方式和冲突处理
+- [ ] 理解字面量类型的作用，能用于定义精确的配置类型
+
+## 🚀 下一步
+
+→ [类型收窄技术](../03-type-narrowing/01-narrowing-techniques.mdx)

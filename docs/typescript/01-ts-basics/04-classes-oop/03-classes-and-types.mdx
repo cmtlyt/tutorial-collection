@@ -1,12 +1,518 @@
 # 类与类型的关系
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍类与类型的关系的核心概念和实践方法。
+TypeScript 采用**结构化类型系统**（Structural Type System），也称为"鸭子类型"——如果一个对象具有某个类型所要求的所有属性和方法，那么它就被认为是该类型的实例，而不管它是否真的通过 `new` 创建。这与 Java、C# 等语言的名义类型系统（Nominal Type System）有本质区别。本节将深入讲解结构化类型系统、类表达式和 `this` 类型。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 结构化类型系统（Structural Typing）
+
+### 核心原则：形状匹配
+
+```ts
+class Point2D {
+  constructor(
+    public x: number,
+    public y: number
+  ) {}
+}
+
+class GamePosition {
+  constructor(
+    public x: number,
+    public y: number
+  ) {}
+}
+
+// Point2D 和 GamePosition 没有任何继承关系
+// 但它们的结构相同，所以可以互相赋值
+const point: Point2D = new GamePosition(10, 20);
+const position: GamePosition = new Point2D(30, 40);
+
+console.log(point.x, point.y);         // 10 20
+console.log(position.x, position.y);   // 30 40
+
+// 甚至普通对象字面量也可以
+const anotherPoint: Point2D = { x: 50, y: 60 };
+console.log(anotherPoint.x, anotherPoint.y); // 50 60
+```
+
+### 结构兼容性：子集规则
+
+一个类型只要包含另一个类型的**所有必需属性**，就被认为兼容：
+
+```ts
+interface HasName {
+  name: string;
+}
+
+interface HasAge {
+  age: number;
+}
+
+interface Person {
+  name: string;
+  age: number;
+  email: string;
+}
+
+// Person 拥有 HasName 的所有属性，所以兼容
+const namedThing: HasName = { name: "Alice", age: 28, email: "a@b.com" } as Person;
+
+// Person 也拥有 HasAge 的所有属性
+const agedThing: HasAge = { name: "Alice", age: 28, email: "a@b.com" } as Person;
+
+function greet(target: HasName): string {
+  return `Hello, ${target.name}!`;
+}
+
+// 任何有 name: string 属性的对象都可以传入
+greet({ name: "Bob" });
+greet({ name: "Charlie", age: 30 } as Person);
+
+class Dog {
+  constructor(
+    public name: string,
+    public breed: string
+  ) {}
+}
+
+// Dog 也有 name: string，所以也兼容 HasName
+console.log(greet(new Dog("Rex", "Labrador"))); // "Hello, Rex!"
+```
+
+### 额外属性检查
+
+TypeScript 对**对象字面量**有特殊的"额外属性检查"：
+
+```ts
+interface Config {
+  host: string;
+  port: number;
+}
+
+// ❌ 对象字面量直接赋值会触发额外属性检查
+// const config: Config = {
+//   host: "localhost",
+//   port: 3000,
+//   debug: true,  // 编译错误：对象字面量不能有 Config 中不存在的属性
+// };
+
+// ✅ 方式一：通过中间变量赋值，不触发额外属性检查
+const rawConfig = {
+  host: "localhost",
+  port: 3000,
+  debug: true,
+};
+const config1: Config = rawConfig; // 正常，因为不是直接赋值对象字面量
+
+// ✅ 方式二：使用类型断言
+const config2: Config = {
+  host: "localhost",
+  port: 3000,
+  debug: true,
+} as Config;
+
+// ✅ 方式三：使用索引签名允许额外属性
+interface FlexibleConfig {
+  host: string;
+  port: number;
+  [key: string]: unknown;
+}
+
+const config3: FlexibleConfig = {
+  host: "localhost",
+  port: 3000,
+  debug: true,
+};
+```
+
+### private 和 protected 打破结构化兼容
+
+带有 `private` 或 `protected` 成员的类不再遵循纯粹的结构兼容：
+
+```ts
+class Animal {
+  private species: string;
+
+  constructor(species: string) {
+    this.species = species;
+  }
+
+  getSpecies(): string {
+    return this.species;
+  }
+}
+
+class Pet {
+  private species: string;
+
+  constructor(species: string) {
+    this.species = species;
+  }
+
+  getSpecies(): string {
+    return this.species;
+  }
+}
+
+// 虽然结构完全相同，但因为 private 成员来自不同的声明
+// 它们不兼容
+// const animal: Animal = new Pet("Dog");  // 编译错误
+
+// 但继承关系中的 private 是兼容的
+class Dog extends Animal {
+  constructor(public breed: string) {
+    super("Dog");
+  }
+}
+
+const animal: Animal = new Dog("Labrador"); // 正常
+console.log(animal.getSpecies()); // "Dog"
+```
+
+## 📦 类表达式
+
+与函数表达式类似，类也可以用表达式的形式定义：
+
+```ts
+// 命名类表达式
+const Rectangle = class RectangleClass {
+  constructor(
+    public width: number,
+    public height: number
+  ) {}
+
+  getArea(): number {
+    return this.width * this.height;
+  }
+};
+
+const rect = new Rectangle(10, 5);
+console.log(rect.getArea()); // 50
+
+// 匿名类表达式
+const Circle = class {
+  constructor(public radius: number) {}
+
+  getArea(): number {
+    return Math.PI * this.radius ** 2;
+  }
+};
+
+const circle = new Circle(5);
+console.log(circle.getArea().toFixed(2)); // "78.54"
+```
+
+### 工厂函数中的类表达式
+
+类表达式在工厂模式中特别有用：
+
+```ts
+interface Timestamped {
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+function withTimestamps<T extends new (...args: unknown[]) => object>(
+  BaseClass: T
+) {
+  return class extends BaseClass implements Timestamped {
+    createdAt = new Date();
+    updatedAt = new Date();
+
+    touch(): void {
+      this.updatedAt = new Date();
+    }
+  };
+}
+
+class Article {
+  constructor(
+    public title: string,
+    public content: string
+  ) {}
+}
+
+const TimestampedArticle = withTimestamps(Article);
+
+const article = new TimestampedArticle("Hello TypeScript", "TypeScript is great!");
+console.log(article.title);     // "Hello TypeScript"
+console.log(article.createdAt); // 当前时间
+article.touch();
+console.log(article.updatedAt); // 更新后的时间
+```
+
+## 🔄 this 类型
+
+### 多态 this
+
+在 TypeScript 中，`this` 可以作为类型使用，它表示**当前类的实例类型**。这在链式调用和继承中特别有用：
+
+```ts
+class QueryBuilder {
+  private conditions: string[] = [];
+  private orderByField: string = "";
+  private limitCount: number = 0;
+
+  where(condition: string): this {
+    this.conditions.push(condition);
+    return this;
+  }
+
+  orderBy(field: string): this {
+    this.orderByField = field;
+    return this;
+  }
+
+  limit(count: number): this {
+    this.limitCount = count;
+    return this;
+  }
+
+  build(): string {
+    let query = "SELECT *";
+    if (this.conditions.length > 0) {
+      query += ` WHERE ${this.conditions.join(" AND ")}`;
+    }
+    if (this.orderByField) {
+      query += ` ORDER BY ${this.orderByField}`;
+    }
+    if (this.limitCount > 0) {
+      query += ` LIMIT ${this.limitCount}`;
+    }
+    return query;
+  }
+}
+
+// 链式调用
+const query = new QueryBuilder()
+  .where("age > 18")
+  .where("status = 'active'")
+  .orderBy("name")
+  .limit(10)
+  .build();
+
+console.log(query);
+// "SELECT * WHERE age > 18 AND status = 'active' ORDER BY name LIMIT 10"
+```
+
+### this 类型与继承
+
+`this` 类型的关键优势在于子类继承时自动指向子类：
+
+```ts
+class Collection<T> {
+  protected items: T[] = [];
+
+  add(item: T): this {
+    this.items.push(item);
+    return this;
+  }
+
+  toArray(): T[] {
+    return [...this.items];
+  }
+}
+
+class UniqueCollection<T> extends Collection<T> {
+  add(item: T): this {
+    if (!this.items.includes(item)) {
+      this.items.push(item);
+    }
+    return this;
+  }
+
+  getSize(): number {
+    return this.items.length;
+  }
+}
+
+// 因为 add 返回 this，子类的链式调用仍然返回子类类型
+const collection = new UniqueCollection<string>()
+  .add("apple")
+  .add("banana")
+  .add("apple")  // 重复，不会添加
+  .add("cherry");
+
+// collection 的类型是 UniqueCollection<string>，可以调用 getSize
+console.log(collection.getSize()); // 3
+console.log(collection.toArray()); // ["apple", "banana", "cherry"]
+```
+
+### this 类型守卫
+
+可以在类方法中使用 `this is Type` 作为类型守卫：
+
+```ts
+class FileSystemEntry {
+  constructor(
+    public name: string,
+    public path: string
+  ) {}
+
+  isFile(): this is FileEntry {
+    return this instanceof FileEntry;
+  }
+
+  isDirectory(): this is DirectoryEntry {
+    return this instanceof DirectoryEntry;
+  }
+}
+
+class FileEntry extends FileSystemEntry {
+  constructor(
+    name: string,
+    path: string,
+    public size: number,
+    public extension: string
+  ) {
+    super(name, path);
+  }
+}
+
+class DirectoryEntry extends FileSystemEntry {
+  children: FileSystemEntry[] = [];
+
+  constructor(name: string, path: string) {
+    super(name, path);
+  }
+
+  addChild(entry: FileSystemEntry): void {
+    this.children.push(entry);
+  }
+}
+
+function describeEntry(entry: FileSystemEntry): string {
+  if (entry.isFile()) {
+    // entry 被收窄为 FileEntry
+    return `📄 ${entry.name}.${entry.extension} (${entry.size} bytes)`;
+  }
+  if (entry.isDirectory()) {
+    // entry 被收窄为 DirectoryEntry
+    return `📁 ${entry.name}/ (${entry.children.length} items)`;
+  }
+  return `❓ ${entry.name}`;
+}
+
+const file = new FileEntry("readme", "/docs/readme", 1024, "md");
+const dir = new DirectoryEntry("src", "/project/src");
+dir.addChild(new FileEntry("index", "/project/src/index", 512, "ts"));
+dir.addChild(new FileEntry("utils", "/project/src/utils", 256, "ts"));
+
+console.log(describeEntry(file)); // "📄 readme.md (1024 bytes)"
+console.log(describeEntry(dir));  // "📁 src/ (2 items)"
+```
+
+## 📝 实际应用示例
+
+### 类型安全的构建器模式
+
+```ts
+interface EmailMessage {
+  from: string;
+  to: string[];
+  subject: string;
+  body: string;
+  cc?: string[];
+  bcc?: string[];
+  attachments?: string[];
+}
+
+class EmailBuilder {
+  private email: Partial<EmailMessage> = {};
+
+  from(address: string): this {
+    this.email.from = address;
+    return this;
+  }
+
+  to(...addresses: string[]): this {
+    this.email.to = addresses;
+    return this;
+  }
+
+  subject(subject: string): this {
+    this.email.subject = subject;
+    return this;
+  }
+
+  body(body: string): this {
+    this.email.body = body;
+    return this;
+  }
+
+  cc(...addresses: string[]): this {
+    this.email.cc = addresses;
+    return this;
+  }
+
+  bcc(...addresses: string[]): this {
+    this.email.bcc = addresses;
+    return this;
+  }
+
+  attach(...files: string[]): this {
+    this.email.attachments = files;
+    return this;
+  }
+
+  build(): EmailMessage {
+    const { from, to, subject, body } = this.email;
+    if (!from) throw new Error("Sender (from) is required");
+    if (!to || to.length === 0) throw new Error("At least one recipient (to) is required");
+    if (!subject) throw new Error("Subject is required");
+    if (!body) throw new Error("Body is required");
+
+    return {
+      from,
+      to,
+      subject,
+      body,
+      cc: this.email.cc,
+      bcc: this.email.bcc,
+      attachments: this.email.attachments,
+    };
+  }
+}
+
+const email = new EmailBuilder()
+  .from("alice@example.com")
+  .to("bob@example.com", "charlie@example.com")
+  .subject("Meeting Tomorrow")
+  .body("Hi team, let's meet at 10am.")
+  .cc("manager@example.com")
+  .attach("agenda.pdf")
+  .build();
+
+console.log(JSON.stringify(email, null, 2));
+// {
+//   "from": "alice@example.com",
+//   "to": ["bob@example.com", "charlie@example.com"],
+//   "subject": "Meeting Tomorrow",
+//   "body": "Hi team, let's meet at 10am.",
+//   "cc": ["manager@example.com"],
+//   "attachments": ["agenda.pdf"]
+// }
+```
+
+## 🔗 相关概念
+
+- **[类基础](./01-class-basics.mdx)**：访问修饰符和属性声明
+- **[类的高级特性](./02-advanced-class-features.mdx)**：抽象类、接口实现和存取器
+- **[对象类型](../02-functions-objects/02-object-types.mdx)**：接口定义和索引签名
+
+## 📚 学习检查点
+
+- [ ] 理解结构化类型系统的"形状匹配"原则
+- [ ] 理解额外属性检查的触发条件和绕过方式
+- [ ] 了解 `private`/`protected` 如何影响结构兼容性
+- [ ] 掌握类表达式的语法和工厂模式应用
+- [ ] 理解 `this` 类型在链式调用和继承中的作用
+- [ ] 能够使用 `this is Type` 在类方法中实现类型守卫
+
+## 🚀 下一步
+
+→ [泛型基础](../../02-generics-advanced-types/01-generics-basics/01-generics-introduction.mdx)

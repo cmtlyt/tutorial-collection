@@ -1,12 +1,372 @@
 # 函数类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍函数类型的核心概念和实践方法。
+函数是 JavaScript 中的一等公民，TypeScript 为函数提供了强大的类型支持。本节将介绍如何为函数声明、函数表达式添加类型，以及可选参数、默认参数、剩余参数、函数重载和回调函数类型等核心概念。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 函数声明与函数表达式的类型
+
+### 函数声明
+
+```ts
+// 为参数和返回值添加类型注解
+function add(a: number, b: number): number {
+  return a + b;
+}
+
+// 没有返回值的函数
+function logMessage(message: string): void {
+  console.log(message);
+}
+
+console.log(add(3, 5));       // 8
+logMessage("Hello TypeScript"); // Hello TypeScript
+```
+
+### 函数表达式
+
+```ts
+// 方式一：直接在参数上标注
+const multiply = (a: number, b: number): number => {
+  return a * b;
+};
+
+// 方式二：使用函数类型定义变量类型
+const divide: (a: number, b: number) => number = (a, b) => {
+  return a / b;
+};
+
+// 方式三：使用 type 定义函数类型
+type MathOperation = (a: number, b: number) => number;
+
+const subtract: MathOperation = (a, b) => a - b;
+
+console.log(multiply(3, 4));  // 12
+console.log(divide(10, 3));   // 3.3333...
+console.log(subtract(10, 3)); // 7
+```
+
+### 使用接口定义函数类型
+
+```ts
+// 使用 interface 的调用签名
+interface Formatter {
+  (input: string): string;
+}
+
+const toUpperCase: Formatter = (input) => input.toUpperCase();
+const toLowerCase: Formatter = (input) => input.toLowerCase();
+
+console.log(toUpperCase("hello")); // "HELLO"
+console.log(toLowerCase("WORLD")); // "world"
+
+// 带属性的可调用对象
+interface Logger {
+  (message: string): void;
+  level: string;
+}
+
+function createLogger(): Logger {
+  const logger = ((message: string) => {
+    console.log(`[${logger.level}] ${message}`);
+  }) as Logger;
+  logger.level = "info";
+  return logger;
+}
+
+const logger = createLogger();
+logger("Application started"); // [info] Application started
+logger.level = "debug";
+logger("Debug info");          // [debug] Debug info
+```
+
+## 🔧 可选参数与默认参数
+
+### 可选参数
+
+使用 `?` 标记参数为可选。可选参数必须放在必选参数之后：
+
+```ts
+function createUser(name: string, age?: number, email?: string): string {
+  let result = `Name: ${name}`;
+  if (age !== undefined) {
+    result += `, Age: ${age}`;
+  }
+  if (email !== undefined) {
+    result += `, Email: ${email}`;
+  }
+  return result;
+}
+
+console.log(createUser("Alice"));                     // "Name: Alice"
+console.log(createUser("Bob", 25));                   // "Name: Bob, Age: 25"
+console.log(createUser("Charlie", 30, "c@test.com")); // "Name: Charlie, Age: 30, Email: c@test.com"
+```
+
+### 默认参数
+
+默认参数不需要标记为可选，TypeScript 会自动推断：
+
+```ts
+function buildUrl(
+  path: string,
+  protocol: string = "https",
+  port: number = 443
+): string {
+  return `${protocol}://example.com:${port}${path}`;
+}
+
+console.log(buildUrl("/api/users"));            // "https://example.com:443/api/users"
+console.log(buildUrl("/api/users", "http"));     // "http://example.com:443/api/users"
+console.log(buildUrl("/api/users", "http", 80)); // "http://example.com:80/api/users"
+
+// 跳过中间参数时传 undefined
+console.log(buildUrl("/api/users", undefined, 8080));
+// "https://example.com:8080/api/users"
+```
+
+## 📦 剩余参数（Rest Parameters）
+
+使用 `...` 语法收集多余的参数到一个数组中：
+
+```ts
+// 基本剩余参数
+function sum(...numbers: number[]): number {
+  return numbers.reduce((total, num) => total + num, 0);
+}
+
+console.log(sum(1, 2, 3));       // 6
+console.log(sum(10, 20, 30, 40)); // 100
+
+// 混合固定参数和剩余参数
+function logWithPrefix(prefix: string, ...messages: string[]): void {
+  messages.forEach((message) => {
+    console.log(`[${prefix}] ${message}`);
+  });
+}
+
+logWithPrefix("APP", "Started", "Listening on port 3000");
+// [APP] Started
+// [APP] Listening on port 3000
+
+// 使用元组类型约束剩余参数
+function createRecord(id: number, ...fields: [string, string, number?]): object {
+  return {
+    id,
+    name: fields[0],
+    category: fields[1],
+    priority: fields[2] ?? 0,
+  };
+}
+
+console.log(createRecord(1, "Task A", "dev", 3));
+// { id: 1, name: "Task A", category: "dev", priority: 3 }
+console.log(createRecord(2, "Task B", "ops"));
+// { id: 2, name: "Task B", category: "ops", priority: 0 }
+```
+
+## 🔄 函数重载（Overloads）
+
+函数重载允许同一个函数根据不同的参数类型和数量返回不同类型的值：
+
+```ts
+// 重载签名（声明多种调用方式）
+function format(value: string): string;
+function format(value: number): string;
+function format(value: Date): string;
+// 实现签名（实际的函数体）
+function format(value: string | number | Date): string {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number") {
+    return value.toFixed(2);
+  }
+  return value.toISOString().split("T")[0];
+}
+
+console.log(format("  hello  ")); // "hello"
+console.log(format(3.14159));     // "3.14"
+console.log(format(new Date("2026-04-22"))); // "2026-04-22"
+
+// 更复杂的重载：根据参数类型决定返回类型
+function parseInput(input: string): string[];
+function parseInput(input: number): number[];
+function parseInput(input: string | number): string[] | number[] {
+  if (typeof input === "string") {
+    return input.split(",").map((item) => item.trim());
+  }
+  return Array.from({ length: input }, (_, index) => index);
+}
+
+const words = parseInput("a, b, c"); // string[] 类型
+console.log(words); // ["a", "b", "c"]
+
+const indices = parseInput(5); // number[] 类型
+console.log(indices); // [0, 1, 2, 3, 4]
+```
+
+### 重载 vs 联合类型
+
+并非所有场景都需要重载。如果返回值类型相同，使用联合类型更简洁：
+
+```ts
+// ❌ 不必要的重载
+function getLength(value: string): number;
+function getLength(value: unknown[]): number;
+function getLength(value: string | unknown[]): number {
+  return value.length;
+}
+
+// ✅ 使用联合类型更简洁
+function getLengthSimple(value: string | unknown[]): number {
+  return value.length;
+}
+```
+
+## 📞 回调函数类型
+
+### 定义回调类型
+
+```ts
+// 简单回调
+type SuccessCallback = (data: string) => void;
+type ErrorCallback = (error: Error) => void;
+
+function fetchData(
+  url: string,
+  onSuccess: SuccessCallback,
+  onError: ErrorCallback
+): void {
+  try {
+    // 模拟异步请求
+    const data = `Response from ${url}`;
+    onSuccess(data);
+  } catch (error) {
+    onError(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+fetchData(
+  "https://api.example.com/users",
+  (data) => console.log("Success:", data),
+  (error) => console.error("Error:", error.message)
+);
+// Success: Response from https://api.example.com/users
+```
+
+### 带泛型的回调
+
+```ts
+function processArray<T, R>(
+  items: T[],
+  transformer: (item: T, index: number) => R
+): R[] {
+  return items.map(transformer);
+}
+
+const numbers = [1, 2, 3, 4, 5];
+
+const doubled = processArray(numbers, (num) => num * 2);
+console.log(doubled); // [2, 4, 6, 8, 10]
+
+const labels = processArray(numbers, (num, index) => `Item ${index}: ${num}`);
+console.log(labels); // ["Item 0: 1", "Item 1: 2", ...]
+```
+
+### void 回调的特殊行为
+
+当回调类型声明返回 `void` 时，实际返回值会被忽略：
+
+```ts
+type VoidCallback = (value: number) => void;
+
+// 这些赋值都是合法的，即使实际有返回值
+const callback1: VoidCallback = (value) => {
+  console.log(value);
+  // 没有返回值
+};
+
+const callback2: VoidCallback = (value) => {
+  return value * 2; // 返回了 number，但被 void 约束忽略
+};
+
+// 这就是为什么 forEach 的回调可以 return
+const result: number[] = [];
+[1, 2, 3].forEach((num) => result.push(num));
+// push 返回 number，但 forEach 的回调类型是 void，所以没问题
+```
+
+## 📝 实际应用示例
+
+### 事件系统
+
+```ts
+type EventHandler<T = void> = T extends void
+  ? () => void
+  : (data: T) => void;
+
+interface EventEmitter {
+  on(event: "click", handler: EventHandler<{ x: number; y: number }>): void;
+  on(event: "keypress", handler: EventHandler<{ key: string }>): void;
+  on(event: "close", handler: EventHandler): void;
+  emit(event: string, data?: unknown): void;
+}
+
+function createEventEmitter(): EventEmitter {
+  const handlers: Record<string, Array<(data?: unknown) => void>> = {};
+
+  return {
+    on(event: string, handler: (data?: unknown) => void) {
+      if (!handlers[event]) {
+        handlers[event] = [];
+      }
+      handlers[event].push(handler);
+    },
+    emit(event: string, data?: unknown) {
+      const eventHandlers = handlers[event];
+      if (eventHandlers) {
+        eventHandlers.forEach((handler) => handler(data));
+      }
+    },
+  };
+}
+
+const emitter = createEventEmitter();
+
+emitter.on("click", (data) => {
+  console.log(`Clicked at (${data.x}, ${data.y})`);
+});
+
+emitter.on("keypress", (data) => {
+  console.log(`Key pressed: ${data.key}`);
+});
+
+emitter.on("close", () => {
+  console.log("Window closed");
+});
+
+emitter.emit("click", { x: 100, y: 200 });
+// Clicked at (100, 200)
+```
+
+## 🔗 相关概念
+
+- **[类型注解与类型推断](../01-getting-started/03-type-annotations-inference.mdx)**：函数参数类型和上下文推断
+- **[对象类型](./02-object-types.mdx)**：函数参数中常用的对象类型定义
+- **[类型别名](./03-type-aliases.mdx)**：使用 type 定义可复用的函数类型
+
+## 📚 学习检查点
+
+- [ ] 能够为函数声明和函数表达式添加正确的类型注解
+- [ ] 理解可选参数和默认参数的区别
+- [ ] 掌握剩余参数的类型声明
+- [ ] 理解函数重载的使用场景和声明方式
+- [ ] 能够定义和使用回调函数类型
+
+## 🚀 下一步
+
+→ [对象类型](./02-object-types.mdx)
