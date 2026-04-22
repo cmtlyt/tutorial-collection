@@ -1,12 +1,620 @@
 # 函数式编程模式
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍函数式编程模式的核心概念和实践方法。
+函数式编程（FP）强调通过**纯函数**、**不可变数据**和**函数组合**来构建程序。TypeScript 的类型系统为函数式编程提供了强大的类型推断支持，让我们能够编写类型安全的函数组合、管道、柯里化和 Monad 等高级模式。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 函数组合类型
+
+### 基本函数组合
+
+函数组合（Compose）将多个函数组合成一个新函数，数据从右向左依次通过每个函数：
+
+```ts
+// 两个函数的组合
+function compose<A, B, C>(
+  f: (b: B) => C,
+  g: (a: A) => B,
+): (a: A) => C {
+  return (a: A) => f(g(a));
+}
+
+// 使用示例
+const double = (n: number): number => n * 2;
+const addOne = (n: number): number => n + 1;
+const toString = (n: number): string => `Result: ${n}`;
+
+const doubleAndAddOne = compose(addOne, double);
+console.log(doubleAndAddOne(5)); // 11
+
+const fullTransform = compose(toString, compose(addOne, double));
+console.log(fullTransform(5)); // "Result: 11"
+```
+
+### 可变参数的函数组合
+
+支持任意数量函数的组合，需要利用元组类型和递归推断：
+
+```ts
+// 辅助类型：提取函数的第一个参数类型
+type FirstParam<F> = F extends (arg: infer A) => unknown ? A : never;
+
+// 辅助类型：提取函数的返回值类型
+type ReturnOf<F> = F extends (...args: unknown[]) => infer R ? R : never;
+
+// 可变参数 compose
+function composeMany<Fns extends Array<(arg: any) => any>>(
+  ...fns: Fns
+): (arg: FirstParam<Fns[Fns["length"] extends 0 ? never : LastElement<Fns>]>) => ReturnOf<Fns[0]> {
+  return (arg: unknown) =>
+    fns.reduceRight((result, fn) => fn(result), arg) as ReturnOf<Fns[0]>;
+}
+
+// 提取数组最后一个元素的类型
+type LastElement<T extends unknown[]> = T extends [...unknown[], infer L] ? L : never;
+
+// 实用工具函数
+const trim = (s: string): string => s.trim();
+const toLowerCase = (s: string): string => s.toLowerCase();
+const split = (separator: string) => (s: string): string[] => s.split(separator);
+const first = <T>(arr: T[]): T | undefined => arr[0];
+
+// 组合多个函数
+const normalize = composeMany(toLowerCase, trim);
+console.log(normalize("  Hello World  ")); // "hello world"
+```
+
+## 🎯 管道（Pipe）类型
+
+管道与函数组合方向相反——数据从左向右流动，更符合阅读习惯：
+
+### pipe 函数
+
+```ts
+// 重载实现类型安全的 pipe
+function pipe<A>(value: A): A;
+function pipe<A, B>(value: A, fn1: (a: A) => B): B;
+function pipe<A, B, C>(value: A, fn1: (a: A) => B, fn2: (b: B) => C): C;
+function pipe<A, B, C, D>(
+  value: A,
+  fn1: (a: A) => B,
+  fn2: (b: B) => C,
+  fn3: (c: C) => D,
+): D;
+function pipe<A, B, C, D, E>(
+  value: A,
+  fn1: (a: A) => B,
+  fn2: (b: B) => C,
+  fn3: (c: C) => D,
+  fn4: (d: D) => E,
+): E;
+function pipe<A, B, C, D, E, F>(
+  value: A,
+  fn1: (a: A) => B,
+  fn2: (b: B) => C,
+  fn3: (c: C) => D,
+  fn4: (d: D) => E,
+  fn5: (e: E) => F,
+): F;
+function pipe(value: unknown, ...fns: Array<(arg: unknown) => unknown>): unknown {
+  return fns.reduce((result, fn) => fn(result), value);
+}
+
+// 使用 pipe：数据从左向右流动
+const result = pipe(
+  "  Hello, World!  ",
+  (s: string) => s.trim(),
+  (s: string) => s.toLowerCase(),
+  (s: string) => s.replace(/[^a-z0-9\s]/g, ""),
+  (s: string) => s.split(" "),
+  (words: string[]) => words.join("-"),
+);
+
+console.log(result); // "hello-world"
+```
+
+### 可链式调用的 pipe
+
+通过封装一个 `Pipe` 类，实现更符合人体工程学的链式 API：
+
+```ts
+class Pipe<T> {
+  constructor(private readonly value: T) {}
+
+  static of<T>(value: T): Pipe<T> {
+    return new Pipe(value);
+  }
+
+  then<U>(fn: (value: T) => U): Pipe<U> {
+    return new Pipe(fn(this.value));
+  }
+
+  tap(fn: (value: T) => void): Pipe<T> {
+    fn(this.value);
+    return this;
+  }
+
+  result(): T {
+    return this.value;
+  }
+}
+
+// 使用链式管道
+const processed = Pipe.of([3, 1, 4, 1, 5, 9, 2, 6])
+  .tap((arr) => console.log("Input:", arr))
+  .then((arr) => arr.filter((n) => n > 2))
+  .tap((arr) => console.log("After filter:", arr))
+  .then((arr) => arr.sort((a, b) => a - b))
+  .then((arr) => arr.map((n) => n * 10))
+  .tap((arr) => console.log("After transform:", arr))
+  .then((arr) => arr.reduce((sum, n) => sum + n, 0))
+  .result();
+
+console.log("Final:", processed);
+// Input: [3, 1, 4, 1, 5, 9, 2, 6]
+// After filter: [3, 4, 5, 9, 6]
+// After transform: [30, 40, 50, 60, 90]
+// Final: 270
+```
+
+## 🎯 柯里化（Curry）类型
+
+柯里化将一个接受多个参数的函数转换为一系列接受单个参数的函数：
+
+### 基本柯里化
+
+```ts
+// 两参数函数的柯里化
+function curry2<A, B, R>(fn: (a: A, b: B) => R): (a: A) => (b: B) => R {
+  return (a: A) => (b: B) => fn(a, b);
+}
+
+// 三参数函数的柯里化
+function curry3<A, B, C, R>(
+  fn: (a: A, b: B, c: C) => R,
+): (a: A) => (b: B) => (c: C) => R {
+  return (a: A) => (b: B) => (c: C) => fn(a, b, c);
+}
+
+// 使用示例
+const add = (a: number, b: number): number => a + b;
+const curriedAdd = curry2(add);
+
+const addFive = curriedAdd(5);
+console.log(addFive(3)); // 8
+console.log(addFive(7)); // 12
+
+const formatMessage = (level: string, module: string, message: string): string =>
+  `[${level}] [${module}] ${message}`;
+
+const curriedFormat = curry3(formatMessage);
+const errorLog = curriedFormat("ERROR");
+const errorAuthLog = errorLog("Auth");
+
+console.log(errorAuthLog("Invalid token"));
+// [ERROR] [Auth] Invalid token
+console.log(errorAuthLog("Session expired"));
+// [ERROR] [Auth] Session expired
+```
+
+### 高级柯里化类型
+
+实现通用的自动柯里化，支持任意数量参数：
+
+```ts
+// 柯里化类型定义
+type Curry<Args extends unknown[], Return> =
+  Args extends [infer First, ...infer Rest]
+    ? Rest extends []
+      ? (arg: First) => Return
+      : (arg: First) => Curry<Rest, Return>
+    : Return;
+
+// 通用柯里化函数
+function curry<Args extends unknown[], Return>(
+  fn: (...args: Args) => Return,
+): Curry<Args, Return> {
+  function curried(...collectedArgs: unknown[]): unknown {
+    if (collectedArgs.length >= fn.length) {
+      return fn(...(collectedArgs as Args));
+    }
+    return (...nextArgs: unknown[]) =>
+      curried(...collectedArgs, ...nextArgs);
+  }
+  return curried as Curry<Args, Return>;
+}
+
+// 使用通用柯里化
+const multiply = (a: number, b: number, c: number): number => a * b * c;
+const curriedMultiply = curry(multiply);
+
+console.log(curriedMultiply(2)(3)(4)); // 24
+
+const double = curriedMultiply(2);
+const doubleThenTriple = double(3);
+console.log(doubleThenTriple(5)); // 30
+
+// 实际应用：类型安全的事件处理器工厂
+const handleEvent = curry(
+  (eventType: string, selector: string, handler: string): string =>
+    `Registered ${eventType} on "${selector}": ${handler}`,
+);
+
+const handleClick = handleEvent("click");
+const handleClickOnButton = handleClick(".btn");
+
+console.log(handleClickOnButton("submitForm"));
+// Registered click on ".btn": submitForm
+console.log(handleClick(".link")("navigate"));
+// Registered click on ".link": navigate
+```
+
+### 部分应用（Partial Application）
+
+部分应用与柯里化类似，但允许一次传入多个参数：
+
+```ts
+// 部分应用类型
+function partial<Args extends unknown[], PartialArgs extends unknown[], Return>(
+  fn: (...args: [...PartialArgs, ...Args]) => Return,
+  ...partialArgs: PartialArgs
+): (...args: Args) => Return {
+  return (...args: Args) => fn(...partialArgs, ...args);
+}
+
+// 使用示例
+function createApiUrl(
+  baseUrl: string,
+  version: string,
+  resource: string,
+  id?: string,
+): string {
+  const url = `${baseUrl}/api/${version}/${resource}`;
+  return id ? `${url}/${id}` : url;
+}
+
+// 固定基础配置
+const apiV2 = partial(createApiUrl, "https://example.com", "v2");
+
+console.log(apiV2("users"));
+// https://example.com/api/v2/users
+
+console.log(apiV2("users", "123"));
+// https://example.com/api/v2/users/123
+
+console.log(apiV2("products"));
+// https://example.com/api/v2/products
+
+// 进一步固定 resource
+const usersApi = partial(createApiUrl, "https://example.com", "v2", "users");
+
+console.log(usersApi());
+// https://example.com/api/v2/users
+
+console.log(usersApi("456"));
+// https://example.com/api/v2/users/456
+```
+
+## 🎯 Monad 类型
+
+Monad 是函数式编程中用于处理副作用、组合计算的抽象模式。核心操作是 `of`（将值放入容器）和 `flatMap`（将容器中的值映射到新容器）。
+
+### Maybe Monad
+
+`Maybe` 用于优雅地处理可能不存在的值，替代 null 检查：
+
+```ts
+class Maybe<T> {
+  private constructor(private readonly value: T | null) {}
+
+  static of<T>(value: T): Maybe<T> {
+    return new Maybe(value);
+  }
+
+  static none<T>(): Maybe<T> {
+    return new Maybe<T>(null);
+  }
+
+  static fromNullable<T>(value: T | null | undefined): Maybe<T> {
+    if (value === null || value === undefined) {
+      return Maybe.none();
+    }
+    return Maybe.of(value);
+  }
+
+  isNone(): boolean {
+    return this.value === null;
+  }
+
+  map<U>(fn: (value: T) => U): Maybe<U> {
+    if (this.value === null) {
+      return Maybe.none();
+    }
+    return Maybe.of(fn(this.value));
+  }
+
+  flatMap<U>(fn: (value: T) => Maybe<U>): Maybe<U> {
+    if (this.value === null) {
+      return Maybe.none();
+    }
+    return fn(this.value);
+  }
+
+  getOrElse(defaultValue: T): T {
+    if (this.value === null) {
+      return defaultValue;
+    }
+    return this.value;
+  }
+
+  filter(predicate: (value: T) => boolean): Maybe<T> {
+    if (this.value === null || !predicate(this.value)) {
+      return Maybe.none();
+    }
+    return this;
+  }
+
+  toString(): string {
+    if (this.value === null) {
+      return "Maybe.None";
+    }
+    return `Maybe.Some(${JSON.stringify(this.value)})`;
+  }
+}
+
+// 使用 Maybe 链式处理可空数据
+interface UserRecord {
+  name: string;
+  address?: {
+    city?: string;
+    street?: string;
+    zip?: string;
+  };
+}
+
+function getUserCity(user: UserRecord | null): string {
+  return Maybe.fromNullable(user)
+    .flatMap((u) => Maybe.fromNullable(u.address))
+    .flatMap((addr) => Maybe.fromNullable(addr.city))
+    .map((city) => city.toUpperCase())
+    .getOrElse("UNKNOWN");
+}
+
+console.log(getUserCity({ name: "Alice", address: { city: "Beijing" } }));
+// BEIJING
+
+console.log(getUserCity({ name: "Bob", address: {} }));
+// UNKNOWN
+
+console.log(getUserCity({ name: "Charlie" }));
+// UNKNOWN
+
+console.log(getUserCity(null));
+// UNKNOWN
+```
+
+### Either Monad
+
+`Either` 用于处理可能失败的计算，携带错误信息：
+
+```ts
+class Either<L, R> {
+  private constructor(
+    private readonly left: L | null,
+    private readonly right: R | null,
+    private readonly isRight: boolean,
+  ) {}
+
+  static right<L, R>(value: R): Either<L, R> {
+    return new Either<L, R>(null, value, true);
+  }
+
+  static left<L, R>(value: L): Either<L, R> {
+    return new Either<L, R>(value, null, false);
+  }
+
+  map<U>(fn: (value: R) => U): Either<L, U> {
+    if (this.isRight) {
+      return Either.right(fn(this.right!));
+    }
+    return Either.left(this.left!);
+  }
+
+  flatMap<U>(fn: (value: R) => Either<L, U>): Either<L, U> {
+    if (this.isRight) {
+      return fn(this.right!);
+    }
+    return Either.left(this.left!);
+  }
+
+  mapLeft<U>(fn: (value: L) => U): Either<U, R> {
+    if (!this.isRight) {
+      return Either.left(fn(this.left!));
+    }
+    return Either.right(this.right!);
+  }
+
+  fold<U>(onLeft: (left: L) => U, onRight: (right: R) => U): U {
+    if (this.isRight) {
+      return onRight(this.right!);
+    }
+    return onLeft(this.left!);
+  }
+
+  getOrElse(defaultValue: R): R {
+    if (this.isRight) {
+      return this.right!;
+    }
+    return defaultValue;
+  }
+}
+
+// 使用 Either 进行链式错误处理
+function parseJSON(input: string): Either<string, unknown> {
+  try {
+    return Either.right(JSON.parse(input));
+  } catch {
+    return Either.left(`Invalid JSON: "${input}"`);
+  }
+}
+
+function extractField(
+  data: unknown,
+  field: string,
+): Either<string, unknown> {
+  if (typeof data !== "object" || data === null) {
+    return Either.left("Data is not an object");
+  }
+  const value = (data as Record<string, unknown>)[field];
+  if (value === undefined) {
+    return Either.left(`Field "${field}" not found`);
+  }
+  return Either.right(value);
+}
+
+function toNumber(value: unknown): Either<string, number> {
+  const num = Number(value);
+  if (isNaN(num)) {
+    return Either.left(`Cannot convert "${value}" to number`);
+  }
+  return Either.right(num);
+}
+
+// 链式处理
+function getAgeFromJSON(jsonString: string): string {
+  return parseJSON(jsonString)
+    .flatMap((data) => extractField(data, "age"))
+    .flatMap((value) => toNumber(value))
+    .map((age) => Math.floor(age))
+    .fold(
+      (error) => `Error: ${error}`,
+      (age) => `Age is ${age}`,
+    );
+}
+
+console.log(getAgeFromJSON('{"name":"Alice","age":30.5}'));
+// Age is 30
+
+console.log(getAgeFromJSON('{"name":"Bob"}'));
+// Error: Field "age" not found
+
+console.log(getAgeFromJSON("not json"));
+// Error: Invalid JSON: "not json"
+
+console.log(getAgeFromJSON('{"age":"abc"}'));
+// Error: Cannot convert "abc" to number
+```
+
+## 📝 实际应用示例
+
+### 类型安全的数据处理管道
+
+将函数式模式综合应用于数据处理场景：
+
+```ts
+// 工具函数库
+const mapArray = <T, U>(fn: (item: T) => U) => (arr: T[]): U[] => arr.map(fn);
+
+const filterArray = <T>(predicate: (item: T) => boolean) => (arr: T[]): T[] =>
+  arr.filter(predicate);
+
+const sortArray = <T>(compareFn: (a: T, b: T) => number) => (arr: T[]): T[] =>
+  [...arr].sort(compareFn);
+
+const takeFirst = (count: number) => <T>(arr: T[]): T[] => arr.slice(0, count);
+
+const sumBy = <T>(selector: (item: T) => number) => (arr: T[]): number =>
+  arr.reduce((sum, item) => sum + selector(item), 0);
+
+const groupBy = <T>(keyFn: (item: T) => string) => (arr: T[]): Record<string, T[]> =>
+  arr.reduce<Record<string, T[]>>((groups, item) => {
+    const key = keyFn(item);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(item);
+    return groups;
+  }, {});
+
+// 业务数据
+interface Transaction {
+  id: string;
+  amount: number;
+  category: string;
+  date: string;
+  status: "completed" | "pending" | "failed";
+}
+
+const transactions: Transaction[] = [
+  { id: "t1", amount: 120, category: "food", date: "2026-01-15", status: "completed" },
+  { id: "t2", amount: 450, category: "electronics", date: "2026-01-16", status: "completed" },
+  { id: "t3", amount: 35, category: "food", date: "2026-01-16", status: "pending" },
+  { id: "t4", amount: 200, category: "clothing", date: "2026-01-17", status: "completed" },
+  { id: "t5", amount: 80, category: "food", date: "2026-01-18", status: "failed" },
+  { id: "t6", amount: 300, category: "electronics", date: "2026-01-18", status: "completed" },
+  { id: "t7", amount: 55, category: "food", date: "2026-01-19", status: "completed" },
+  { id: "t8", amount: 180, category: "clothing", date: "2026-01-20", status: "completed" },
+];
+
+// 管道 1：获取已完成的 top 3 高额交易
+const topCompletedTransactions = Pipe.of(transactions)
+  .then(filterArray<Transaction>((t) => t.status === "completed"))
+  .then(sortArray<Transaction>((a, b) => b.amount - a.amount))
+  .then(takeFirst(3))
+  .then(mapArray<Transaction, string>((t) => `${t.id}: ${t.amount} (${t.category})`))
+  .result();
+
+console.log("Top 3 completed:", topCompletedTransactions);
+// Top 3 completed: ["t2: $450 (electronics)", "t6: $300 (electronics)", "t4: $200 (clothing)"]
+
+// 管道 2：按分类汇总已完成交易的总金额
+const categoryTotals = Pipe.of(transactions)
+  .then(filterArray<Transaction>((t) => t.status === "completed"))
+  .then(groupBy<Transaction>((t) => t.category))
+  .then((groups) =>
+    Object.entries(groups).map(([category, items]) => ({
+      category,
+      total: items.reduce((sum, t) => sum + t.amount, 0),
+      count: items.length,
+    })),
+  )
+  .then(sortArray((a, b) => b.total - a.total))
+  .result();
+
+console.log("Category totals:", categoryTotals);
+// Category totals: [
+//   { category: "electronics", total: 750, count: 2 },
+//   { category: "clothing", total: 380, count: 2 },
+//   { category: "food", total: 175, count: 2 },
+// ]
+
+// 管道 3：计算已完成交易的总金额
+const totalAmount = Pipe.of(transactions)
+  .then(filterArray<Transaction>((t) => t.status === "completed"))
+  .then(sumBy<Transaction>((t) => t.amount))
+  .result();
+
+console.log("Total completed amount:", totalAmount);
+// Total completed amount: 1305
+```
+
+## 🔗 相关概念
+
+- **[OOP 设计模式](./01-oop-design-patterns.mdx)**：面向对象和函数式是两种互补的编程范式
+- **[变体类型](../01-advanced-type-patterns/03-variant-types.mdx)**：Result / Option 类型是 Monad 的简化版本
+- **[品牌类型](../01-advanced-type-patterns/01-branded-types.mdx)**：品牌类型可以与函数组合结合，在管道中传递类型安全的值
+- **[类型性能优化](../04-best-practices/01-type-performance.mdx)**：复杂的递归类型（如通用柯里化类型）可能影响编译性能
+
+## 📝 学习检查点
+
+- [ ] 理解函数组合（compose）的概念和类型签名
+- [ ] 能够实现类型安全的管道（pipe）函数
+- [ ] 掌握柯里化和部分应用的区别及实现
+- [ ] 理解 Maybe Monad 如何优雅地处理空值
+- [ ] 理解 Either Monad 如何进行链式错误处理
+- [ ] 能够将函数式模式应用于数据处理管道
+
+## 🚀 下一步
+
+→ [类型性能优化](../04-best-practices/01-type-performance.mdx)

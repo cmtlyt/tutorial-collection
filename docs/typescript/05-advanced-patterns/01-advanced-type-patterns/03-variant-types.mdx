@@ -1,12 +1,522 @@
 # 变体类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍变体类型的核心概念和实践方法。
+**变体类型**（Variant Types）源自函数式编程中的**代数数据类型**（Algebraic Data Types，ADT）。核心思想是：一个值可以是若干种不同形态（变体）中的某一种，每种变体可以携带不同的数据。在 TypeScript 中，我们通过**可辨识联合**（Discriminated Unions）来实现代数数据类型，并通过 `Result`、`Option` 等经典模式实现类型安全的错误处理和空值管理。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 代数数据类型（ADT）
+
+### 和类型（Sum Types）
+
+和类型表示"或"的关系——一个值是 A **或** B **或** C。TypeScript 中的联合类型就是和类型：
+
+```ts
+// 定义形状的代数数据类型
+type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "rectangle"; width: number; height: number }
+  | { kind: "triangle"; base: number; height: number };
+
+// 计算面积：通过 kind 字段区分不同变体
+function calculateArea(shape: Shape): number {
+  switch (shape.kind) {
+    case "circle":
+      return Math.PI * shape.radius ** 2;
+    case "rectangle":
+      return shape.width * shape.height;
+    case "triangle":
+      return (shape.base * shape.height) / 2;
+  }
+}
+
+// 穷尽性检查：确保处理了所有变体
+function assertNever(value: never): never {
+  throw new Error(`Unexpected value: ${JSON.stringify(value)}`);
+}
+
+function describeShape(shape: Shape): string {
+  switch (shape.kind) {
+    case "circle":
+      return `Circle with radius ${shape.radius}`;
+    case "rectangle":
+      return `Rectangle ${shape.width}x${shape.height}`;
+    case "triangle":
+      return `Triangle with base ${shape.base} and height ${shape.height}`;
+    default:
+      return assertNever(shape);
+  }
+}
+
+const shapes: Shape[] = [
+  { kind: "circle", radius: 5 },
+  { kind: "rectangle", width: 10, height: 20 },
+  { kind: "triangle", base: 6, height: 8 },
+];
+
+for (const shape of shapes) {
+  console.log(`${describeShape(shape)}: area = ${calculateArea(shape).toFixed(2)}`);
+}
+// Circle with radius 5: area = 78.54
+// Rectangle 10x20: area = 200.00
+// Triangle with base 6 and height 8: area = 24.00
+```
+
+### 积类型（Product Types）
+
+积类型表示"与"的关系——一个值同时包含 A **和** B **和** C。TypeScript 中的对象类型和元组就是积类型：
+
+```ts
+// 积类型：一个用户同时包含所有字段
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  role: "admin" | "editor" | "viewer";
+}
+
+// 和类型 + 积类型组合：不同角色有不同权限字段
+type UserWithPermissions =
+  | { role: "admin"; canManageUsers: boolean; canDeletePosts: boolean }
+  | { role: "editor"; canEditPosts: boolean; canPublish: boolean }
+  | { role: "viewer"; canComment: boolean };
+
+function describePermissions(user: UserWithPermissions): string {
+  switch (user.role) {
+    case "admin":
+      return `Admin: manage users=${user.canManageUsers}, delete posts=${user.canDeletePosts}`;
+    case "editor":
+      return `Editor: edit posts=${user.canEditPosts}, publish=${user.canPublish}`;
+    case "viewer":
+      return `Viewer: can comment=${user.canComment}`;
+  }
+}
+
+const admin: UserWithPermissions = {
+  role: "admin",
+  canManageUsers: true,
+  canDeletePosts: true,
+};
+console.log(describePermissions(admin));
+// Admin: manage users=true, delete posts=true
+```
+
+### 递归代数数据类型
+
+ADT 可以是递归的，用来表示树形结构等数据：
+
+```ts
+// 二叉树的 ADT 定义
+type Tree<T> =
+  | { kind: "leaf"; value: T }
+  | { kind: "node"; left: Tree<T>; right: Tree<T> };
+
+// 遍历并收集所有叶子节点的值
+function collectLeaves<T>(tree: Tree<T>): T[] {
+  switch (tree.kind) {
+    case "leaf":
+      return [tree.value];
+    case "node":
+      return [...collectLeaves(tree.left), ...collectLeaves(tree.right)];
+  }
+}
+
+// 计算树的深度
+function treeDepth<T>(tree: Tree<T>): number {
+  switch (tree.kind) {
+    case "leaf":
+      return 1;
+    case "node":
+      return 1 + Math.max(treeDepth(tree.left), treeDepth(tree.right));
+  }
+}
+
+// 构建测试树
+const tree: Tree<number> = {
+  kind: "node",
+  left: {
+    kind: "node",
+    left: { kind: "leaf", value: 1 },
+    right: { kind: "leaf", value: 2 },
+  },
+  right: { kind: "leaf", value: 3 },
+};
+
+console.log("Leaves:", collectLeaves(tree)); // [1, 2, 3]
+console.log("Depth:", treeDepth(tree));       // 3
+```
+
+## 🎯 Result / Option 类型
+
+### Result 类型
+
+`Result` 类型用于替代异常处理，将成功和失败显式编码到类型系统中，强制调用者处理错误：
+
+```ts
+// Result 类型定义
+type Result<T, E> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+// 工厂函数
+function ok<T>(value: T): Result<T, never> {
+  return { ok: true, value };
+}
+
+function err<E>(error: E): Result<never, E> {
+  return { ok: false, error };
+}
+
+// 工具函数
+function map<T, U, E>(result: Result<T, E>, fn: (value: T) => U): Result<U, E> {
+  if (result.ok) {
+    return ok(fn(result.value));
+  }
+  return result;
+}
+
+function flatMap<T, U, E>(
+  result: Result<T, E>,
+  fn: (value: T) => Result<U, E>,
+): Result<U, E> {
+  if (result.ok) {
+    return fn(result.value);
+  }
+  return result;
+}
+
+function unwrapOr<T, E>(result: Result<T, E>, defaultValue: T): T {
+  if (result.ok) {
+    return result.value;
+  }
+  return defaultValue;
+}
+
+// 实际用法：解析配置
+interface AppConfig {
+  port: number;
+  host: string;
+  debug: boolean;
+}
+
+function parsePort(input: string): Result<number, string> {
+  const port = parseInt(input, 10);
+  if (isNaN(port)) return err(`Invalid port number: "${input}"`);
+  if (port < 1 || port > 65535) return err(`Port out of range: ${port}`);
+  return ok(port);
+}
+
+function parseHost(input: string): Result<string, string> {
+  if (input.trim().length === 0) return err("Host cannot be empty");
+  return ok(input.trim());
+}
+
+function parseBoolean(input: string): Result<boolean, string> {
+  if (input === "true") return ok(true);
+  if (input === "false") return ok(false);
+  return err(`Invalid boolean: "${input}"`);
+}
+
+function parseConfig(
+  raw: Record<string, string>,
+): Result<AppConfig, string> {
+  const portResult = parsePort(raw["port"] ?? "");
+  if (!portResult.ok) return portResult;
+
+  const hostResult = parseHost(raw["host"] ?? "");
+  if (!hostResult.ok) return hostResult;
+
+  const debugResult = parseBoolean(raw["debug"] ?? "false");
+  if (!debugResult.ok) return debugResult;
+
+  return ok({
+    port: portResult.value,
+    host: hostResult.value,
+    debug: debugResult.value,
+  });
+}
+
+// 使用示例
+const validConfig = parseConfig({ port: "3000", host: "localhost", debug: "true" });
+if (validConfig.ok) {
+  console.log("Config:", validConfig.value);
+  // Config: { port: 3000, host: "localhost", debug: true }
+} else {
+  console.error("Config error:", validConfig.error);
+}
+
+const invalidConfig = parseConfig({ port: "abc", host: "localhost" });
+if (!invalidConfig.ok) {
+  console.error("Config error:", invalidConfig.error);
+  // Config error: Invalid port number: "abc"
+}
+```
+
+### Option 类型
+
+`Option` 类型用于替代 `null` / `undefined`，显式表达"值可能不存在"的语义：
+
+```ts
+// Option 类型定义
+type Option<T> =
+  | { some: true; value: T }
+  | { some: false };
+
+// 工厂函数
+function some<T>(value: T): Option<T> {
+  return { some: true, value };
+}
+
+function none<T = never>(): Option<T> {
+  return { some: false };
+}
+
+// 从可能为 null 的值创建 Option
+function fromNullable<T>(value: T | null | undefined): Option<T> {
+  if (value === null || value === undefined) {
+    return none();
+  }
+  return some(value);
+}
+
+// 工具函数
+function mapOption<T, U>(option: Option<T>, fn: (value: T) => U): Option<U> {
+  if (option.some) {
+    return some(fn(option.value));
+  }
+  return none();
+}
+
+function flatMapOption<T, U>(
+  option: Option<T>,
+  fn: (value: T) => Option<U>,
+): Option<U> {
+  if (option.some) {
+    return fn(option.value);
+  }
+  return none();
+}
+
+function getOrElse<T>(option: Option<T>, defaultValue: T): T {
+  if (option.some) {
+    return option.value;
+  }
+  return defaultValue;
+}
+
+// 实际用法：安全的属性访问链
+interface Company {
+  name: string;
+  ceo?: { name: string; email?: string };
+}
+
+function getCeoEmail(company: Company): Option<string> {
+  return flatMapOption(
+    fromNullable(company.ceo),
+    (ceo) => fromNullable(ceo.email),
+  );
+}
+
+const companyWithEmail: Company = {
+  name: "TechCorp",
+  ceo: { name: "Alice", email: "alice@techcorp.com" },
+};
+
+const companyWithoutEmail: Company = {
+  name: "StartupInc",
+  ceo: { name: "Bob" },
+};
+
+const companyWithoutCeo: Company = {
+  name: "NoLeaderCo",
+};
+
+console.log(getOrElse(getCeoEmail(companyWithEmail), "N/A"));    // alice@techcorp.com
+console.log(getOrElse(getCeoEmail(companyWithoutEmail), "N/A")); // N/A
+console.log(getOrElse(getCeoEmail(companyWithoutCeo), "N/A"));   // N/A
+```
+
+## 🎯 模式匹配模拟
+
+TypeScript 目前没有原生的模式匹配语法，但可以通过工具函数模拟类似体验：
+
+```ts
+// 通用的模式匹配工具
+type VariantMap<T extends { kind: string }> = {
+  [K in T["kind"]]: (variant: Extract<T, { kind: K }>) => unknown;
+};
+
+function match<T extends { kind: string }, R>(
+  value: T,
+  handlers: { [K in T["kind"]]: (variant: Extract<T, { kind: K }>) => R },
+): R {
+  const handler = handlers[value.kind as T["kind"]];
+  return handler(value as Extract<T, { kind: T["kind"] }>);
+}
+
+// 定义 AST 节点
+type Expression =
+  | { kind: "number"; value: number }
+  | { kind: "string"; value: string }
+  | { kind: "binary"; operator: "+" | "-" | "*" | "/"; left: Expression; right: Expression }
+  | { kind: "unary"; operator: "-" | "!"; operand: Expression };
+
+// 使用 match 进行模式匹配
+function evaluate(expr: Expression): number {
+  return match(expr, {
+    number: ({ value }) => value,
+    string: ({ value }) => parseFloat(value) || 0,
+    binary: ({ operator, left, right }) => {
+      const leftValue = evaluate(left);
+      const rightValue = evaluate(right);
+      switch (operator) {
+        case "+": return leftValue + rightValue;
+        case "-": return leftValue - rightValue;
+        case "*": return leftValue * rightValue;
+        case "/": return leftValue / rightValue;
+      }
+    },
+    unary: ({ operator, operand }) => {
+      const value = evaluate(operand);
+      switch (operator) {
+        case "-": return -value;
+        case "!": return value === 0 ? 1 : 0;
+      }
+    },
+  });
+}
+
+function prettyPrint(expr: Expression): string {
+  return match(expr, {
+    number: ({ value }) => String(value),
+    string: ({ value }) => `"${value}"`,
+    binary: ({ operator, left, right }) =>
+      `(${prettyPrint(left)} ${operator} ${prettyPrint(right)})`,
+    unary: ({ operator, operand }) =>
+      `(${operator}${prettyPrint(operand)})`,
+  });
+}
+
+// 构建表达式: (3 + 4) * 2
+const expr: Expression = {
+  kind: "binary",
+  operator: "*",
+  left: {
+    kind: "binary",
+    operator: "+",
+    left: { kind: "number", value: 3 },
+    right: { kind: "number", value: 4 },
+  },
+  right: { kind: "number", value: 2 },
+};
+
+console.log(prettyPrint(expr)); // ((3 + 4) * 2)
+console.log(evaluate(expr));    // 14
+```
+
+## 📝 实际应用示例
+
+### 类型安全的状态管理
+
+将 ADT 应用于前端状态管理，完整覆盖异步数据的所有状态：
+
+```ts
+// 异步数据的 ADT
+type AsyncData<T, E = Error> =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "success"; data: T }
+  | { status: "error"; error: E };
+
+function idle<T, E = Error>(): AsyncData<T, E> {
+  return { status: "idle" };
+}
+
+function loading<T, E = Error>(): AsyncData<T, E> {
+  return { status: "loading" };
+}
+
+function success<T, E = Error>(data: T): AsyncData<T, E> {
+  return { status: "success", data };
+}
+
+function error<T, E = Error>(err: E): AsyncData<T, E> {
+  return { status: "error", error: err };
+}
+
+// 工具函数
+function mapAsyncData<T, U, E>(
+  asyncData: AsyncData<T, E>,
+  fn: (data: T) => U,
+): AsyncData<U, E> {
+  if (asyncData.status === "success") {
+    return success(fn(asyncData.data));
+  }
+  return asyncData as AsyncData<U, E>;
+}
+
+// 渲染函数：穷尽处理所有状态
+function renderAsyncData<T>(
+  asyncData: AsyncData<T, string>,
+  renderData: (data: T) => string,
+): string {
+  switch (asyncData.status) {
+    case "idle":
+      return "Click to load";
+    case "loading":
+      return "Loading...";
+    case "success":
+      return renderData(asyncData.data);
+    case "error":
+      return `Error: ${asyncData.error}`;
+  }
+}
+
+// 使用示例
+interface UserProfile {
+  name: string;
+  avatar: string;
+}
+
+let userState: AsyncData<UserProfile, string> = idle();
+console.log(renderAsyncData(userState, (u) => u.name)); // Click to load
+
+userState = loading();
+console.log(renderAsyncData(userState, (u) => u.name)); // Loading...
+
+userState = success({ name: "Alice", avatar: "alice.png" });
+console.log(renderAsyncData(userState, (u) => u.name)); // Alice
+
+userState = error("Network timeout");
+console.log(renderAsyncData(userState, (u) => u.name)); // Error: Network timeout
+
+// mapAsyncData 只在 success 时变换数据
+const mappedState = mapAsyncData(
+  success({ name: "Bob", avatar: "bob.png" }),
+  (user) => user.name.toUpperCase(),
+);
+console.log(mappedState); // { status: "success", data: "BOB" }
+```
+
+## 🔗 相关概念
+
+- **[品牌类型](./01-branded-types.mdx)**：品牌类型可以与 ADT 结合，为变体携带的数据添加额外的类型安全
+- **[构建器模式](./02-builder-pattern.mdx)**：状态机类型是 ADT 在构建器中的一种应用
+- **[函数式编程模式](../03-design-patterns/02-fp-patterns.mdx)**：Result / Option 是函数式编程中 Monad 的简化版本
+- **可辨识联合**：变体类型的实现基础，依赖 TypeScript 对可辨识联合的类型收窄支持
+
+## 📝 学习检查点
+
+- [ ] 理解代数数据类型中和类型与积类型的区别
+- [ ] 能够使用可辨识联合实现 ADT
+- [ ] 掌握穷尽性检查（`assertNever`）确保处理所有变体
+- [ ] 能够实现 Result 类型及其 `map`、`flatMap` 等工具函数
+- [ ] 能够实现 Option 类型处理可空值
+- [ ] 能够使用通用 `match` 函数模拟模式匹配
+- [ ] 能够将 ADT 应用于异步状态管理等实际场景
+
+## 🚀 下一步
+
+→ [装饰器](../02-decorators-metaprogramming/01-decorators.mdx)

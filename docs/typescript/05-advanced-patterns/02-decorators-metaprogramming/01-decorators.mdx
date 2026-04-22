@@ -1,12 +1,557 @@
 # 装饰器
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍装饰器的核心概念和实践方法。
+**装饰器**（Decorators）是一种特殊的声明，可以附加到类、方法、属性或参数上，用于在不修改原始代码的情况下扩展或修改其行为。TypeScript 5.0+ 正式支持 **TC39 Stage 3 装饰器标准**，这是一套与旧版实验性装饰器（`experimentalDecorators`）不同的新规范。
+
+本文聚焦于 TC39 Stage 3 标准装饰器，它们不需要任何编译器标志即可使用（TypeScript 5.0+）。
 
 :::tip
-本文档正在编写中，敬请期待。
+TC39 Stage 3 装饰器与旧版 `experimentalDecorators` 在 API 上有显著差异。新标准装饰器更加安全、可预测，是未来的方向。
 :::
+
+## 🎯 TC39 Stage 3 装饰器
+
+### 装饰器的本质
+
+装饰器本质上是一个函数，它接收被装饰的目标和上下文信息，返回一个替换值（或 `void` 表示不替换）：
+
+```ts
+// 装饰器的基本签名（以方法装饰器为例）
+type MethodDecorator = (
+  target: Function,
+  context: ClassMethodDecoratorContext,
+) => Function | void;
+```
+
+### 最简单的装饰器
+
+```ts
+// 一个记录方法调用的装饰器
+function log(
+  target: Function,
+  context: ClassMethodDecoratorContext,
+) {
+  const methodName = String(context.name);
+
+  function replacementMethod(this: unknown, ...args: unknown[]) {
+    console.log(`Calling ${methodName} with args:`, args);
+    const result = (target as Function).call(this, ...args);
+    console.log(`${methodName} returned:`, result);
+    return result;
+  }
+
+  return replacementMethod;
+}
+
+class Calculator {
+  @log
+  add(a: number, b: number): number {
+    return a + b;
+  }
+
+  @log
+  multiply(a: number, b: number): number {
+    return a * b;
+  }
+}
+
+const calc = new Calculator();
+calc.add(2, 3);
+// Calling add with args: [2, 3]
+// add returned: 5
+
+calc.multiply(4, 5);
+// Calling multiply with args: [4, 5]
+// multiply returned: 20
+```
+
+## 🎯 类装饰器
+
+类装饰器应用于类的构造函数，可以用来修改或替换类定义：
+
+```ts
+// 密封类：防止添加新属性
+function sealed(
+  target: new (...args: unknown[]) => unknown,
+  _context: ClassDecoratorContext,
+) {
+  Object.seal(target);
+  Object.seal(target.prototype);
+}
+
+// 添加 toString 方法
+function withToString(
+  target: new (...args: unknown[]) => unknown,
+  context: ClassDecoratorContext,
+) {
+  const className = String(context.name);
+  target.prototype.toString = function () {
+    return `[${className} ${JSON.stringify(this)}]`;
+  };
+}
+
+// 注册类到全局注册表
+const classRegistry = new Map<string, new (...args: unknown[]) => unknown>();
+
+function register(
+  target: new (...args: unknown[]) => unknown,
+  context: ClassDecoratorContext,
+) {
+  const className = String(context.name);
+  classRegistry.set(className, target);
+}
+
+@sealed
+@withToString
+@register
+class User {
+  constructor(
+    public name: string,
+    public age: number,
+  ) {}
+}
+
+const user = new User("Alice", 30);
+console.log(user.toString()); // [User {"name":"Alice","age":30}]
+console.log(classRegistry.has("User")); // true
+
+// 类已被密封，不能添加新属性
+// Object.defineProperty(User.prototype, 'hack', { value: 1 });
+// TypeError: Cannot define property hack, object is not extensible
+```
+
+### 使用类装饰器扩展类
+
+类装饰器可以返回一个新类来替换原类：
+
+```ts
+function withTimestamp<T extends new (...args: unknown[]) => object>(
+  target: T,
+  _context: ClassDecoratorContext,
+) {
+  return class extends target {
+    createdAt = new Date();
+  };
+}
+
+function withId<T extends new (...args: unknown[]) => object>(
+  target: T,
+  _context: ClassDecoratorContext,
+) {
+  let nextId = 1;
+  return class extends target {
+    id = nextId++;
+  };
+}
+
+@withId
+@withTimestamp
+class Article {
+  constructor(
+    public title: string,
+    public content: string,
+  ) {}
+}
+
+const article1 = new Article("Hello", "World");
+const article2 = new Article("TypeScript", "Decorators");
+
+console.log((article1 as any).id);        // 1
+console.log((article1 as any).createdAt);  // 当前时间
+console.log((article2 as any).id);        // 2
+```
+
+## 🎯 方法装饰器
+
+方法装饰器是最常用的装饰器类型，可以拦截方法调用、添加额外行为：
+
+### 性能计时装饰器
+
+```ts
+function timed(
+  target: Function,
+  context: ClassMethodDecoratorContext,
+) {
+  const methodName = String(context.name);
+
+  function timedMethod(this: unknown, ...args: unknown[]) {
+    const start = performance.now();
+    const result = (target as Function).call(this, ...args);
+    const duration = performance.now() - start;
+    console.log(`${methodName} took ${duration.toFixed(2)}ms`);
+    return result;
+  }
+
+  return timedMethod;
+}
+
+class DataProcessor {
+  @timed
+  processData(items: number[]): number {
+    let sum = 0;
+    for (const item of items) {
+      sum += Math.sqrt(item);
+    }
+    return sum;
+  }
+}
+
+const processor = new DataProcessor();
+const data = Array.from({ length: 1_000_000 }, (_, i) => i);
+processor.processData(data);
+// processData took X.XXms
+```
+
+### 错误边界装饰器
+
+```ts
+function catchError(
+  target: Function,
+  context: ClassMethodDecoratorContext,
+) {
+  const methodName = String(context.name);
+
+  function wrappedMethod(this: unknown, ...args: unknown[]) {
+    try {
+      return (target as Function).call(this, ...args);
+    } catch (error) {
+      console.error(`Error in ${methodName}:`, error);
+      return undefined;
+    }
+  }
+
+  return wrappedMethod;
+}
+
+class FileReader {
+  @catchError
+  readFile(path: string): string {
+    if (path.includes("..")) {
+      throw new Error("Path traversal detected");
+    }
+    return `Content of ${path}`;
+  }
+}
+
+const reader = new FileReader();
+console.log(reader.readFile("data.txt"));     // Content of data.txt
+console.log(reader.readFile("../secret.txt")); // undefined (错误被捕获并记录)
+```
+
+### 防抖装饰器
+
+```ts
+function debounce(delay: number) {
+  return function (
+    target: Function,
+    _context: ClassMethodDecoratorContext,
+  ) {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    function debouncedMethod(this: unknown, ...args: unknown[]) {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      timeoutId = setTimeout(() => {
+        (target as Function).call(this, ...args);
+        timeoutId = null;
+      }, delay);
+    }
+
+    return debouncedMethod;
+  };
+}
+
+class SearchBox {
+  @debounce(300)
+  search(query: string) {
+    console.log(`Searching for: ${query}`);
+  }
+}
+
+const searchBox = new SearchBox();
+searchBox.search("h");
+searchBox.search("he");
+searchBox.search("hel");
+searchBox.search("hello");
+// 300ms 后只输出: Searching for: hello
+```
+
+## 🎯 属性装饰器
+
+属性（字段）装饰器可以用来拦截属性的初始化：
+
+```ts
+// 属性验证装饰器
+function min(minValue: number) {
+  return function (
+    _target: undefined,
+    context: ClassFieldDecoratorContext,
+  ) {
+    const fieldName = String(context.name);
+    return function (initialValue: number): number {
+      if (initialValue < minValue) {
+        throw new Error(`${fieldName} must be at least ${minValue}, got ${initialValue}`);
+      }
+      return initialValue;
+    };
+  };
+}
+
+function max(maxValue: number) {
+  return function (
+    _target: undefined,
+    context: ClassFieldDecoratorContext,
+  ) {
+    const fieldName = String(context.name);
+    return function (initialValue: number): number {
+      if (initialValue > maxValue) {
+        throw new Error(`${fieldName} must be at most ${maxValue}, got ${initialValue}`);
+      }
+      return initialValue;
+    };
+  };
+}
+
+class GameCharacter {
+  @min(1)
+  @max(100)
+  level: number = 1;
+
+  @min(0)
+  health: number = 100;
+
+  constructor(level: number, health: number) {
+    this.level = level;
+    this.health = health;
+  }
+}
+
+const hero = new GameCharacter(50, 200);
+console.log(hero.level);  // 50
+console.log(hero.health); // 200
+
+// 以下会抛出错误
+// const invalid = new GameCharacter(0, 100);
+// Error: level must be at least 1, got 0
+```
+
+## 🎯 装饰器工厂
+
+装饰器工厂是一个返回装饰器的函数，允许在应用装饰器时传入配置参数：
+
+```ts
+// 通用的重试装饰器工厂
+function retry(options: { maxAttempts: number; delay: number }) {
+  return function (
+    target: Function,
+    context: ClassMethodDecoratorContext,
+  ) {
+    const methodName = String(context.name);
+
+    async function retryMethod(this: unknown, ...args: unknown[]) {
+      let lastError: Error | undefined;
+
+      for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
+        try {
+          return await (target as Function).call(this, ...args);
+        } catch (error) {
+          lastError = error as Error;
+          console.warn(
+            `${methodName} attempt ${attempt}/${options.maxAttempts} failed:`,
+            lastError.message,
+          );
+
+          if (attempt < options.maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, options.delay));
+          }
+        }
+      }
+
+      throw new Error(
+        `${methodName} failed after ${options.maxAttempts} attempts: ${lastError?.message}`,
+      );
+    }
+
+    return retryMethod;
+  };
+}
+
+// 缓存装饰器工厂
+function memoize(options: { maxSize?: number } = {}) {
+  return function (
+    target: Function,
+    _context: ClassMethodDecoratorContext,
+  ) {
+    const cache = new Map<string, unknown>();
+    const maxSize = options.maxSize ?? 100;
+
+    function memoizedMethod(this: unknown, ...args: unknown[]) {
+      const key = JSON.stringify(args);
+
+      if (cache.has(key)) {
+        return cache.get(key);
+      }
+
+      const result = (target as Function).call(this, ...args);
+
+      if (cache.size >= maxSize) {
+        const firstKey = cache.keys().next().value;
+        cache.delete(firstKey!);
+      }
+
+      cache.set(key, result);
+      return result;
+    }
+
+    return memoizedMethod;
+  };
+}
+
+class ApiService {
+  private callCount = 0;
+
+  @retry({ maxAttempts: 3, delay: 1000 })
+  async fetchData(url: string): Promise<string> {
+    this.callCount++;
+    if (this.callCount < 3) {
+      throw new Error("Network error");
+    }
+    return `Data from ${url}`;
+  }
+
+  @memoize({ maxSize: 50 })
+  computeExpensive(input: number): number {
+    console.log(`Computing for ${input}...`);
+    let result = 0;
+    for (let i = 0; i < input * 1000; i++) {
+      result += Math.sqrt(i);
+    }
+    return result;
+  }
+}
+
+const api = new ApiService();
+
+// retry 示例
+api.fetchData("https://api.example.com/data").then(console.log);
+
+// memoize 示例
+console.log(api.computeExpensive(10)); // Computing for 10... → 结果
+console.log(api.computeExpensive(10)); // 直接返回缓存结果，不打印 "Computing..."
+console.log(api.computeExpensive(20)); // Computing for 20... → 新结果
+```
+
+## 📝 实际应用示例
+
+### 类型安全的路由装饰器
+
+将装饰器应用于 HTTP 路由注册，实现声明式的路由定义：
+
+```ts
+// 路由元数据存储
+interface RouteMetadata {
+  method: "GET" | "POST" | "PUT" | "DELETE";
+  path: string;
+  handlerName: string;
+}
+
+const routeStore = new Map<new (...args: unknown[]) => unknown, RouteMetadata[]>();
+
+// 路由装饰器工厂
+function route(method: RouteMetadata["method"], path: string) {
+  return function (
+    target: Function,
+    context: ClassMethodDecoratorContext,
+  ) {
+    const handlerName = String(context.name);
+
+    context.addInitializer(function (this: object) {
+      const constructor = this.constructor as new (...args: unknown[]) => unknown;
+      const routes = routeStore.get(constructor) ?? [];
+      routes.push({ method, path, handlerName });
+      routeStore.set(constructor, routes);
+    });
+  };
+}
+
+// 便捷的 HTTP 方法装饰器
+function get(path: string) {
+  return route("GET", path);
+}
+function post(path: string) {
+  return route("POST", path);
+}
+function put(path: string) {
+  return route("PUT", path);
+}
+function del(path: string) {
+  return route("DELETE", path);
+}
+
+// 使用示例
+class UserController {
+  @get("/users")
+  listUsers() {
+    return [{ id: 1, name: "Alice" }];
+  }
+
+  @get("/users/:id")
+  getUser(id: string) {
+    return { id, name: "Alice" };
+  }
+
+  @post("/users")
+  createUser(body: { name: string }) {
+    return { id: 2, name: body.name };
+  }
+
+  @put("/users/:id")
+  updateUser(id: string, body: { name: string }) {
+    return { id, name: body.name };
+  }
+
+  @del("/users/:id")
+  deleteUser(id: string) {
+    return { success: true };
+  }
+}
+
+// 实例化控制器以触发 addInitializer
+const controller = new UserController();
+
+// 打印注册的路由
+const routes = routeStore.get(UserController as unknown as new (...args: unknown[]) => unknown) ?? [];
+for (const routeInfo of routes) {
+  console.log(`${routeInfo.method} ${routeInfo.path} → ${routeInfo.handlerName}`);
+}
+// GET /users → listUsers
+// GET /users/:id → getUser
+// POST /users → createUser
+// PUT /users/:id → updateUser
+// DELETE /users/:id → deleteUser
+```
+
+## 🔗 相关概念
+
+- **[元数据反射](./02-metadata-reflection.mdx)**：装饰器与 `reflect-metadata` 结合可实现依赖注入等高级功能
+- **[OOP 设计模式](../03-design-patterns/01-oop-design-patterns.mdx)**：装饰器模式是经典的结构型设计模式
+- **[构建器模式](../01-advanced-type-patterns/02-builder-pattern.mdx)**：装饰器可以看作对类/方法的"增强构建"
+
+## 📝 学习检查点
+
+- [ ] 理解 TC39 Stage 3 装饰器与旧版 `experimentalDecorators` 的区别
+- [ ] 能够编写类装饰器来扩展类的功能
+- [ ] 能够编写方法装饰器来拦截和增强方法行为
+- [ ] 能够编写属性装饰器来验证字段初始值
+- [ ] 掌握装饰器工厂模式，支持参数化装饰器
+- [ ] 能够使用 `context.addInitializer` 在实例化时执行初始化逻辑
+- [ ] 能够组合多个装饰器解决实际问题
+
+## 🚀 下一步
+
+→ [元数据反射](./02-metadata-reflection.mdx)

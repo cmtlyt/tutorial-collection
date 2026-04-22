@@ -1,12 +1,403 @@
 # 品牌类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍品牌类型的核心概念和实践方法。
+TypeScript 使用**结构化类型系统**（Structural Typing），只要两个类型的结构兼容，它们就可以互相赋值。这在大多数场景下非常方便，但在某些情况下会带来问题——比如你有一个 `UserId` 和一个 `OrderId`，它们底层都是 `string`，却可以被混用，编译器不会报错。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+**品牌类型**（Branded Types）通过给类型附加一个"品牌"标记，模拟**名义类型系统**（Nominal Typing），使得结构相同但语义不同的类型无法互相赋值，从而在编译期捕获逻辑错误。
+
+## 🎯 名义类型模拟
+
+### 什么是结构化类型的问题
+
+在纯结构化类型系统中，以下代码不会报错，但逻辑上是错误的：
+
+```ts
+type UserId = string;
+type OrderId = string;
+
+function getUser(id: UserId) {
+  console.log("Fetching user:", id);
+}
+
+const orderId: OrderId = "order-123";
+
+// 不会报错！但语义上是错误的
+getUser(orderId);
+```
+
+### 品牌类型的基本实现
+
+通过交叉类型和一个唯一的"品牌"字段，让类型在结构上变得不兼容：
+
+```ts
+// 定义品牌类型的通用工具
+type Brand<BaseType, BrandTag extends string> = BaseType & {
+  readonly __brand: BrandTag;
+};
+
+// 定义具体的品牌类型
+type UserId = Brand<string, "UserId">;
+type OrderId = Brand<string, "OrderId">;
+
+// 创建品牌值的工厂函数
+function createUserId(id: string): UserId {
+  return id as UserId;
+}
+
+function createOrderId(id: string): OrderId {
+  return id as OrderId;
+}
+
+// 使用品牌类型
+function getUser(id: UserId) {
+  console.log("Fetching user:", id);
+}
+
+function getOrder(id: OrderId) {
+  console.log("Fetching order:", id);
+}
+
+const userId = createUserId("user-456");
+const orderId = createOrderId("order-123");
+
+getUser(userId);   // 正确
+getOrder(orderId); // 正确
+
+// @ts-expect-error - 类型不兼容，编译期报错
+getUser(orderId);
+
+// @ts-expect-error - 类型不兼容，编译期报错
+getOrder(userId);
+```
+
+### 使用 unique symbol 实现更强的品牌
+
+使用 `unique symbol` 可以确保品牌标签在全局唯一，避免不同模块间的品牌冲突：
+
+```ts
+declare const UserIdBrand: unique symbol;
+declare const OrderIdBrand: unique symbol;
+
+type UserId = string & { readonly [UserIdBrand]: typeof UserIdBrand };
+type OrderId = string & { readonly [OrderIdBrand]: typeof OrderIdBrand };
+
+function createUserId(id: string): UserId {
+  return id as UserId;
+}
+
+function createOrderId(id: string): OrderId {
+  return id as OrderId;
+}
+
+const userId = createUserId("user-1");
+const orderId = createOrderId("order-1");
+
+// 品牌类型的值在运行时仍然是普通字符串
+console.log(typeof userId);  // "string"
+console.log(userId.length);  // 6
+```
+
+## 🎯 类型安全的 ID
+
+### 数据库实体 ID
+
+在实际项目中，不同实体的 ID 经常混淆。品牌类型可以从根本上杜绝这类问题：
+
+```ts
+type Brand<T, Tag extends string> = T & { readonly __brand: Tag };
+
+type ProductId = Brand<number, "ProductId">;
+type CategoryId = Brand<number, "CategoryId">;
+type CartItemId = Brand<number, "CartItemId">;
+
+// 工厂函数集中管理 ID 创建
+const ProductId = {
+  create(value: number): ProductId {
+    if (value <= 0) throw new Error("ProductId must be positive");
+    return value as ProductId;
+  },
+  fromString(value: string): ProductId {
+    const parsed = parseInt(value, 10);
+    if (isNaN(parsed)) throw new Error("Invalid ProductId string");
+    return ProductId.create(parsed);
+  },
+};
+
+const CategoryId = {
+  create(value: number): CategoryId {
+    if (value <= 0) throw new Error("CategoryId must be positive");
+    return value as CategoryId;
+  },
+};
+
+// 业务函数使用品牌类型
+function getProduct(id: ProductId) {
+  console.log("Fetching product:", id);
+}
+
+function getCategory(id: CategoryId) {
+  console.log("Fetching category:", id);
+}
+
+const productId = ProductId.create(42);
+const categoryId = CategoryId.create(7);
+
+getProduct(productId);   // 正确
+getCategory(categoryId); // 正确
+
+// @ts-expect-error - 不能把 CategoryId 当作 ProductId
+getProduct(categoryId);
+```
+
+### 带验证的品牌类型
+
+品牌类型工厂函数是放置验证逻辑的最佳位置，确保值在创建时就满足业务约束：
+
+```ts
+type Brand<T, Tag extends string> = T & { readonly __brand: Tag };
+
+type Email = Brand<string, "Email">;
+type NonEmptyString = Brand<string, "NonEmptyString">;
+type PositiveInteger = Brand<number, "PositiveInteger">;
+
+function createEmail(value: string): Email {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(value)) {
+    throw new Error(`Invalid email: ${value}`);
+  }
+  return value as Email;
+}
+
+function createNonEmptyString(value: string): NonEmptyString {
+  if (value.trim().length === 0) {
+    throw new Error("String must not be empty");
+  }
+  return value as NonEmptyString;
+}
+
+function createPositiveInteger(value: number): PositiveInteger {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Must be a positive integer: ${value}`);
+  }
+  return value as PositiveInteger;
+}
+
+// 使用带验证的品牌类型
+function sendEmail(to: Email, subject: NonEmptyString, body: string) {
+  console.log(`Sending email to ${to}: ${subject}`);
+}
+
+const email = createEmail("user@example.com");
+const subject = createNonEmptyString("Hello World");
+sendEmail(email, subject, "This is the body");
+
+// @ts-expect-error - 普通字符串不能直接用
+sendEmail("user@example.com", "Hello", "body");
+```
+
+## 🎯 单位类型
+
+### 货币类型
+
+不同货币之间不能直接运算，品牌类型可以在编译期防止货币混用：
+
+```ts
+type Brand<T, Tag extends string> = T & { readonly __brand: Tag };
+
+type USD = Brand<number, "USD">;
+type EUR = Brand<number, "EUR">;
+type CNY = Brand<number, "CNY">;
+
+function usd(amount: number): USD {
+  return amount as USD;
+}
+
+function eur(amount: number): EUR {
+  return amount as EUR;
+}
+
+function cny(amount: number): CNY {
+  return amount as CNY;
+}
+
+// 只能对相同货币进行运算
+function addUSD(a: USD, b: USD): USD {
+  return ((a as number) + (b as number)) as USD;
+}
+
+// 货币转换必须显式声明
+function usdToEur(amount: USD, exchangeRate: number): EUR {
+  return ((amount as number) * exchangeRate) as EUR;
+}
+
+const price = usd(100);
+const tax = usd(8.5);
+const total = addUSD(price, tax);
+console.log("Total USD:", total); // 108.5
+
+const euroPrice = usdToEur(price, 0.92);
+console.log("Euro price:", euroPrice); // 92
+
+// @ts-expect-error - 不能将 EUR 和 USD 相加
+addUSD(price, euroPrice);
+```
+
+### 度量单位类型
+
+同样的思路可以应用于物理单位，防止不同度量单位的值混用：
+
+```ts
+type Brand<T, Tag extends string> = T & { readonly __brand: Tag };
+
+type Meters = Brand<number, "Meters">;
+type Kilometers = Brand<number, "Kilometers">;
+type Seconds = Brand<number, "Seconds">;
+type MetersPerSecond = Brand<number, "MetersPerSecond">;
+
+function meters(value: number): Meters {
+  return value as Meters;
+}
+
+function kilometers(value: number): Kilometers {
+  return value as Kilometers;
+}
+
+function seconds(value: number): Seconds {
+  return value as Seconds;
+}
+
+// 类型安全的单位转换
+function kmToMeters(km: Kilometers): Meters {
+  return ((km as number) * 1000) as Meters;
+}
+
+// 类型安全的物理计算
+function calculateSpeed(distance: Meters, time: Seconds): MetersPerSecond {
+  return ((distance as number) / (time as number)) as MetersPerSecond;
+}
+
+const distance = meters(100);
+const time = seconds(9.58);
+const speed = calculateSpeed(distance, time);
+console.log("Speed:", speed, "m/s"); // ≈ 10.44 m/s
+
+const marathonKm = kilometers(42.195);
+const marathonMeters = kmToMeters(marathonKm);
+console.log("Marathon in meters:", marathonMeters); // 42195
+
+// @ts-expect-error - 不能把 Kilometers 直接当 Meters 用
+calculateSpeed(marathonKm, time);
+```
+
+## 📝 实际应用示例
+
+### 类型安全的 API 请求层
+
+将品牌类型应用于真实的 API 层设计中，确保请求参数的类型安全：
+
+```ts
+type Brand<T, Tag extends string> = T & { readonly __brand: Tag };
+
+// 定义各种品牌 ID
+type UserId = Brand<string, "UserId">;
+type PostId = Brand<string, "PostId">;
+type CommentId = Brand<string, "CommentId">;
+type AuthToken = Brand<string, "AuthToken">;
+
+// ID 工厂
+const UserId = {
+  create: (value: string): UserId => value as UserId,
+};
+
+const PostId = {
+  create: (value: string): PostId => value as PostId,
+};
+
+const CommentId = {
+  create: (value: string): CommentId => value as CommentId,
+};
+
+const AuthToken = {
+  create: (value: string): AuthToken => {
+    if (!value.startsWith("Bearer ")) {
+      throw new Error("AuthToken must start with 'Bearer '");
+    }
+    return value as AuthToken;
+  },
+};
+
+// 类型安全的 API 接口
+interface ApiClient {
+  getUser(token: AuthToken, userId: UserId): Promise<{ name: string }>;
+  getPost(token: AuthToken, postId: PostId): Promise<{ title: string }>;
+  getComments(token: AuthToken, postId: PostId): Promise<{ text: string }[]>;
+  deleteComment(
+    token: AuthToken,
+    postId: PostId,
+    commentId: CommentId,
+  ): Promise<void>;
+}
+
+// 模拟 API 客户端
+const apiClient: ApiClient = {
+  async getUser(token, userId) {
+    console.log("GET /users/" + userId, "with", token);
+    return { name: "Alice" };
+  },
+  async getPost(token, postId) {
+    console.log("GET /posts/" + postId, "with", token);
+    return { title: "Hello World" };
+  },
+  async getComments(token, postId) {
+    console.log("GET /posts/" + postId + "/comments", "with", token);
+    return [{ text: "Great post!" }];
+  },
+  async deleteComment(token, postId, commentId) {
+    console.log(
+      "DELETE /posts/" + postId + "/comments/" + commentId,
+      "with",
+      token,
+    );
+  },
+};
+
+// 使用示例
+async function main() {
+  const token = AuthToken.create("Bearer abc123");
+  const userId = UserId.create("user-1");
+  const postId = PostId.create("post-42");
+  const commentId = CommentId.create("comment-7");
+
+  const user = await apiClient.getUser(token, userId);
+  const post = await apiClient.getPost(token, postId);
+  const comments = await apiClient.getComments(token, postId);
+  await apiClient.deleteComment(token, postId, commentId);
+
+  console.log(user, post, comments);
+}
+
+main();
+```
+
+## 🔗 相关概念
+
+- **[类型安全的构建器模式](./02-builder-pattern.mdx)**：品牌类型常与构建器模式结合，提供更强的类型安全保证
+- **[变体类型](./03-variant-types.mdx)**：代数数据类型中也可以使用品牌类型来区分不同变体
+- **可辨识联合**：品牌类型是可辨识联合的一种补充方案，适用于基础类型需要区分的场景
+
+## 📝 学习检查点
+
+- [ ] 理解 TypeScript 结构化类型系统带来的类型混用问题
+- [ ] 掌握品牌类型的基本实现方式（交叉类型 + 品牌字段）
+- [ ] 能够使用 `unique symbol` 实现更强的品牌隔离
+- [ ] 能够为业务实体 ID 设计品牌类型
+- [ ] 能够将验证逻辑封装到品牌类型工厂函数中
+- [ ] 理解品牌类型在货币、度量单位等领域的应用
+
+## 🚀 下一步
+
+→ [类型安全的构建器模式](./02-builder-pattern.mdx)

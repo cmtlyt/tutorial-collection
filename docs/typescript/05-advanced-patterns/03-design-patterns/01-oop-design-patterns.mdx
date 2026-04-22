@@ -1,12 +1,947 @@
 # 常用设计模式的类型实现
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍常用设计模式的类型实现的核心概念和实践方法。
+设计模式是软件工程中经过验证的解决方案模板。TypeScript 的类型系统为设计模式带来了独特的优势——不仅能在运行时正确执行，还能在**编译期**捕获模式使用中的错误。本节介绍四种经典设计模式在 TypeScript 中的类型安全实现：**工厂模式**、**策略模式**、**观察者模式**和**状态模式**。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 工厂模式（Factory）
+
+工厂模式通过一个统一的接口创建对象，将对象的创建逻辑与使用逻辑分离。TypeScript 的泛型和可辨识联合让工厂模式的返回类型可以根据输入自动推断。
+
+### 简单工厂
+
+```ts
+// 产品接口
+interface Notification {
+  send(message: string): void;
+}
+
+class EmailNotification implements Notification {
+  constructor(private recipient: string) {}
+  send(message: string) {
+    console.log(`Email to ${this.recipient}: ${message}`);
+  }
+}
+
+class SmsNotification implements Notification {
+  constructor(private phoneNumber: string) {}
+  send(message: string) {
+    console.log(`SMS to ${this.phoneNumber}: ${message}`);
+  }
+}
+
+class PushNotification implements Notification {
+  constructor(private deviceToken: string) {}
+  send(message: string) {
+    console.log(`Push to ${this.deviceToken}: ${message}`);
+  }
+}
+
+// 工厂配置映射
+interface NotificationConfigMap {
+  email: { recipient: string };
+  sms: { phoneNumber: string };
+  push: { deviceToken: string };
+}
+
+// 类型安全的工厂函数：根据 type 推断 config 类型
+function createNotification<T extends keyof NotificationConfigMap>(
+  type: T,
+  config: NotificationConfigMap[T],
+): Notification {
+  switch (type) {
+    case "email":
+      return new EmailNotification(
+        (config as NotificationConfigMap["email"]).recipient,
+      );
+    case "sms":
+      return new SmsNotification(
+        (config as NotificationConfigMap["sms"]).phoneNumber,
+      );
+    case "push":
+      return new PushNotification(
+        (config as NotificationConfigMap["push"]).deviceToken,
+      );
+    default: {
+      const exhaustive: never = type;
+      throw new Error(`Unknown notification type: ${exhaustive}`);
+    }
+  }
+}
+
+// 使用：config 的类型会根据 type 自动推断
+const email = createNotification("email", { recipient: "alice@example.com" });
+email.send("Hello!");
+// Email to alice@example.com: Hello!
+
+const sms = createNotification("sms", { phoneNumber: "+1234567890" });
+sms.send("Verification code: 1234");
+// SMS to +1234567890: Verification code: 1234
+
+// @ts-expect-error - email 类型不接受 phoneNumber
+createNotification("email", { phoneNumber: "123" });
+```
+
+### 抽象工厂
+
+抽象工厂用于创建一族相关对象，确保产品之间的兼容性：
+
+```ts
+// UI 组件接口
+interface Button {
+  render(): string;
+  onClick(handler: () => void): void;
+}
+
+interface Input {
+  render(): string;
+  getValue(): string;
+}
+
+interface Modal {
+  render(): string;
+  open(): void;
+  close(): void;
+}
+
+// UI 工厂接口
+interface UIFactory {
+  createButton(label: string): Button;
+  createInput(placeholder: string): Input;
+  createModal(title: string): Modal;
+}
+
+// Material 风格实现
+class MaterialButton implements Button {
+  constructor(private label: string) {}
+  render() {
+    return `<md-button>${this.label}</md-button>`;
+  }
+  onClick(handler: () => void) {
+    console.log(`Material button "${this.label}" clicked`);
+    handler();
+  }
+}
+
+class MaterialInput implements Input {
+  private value = "";
+  constructor(private placeholder: string) {}
+  render() {
+    return `<md-input placeholder="${this.placeholder}" />`;
+  }
+  getValue() {
+    return this.value;
+  }
+}
+
+class MaterialModal implements Modal {
+  private isOpen = false;
+  constructor(private title: string) {}
+  render() {
+    return `<md-dialog>${this.title}</md-dialog>`;
+  }
+  open() {
+    this.isOpen = true;
+    console.log(`Material modal "${this.title}" opened`);
+  }
+  close() {
+    this.isOpen = false;
+    console.log(`Material modal "${this.title}" closed`);
+  }
+}
+
+// Ant Design 风格实现
+class AntButton implements Button {
+  constructor(private label: string) {}
+  render() {
+    return `<a-button>${this.label}</a-button>`;
+  }
+  onClick(handler: () => void) {
+    console.log(`Ant button "${this.label}" clicked`);
+    handler();
+  }
+}
+
+class AntInput implements Input {
+  private value = "";
+  constructor(private placeholder: string) {}
+  render() {
+    return `<a-input placeholder="${this.placeholder}" />`;
+  }
+  getValue() {
+    return this.value;
+  }
+}
+
+class AntModal implements Modal {
+  private visible = false;
+  constructor(private title: string) {}
+  render() {
+    return `<a-modal title="${this.title}" />`;
+  }
+  open() {
+    this.visible = true;
+    console.log(`Ant modal "${this.title}" opened`);
+  }
+  close() {
+    this.visible = false;
+    console.log(`Ant modal "${this.title}" closed`);
+  }
+}
+
+// 具体工厂
+class MaterialUIFactory implements UIFactory {
+  createButton(label: string) {
+    return new MaterialButton(label);
+  }
+  createInput(placeholder: string) {
+    return new MaterialInput(placeholder);
+  }
+  createModal(title: string) {
+    return new MaterialModal(title);
+  }
+}
+
+class AntUIFactory implements UIFactory {
+  createButton(label: string) {
+    return new AntButton(label);
+  }
+  createInput(placeholder: string) {
+    return new AntInput(placeholder);
+  }
+  createModal(title: string) {
+    return new AntModal(title);
+  }
+}
+
+// 使用抽象工厂：切换 UI 框架只需更换工厂
+function renderForm(factory: UIFactory) {
+  const submitButton = factory.createButton("Submit");
+  const nameInput = factory.createInput("Enter your name");
+  const confirmModal = factory.createModal("Confirm Submission");
+
+  console.log(nameInput.render());
+  console.log(submitButton.render());
+
+  submitButton.onClick(() => {
+    confirmModal.open();
+  });
+}
+
+console.log("--- Material UI ---");
+renderForm(new MaterialUIFactory());
+// <md-input placeholder="Enter your name" />
+// <md-button>Submit</md-button>
+// Material button "Submit" clicked
+// Material modal "Confirm Submission" opened
+
+console.log("--- Ant Design ---");
+renderForm(new AntUIFactory());
+// <a-input placeholder="Enter your name" />
+// <a-button>Submit</a-button>
+// Ant button "Submit" clicked
+// Ant modal "Confirm Submission" opened
+```
+
+## 🎯 策略模式（Strategy）
+
+策略模式定义一族算法，将每种算法封装起来，使它们可以互相替换。TypeScript 的类型系统确保策略接口的一致性。
+
+### 基本策略模式
+
+```ts
+// 定价策略接口
+interface PricingStrategy {
+  calculatePrice(basePrice: number, quantity: number): number;
+  describe(): string;
+}
+
+// 正价策略
+class RegularPricing implements PricingStrategy {
+  calculatePrice(basePrice: number, quantity: number): number {
+    return basePrice * quantity;
+  }
+  describe(): string {
+    return "Regular pricing (no discount)";
+  }
+}
+
+// 会员折扣策略
+class MemberPricing implements PricingStrategy {
+  constructor(private discountPercent: number) {}
+  calculatePrice(basePrice: number, quantity: number): number {
+    const discount = 1 - this.discountPercent / 100;
+    return basePrice * quantity * discount;
+  }
+  describe(): string {
+    return `Member pricing (${this.discountPercent}% off)`;
+  }
+}
+
+// 满减策略
+class ThresholdPricing implements PricingStrategy {
+  constructor(
+    private threshold: number,
+    private reduction: number,
+  ) {}
+  calculatePrice(basePrice: number, quantity: number): number {
+    const total = basePrice * quantity;
+    if (total >= this.threshold) {
+      return total - this.reduction;
+    }
+    return total;
+  }
+  describe(): string {
+    return `Threshold pricing (${this.reduction} off when >= ${this.threshold})`;
+  }
+}
+
+// 阶梯定价策略
+class TieredPricing implements PricingStrategy {
+  constructor(
+    private tiers: { minQuantity: number; pricePerUnit: number }[],
+  ) {
+    this.tiers.sort((a, b) => b.minQuantity - a.minQuantity);
+  }
+  calculatePrice(_basePrice: number, quantity: number): number {
+    for (const tier of this.tiers) {
+      if (quantity >= tier.minQuantity) {
+        return tier.pricePerUnit * quantity;
+      }
+    }
+    return _basePrice * quantity;
+  }
+  describe(): string {
+    return "Tiered pricing (volume discounts)";
+  }
+}
+
+// 使用策略的上下文
+class ShoppingCart {
+  private items: { name: string; price: number; quantity: number }[] = [];
+  private strategy: PricingStrategy = new RegularPricing();
+
+  setStrategy(strategy: PricingStrategy): void {
+    this.strategy = strategy;
+    console.log(`Strategy set to: ${strategy.describe()}`);
+  }
+
+  addItem(name: string, price: number, quantity: number): void {
+    this.items.push({ name, price, quantity });
+  }
+
+  calculateTotal(): number {
+    return this.items.reduce(
+      (total, item) =>
+        total + this.strategy.calculatePrice(item.price, item.quantity),
+      0,
+    );
+  }
+
+  printReceipt(): void {
+    console.log("=== Receipt ===");
+    console.log(`Strategy: ${this.strategy.describe()}`);
+    for (const item of this.items) {
+      const subtotal = this.strategy.calculatePrice(item.price, item.quantity);
+      console.log(`${item.name} x${item.quantity}: ${subtotal.toFixed(2)}`);
+    }
+    console.log(`Total: ${this.calculateTotal().toFixed(2)}`);
+    console.log("===============");
+  }
+}
+
+const cart = new ShoppingCart();
+cart.addItem("T-Shirt", 25, 3);
+cart.addItem("Jeans", 60, 2);
+
+// 正价
+cart.printReceipt();
+// Total: $195.00
+
+// 会员 10% 折扣
+cart.setStrategy(new MemberPricing(10));
+cart.printReceipt();
+// Total: $175.50
+
+// 满 150 减 20
+cart.setStrategy(new ThresholdPricing(150, 20));
+cart.printReceipt();
+// Total: $175.00
+```
+
+### 类型安全的策略注册表
+
+使用泛型映射类型创建可扩展的策略注册表：
+
+```ts
+// 验证策略
+type ValidatorFn<T> = (value: T) => { valid: boolean; message?: string };
+
+class ValidationRegistry<FieldMap extends Record<string, unknown>> {
+  private validators = new Map<string, ValidatorFn<unknown>[]>();
+
+  register<K extends keyof FieldMap & string>(
+    field: K,
+    validator: ValidatorFn<FieldMap[K]>,
+  ): this {
+    const validators = this.validators.get(field) ?? [];
+    validators.push(validator as ValidatorFn<unknown>);
+    this.validators.set(field, validators);
+    return this;
+  }
+
+  validate(data: FieldMap): { valid: boolean; errors: Record<string, string[]> } {
+    const errors: Record<string, string[]> = {};
+    let allValid = true;
+
+    for (const [field, validators] of this.validators) {
+      const value = (data as Record<string, unknown>)[field];
+      for (const validator of validators) {
+        const result = validator(value);
+        if (!result.valid) {
+          allValid = false;
+          if (!errors[field]) errors[field] = [];
+          errors[field].push(result.message ?? "Validation failed");
+        }
+      }
+    }
+
+    return { valid: allValid, errors };
+  }
+}
+
+// 预定义的验证策略
+function required<T>(): ValidatorFn<T> {
+  return (value) => ({
+    valid: value !== null && value !== undefined && value !== "",
+    message: "Field is required",
+  });
+}
+
+function minLength(min: number): ValidatorFn<string> {
+  return (value) => ({
+    valid: value.length >= min,
+    message: `Must be at least ${min} characters`,
+  });
+}
+
+function isEmail(): ValidatorFn<string> {
+  return (value) => ({
+    valid: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+    message: "Must be a valid email",
+  });
+}
+
+function inRange(min: number, max: number): ValidatorFn<number> {
+  return (value) => ({
+    valid: value >= min && value <= max,
+    message: `Must be between ${min} and ${max}`,
+  });
+}
+
+// 使用
+interface SignupForm {
+  username: string;
+  email: string;
+  age: number;
+}
+
+const signupValidator = new ValidationRegistry<SignupForm>()
+  .register("username", required())
+  .register("username", minLength(3))
+  .register("email", required())
+  .register("email", isEmail())
+  .register("age", inRange(13, 120));
+
+const validData: SignupForm = {
+  username: "alice",
+  email: "alice@example.com",
+  age: 25,
+};
+console.log(signupValidator.validate(validData));
+// { valid: true, errors: {} }
+
+const invalidData: SignupForm = {
+  username: "ab",
+  email: "not-an-email",
+  age: 5,
+};
+console.log(signupValidator.validate(invalidData));
+// { valid: false, errors: {
+//   username: ["Must be at least 3 characters"],
+//   email: ["Must be a valid email"],
+//   age: ["Must be between 13 and 120"]
+// }}
+```
+
+## 🎯 观察者模式（Observer）
+
+观察者模式定义了对象间的一对多依赖关系。TypeScript 的泛型让我们可以创建类型安全的事件系统。
+
+```ts
+// 类型安全的事件发射器
+class TypedEventEmitter<EventMap extends Record<string, unknown[]>> {
+  private listeners = new Map<string, Set<Function>>();
+
+  on<K extends keyof EventMap & string>(
+    event: K,
+    handler: (...args: EventMap[K]) => void,
+  ): () => void {
+    const handlers = this.listeners.get(event) ?? new Set();
+    handlers.add(handler);
+    this.listeners.set(event, handlers);
+
+    // 返回取消订阅函数
+    return () => {
+      handlers.delete(handler);
+    };
+  }
+
+  once<K extends keyof EventMap & string>(
+    event: K,
+    handler: (...args: EventMap[K]) => void,
+  ): () => void {
+    const wrapper = (...args: EventMap[K]) => {
+      handler(...args);
+      unsubscribe();
+    };
+    const unsubscribe = this.on(event, wrapper);
+    return unsubscribe;
+  }
+
+  emit<K extends keyof EventMap & string>(
+    event: K,
+    ...args: EventMap[K]
+  ): void {
+    const handlers = this.listeners.get(event);
+    if (handlers) {
+      for (const handler of handlers) {
+        handler(...args);
+      }
+    }
+  }
+
+  removeAllListeners<K extends keyof EventMap & string>(event?: K): void {
+    if (event) {
+      this.listeners.delete(event);
+    } else {
+      this.listeners.clear();
+    }
+  }
+}
+
+// 定义事件映射
+interface StoreEvents {
+  "item:added": [item: { id: string; name: string; price: number }];
+  "item:removed": [itemId: string];
+  "cart:cleared": [];
+  "checkout:completed": [orderId: string, total: number];
+}
+
+// 使用类型安全的事件系统
+const store = new TypedEventEmitter<StoreEvents>();
+
+// 订阅事件：参数类型自动推断
+const unsubAdd = store.on("item:added", (item) => {
+  console.log(`Added: ${item.name} (${item.price})`);
+});
+
+store.on("item:removed", (itemId) => {
+  console.log(`Removed item: ${itemId}`);
+});
+
+store.once("checkout:completed", (orderId, total) => {
+  console.log(`Order ${orderId} completed! Total: ${total}`);
+});
+
+// 触发事件：参数类型被严格检查
+store.emit("item:added", { id: "1", name: "Laptop", price: 999 });
+// Added: Laptop ($999)
+
+store.emit("item:added", { id: "2", name: "Mouse", price: 29 });
+// Added: Mouse ($29)
+
+store.emit("item:removed", "1");
+// Removed item: 1
+
+store.emit("checkout:completed", "order-001", 1028);
+// Order order-001 completed! Total: $1028
+
+// @ts-expect-error - 参数类型不匹配
+store.emit("item:added", "wrong argument");
+
+// @ts-expect-error - 缺少必需参数
+store.emit("checkout:completed", "order-002");
+
+// 取消订阅
+unsubAdd();
+store.emit("item:added", { id: "3", name: "Keyboard", price: 79 });
+// 不会输出，因为已取消订阅
+```
+
+## 🎯 状态模式（State）
+
+状态模式将对象的行为封装在不同的状态对象中，让对象在内部状态改变时改变行为。TypeScript 的类型系统可以确保状态转换的合法性。
+
+```ts
+// 订单状态接口
+interface OrderState {
+  readonly name: string;
+  pay(order: Order): void;
+  ship(order: Order): void;
+  deliver(order: Order): void;
+  cancel(order: Order): void;
+}
+
+// 待支付状态
+class PendingPaymentState implements OrderState {
+  readonly name = "PendingPayment";
+
+  pay(order: Order): void {
+    console.log("Payment received. Order is now paid.");
+    order.setState(new PaidState());
+  }
+
+  ship(_order: Order): void {
+    console.log("Cannot ship: payment not received yet.");
+  }
+
+  deliver(_order: Order): void {
+    console.log("Cannot deliver: order not shipped yet.");
+  }
+
+  cancel(order: Order): void {
+    console.log("Order cancelled before payment.");
+    order.setState(new CancelledState());
+  }
+}
+
+// 已支付状态
+class PaidState implements OrderState {
+  readonly name = "Paid";
+
+  pay(_order: Order): void {
+    console.log("Order is already paid.");
+  }
+
+  ship(order: Order): void {
+    console.log("Order shipped!");
+    order.setState(new ShippedState());
+  }
+
+  deliver(_order: Order): void {
+    console.log("Cannot deliver: order not shipped yet.");
+  }
+
+  cancel(order: Order): void {
+    console.log("Order cancelled. Refund will be processed.");
+    order.setState(new CancelledState());
+  }
+}
+
+// 已发货状态
+class ShippedState implements OrderState {
+  readonly name = "Shipped";
+
+  pay(_order: Order): void {
+    console.log("Order is already paid.");
+  }
+
+  ship(_order: Order): void {
+    console.log("Order is already shipped.");
+  }
+
+  deliver(order: Order): void {
+    console.log("Order delivered successfully!");
+    order.setState(new DeliveredState());
+  }
+
+  cancel(_order: Order): void {
+    console.log("Cannot cancel: order already shipped.");
+  }
+}
+
+// 已送达状态
+class DeliveredState implements OrderState {
+  readonly name = "Delivered";
+
+  pay(_order: Order): void {
+    console.log("Order is already paid and delivered.");
+  }
+
+  ship(_order: Order): void {
+    console.log("Order is already delivered.");
+  }
+
+  deliver(_order: Order): void {
+    console.log("Order is already delivered.");
+  }
+
+  cancel(_order: Order): void {
+    console.log("Cannot cancel: order already delivered. Please apply for a return.");
+  }
+}
+
+// 已取消状态
+class CancelledState implements OrderState {
+  readonly name = "Cancelled";
+
+  pay(_order: Order): void {
+    console.log("Cannot pay: order is cancelled.");
+  }
+
+  ship(_order: Order): void {
+    console.log("Cannot ship: order is cancelled.");
+  }
+
+  deliver(_order: Order): void {
+    console.log("Cannot deliver: order is cancelled.");
+  }
+
+  cancel(_order: Order): void {
+    console.log("Order is already cancelled.");
+  }
+}
+
+// 订单上下文
+class Order {
+  private state: OrderState;
+  private history: string[] = [];
+
+  constructor(
+    public readonly orderId: string,
+    public readonly items: string[],
+  ) {
+    this.state = new PendingPaymentState();
+    this.history.push(this.state.name);
+  }
+
+  setState(state: OrderState): void {
+    this.state = state;
+    this.history.push(state.name);
+  }
+
+  getStateName(): string {
+    return this.state.name;
+  }
+
+  getHistory(): string[] {
+    return [...this.history];
+  }
+
+  pay(): void {
+    this.state.pay(this);
+  }
+
+  ship(): void {
+    this.state.ship(this);
+  }
+
+  deliver(): void {
+    this.state.deliver(this);
+  }
+
+  cancel(): void {
+    this.state.cancel(this);
+  }
+}
+
+// 使用示例
+const order = new Order("ORD-001", ["Laptop", "Mouse"]);
+
+console.log(`Order state: ${order.getStateName()}`);
+// Order state: PendingPayment
+
+order.ship();
+// Cannot ship: payment not received yet.
+
+order.pay();
+// Payment received. Order is now paid.
+
+order.pay();
+// Order is already paid.
+
+order.ship();
+// Order shipped!
+
+order.cancel();
+// Cannot cancel: order already shipped.
+
+order.deliver();
+// Order delivered successfully!
+
+console.log("State history:", order.getHistory());
+// State history: ["PendingPayment", "Paid", "Shipped", "Delivered"]
+```
+
+## 📝 实际应用示例
+
+### 组合模式实战：插件系统
+
+将多种设计模式组合，实现一个类型安全的插件系统：
+
+```ts
+// 插件生命周期接口
+interface Plugin<Config = unknown> {
+  readonly name: string;
+  setup(config: Config): void;
+  start(): void;
+  stop(): void;
+}
+
+// 插件配置映射
+interface PluginConfigMap {
+  logger: { level: "debug" | "info" | "warn" | "error" };
+  cache: { maxSize: number; ttlMs: number };
+  metrics: { endpoint: string; intervalMs: number };
+}
+
+// 具体插件实现
+class LoggerPlugin implements Plugin<PluginConfigMap["logger"]> {
+  readonly name = "logger";
+  private level: string = "info";
+
+  setup(config: PluginConfigMap["logger"]) {
+    this.level = config.level;
+    console.log(`Logger configured with level: ${this.level}`);
+  }
+
+  start() {
+    console.log(`Logger started (level: ${this.level})`);
+  }
+
+  stop() {
+    console.log("Logger stopped");
+  }
+}
+
+class CachePlugin implements Plugin<PluginConfigMap["cache"]> {
+  readonly name = "cache";
+  private maxSize = 100;
+  private ttlMs = 60000;
+
+  setup(config: PluginConfigMap["cache"]) {
+    this.maxSize = config.maxSize;
+    this.ttlMs = config.ttlMs;
+    console.log(`Cache configured: maxSize=${this.maxSize}, ttl=${this.ttlMs}ms`);
+  }
+
+  start() {
+    console.log("Cache started");
+  }
+
+  stop() {
+    console.log("Cache stopped and cleared");
+  }
+}
+
+class MetricsPlugin implements Plugin<PluginConfigMap["metrics"]> {
+  readonly name = "metrics";
+  private endpoint = "";
+  private intervalMs = 5000;
+
+  setup(config: PluginConfigMap["metrics"]) {
+    this.endpoint = config.endpoint;
+    this.intervalMs = config.intervalMs;
+    console.log(
+      `Metrics configured: endpoint=${this.endpoint}, interval=${this.intervalMs}ms`,
+    );
+  }
+
+  start() {
+    console.log(`Metrics reporting to ${this.endpoint}`);
+  }
+
+  stop() {
+    console.log("Metrics stopped");
+  }
+}
+
+// 类型安全的插件注册表
+type PluginFactory<K extends keyof PluginConfigMap> = () => Plugin<PluginConfigMap[K]>;
+
+class PluginManager {
+  private factories = new Map<string, PluginFactory<keyof PluginConfigMap>>();
+  private instances: Plugin<unknown>[] = [];
+
+  register<K extends keyof PluginConfigMap>(
+    name: K,
+    factory: PluginFactory<K>,
+  ): this {
+    this.factories.set(name, factory as PluginFactory<keyof PluginConfigMap>);
+    return this;
+  }
+
+  use<K extends keyof PluginConfigMap>(name: K, config: PluginConfigMap[K]): this {
+    const factory = this.factories.get(name);
+    if (!factory) {
+      throw new Error(`Plugin "${name}" is not registered`);
+    }
+
+    const plugin = factory();
+    plugin.setup(config);
+    this.instances.push(plugin);
+    return this;
+  }
+
+  startAll(): void {
+    console.log("--- Starting all plugins ---");
+    for (const plugin of this.instances) {
+      plugin.start();
+    }
+  }
+
+  stopAll(): void {
+    console.log("--- Stopping all plugins ---");
+    for (const plugin of [...this.instances].reverse()) {
+      plugin.stop();
+    }
+  }
+}
+
+// 使用
+const manager = new PluginManager()
+  .register("logger", () => new LoggerPlugin())
+  .register("cache", () => new CachePlugin())
+  .register("metrics", () => new MetricsPlugin());
+
+manager
+  .use("logger", { level: "debug" })
+  .use("cache", { maxSize: 500, ttlMs: 30000 })
+  .use("metrics", { endpoint: "https://metrics.example.com", intervalMs: 10000 });
+
+manager.startAll();
+// --- Starting all plugins ---
+// Logger started (level: debug)
+// Cache started
+// Metrics reporting to https://metrics.example.com
+
+manager.stopAll();
+// --- Stopping all plugins ---
+// Metrics stopped
+// Cache stopped and cleared
+// Logger stopped
+```
+
+## 🔗 相关概念
+
+- **[函数式编程模式](./02-fp-patterns.mdx)**：函数式编程提供了另一种组织代码的范式，与 OOP 模式互补
+- **[装饰器](../02-decorators-metaprogramming/01-decorators.mdx)**：装饰器模式本身也是经典的结构型设计模式
+- **[构建器模式](../01-advanced-type-patterns/02-builder-pattern.mdx)**：构建器是经典的创建型设计模式
+- **[变体类型](../01-advanced-type-patterns/03-variant-types.mdx)**：状态模式中的状态可以用 ADT 来建模
+
+## 📝 学习检查点
+
+- [ ] 能够实现类型安全的工厂模式，根据输入参数自动推断返回类型
+- [ ] 理解抽象工厂在创建产品族中的作用
+- [ ] 能够使用策略模式封装可互换的算法
+- [ ] 能够实现类型安全的事件发射器（观察者模式）
+- [ ] 理解状态模式如何通过状态对象管理行为切换
+- [ ] 能够组合多种设计模式解决复杂问题
+
+## 🚀 下一步
+
+→ [函数式编程模式](./02-fp-patterns.mdx)

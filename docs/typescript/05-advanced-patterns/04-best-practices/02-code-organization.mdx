@@ -1,12 +1,728 @@
 # 代码组织最佳实践
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍代码组织最佳实践的核心概念和实践方法。
+良好的类型代码组织对项目的可维护性、编译性能和开发体验至关重要。随着项目规模增长，类型定义会分散在各个文件中，导致循环依赖、类型污染和编译缓慢等问题。本节介绍 TypeScript 项目中类型文件的组织策略、导出规范、模块边界设计等最佳实践。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 类型文件组织策略
+
+### 按职责分层
+
+将类型文件按职责划分到不同目录，保持清晰的层次结构：
+
+```ts
+// 推荐的目录结构
+// src/
+// ├── types/                  # 全局共享类型
+// │   ├── common.ts           # 通用工具类型
+// │   ├── api.ts              # API 相关类型
+// │   └── index.ts            # 统一导出
+// ├── modules/
+// │   ├── user/
+// │   │   ├── types.ts        # 模块内部类型
+// │   │   ├── user.service.ts
+// │   │   └── user.controller.ts
+// │   └── order/
+// │       ├── types.ts
+// │       ├── order.service.ts
+// │       └── order.controller.ts
+// └── shared/
+//     └── utils/
+//         ├── types.ts         # 工具函数的类型
+//         └── result.ts
+
+// === src/types/common.ts ===
+// 全局通用类型，任何模块都可能用到
+
+export type Nullable<T> = T | null;
+
+export type DeepPartial<T> = T extends object
+  ? { [K in keyof T]?: DeepPartial<T[K]> }
+  : T;
+
+export interface Pagination {
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface PaginatedList<T> {
+  items: T[];
+  pagination: Pagination;
+}
+
+export interface Timestamps {
+  createdAt: Date;
+  updatedAt: Date;
+}
+```
+
+### 模块内部的类型组织
+
+每个业务模块应有独立的 `types.ts` 文件，只包含该模块的类型定义：
+
+```ts
+// === src/modules/user/types.ts ===
+// 只包含 user 模块相关的类型
+
+import type { Timestamps, Pagination } from "../../types/common";
+
+// 实体类型
+export interface User extends Timestamps {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  status: UserStatus;
+}
+
+export type UserRole = "admin" | "editor" | "viewer";
+export type UserStatus = "active" | "inactive" | "banned";
+
+// 请求/响应类型
+export interface CreateUserRequest {
+  name: string;
+  email: string;
+  role: UserRole;
+}
+
+export interface UpdateUserRequest {
+  name?: string;
+  email?: string;
+  role?: UserRole;
+  status?: UserStatus;
+}
+
+export interface UserListQuery extends Partial<Pagination> {
+  role?: UserRole;
+  status?: UserStatus;
+  search?: string;
+}
+
+// 模块内部使用的类型（不导出到模块外）
+interface UserCacheEntry {
+  user: User;
+  expiresAt: number;
+}
+```
+
+```ts
+// === src/modules/user/user.service.ts ===
+import type {
+  User,
+  CreateUserRequest,
+  UpdateUserRequest,
+  UserListQuery,
+} from "./types";
+import type { PaginatedList } from "../../types/common";
+
+export class UserService {
+  async listUsers(query: UserListQuery): Promise<PaginatedList<User>> {
+    console.log("Listing users with query:", query);
+    return {
+      items: [],
+      pagination: {
+        page: query.page ?? 1,
+        pageSize: query.pageSize ?? 20,
+        total: 0,
+      },
+    };
+  }
+
+  async createUser(request: CreateUserRequest): Promise<User> {
+    console.log("Creating user:", request.name);
+    return {
+      id: crypto.randomUUID(),
+      name: request.name,
+      email: request.email,
+      role: request.role,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+  }
+
+  async updateUser(id: string, request: UpdateUserRequest): Promise<User> {
+    console.log(`Updating user ${id}:`, request);
+    return {
+      id,
+      name: request.name ?? "Unknown",
+      email: request.email ?? "unknown@example.com",
+      role: request.role ?? "viewer",
+      status: request.status ?? "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+  }
+}
+
+// 使用示例
+const service = new UserService();
+service.listUsers({ role: "admin", page: 1, pageSize: 10 }).then(console.log);
+service.createUser({ name: "Alice", email: "alice@example.com", role: "editor" }).then(console.log);
+```
+
+### 统一导出入口
+
+每个类型目录应有 `index.ts` 作为统一导出入口，控制对外暴露的类型：
+
+```ts
+// === src/types/index.ts ===
+// 统一导出公共类型
+export type {
+  Nullable,
+  DeepPartial,
+  Pagination,
+  PaginatedList,
+  Timestamps,
+} from "./common";
+
+export type {
+  ApiResponse,
+  ApiError,
+  RequestConfig,
+} from "./api";
+```
+
+```ts
+// === src/types/api.ts ===
+export interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  message?: string;
+}
+
+export interface ApiError {
+  code: string;
+  message: string;
+  details?: Record<string, string[]>;
+}
+
+export interface RequestConfig {
+  baseUrl: string;
+  timeout: number;
+  headers: Record<string, string>;
+}
+```
+
+## 🎯 导出类型的最佳实践
+
+### 使用 `import type` 和 `export type`
+
+始终使用 `import type` / `export type` 来导入和导出纯类型，这有助于：
+1. 让打包工具更好地进行 tree-shaking
+2. 明确区分值导入和类型导入
+3. 避免循环依赖问题
+
+```ts
+// ✅ 推荐：显式的类型导入/导出
+import type { User, UserRole } from "./types";
+import { UserService } from "./user.service";
+
+export type { User, UserRole };
+export { UserService };
+
+// ❌ 不推荐：混合导入，不清楚哪些是类型
+import { User, UserRole, UserService } from "./user";
+```
+
+### 在 tsconfig.json 中强制类型导入
+
+通过配置强制使用 `import type`：
+
+```json
+{
+  "compilerOptions": {
+    "verbatimModuleSyntax": true
+  }
+}
+```
+
+开启 `verbatimModuleSyntax` 后，TypeScript 会要求：
+- 纯类型导入必须使用 `import type`
+- 混合导入时使用 `import { type X, Y }` 语法
+
+```ts
+// verbatimModuleSyntax 开启后的标准写法
+import type { User, UserRole } from "./types";
+import { type CreateUserRequest, UserService } from "./user";
+```
+
+## 🎯 避免类型导出污染
+
+### 内部类型不应导出
+
+模块内部使用的类型不应暴露到公共 API 中：
+
+```ts
+// === src/modules/order/types.ts ===
+
+// ✅ 公共 API 类型：导出
+export interface Order {
+  id: string;
+  userId: string;
+  items: OrderItem[];
+  status: OrderStatus;
+  total: number;
+}
+
+export interface OrderItem {
+  productId: string;
+  name: string;
+  price: number;
+  quantity: number;
+}
+
+export type OrderStatus =
+  | "pending"
+  | "confirmed"
+  | "shipped"
+  | "delivered"
+  | "cancelled";
+
+export interface CreateOrderRequest {
+  userId: string;
+  items: { productId: string; quantity: number }[];
+}
+
+// ❌ 内部实现类型：不导出
+// 这些类型仅用于模块内部实现，不应暴露给外部
+interface OrderProcessingContext {
+  order: Order;
+  retryCount: number;
+  lastError?: Error;
+}
+
+interface OrderValidationRule {
+  name: string;
+  validate(order: Order): boolean;
+  errorMessage: string;
+}
+
+// 在同一文件或同一模块内部使用
+function processOrder(context: OrderProcessingContext): void {
+  console.log(`Processing order ${context.order.id}, retry: ${context.retryCount}`);
+}
+
+const validationRules: OrderValidationRule[] = [
+  {
+    name: "hasItems",
+    validate: (order) => order.items.length > 0,
+    errorMessage: "Order must have at least one item",
+  },
+  {
+    name: "positiveTotal",
+    validate: (order) => order.total > 0,
+    errorMessage: "Order total must be positive",
+  },
+];
+
+// 使用验证规则
+function validateOrder(order: Order): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  for (const rule of validationRules) {
+    if (!rule.validate(order)) {
+      errors.push(rule.errorMessage);
+    }
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+// 验证示例
+const testOrder: Order = {
+  id: "ord-1",
+  userId: "user-1",
+  items: [{ productId: "p-1", name: "Laptop", price: 999, quantity: 1 }],
+  status: "pending",
+  total: 999,
+};
+
+console.log(validateOrder(testOrder));
+// { valid: true, errors: [] }
+```
+
+### 模块桶文件（Barrel File）的最佳实践
+
+桶文件（`index.ts`）应该精心控制导出内容，而不是简单地 `export *`：
+
+```ts
+// ❌ 不推荐：导出一切，包括内部实现细节
+export * from "./types";
+export * from "./user.service";
+export * from "./user.repository";
+export * from "./user.validator";
+export * from "./user.cache";
+
+// ✅ 推荐：显式选择性导出
+export type { User, UserRole, UserStatus, CreateUserRequest, UpdateUserRequest } from "./types";
+export { UserService } from "./user.service";
+// 不导出 repository、validator、cache 等内部实现
+```
+
+## 🎯 模块边界类型设计
+
+### 输入输出类型分离
+
+模块的输入类型（Request）和输出类型（Response）应当分离，即使结构相似：
+
+```ts
+// ✅ 推荐：分离输入输出类型
+
+// 创建时的输入类型：只包含用户提供的字段
+export interface CreateProductInput {
+  name: string;
+  description: string;
+  price: number;
+  categoryId: string;
+  tags: string[];
+}
+
+// 更新时的输入类型：所有字段可选
+export interface UpdateProductInput {
+  name?: string;
+  description?: string;
+  price?: number;
+  categoryId?: string;
+  tags?: string[];
+}
+
+// 输出类型：包含系统生成的字段
+export interface ProductOutput {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  categoryId: string;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+  slug: string;
+}
+
+// 列表项输出类型：精简版本
+export interface ProductListItem {
+  id: string;
+  name: string;
+  price: number;
+  slug: string;
+}
+
+// 服务使用明确的输入/输出类型
+class ProductService {
+  async create(input: CreateProductInput): Promise<ProductOutput> {
+    const now = new Date().toISOString();
+    return {
+      id: crypto.randomUUID(),
+      ...input,
+      createdAt: now,
+      updatedAt: now,
+      slug: input.name.toLowerCase().replace(/\s+/g, "-"),
+    };
+  }
+
+  async update(id: string, input: UpdateProductInput): Promise<ProductOutput> {
+    console.log(`Updating product ${id}`);
+    return {
+      id,
+      name: input.name ?? "Product",
+      description: input.description ?? "",
+      price: input.price ?? 0,
+      categoryId: input.categoryId ?? "default",
+      tags: input.tags ?? [],
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: new Date().toISOString(),
+      slug: (input.name ?? "product").toLowerCase().replace(/\s+/g, "-"),
+    };
+  }
+
+  async list(): Promise<ProductListItem[]> {
+    return [
+      { id: "1", name: "Laptop", price: 999, slug: "laptop" },
+      { id: "2", name: "Mouse", price: 29, slug: "mouse" },
+    ];
+  }
+}
+
+const productService = new ProductService();
+
+productService
+  .create({
+    name: "Wireless Keyboard",
+    description: "Bluetooth keyboard",
+    price: 79,
+    categoryId: "electronics",
+    tags: ["keyboard", "wireless"],
+  })
+  .then((product) => console.log("Created:", product.slug));
+// Created: wireless-keyboard
+```
+
+### 跨模块通信的类型契约
+
+模块之间应通过**类型契约**（接口）通信，而非直接依赖具体实现：
+
+```ts
+// === src/shared/contracts/notification.ts ===
+// 通知服务的类型契约
+
+export interface NotificationPayload {
+  recipient: string;
+  title: string;
+  body: string;
+  metadata?: Record<string, string>;
+}
+
+export interface NotificationResult {
+  id: string;
+  status: "sent" | "queued" | "failed";
+  sentAt?: Date;
+}
+
+// 通知服务契约接口
+export interface NotificationService {
+  send(payload: NotificationPayload): Promise<NotificationResult>;
+  sendBatch(payloads: NotificationPayload[]): Promise<NotificationResult[]>;
+}
+
+// === src/modules/email/email-notification.service.ts ===
+// 邮件通知的具体实现
+
+import type {
+  NotificationService,
+  NotificationPayload,
+  NotificationResult,
+} from "../../shared/contracts/notification";
+
+export class EmailNotificationService implements NotificationService {
+  async send(payload: NotificationPayload): Promise<NotificationResult> {
+    console.log(`Sending email to ${payload.recipient}: ${payload.title}`);
+    return {
+      id: crypto.randomUUID(),
+      status: "sent",
+      sentAt: new Date(),
+    };
+  }
+
+  async sendBatch(payloads: NotificationPayload[]): Promise<NotificationResult[]> {
+    const results: NotificationResult[] = [];
+    for (const payload of payloads) {
+      results.push(await this.send(payload));
+    }
+    return results;
+  }
+}
+
+// === src/modules/order/order.service.ts ===
+// 订单模块通过契约接口依赖通知服务，不直接依赖邮件实现
+
+import type { NotificationService } from "../../shared/contracts/notification";
+
+export class OrderService {
+  constructor(private notificationService: NotificationService) {}
+
+  async placeOrder(userId: string, total: number): Promise<string> {
+    const orderId = crypto.randomUUID();
+    console.log(`Order ${orderId} placed for user ${userId}`);
+
+    // 通过契约接口发送通知，不关心具体实现
+    await this.notificationService.send({
+      recipient: userId,
+      title: "Order Confirmed",
+      body: `Your order #${orderId} for ${total} has been confirmed.`,
+      metadata: { orderId, total: String(total) },
+    });
+
+    return orderId;
+  }
+}
+
+// 组装：在应用入口注入具体实现
+const emailService = new EmailNotificationService();
+const orderService = new OrderService(emailService);
+
+orderService.placeOrder("user-123", 299.99).then((orderId) => {
+  console.log("Order placed:", orderId);
+});
+// Sending email to user-123: Order Confirmed
+// Order placed: <uuid>
+```
+
+## 📝 实际应用示例
+
+### 完整的模块类型组织方案
+
+展示一个中型项目的完整类型组织结构：
+
+```ts
+// === src/types/result.ts ===
+// 全局错误处理类型
+
+export type Result<T, E = string> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+export function ok<T>(value: T): Result<T, never> {
+  return { ok: true, value };
+}
+
+export function err<E>(error: E): Result<never, E> {
+  return { ok: false, error };
+}
+
+// === src/types/common.ts ===
+export interface SortOptions {
+  field: string;
+  direction: "asc" | "desc";
+}
+
+export interface FilterOptions {
+  field: string;
+  operator: "eq" | "ne" | "gt" | "lt" | "contains";
+  value: string | number;
+}
+
+export interface QueryOptions {
+  page?: number;
+  pageSize?: number;
+  sort?: SortOptions;
+  filters?: FilterOptions[];
+}
+
+// === src/modules/product/types.ts ===
+import type { QueryOptions } from "../../types/common";
+
+// 领域模型
+export interface Product {
+  id: string;
+  name: string;
+  sku: string;
+  price: number;
+  stock: number;
+  category: string;
+  isActive: boolean;
+}
+
+// 查询类型继承通用选项
+export interface ProductQuery extends QueryOptions {
+  category?: string;
+  minPrice?: number;
+  maxPrice?: number;
+  inStock?: boolean;
+}
+
+// 命令类型
+export interface CreateProductCommand {
+  name: string;
+  sku: string;
+  price: number;
+  stock: number;
+  category: string;
+}
+
+export interface AdjustStockCommand {
+  productId: string;
+  adjustment: number;
+  reason: string;
+}
+
+// 事件类型
+export interface ProductCreatedEvent {
+  type: "product.created";
+  payload: Product;
+  timestamp: Date;
+}
+
+export interface StockAdjustedEvent {
+  type: "stock.adjusted";
+  payload: {
+    productId: string;
+    previousStock: number;
+    newStock: number;
+    adjustment: number;
+    reason: string;
+  };
+  timestamp: Date;
+}
+
+export type ProductEvent = ProductCreatedEvent | StockAdjustedEvent;
+
+// === 使用示例 ===
+import type { Result } from "../../types/result";
+
+function handleProductEvent(event: ProductEvent): void {
+  switch (event.type) {
+    case "product.created":
+      console.log(`New product: ${event.payload.name} (${event.payload.price})`);
+      break;
+    case "stock.adjusted":
+      console.log(
+        `Stock adjusted for ${event.payload.productId}: ` +
+        `${event.payload.previousStock} → ${event.payload.newStock} ` +
+        `(reason: ${event.payload.reason})`
+      );
+      break;
+  }
+}
+
+function createProduct(command: CreateProductCommand): Result<Product> {
+  if (command.price <= 0) {
+    return { ok: false, error: "Price must be positive" };
+  }
+  if (command.stock < 0) {
+    return { ok: false, error: "Stock cannot be negative" };
+  }
+
+  const product: Product = {
+    id: crypto.randomUUID(),
+    ...command,
+    isActive: true,
+  };
+
+  handleProductEvent({
+    type: "product.created",
+    payload: product,
+    timestamp: new Date(),
+  });
+
+  return { ok: true, value: product };
+}
+
+// 测试
+const result = createProduct({
+  name: "Wireless Mouse",
+  sku: "WM-001",
+  price: 29.99,
+  stock: 100,
+  category: "peripherals",
+});
+
+if (result.ok) {
+  console.log("Product created:", result.value.name);
+} else {
+  console.error("Failed:", result.error);
+}
+// New product: Wireless Mouse ($29.99)
+// Product created: Wireless Mouse
+```
+
+## 🔗 相关概念
+
+- **[类型性能优化](./01-type-performance.mdx)**：良好的类型组织有助于提升编译性能
+- **[迁移策略](./03-migration-strategies.mdx)**：从 JavaScript 迁移时，类型文件组织是关键一步
+- **[品牌类型](../01-advanced-type-patterns/01-branded-types.mdx)**：品牌类型的工厂函数通常放在模块入口文件中
+
+## 📝 学习检查点
+
+- [ ] 能够按职责分层组织类型文件（全局类型 / 模块类型 / 契约类型）
+- [ ] 掌握 `import type` / `export type` 的使用时机
+- [ ] 理解 `verbatimModuleSyntax` 配置的作用
+- [ ] 能够区分公共 API 类型和内部实现类型
+- [ ] 掌握桶文件（barrel file）的选择性导出策略
+- [ ] 能够设计模块间的类型契约，实现松耦合
+
+## 🚀 下一步
+
+→ [迁移策略](./03-migration-strategies.mdx)

@@ -1,12 +1,766 @@
 # 迁移策略
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍迁移策略的核心概念和实践方法。
+将现有 JavaScript 项目迁移到 TypeScript 是一个常见的工程任务。一次性全面重写既不现实也不安全，**渐进式迁移**是经过实践验证的最佳策略——让 JavaScript 和 TypeScript 共存，逐步添加类型注解，逐步收紧类型检查严格度，最终实现完整的类型覆盖。本节介绍从环境配置、JSDoc 过渡、到严格模式渐进开启的完整迁移路径。
+
+## 🎯 JavaScript 到 TypeScript 渐进迁移
+
+### 迁移路线图
+
+渐进迁移分为四个阶段，每个阶段都可以独立交付：
+
+```
+阶段 1: 基础设施
+  └─ 安装 TypeScript、配置 tsconfig.json（allowJs: true）
+
+阶段 2: JSDoc 类型注解
+  └─ 在 .js 文件中用 JSDoc 添加类型（checkJs: true）
+
+阶段 3: 逐文件转换
+  └─ 将 .js 文件逐一重命名为 .ts/.tsx，修复类型错误
+
+阶段 4: 严格模式
+  └─ 逐步开启 strict 系列选项，消除隐式 any
+```
+
+### 阶段 1：基础设施搭建
+
+初始化 TypeScript 环境，确保不影响现有 JavaScript 代码的运行：
+
+```bash
+# 安装 TypeScript
+npm install --save-dev typescript
+
+# 生成初始 tsconfig.json
+npx tsc --init
+```
+
+配置一个**最宽松**的初始 `tsconfig.json`，允许 JS 和 TS 共存：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+
+    "allowJs": true,
+    "checkJs": false,
+
+    "strict": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+关键配置说明：
+- **`allowJs: true`**：允许 TypeScript 编译器处理 `.js` 文件
+- **`checkJs: false`**：暂不检查 JS 文件的类型（阶段 2 开启）
+- **`strict: false`**：暂不开启严格模式（阶段 4 逐步开启）
+- **`noEmit: true`**：如果使用 Vite/Rspack 等打包工具，TypeScript 只做类型检查
+
+## 🎯 allowJs 与 checkJs
+
+### allowJs：JS/TS 共存
+
+`allowJs: true` 让 TypeScript 编译器接受 `.js` 文件作为输入。此时可以在项目中混合使用 `.js` 和 `.ts` 文件：
+
+```ts
+// src/utils/math.js —— 保持为 JS 文件
+export function add(a, b) {
+  return a + b;
+}
+
+export function multiply(a, b) {
+  return a * b;
+}
+```
+
+```ts
+// src/calculator.ts —— 新文件或已迁移的文件
+// 可以直接导入 JS 模块
+import { add, multiply } from "./utils/math";
+
+// TypeScript 会把 JS 导出的类型推断为 any（未开启 checkJs 时）
+const result = add(2, 3);
+console.log(result); // 5
+
+// 新写的 TS 代码享有完整的类型检查
+function calculate(operation: "add" | "multiply", a: number, b: number): number {
+  switch (operation) {
+    case "add":
+      return add(a, b);
+    case "multiply":
+      return multiply(a, b);
+  }
+}
+
+console.log(calculate("add", 10, 20));      // 30
+console.log(calculate("multiply", 5, 6));   // 30
+```
+
+### checkJs：检查 JS 文件的类型
+
+开启 `checkJs: true` 后，TypeScript 会对 `.js` 文件进行类型推断和检查。这是迁移的第二阶段，可以在**不重命名文件**的情况下获得类型安全：
+
+```json
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true
+  }
+}
+```
+
+如果某些 JS 文件暂时不想被检查，可以在文件顶部添加注释：
+
+```js
+// @ts-nocheck
+// 这个文件暂时跳过类型检查
+
+export function legacyFunction(data) {
+  // 复杂的遗留逻辑...
+  return data.process();
+}
+```
+
+反过来，如果 `checkJs` 全局关闭，但想对某个 JS 文件单独开启检查：
+
+```js
+// @ts-check
+// 这个文件开启类型检查
+
+/**
+ * @param {number} a
+ * @param {number} b
+ * @returns {number}
+ */
+export function add(a, b) {
+  return a + b;
+}
+
+// 有了 @ts-check 和 JSDoc，TypeScript 会报错：
+// add("hello", "world"); // Error: Argument of type 'string' is not assignable to parameter of type 'number'
+```
+
+## 🎯 JSDoc 类型注解
+
+JSDoc 是在不修改文件扩展名的前提下为 JavaScript 添加类型信息的最佳方式。TypeScript 完全理解 JSDoc 类型注解。
+
+### 基本类型注解
+
+```js
+// @ts-check
+
+// 变量类型
+/** @type {string} */
+let username = "Alice";
+
+/** @type {number} */
+let age = 30;
+
+/** @type {boolean} */
+let isActive = true;
+
+/** @type {string[]} */
+let tags = ["typescript", "javascript"];
+
+/** @type {{ name: string, email: string }} */
+let user = { name: "Alice", email: "alice@example.com" };
+
+console.log(username, age, isActive, tags, user);
+```
+
+### 函数类型注解
+
+```js
+// @ts-check
+
+/**
+ * 计算两个数的和
+ * @param {number} a - 第一个数
+ * @param {number} b - 第二个数
+ * @returns {number} 两数之和
+ */
+function add(a, b) {
+  return a + b;
+}
+
+/**
+ * 格式化用户名
+ * @param {string} firstName
+ * @param {string} [lastName] - 可选参数
+ * @returns {string}
+ */
+function formatName(firstName, lastName) {
+  if (lastName) {
+    return `${firstName} ${lastName}`;
+  }
+  return firstName;
+}
+
+console.log(add(1, 2));             // 3
+console.log(formatName("Alice"));   // Alice
+console.log(formatName("Bob", "Smith")); // Bob Smith
+```
+
+### 复杂类型和泛型
+
+```js
+// @ts-check
+
+/**
+ * @typedef {Object} UserProfile
+ * @property {string} id
+ * @property {string} name
+ * @property {string} email
+ * @property {"admin" | "editor" | "viewer"} role
+ * @property {Date} createdAt
+ */
+
+/**
+ * @typedef {Object} ApiResponse
+ * @template T
+ * @property {boolean} success
+ * @property {T} data
+ * @property {string} [message]
+ */
+
+/**
+ * 获取用户信息
+ * @param {string} userId
+ * @returns {Promise<ApiResponse<UserProfile>>}
+ */
+async function getUser(userId) {
+  // 模拟 API 调用
+  return {
+    success: true,
+    data: {
+      id: userId,
+      name: "Alice",
+      email: "alice@example.com",
+      role: "admin",
+      createdAt: new Date(),
+    },
+  };
+}
+
+/**
+ * 通用的数组过滤函数
+ * @template T
+ * @param {T[]} items
+ * @param {(item: T) => boolean} predicate
+ * @returns {T[]}
+ */
+function filterItems(items, predicate) {
+  return items.filter(predicate);
+}
+
+// 使用
+getUser("user-1").then((response) => {
+  if (response.success) {
+    console.log(`User: ${response.data.name} (${response.data.role})`);
+  }
+});
+
+const numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const evenNumbers = filterItems(numbers, (n) => n % 2 === 0);
+console.log("Even numbers:", evenNumbers); // [2, 4, 6, 8, 10]
+```
+
+### 类的 JSDoc 类型注解
+
+```js
+// @ts-check
+
+/**
+ * @typedef {Object} EventData
+ * @property {string} type
+ * @property {unknown} payload
+ * @property {Date} timestamp
+ */
+
+class EventBus {
+  constructor() {
+    /** @type {Map<string, Set<(data: EventData) => void>>} */
+    this.listeners = new Map();
+  }
+
+  /**
+   * @param {string} event
+   * @param {(data: EventData) => void} handler
+   * @returns {() => void} 取消订阅函数
+   */
+  on(event, handler) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event).add(handler);
+
+    return () => {
+      this.listeners.get(event)?.delete(handler);
+    };
+  }
+
+  /**
+   * @param {string} type
+   * @param {unknown} payload
+   */
+  emit(type, payload) {
+    /** @type {EventData} */
+    const data = { type, payload, timestamp: new Date() };
+    const handlers = this.listeners.get(type);
+    if (handlers) {
+      for (const handler of handlers) {
+        handler(data);
+      }
+    }
+  }
+}
+
+// 使用
+const bus = new EventBus();
+const unsubscribe = bus.on("user:login", (data) => {
+  console.log(`Event: ${data.type}`, data.payload);
+});
+
+bus.emit("user:login", { userId: "123", name: "Alice" });
+// Event: user:login { userId: "123", name: "Alice" }
+
+unsubscribe();
+bus.emit("user:login", { userId: "456" });
+// 不会输出，已取消订阅
+```
+
+## 🎯 严格模式渐进开启
+
+### strict 选项解析
+
+`strict: true` 实际上是一组选项的快捷方式。渐进式迁移时，应逐个开启这些选项：
+
+```json
+{
+  "compilerOptions": {
+    "strict": false,
+
+    "strictNullChecks": true,
+    "noImplicitAny": false,
+    "strictFunctionTypes": false,
+    "strictBindCallApply": false,
+    "strictPropertyInitialization": false,
+    "noImplicitThis": false,
+    "alwaysStrict": false,
+    "useUnknownInCatchVariables": false
+  }
+}
+```
+
+### 推荐的开启顺序
+
+按照从影响最小到最大的顺序逐步开启：
+
+```ts
+// === 第 1 步：strictNullChecks ===
+// 影响：null 和 undefined 不再自动兼容其他类型
+// 这是最重要的严格选项，建议最先开启
+
+function getUser(id: string): { name: string } | null {
+  if (id === "unknown") return null;
+  return { name: "Alice" };
+}
+
+const user = getUser("123");
+// 开启 strictNullChecks 后，必须先检查 null
+if (user !== null) {
+  console.log(user.name); // 安全
+}
+
+// === 第 2 步：noImplicitAny ===
+// 影响：禁止隐式 any，所有变量和参数必须有明确的类型
+
+// 开启前：参数 x 隐式为 any，不报错
+// function process(x) { return x.toString(); }
+
+// 开启后：必须标注类型
+function process(x: unknown): string {
+  if (typeof x === "string") return x;
+  if (typeof x === "number") return String(x);
+  return JSON.stringify(x);
+}
+
+console.log(process(42));       // "42"
+console.log(process("hello"));  // "hello"
+
+// === 第 3 步：strictFunctionTypes ===
+// 影响：函数参数类型检查更严格（逆变检查）
+
+interface Animal {
+  name: string;
+}
+
+interface Dog extends Animal {
+  breed: string;
+}
+
+// 开启 strictFunctionTypes 后：
+type AnimalHandler = (animal: Animal) => void;
+
+const dogHandler = (dog: Dog) => {
+  console.log(dog.breed);
+};
+
+// 在严格模式下，不能将 (Dog) => void 赋给 (Animal) => void
+// const handler: AnimalHandler = dogHandler; // Error!
+
+// 正确做法：
+const safeHandler: AnimalHandler = (animal) => {
+  console.log(animal.name);
+};
+safeHandler({ name: "Buddy" });
+
+// === 第 4 步：strictBindCallApply ===
+// 影响：bind、call、apply 的参数类型检查更严格
+
+function greet(name: string, age: number): string {
+  return `Hello, ${name}! You are ${age} years old.`;
+}
+
+// 开启后，call/apply 参数类型会被严格检查
+console.log(greet.call(null, "Alice", 30));
+// 正确
+
+// greet.call(null, "Alice", "thirty");
+// Error: Argument of type 'string' is not assignable to parameter of type 'number'
+
+// === 第 5 步：strictPropertyInitialization ===
+// 影响：类属性必须在构造函数中初始化
+
+class UserProfile {
+  name: string;
+  email: string;
+  // age: number; // Error! 未在构造函数中初始化
+
+  // 使用确定赋值断言标记那些在构造函数外初始化的属性
+  age!: number;
+
+  constructor(name: string, email: string) {
+    this.name = name;
+    this.email = email;
+    // this.age 将在 init() 中赋值
+  }
+
+  init(age: number) {
+    this.age = age;
+  }
+}
+
+const profile = new UserProfile("Alice", "alice@example.com");
+profile.init(30);
+console.log(`${profile.name}, ${profile.age}`); // Alice, 30
+
+// === 第 6 步：useUnknownInCatchVariables ===
+// 影响：catch 子句的错误变量类型为 unknown 而非 any
+
+function riskyOperation(): void {
+  throw new Error("Something went wrong");
+}
+
+try {
+  riskyOperation();
+} catch (error) {
+  // 开启后，error 是 unknown，必须类型检查后使用
+  if (error instanceof Error) {
+    console.log("Error message:", error.message);
+  } else {
+    console.log("Unknown error:", String(error));
+  }
+}
+```
+
+### 使用 @ts-expect-error 管理迁移债务
+
+在迁移过程中，某些类型错误可能暂时无法修复。使用 `@ts-expect-error` 来标记这些已知问题：
+
+```ts
+// 迁移中的已知类型问题，计划在下个迭代修复
+interface LegacyApi {
+  fetch(url: string): Promise<unknown>;
+}
+
+const legacyApi: LegacyApi = {
+  async fetch(url) {
+    console.log("Fetching:", url);
+    return {};
+  },
+};
+
+async function loadData() {
+  const data = await legacyApi.fetch("/api/data");
+
+  // @ts-expect-error 遗留代码，data 类型为 unknown，需要后续添加类型断言
+  const items = data.items;
+
+  console.log(items);
+}
+
+loadData();
+```
 
 :::tip
-本文档正在编写中，敬请期待。
+`@ts-expect-error` 比 `@ts-ignore` 更好，因为当底层类型问题被修复后，`@ts-expect-error` 会变成一个错误（提醒你移除这行注释），而 `@ts-ignore` 会永远沉默。
 :::
+
+## 📝 实际应用示例
+
+### 完整的迁移示例
+
+将一个 JavaScript 模块逐步迁移到 TypeScript：
+
+```js
+// === 阶段 1: 原始 JavaScript 代码 (src/store.js) ===
+// @ts-check
+
+/**
+ * @template T
+ * @typedef {Object} StoreOptions
+ * @property {T} initialState
+ * @property {string} [name]
+ */
+
+/**
+ * @template T
+ * @typedef {(state: T) => void} Subscriber
+ */
+
+/**
+ * 简单的状态管理器
+ * @template T
+ */
+class Store {
+  /**
+   * @param {StoreOptions<T>} options
+   */
+  constructor(options) {
+    /** @type {T} */
+    this.state = options.initialState;
+    /** @type {string} */
+    this.name = options.name ?? "store";
+    /** @type {Set<Subscriber<T>>} */
+    this.subscribers = new Set();
+  }
+
+  /**
+   * @returns {T}
+   */
+  getState() {
+    return this.state;
+  }
+
+  /**
+   * @param {Partial<T>} partial
+   */
+  setState(partial) {
+    this.state = { ...this.state, ...partial };
+    this.notify();
+  }
+
+  /**
+   * @param {Subscriber<T>} fn
+   * @returns {() => void}
+   */
+  subscribe(fn) {
+    this.subscribers.add(fn);
+    return () => this.subscribers.delete(fn);
+  }
+
+  notify() {
+    for (const fn of this.subscribers) {
+      fn(this.state);
+    }
+  }
+}
+
+// 测试 JSDoc 阶段的代码
+const counterStore = new Store({ initialState: { count: 0 }, name: "counter" });
+
+const unsubscribe = counterStore.subscribe((state) => {
+  console.log(`[${counterStore.name}] Count: ${state.count}`);
+});
+
+counterStore.setState({ count: 1 });
+// [counter] Count: 1
+
+counterStore.setState({ count: 2 });
+// [counter] Count: 2
+
+unsubscribe();
+counterStore.setState({ count: 3 });
+// 不会输出，已取消订阅
+```
+
+```ts
+// === 阶段 2: 迁移为 TypeScript (src/store.ts) ===
+// 将 .js 重命名为 .ts，移除 JSDoc，添加 TypeScript 类型
+
+interface StoreOptions<T> {
+  initialState: T;
+  name?: string;
+}
+
+type Subscriber<T> = (state: T) => void;
+type Updater<T> = (state: T) => Partial<T>;
+
+class TypedStore<T extends Record<string, unknown>> {
+  private state: T;
+  private readonly name: string;
+  private subscribers = new Set<Subscriber<T>>();
+
+  constructor(options: StoreOptions<T>) {
+    this.state = options.initialState;
+    this.name = options.name ?? "store";
+  }
+
+  getState(): Readonly<T> {
+    return this.state;
+  }
+
+  setState(partial: Partial<T>): void {
+    this.state = { ...this.state, ...partial };
+    this.notify();
+  }
+
+  update(updater: Updater<T>): void {
+    const partial = updater(this.state);
+    this.setState(partial);
+  }
+
+  subscribe(fn: Subscriber<T>): () => void {
+    this.subscribers.add(fn);
+    // 立即通知当前状态
+    fn(this.state);
+    return () => this.subscribers.delete(fn);
+  }
+
+  private notify(): void {
+    for (const fn of this.subscribers) {
+      fn(this.state);
+    }
+  }
+}
+
+// TypeScript 版本的使用
+interface TodoState {
+  items: Array<{ id: number; text: string; done: boolean }>;
+  filter: "all" | "active" | "completed";
+}
+
+const todoStore = new TypedStore<TodoState>({
+  initialState: {
+    items: [],
+    filter: "all",
+  },
+  name: "todos",
+});
+
+todoStore.subscribe((state) => {
+  const activeCount = state.items.filter((item) => !item.done).length;
+  console.log(`[${state.filter}] ${state.items.length} items, ${activeCount} active`);
+});
+// [all] 0 items, 0 active
+
+todoStore.update((state) => ({
+  items: [
+    ...state.items,
+    { id: 1, text: "Learn TypeScript", done: false },
+    { id: 2, text: "Write docs", done: false },
+  ],
+}));
+// [all] 2 items, 2 active
+
+todoStore.update((state) => ({
+  items: state.items.map((item) =>
+    item.id === 1 ? { ...item, done: true } : item,
+  ),
+}));
+// [all] 2 items, 1 active
+
+todoStore.setState({ filter: "active" });
+// [active] 2 items, 1 active
+
+// 类型安全：以下会报错
+// @ts-expect-error filter 必须是指定的字面量类型
+todoStore.setState({ filter: "invalid" });
+```
+
+### 迁移检查清单
+
+在每次迁移一个文件时，遵循以下检查清单：
+
+```ts
+// 迁移单个文件的步骤：
+
+// 1. 将 .js 重命名为 .ts（或 .jsx → .tsx）
+// 2. 移除 @ts-check 和 @ts-nocheck 注释
+// 3. 将 JSDoc 类型注解转换为 TypeScript 类型注解
+// 4. 添加缺失的类型注解（参数、返回值）
+// 5. 修复 TypeScript 报告的类型错误
+// 6. 添加必要的 import type 语句
+// 7. 运行 tsc --noEmit 确认无错误
+// 8. 运行测试确认功能正常
+
+// 迁移优先级建议：
+// 1. 工具函数/纯函数 → 最容易迁移，依赖少
+// 2. 类型定义/接口 → 创建 types.ts 集中管理
+// 3. 数据层（API、数据库） → 影响广泛但结构清晰
+// 4. 业务逻辑层 → 依赖多，可能需要逐步处理
+// 5. UI 组件 → 通常是最复杂的，放到最后
+
+// 进度跟踪示例：
+// src/
+// ├── utils/
+// │   ├── math.ts        ✅ 已迁移
+// │   ├── string.ts      ✅ 已迁移
+// │   └── date.js        ⏳ 待迁移
+// ├── api/
+// │   ├── client.ts      ✅ 已迁移
+// │   └── endpoints.js   ⏳ 待迁移
+// └── components/
+//     ├── Button.jsx      ⏳ 待迁移
+//     └── Modal.jsx       ⏳ 待迁移
+```
+
+## 🔗 相关概念
+
+- **[类型性能优化](./01-type-performance.mdx)**：迁移后应关注类型复杂度对编译性能的影响
+- **[代码组织最佳实践](./02-code-organization.mdx)**：迁移是重新组织类型文件结构的好时机
+- **[品牌类型](../01-advanced-type-patterns/01-branded-types.mdx)**：迁移完成后可以引入品牌类型来增强类型安全
+
+## 📝 学习检查点
+
+- [ ] 理解 `allowJs` 和 `checkJs` 的作用和区别
+- [ ] 能够使用 JSDoc 为 JavaScript 文件添加类型注解
+- [ ] 掌握 `@typedef`、`@template`、`@param`、`@returns` 等 JSDoc 标签
+- [ ] 理解 `strict` 选项包含的子选项及推荐的开启顺序
+- [ ] 能够使用 `@ts-expect-error` 管理迁移债务
+- [ ] 能够制定并执行一个渐进式迁移计划
+
+## 🚀 下一步
+
+恭喜你完成了 TypeScript 第五阶段的全部学习！接下来可以继续学习：
+
+→ [第六阶段：TypeScript 生态与工程化](/typescript/06-ecosystem-engineering) （即将推出）

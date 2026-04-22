@@ -1,12 +1,454 @@
 # 类型性能优化
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍类型性能优化的核心概念和实践方法。
+TypeScript 的类型系统功能强大，但过度复杂的类型也会显著影响编译速度和 IDE 响应性能。随着项目规模增长和类型体操的深入使用，理解类型系统的性能特征变得尤为重要。本节介绍类型性能的常见陷阱和优化策略，帮助你在类型安全和编译性能之间找到最佳平衡点。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 避免过度复杂的类型
+
+### 过度嵌套的条件类型
+
+条件类型嵌套过深会导致类型检查器进行指数级的计算：
+
+```ts
+// ❌ 不好：深度嵌套的条件类型
+type DeepCheck<T> =
+  T extends string
+    ? T extends `${infer First}${infer Rest}`
+      ? First extends "a"
+        ? Rest extends ""
+          ? "single-a"
+          : Rest extends `${infer _}${infer __}`
+            ? "starts-with-a"
+            : "a-and-one"
+        : "not-a"
+      : "empty"
+    : "not-string";
+
+// ✅ 更好：拆分为多个简单的类型
+type IsString<T> = T extends string ? true : false;
+type StartsWithA<T extends string> = T extends `a${infer _Rest}` ? true : false;
+type IsSingleChar<T extends string> = T extends `${infer _First}${infer Rest}`
+  ? Rest extends ""
+    ? true
+    : false
+  : false;
+```
+
+### 避免不必要的分布式条件类型
+
+分布式条件类型会对联合类型的每个成员独立求值，当联合类型成员很多时会显著影响性能：
+
+```ts
+// ❌ 不好：对大联合类型进行分布式展开
+type AllHTMLElements =
+  | "div" | "span" | "p" | "a" | "button" | "input"
+  | "form" | "table" | "tr" | "td" | "th" | "ul" | "li"
+  | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+  | "img" | "video" | "audio" | "canvas" | "svg";
+
+// 分布式条件类型：会对每个成员独立求值
+type ElementProps<T extends AllHTMLElements> = T extends "input"
+  ? { type: string; value: string }
+  : T extends "a"
+    ? { href: string }
+    : { children: string };
+
+// ✅ 更好：使用映射查找表，一次性定义
+interface ElementPropsMap {
+  input: { type: string; value: string };
+  a: { href: string };
+  div: { children: string };
+  span: { children: string };
+  p: { children: string };
+  // ... 其他元素
+}
+
+type BetterElementProps<T extends keyof ElementPropsMap> = ElementPropsMap[T];
+```
+
+### 简化联合类型
+
+大量成员的联合类型本身就会影响性能。考虑使用更宽泛的类型或分组：
+
+```ts
+// ❌ 不好：100+ 成员的联合类型
+type HttpStatusCode =
+  | 100 | 101 | 102
+  | 200 | 201 | 202 | 203 | 204 | 205 | 206
+  | 300 | 301 | 302 | 303 | 304 | 305 | 307 | 308
+  | 400 | 401 | 402 | 403 | 404 | 405 | 406 | 407 | 408 | 409
+  | 410 | 411 | 412 | 413 | 414 | 415 | 416 | 417 | 418 | 421 | 422
+  | 500 | 501 | 502 | 503 | 504 | 505;
+
+// ✅ 更好：按范围分组，降低联合成员数
+type InformationalStatus = 100 | 101 | 102;
+type SuccessStatus = 200 | 201 | 202 | 204;
+type RedirectStatus = 301 | 302 | 304 | 307 | 308;
+type ClientErrorStatus = 400 | 401 | 403 | 404 | 405 | 409 | 422;
+type ServerErrorStatus = 500 | 501 | 502 | 503 | 504;
+
+// 在需要的地方才组合
+type CommonStatus = SuccessStatus | ClientErrorStatus | ServerErrorStatus;
+```
+
+## 🎯 类型实例化深度限制
+
+TypeScript 编译器对递归类型有实例化深度限制（默认约 50 层）。超过限制会报错或导致编译极慢。
+
+### 递归类型的深度问题
+
+```ts
+// ❌ 不好：无限制的递归类型
+type InfiniteDeepReadonly<T> = {
+  readonly [K in keyof T]: T[K] extends object
+    ? InfiniteDeepReadonly<T[K]>
+    : T[K];
+};
+
+// 对于深层嵌套的对象，这会导致编译器超时
+
+// ✅ 更好：限制递归深度
+type DeepReadonly<T, Depth extends number[] = []> =
+  Depth["length"] extends 10
+    ? T  // 达到最大深度，停止递归
+    : T extends object
+      ? { readonly [K in keyof T]: DeepReadonly<T[K], [...Depth, 0]> }
+      : T;
+
+// 使用示例
+interface Config {
+  database: {
+    host: string;
+    port: number;
+    credentials: {
+      username: string;
+      password: string;
+    };
+  };
+}
+
+type ReadonlyConfig = DeepReadonly<Config>;
+
+const config: ReadonlyConfig = {
+  database: {
+    host: "localhost",
+    port: 5432,
+    credentials: {
+      username: "admin",
+      password: "secret",
+    },
+  },
+};
+
+// @ts-expect-error - 所有层级都是 readonly
+config.database.credentials.username = "hacker";
+```
+
+### 避免递归展开字符串类型
+
+模板字面量类型的递归处理特别容易触发深度限制：
+
+```ts
+// ❌ 不好：递归拆解任意长度字符串
+type ReverseString<S extends string> =
+  S extends `${infer First}${infer Rest}`
+    ? `${ReverseString<Rest>}${First}`
+    : S;
+
+// 对于较长的字符串字面量类型，会触发深度限制
+
+// ✅ 更好：对于运行时操作，使用函数而不是类型
+function reverseString(str: string): string {
+  return str.split("").reverse().join("");
+}
+
+console.log(reverseString("hello")); // "olleh"
+
+// 类型层面只处理简单的、有限的场景
+type CamelToKebab<S extends string> =
+  S extends `${infer First}${infer Rest}`
+    ? First extends Uppercase<First>
+      ? `-${Lowercase<First>}${CamelToKebab<Rest>}`
+      : `${First}${CamelToKebab<Rest>}`
+    : S;
+
+type TestKebab = CamelToKebab<"backgroundColor">;
+// "background-color"
+```
+
+## 🎯 条件类型性能陷阱
+
+### 避免条件类型中的过度推断
+
+`infer` 关键字虽然强大，但每次使用都会增加类型检查器的负担：
+
+```ts
+// ❌ 不好：在一个条件类型中使用过多 infer
+type ParseRoute<S extends string> =
+  S extends `${infer _Method} ${infer _Path}?${infer _Query}#${infer _Hash}`
+    ? { hasQuery: true; hasHash: true }
+    : S extends `${infer _Method} ${infer _Path}?${infer _Query}`
+      ? { hasQuery: true; hasHash: false }
+      : S extends `${infer _Method} ${infer _Path}#${infer _Hash}`
+        ? { hasQuery: false; hasHash: true }
+        : S extends `${infer _Method} ${infer _Path}`
+          ? { hasQuery: false; hasHash: false }
+          : never;
+
+// ✅ 更好：分步提取，每步只做一件事
+type HasQuery<S extends string> = S extends `${infer _}?${infer _}` ? true : false;
+type HasHash<S extends string> = S extends `${infer _}#${infer _}` ? true : false;
+
+type RouteInfo<S extends string> = {
+  hasQuery: HasQuery<S>;
+  hasHash: HasHash<S>;
+};
+
+type TestRoute = RouteInfo<"GET /users?page=1#section">;
+// { hasQuery: true; hasHash: true }
+```
+
+### 缓存中间类型结果
+
+将频繁使用的复杂类型结果存储为类型别名，避免重复计算：
+
+```ts
+// ❌ 不好：重复计算相同的类型表达式
+interface ApiResponse<T> {
+  data: T extends Array<infer U> ? U[] : T;
+  meta: {
+    count: T extends Array<infer U> ? number : 1;
+    itemType: T extends Array<infer U> ? U : T;
+  };
+}
+
+// ✅ 更好：提取中间结果，避免重复推断
+type UnwrapArray<T> = T extends Array<infer U> ? U : T;
+type IsArray<T> = T extends unknown[] ? true : false;
+
+interface BetterApiResponse<T> {
+  data: T;
+  meta: {
+    count: IsArray<T> extends true ? number : 1;
+    itemType: UnwrapArray<T>;
+  };
+}
+
+type TestResponse = BetterApiResponse<string[]>;
+// {
+//   data: string[];
+//   meta: { count: number; itemType: string };
+// }
+```
+
+## 🎯 使用 interface 替代 type 的场景
+
+`interface` 和 `type` 在大多数场景下可以互换，但在性能上有重要差异。
+
+### interface 的性能优势
+
+TypeScript 编译器对 `interface` 有特殊的优化：
+- `interface` 创建了一个**命名类型**，编译器可以缓存并复用其计算结果
+- `type` 别名每次使用时都会被展开重新计算
+- `interface` 支持声明合并，更适合扩展
+
+```ts
+// ✅ 推荐：对象结构使用 interface
+interface UserProfile {
+  id: number;
+  name: string;
+  email: string;
+  preferences: UserPreferences;
+}
+
+interface UserPreferences {
+  theme: "light" | "dark";
+  language: string;
+  notifications: boolean;
+}
+
+// ✅ 推荐：interface 继承比交叉类型更高效
+interface AdminProfile extends UserProfile {
+  permissions: string[];
+  lastLogin: Date;
+}
+
+// ❌ 不推荐：交叉类型在每次使用时都会重新计算
+type AdminProfileType = UserProfile & {
+  permissions: string[];
+  lastLogin: Date;
+};
+```
+
+### type 不可替代的场景
+
+以下场景必须使用 `type`，`interface` 无法实现：
+
+```ts
+// 联合类型：只能用 type
+type Status = "active" | "inactive" | "suspended";
+
+// 元组类型：只能用 type
+type Coordinate = [number, number];
+
+// 映射类型：只能用 type
+type Readonly<T> = { readonly [K in keyof T]: T[K] };
+
+// 条件类型：只能用 type
+type NonNullable<T> = T extends null | undefined ? never : T;
+
+// 工具类型组合：只能用 type
+type PartialPick<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
+```
+
+### 实践建议
+
+```ts
+// ✅ 最佳实践总结
+
+// 1. 对象形状 → interface
+interface ApiClient {
+  get(url: string): Promise<unknown>;
+  post(url: string, body: unknown): Promise<unknown>;
+}
+
+// 2. 联合/交叉/条件/映射 → type
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+type ResponseOf<T> = T extends (...args: unknown[]) => Promise<infer R> ? R : never;
+
+// 3. 函数类型 → type（更简洁）
+type EventHandler = (event: Event) => void;
+
+// 4. 需要扩展的公共 API → interface
+interface PluginOptions {
+  name: string;
+  version: string;
+}
+
+// 其他模块可以扩展
+// declare module './plugin' {
+//   interface PluginOptions {
+//     debug?: boolean;
+//   }
+// }
+```
+
+## 📝 实际应用示例
+
+### 诊断类型性能问题
+
+使用 TypeScript 编译器内置的性能追踪工具来定位类型性能瓶颈：
+
+```bash
+# 生成详细的编译性能跟踪
+npx tsc --generateTrace ./trace-output
+
+# trace-output 目录会包含：
+# - trace.json: 可用 Chrome DevTools Performance 面板打开
+# - types.json: 类型实例化信息
+```
+
+### 编写性能友好的工具类型
+
+将前面的优化原则综合应用于实际的工具类型设计：
+
+```ts
+// 性能友好的 DeepPartial 实现
+type DeepPartial<T> = T extends object
+  ? T extends Function
+    ? T  // 函数类型不递归
+    : T extends Array<infer U>
+      ? Array<DeepPartial<U>>  // 数组特殊处理
+      : { [K in keyof T]?: DeepPartial<T[K]> }
+  : T;
+
+// 性能友好的类型安全 pick
+type StrictPick<T, K extends keyof T> = {
+  [P in K]: T[P];
+};
+
+// 性能友好的 merge 类型：使用 interface 继承而非交叉类型
+interface BaseConfig {
+  host: string;
+  port: number;
+}
+
+interface DatabaseConfig extends BaseConfig {
+  database: string;
+  ssl: boolean;
+}
+
+interface AppConfig extends DatabaseConfig {
+  logLevel: "debug" | "info" | "warn" | "error";
+  maxRetries: number;
+}
+
+// 验证这些类型可以正常使用
+const appConfig: DeepPartial<AppConfig> = {
+  host: "localhost",
+  logLevel: "debug",
+  // 其他字段可选
+};
+
+console.log(appConfig.host);     // "localhost"
+console.log(appConfig.logLevel); // "debug"
+console.log(appConfig.port);     // undefined
+
+// StrictPick 使用
+type HostAndPort = StrictPick<AppConfig, "host" | "port">;
+const serverAddr: HostAndPort = { host: "0.0.0.0", port: 8080 };
+console.log(`Server: ${serverAddr.host}:${serverAddr.port}`);
+// Server: 0.0.0.0:8080
+```
+
+### 类型性能检查清单
+
+在代码审查中关注以下类型性能信号：
+
+```ts
+// 🚩 红旗信号：可能有性能问题的类型模式
+
+// 1. 递归深度超过 5 层的类型
+// 2. 联合类型成员超过 50 个
+// 3. 映射类型中嵌套条件类型
+// 4. 模板字面量类型与大联合类型的组合
+// 5. 交叉类型链超过 3 层
+
+// ✅ 改善措施
+// 1. 限制递归深度，或改用运行时函数
+// 2. 将大联合类型拆分为子类型
+// 3. 将条件逻辑提取为独立的类型别名
+// 4. 使用映射查找表替代分布式条件类型
+// 5. 使用 interface 继承替代交叉类型
+
+// 验证类型计算是否如预期
+type Assert<T extends true> = T;
+type IsEqual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+// 断言类型等价性
+type _test1 = Assert<IsEqual<StrictPick<{ a: 1; b: 2; c: 3 }, "a" | "b">, { a: 1; b: 2 }>>;
+type _test2 = Assert<IsEqual<DeepPartial<{ x: number }>, { x?: number }>>;
+```
+
+## 🔗 相关概念
+
+- **[代码组织最佳实践](./02-code-organization.mdx)**：良好的代码组织有助于减少不必要的类型重新计算
+- **[函数式编程模式](../03-design-patterns/02-fp-patterns.mdx)**：复杂的柯里化和组合类型需要关注性能
+- **[变体类型](../01-advanced-type-patterns/03-variant-types.mdx)**：ADT 的联合类型成员数量应当控制
+
+## 📝 学习检查点
+
+- [ ] 理解条件类型嵌套和分布式展开对性能的影响
+- [ ] 能够识别递归类型的深度问题并设置合理的深度限制
+- [ ] 理解 `interface` 和 `type` 在性能上的差异
+- [ ] 掌握使用映射查找表替代分布式条件类型的技巧
+- [ ] 能够使用 `--generateTrace` 诊断类型性能瓶颈
+- [ ] 能够将复杂类型拆分为可缓存的中间类型
+
+## 🚀 下一步
+
+→ [代码组织最佳实践](./02-code-organization.mdx)

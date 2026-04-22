@@ -1,12 +1,579 @@
 # 元数据反射
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍元数据反射的核心概念和实践方法。
+**元数据反射**（Metadata Reflection）是一种在运行时获取和操作类型信息的技术。JavaScript 本身缺乏运行时类型信息，但通过 `reflect-metadata` 库和装饰器的配合，我们可以在类、方法、属性上附加自定义的元数据，并在运行时读取这些信息。这是**依赖注入**（DI）、**ORM 映射**、**序列化/反序列化**等高级模式的实现基础。
 
 :::tip
-本文档正在编写中，敬请期待。
+`reflect-metadata` 是旧版 `experimentalDecorators` 生态的核心库。在 TC39 Stage 3 装饰器标准中，推荐使用 `context.metadata` 来存储元数据。本文将两种方式都进行介绍。
 :::
+
+## 🎯 reflect-metadata
+
+### 基本概念
+
+`reflect-metadata` 提供了一套 API 来在对象上定义和读取元数据。需要先安装：
+
+```bash
+npm install reflect-metadata
+```
+
+在项目入口导入：
+
+```ts
+import "reflect-metadata";
+```
+
+同时需要在 `tsconfig.json` 中开启：
+
+```json
+{
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  }
+}
+```
+
+### 元数据 API
+
+`reflect-metadata` 提供的核心 API：
+
+```ts
+import "reflect-metadata";
+
+class Example {
+  name: string = "test";
+}
+
+// 在类上定义元数据
+Reflect.defineMetadata("role", "entity", Example);
+
+// 在实例的属性上定义元数据
+const instance = new Example();
+Reflect.defineMetadata("column", { type: "varchar" }, instance, "name");
+
+// 读取元数据
+console.log(Reflect.getMetadata("role", Example));
+// "entity"
+
+console.log(Reflect.getMetadata("column", instance, "name"));
+// { type: "varchar" }
+
+// 检查元数据是否存在
+console.log(Reflect.hasMetadata("role", Example));
+// true
+
+// 获取所有元数据键
+console.log(Reflect.getMetadataKeys(Example));
+// ["role"]
+```
+
+### 装饰器 + 元数据
+
+在实际使用中，元数据通常通过装饰器来附加：
+
+```ts
+import "reflect-metadata";
+
+// 实体标记装饰器
+function Entity(tableName: string) {
+  return function (target: Function) {
+    Reflect.defineMetadata("entity:table", tableName, target);
+  };
+}
+
+// 列标记装饰器
+function Column(options: { type: string; nullable?: boolean }) {
+  return function (target: Object, propertyKey: string) {
+    // 获取已有的列列表，或创建新列表
+    const columns: string[] =
+      Reflect.getMetadata("entity:columns", target.constructor) ?? [];
+    columns.push(propertyKey);
+    Reflect.defineMetadata("entity:columns", columns, target.constructor);
+
+    // 存储列的配置
+    Reflect.defineMetadata("column:options", options, target, propertyKey);
+  };
+}
+
+// 主键装饰器
+function PrimaryKey() {
+  return function (target: Object, propertyKey: string) {
+    Reflect.defineMetadata("entity:primaryKey", propertyKey, target.constructor);
+  };
+}
+
+// 使用装饰器
+@Entity("users")
+class User {
+  @PrimaryKey()
+  @Column({ type: "int" })
+  id!: number;
+
+  @Column({ type: "varchar" })
+  name!: string;
+
+  @Column({ type: "varchar", nullable: true })
+  email!: string;
+}
+
+// 在运行时读取元数据
+function getEntityInfo(entityClass: Function) {
+  const tableName = Reflect.getMetadata("entity:table", entityClass);
+  const columns: string[] =
+    Reflect.getMetadata("entity:columns", entityClass) ?? [];
+  const primaryKey = Reflect.getMetadata("entity:primaryKey", entityClass);
+
+  const columnDetails = columns.map((col) => {
+    const options = Reflect.getMetadata(
+      "column:options",
+      entityClass.prototype,
+      col,
+    );
+    return { name: col, ...options };
+  });
+
+  return { tableName, primaryKey, columns: columnDetails };
+}
+
+const info = getEntityInfo(User);
+console.log(JSON.stringify(info, null, 2));
+// {
+//   "tableName": "users",
+//   "primaryKey": "id",
+//   "columns": [
+//     { "name": "id", "type": "int" },
+//     { "name": "name", "type": "varchar" },
+//     { "name": "email", "type": "varchar", "nullable": true }
+//   ]
+// }
+```
+
+## 🎯 依赖注入实现
+
+依赖注入（Dependency Injection）是元数据反射最经典的应用场景。通过装饰器和元数据，实现一个简单但完整的 DI 容器：
+
+### 基于 reflect-metadata 的 DI 容器
+
+```ts
+import "reflect-metadata";
+
+// DI 容器
+class Container {
+  private instances = new Map<string, unknown>();
+  private factories = new Map<string, () => unknown>();
+
+  // 注册单例
+  registerSingleton<T>(token: string, factory: () => T): void {
+    this.factories.set(token, factory);
+  }
+
+  // 注册已有实例
+  registerInstance<T>(token: string, instance: T): void {
+    this.instances.set(token, instance);
+  }
+
+  // 解析依赖
+  resolve<T>(token: string): T {
+    // 先检查是否已有实例
+    if (this.instances.has(token)) {
+      return this.instances.get(token) as T;
+    }
+
+    // 尝试使用工厂创建
+    const factory = this.factories.get(token);
+    if (factory) {
+      const instance = factory() as T;
+      this.instances.set(token, instance); // 缓存为单例
+      return instance;
+    }
+
+    throw new Error(`No provider found for: ${token}`);
+  }
+}
+
+// 全局容器实例
+const container = new Container();
+
+// @Injectable 装饰器：标记一个类可以被注入
+function Injectable(token: string) {
+  return function (target: Function) {
+    Reflect.defineMetadata("di:token", token, target);
+
+    // 自动注册到容器
+    container.registerSingleton(token, () => {
+      // 获取构造函数参数的依赖 token
+      const paramTokens: string[] =
+        Reflect.getMetadata("di:params", target) ?? [];
+
+      // 递归解析依赖
+      const resolvedParams = paramTokens.map((paramToken) =>
+        container.resolve(paramToken),
+      );
+
+      return new (target as new (...args: unknown[]) => unknown)(
+        ...resolvedParams,
+      );
+    });
+  };
+}
+
+// @Inject 装饰器：标记构造函数参数的依赖
+function Inject(token: string) {
+  return function (target: Object, _propertyKey: undefined, parameterIndex: number) {
+    const existingParams: string[] =
+      Reflect.getMetadata("di:params", target) ?? [];
+    existingParams[parameterIndex] = token;
+    Reflect.defineMetadata("di:params", existingParams, target);
+  };
+}
+
+// 使用示例
+
+// 日志服务
+@Injectable("Logger")
+class Logger {
+  log(message: string) {
+    console.log(`[LOG] ${message}`);
+  }
+
+  error(message: string) {
+    console.error(`[ERROR] ${message}`);
+  }
+}
+
+// 数据库服务
+@Injectable("Database")
+class Database {
+  constructor(@Inject("Logger") private logger: Logger) {}
+
+  query(sql: string): string[] {
+    this.logger.log(`Executing: ${sql}`);
+    return [`Result of: ${sql}`];
+  }
+}
+
+// 用户服务
+@Injectable("UserService")
+class UserService {
+  constructor(
+    @Inject("Database") private database: Database,
+    @Inject("Logger") private logger: Logger,
+  ) {}
+
+  getUsers(): string[] {
+    this.logger.log("Fetching all users");
+    return this.database.query("SELECT * FROM users");
+  }
+
+  createUser(name: string): string {
+    this.logger.log(`Creating user: ${name}`);
+    this.database.query(`INSERT INTO users (name) VALUES ('${name}')`);
+    return `User ${name} created`;
+  }
+}
+
+// 解析并使用
+const userService = container.resolve<UserService>("UserService");
+console.log(userService.getUsers());
+// [LOG] Fetching all users
+// [LOG] Executing: SELECT * FROM users
+// ["Result of: SELECT * FROM users"]
+
+console.log(userService.createUser("Alice"));
+// [LOG] Creating user: Alice
+// [LOG] Executing: INSERT INTO users (name) VALUES ('Alice')
+// User Alice created
+```
+
+## 🎯 装饰器与类型信息
+
+### TC39 Stage 3 中的 context.metadata
+
+在新标准装饰器中，每个装饰器上下文都提供了 `metadata` 对象，可以用来替代 `reflect-metadata`：
+
+```ts
+// 使用 TC39 Stage 3 装饰器的元数据方式
+// 不需要 reflect-metadata，不需要 experimentalDecorators
+
+const VALIDATORS = Symbol("validators");
+
+type ValidatorFn = (value: unknown) => boolean;
+
+interface ValidatorEntry {
+  fieldName: string;
+  validator: ValidatorFn;
+  message: string;
+}
+
+// 验证装饰器：利用 context.metadata 存储验证规则
+function required(
+  _target: undefined,
+  context: ClassFieldDecoratorContext,
+) {
+  const fieldName = String(context.name);
+  const validators: ValidatorEntry[] =
+    (context.metadata[VALIDATORS] as ValidatorEntry[]) ?? [];
+
+  validators.push({
+    fieldName,
+    validator: (value) => value !== null && value !== undefined && value !== "",
+    message: `${fieldName} is required`,
+  });
+
+  context.metadata[VALIDATORS] = validators;
+}
+
+function minLength(min: number) {
+  return function (
+    _target: undefined,
+    context: ClassFieldDecoratorContext,
+  ) {
+    const fieldName = String(context.name);
+    const validators: ValidatorEntry[] =
+      (context.metadata[VALIDATORS] as ValidatorEntry[]) ?? [];
+
+    validators.push({
+      fieldName,
+      validator: (value) =>
+        typeof value === "string" && value.length >= min,
+      message: `${fieldName} must be at least ${min} characters`,
+    });
+
+    context.metadata[VALIDATORS] = validators;
+  };
+}
+
+function range(min: number, max: number) {
+  return function (
+    _target: undefined,
+    context: ClassFieldDecoratorContext,
+  ) {
+    const fieldName = String(context.name);
+    const validators: ValidatorEntry[] =
+      (context.metadata[VALIDATORS] as ValidatorEntry[]) ?? [];
+
+    validators.push({
+      fieldName,
+      validator: (value) =>
+        typeof value === "number" && value >= min && value <= max,
+      message: `${fieldName} must be between ${min} and ${max}`,
+    });
+
+    context.metadata[VALIDATORS] = validators;
+  };
+}
+
+// 通用验证函数
+function validate(instance: object): { valid: boolean; errors: string[] } {
+  const metadata = (instance.constructor as any)[Symbol.metadata];
+  if (!metadata) return { valid: true, errors: [] };
+
+  const validators: ValidatorEntry[] = metadata[VALIDATORS] ?? [];
+  const errors: string[] = [];
+
+  for (const { fieldName, validator, message } of validators) {
+    const value = (instance as Record<string, unknown>)[fieldName];
+    if (!validator(value)) {
+      errors.push(message);
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+// 使用验证装饰器
+class CreateUserRequest {
+  @required
+  @minLength(2)
+  name: string;
+
+  @required
+  email: string;
+
+  @range(0, 150)
+  age: number;
+
+  constructor(name: string, email: string, age: number) {
+    this.name = name;
+    this.email = email;
+    this.age = age;
+  }
+}
+
+// 验证示例
+const validRequest = new CreateUserRequest("Alice", "alice@example.com", 30);
+console.log(validate(validRequest));
+// { valid: true, errors: [] }
+
+const invalidRequest = new CreateUserRequest("", "", 200);
+console.log(validate(invalidRequest));
+// { valid: false, errors: [
+//   "name is required",
+//   "name must be at least 2 characters",
+//   "email is required",
+//   "age must be between 0 and 150"
+// ]}
+```
+
+## 📝 实际应用示例
+
+### 声明式序列化/反序列化
+
+使用元数据装饰器实现对象与 JSON 之间的自动映射：
+
+```ts
+import "reflect-metadata";
+
+// 序列化配置
+interface SerializeOptions {
+  name?: string;
+  transform?: (value: unknown) => unknown;
+  ignore?: boolean;
+}
+
+// 装饰器：标记可序列化的字段
+function Serialize(options: SerializeOptions = {}) {
+  return function (target: Object, propertyKey: string) {
+    const fields: Map<string, SerializeOptions> =
+      Reflect.getMetadata("serialize:fields", target.constructor) ??
+      new Map();
+
+    fields.set(propertyKey, options);
+    Reflect.defineMetadata("serialize:fields", fields, target.constructor);
+  };
+}
+
+// 忽略字段
+function Ignore() {
+  return Serialize({ ignore: true });
+}
+
+// 序列化函数
+function serialize(instance: object): Record<string, unknown> {
+  const fields: Map<string, SerializeOptions> =
+    Reflect.getMetadata("serialize:fields", instance.constructor) ??
+    new Map();
+
+  const result: Record<string, unknown> = {};
+
+  for (const [propertyKey, options] of fields) {
+    if (options.ignore) continue;
+
+    const outputKey = options.name ?? propertyKey;
+    let value = (instance as Record<string, unknown>)[propertyKey];
+
+    if (options.transform) {
+      value = options.transform(value);
+    }
+
+    result[outputKey] = value;
+  }
+
+  return result;
+}
+
+// 反序列化函数
+function deserialize<T>(
+  cls: new (...args: unknown[]) => T,
+  data: Record<string, unknown>,
+): T {
+  const fields: Map<string, SerializeOptions> =
+    Reflect.getMetadata("serialize:fields", cls) ?? new Map();
+
+  const instance = Object.create(cls.prototype) as Record<string, unknown>;
+
+  for (const [propertyKey, options] of fields) {
+    if (options.ignore) continue;
+
+    const inputKey = options.name ?? propertyKey;
+    instance[propertyKey] = data[inputKey];
+  }
+
+  return instance as T;
+}
+
+// 使用示例
+class UserProfile {
+  @Serialize()
+  id!: number;
+
+  @Serialize({ name: "user_name" })
+  name!: string;
+
+  @Serialize({ name: "email_address" })
+  email!: string;
+
+  @Serialize({
+    name: "created_at",
+    transform: (value) =>
+      value instanceof Date ? value.toISOString() : value,
+  })
+  createdAt!: Date;
+
+  @Ignore()
+  passwordHash!: string;
+
+  constructor() {}
+
+  static create(
+    id: number,
+    name: string,
+    email: string,
+    passwordHash: string,
+  ): UserProfile {
+    const profile = new UserProfile();
+    profile.id = id;
+    profile.name = name;
+    profile.email = email;
+    profile.createdAt = new Date("2026-01-15T10:30:00Z");
+    profile.passwordHash = passwordHash;
+    return profile;
+  }
+}
+
+// 序列化
+const profile = UserProfile.create(1, "Alice", "alice@example.com", "hashed_pw");
+const json = serialize(profile);
+console.log(json);
+// {
+//   id: 1,
+//   user_name: "Alice",
+//   email_address: "alice@example.com",
+//   created_at: "2026-01-15T10:30:00.000Z"
+// }
+// 注意 passwordHash 被忽略了
+
+// 反序列化
+const restored = deserialize(UserProfile, {
+  id: 2,
+  user_name: "Bob",
+  email_address: "bob@example.com",
+  created_at: "2026-02-20T08:00:00Z",
+});
+console.log(restored.name);  // Bob
+console.log(restored.email); // bob@example.com
+```
+
+## 🔗 相关概念
+
+- **[装饰器](./01-decorators.mdx)**：元数据反射依赖装饰器来附加和读取元数据
+- **[OOP 设计模式](../03-design-patterns/01-oop-design-patterns.mdx)**：依赖注入是控制反转（IoC）模式的实现方式
+- **[品牌类型](../01-advanced-type-patterns/01-branded-types.mdx)**：品牌类型提供编译期安全，元数据反射提供运行时类型信息，二者互补
+
+## 📝 学习检查点
+
+- [ ] 理解元数据反射的作用和使用场景
+- [ ] 掌握 `reflect-metadata` 的基本 API（`defineMetadata`、`getMetadata`）
+- [ ] 能够通过装饰器附加和读取元数据
+- [ ] 理解依赖注入的核心原理并能实现简单的 DI 容器
+- [ ] 了解 TC39 Stage 3 装饰器中 `context.metadata` 的用法
+- [ ] 能够使用元数据实现声明式的验证、序列化等功能
+
+## 🚀 下一步
+
+→ [常用设计模式的类型实现](../03-design-patterns/01-oop-design-patterns.mdx)
