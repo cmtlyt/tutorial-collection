@@ -1,0 +1,839 @@
+# Webpack 高级配置
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+Webpack 是最成熟、功能最全面的前端构建工具，提供了强大的模块打包、代码转换、资源优化等功能。虽然配置相对复杂，但其灵活性和生态成熟度使其成为大型项目的首选。
+
+## 🎯 Webpack 核心概念
+
+### 1. Entry（入口）
+
+Webpack 的入口点，指示从哪个文件开始构建依赖图：
+
+```js
+// webpack.config.js
+const path = require('path');
+
+module.exports = {
+  entry: {
+    main: './src/index.js',
+    vendor: './src/vendor.js'
+  }
+};
+```
+
+### 2. Output（输出）
+
+配置打包后的文件输出位置和命名规则：
+
+```js
+// webpack.config.js
+const path = require('path');
+
+module.exports = {
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'js/[name].[contenthash:8].js',
+    chunkFilename: 'js/[name].[contenthash:8].chunk.js',
+    publicPath: '/',
+    clean: true
+  }
+};
+```
+
+### 3. Loader（加载器）
+
+Webpack 通过 Loader 处理非 JavaScript 文件：
+
+```js
+// webpack.config.js
+module.exports = {
+  module: {
+    rules: [
+      {
+        test: /\.(js|jsx|ts|tsx)$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'babel-loader',
+          options: {
+            cacheDirectory: true,
+            presets: [
+              ['@babel/preset-env', { targets: 'defaults' }],
+              ['@babel/preset-react', { runtime: 'automatic' }],
+              '@babel/preset-typescript'
+            ],
+            plugins: [
+              '@babel/plugin-transform-runtime',
+              'babel-plugin-macros'
+            ]
+          }
+        }
+      },
+      {
+        test: /\.css$/,
+        use: [
+          'style-loader',
+          'css-loader',
+          'postcss-loader'
+        ]
+      },
+      {
+        test: /\.module\.css$/,
+        use: [
+          'style-loader',
+          {
+            loader: 'css-loader',
+            options: {
+              modules: {
+                localIdentName: '[name]__[local]--[hash:base64:5]'
+              }
+            }
+          },
+          'postcss-loader'
+        ]
+      }
+    ]
+  }
+};
+```
+
+### 4. Plugin（插件）
+
+Plugin 用于执行范围更广的任务，从打包优化和压缩到重新定义环境中的变量：
+
+```js
+// webpack.config.js
+const HtmlWebpackPlugin = require('html-webpack-plugin');
+const MiniCssExtractPlugin = require('mini-css-extract-plugin');
+const { CleanWebpackPlugin } = require('clean-webpack-plugin');
+
+module.exports = {
+  plugins: [
+    new CleanWebpackPlugin(),
+    new HtmlWebpackPlugin({
+      template: './public/index.html',
+      filename: 'index.html',
+      minify: {
+        removeComments: true,
+        collapseWhitespace: true,
+        removeAttributeQuotes: true
+      }
+    }),
+    new MiniCssExtractPlugin({
+      filename: 'css/[name].[contenthash:8].css',
+      chunkFilename: 'css/[name].[contenthash:8].chunk.css'
+    })
+  ]
+};
+```
+
+## 🛠️ 完整配置示例
+
+### React 19 + TypeScript 配置
+
+```js
+// webpack.config.js
+const path = require('path');
+const HtmlWebpackPlugin = require('html-webpack-plugin');
+const MiniCssExtractPlugin = require('mini-css-extract-plugin');
+const { CleanWebpackPlugin } = require('clean-webpack-plugin');
+const TerserPlugin = require('terser-webpack-plugin');
+const CssMinimizerPlugin = require('css-minimizer-webpack-plugin');
+const { BundleAnalyzerPlugin } = require('webpack-bundle-analyzer');
+const ReactRefreshWebpackPlugin = require('@pmmmwh/react-refresh-webpack-plugin');
+
+const isDevelopment = process.env.NODE_ENV === 'development';
+const isProduction = process.env.NODE_ENV === 'production';
+
+module.exports = {
+  mode: isProduction ? 'production' : 'development',
+  entry: {
+    main: './src/index.tsx'
+  },
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'js/[name].[contenthash:8].js',
+    chunkFilename: 'js/[name].[contenthash:8].chunk.js',
+    publicPath: '/',
+    clean: true
+  },
+  resolve: {
+    extensions: ['.tsx', '.ts', '.jsx', '.js', '.json'],
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+      '@components': path.resolve(__dirname, './src/components'),
+      '@utils': path.resolve(__dirname, './src/utils'),
+      '@hooks': path.resolve(__dirname, './src/hooks'),
+      '@services': path.resolve(__dirname, './src/services'),
+      '@types': path.resolve(__dirname, './src/types')
+    }
+  },
+  module: {
+    rules: [
+      {
+        test: /\.(js|jsx|ts|tsx)$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'babel-loader',
+          options: {
+            cacheDirectory: true,
+            presets: [
+              ['@babel/preset-env', { 
+                targets: 'defaults',
+                modules: false
+              }],
+              ['@babel/preset-react', { 
+                runtime: 'automatic',
+                development: isDevelopment
+              }],
+              '@babel/preset-typescript'
+            ],
+            plugins: [
+              '@babel/plugin-transform-runtime',
+              isDevelopment && 'react-refresh/babel'
+            ].filter(Boolean)
+          }
+        }
+      },
+      {
+        test: /\.css$/,
+        exclude: /\.module\.css$/,
+        use: [
+          isDevelopment ? 'style-loader' : MiniCssExtractPlugin.loader,
+          'css-loader',
+          'postcss-loader'
+        ]
+      },
+      {
+        test: /\.module\.css$/,
+        use: [
+          isDevelopment ? 'style-loader' : MiniCssExtractPlugin.loader,
+          {
+            loader: 'css-loader',
+            options: {
+              modules: {
+                localIdentName: isDevelopment 
+                  ? '[name]__[local]--[hash:base64:5]'
+                  : '[hash:base64:8]'
+              }
+            }
+          },
+          'postcss-loader'
+        ]
+      },
+      {
+        test: /\.(png|jpe?g|gif|webp|svg)$/i,
+        type: 'asset',
+        parser: {
+          dataUrlCondition: {
+            maxSize: 8 * 1024
+          }
+        },
+        generator: {
+          filename: 'images/[name].[contenthash:8][ext]'
+        }
+      },
+      {
+        test: /\.(woff|woff2|eot|ttf|otf)$/i,
+        type: 'asset/resource',
+        generator: {
+          filename: 'fonts/[name].[contenthash:8][ext]'
+        }
+      }
+    ]
+  },
+  plugins: [
+    new CleanWebpackPlugin(),
+    new HtmlWebpackPlugin({
+      template: './public/index.html',
+      filename: 'index.html',
+      minify: isProduction ? {
+        removeComments: true,
+        collapseWhitespace: true,
+        removeAttributeQuotes: true,
+        minifyCSS: true,
+        minifyJS: true
+      } : false
+    }),
+    new MiniCssExtractPlugin({
+      filename: 'css/[name].[contenthash:8].css',
+      chunkFilename: 'css/[name].[contenthash:8].chunk.css'
+    }),
+    isDevelopment && new ReactRefreshWebpackPlugin(),
+    process.env.ANALYZE && new BundleAnalyzerPlugin({
+      analyzerMode: 'server',
+      analyzerPort: 8888
+    })
+  ].filter(Boolean),
+  optimization: {
+    minimize: isProduction,
+    minimizer: [
+      new TerserPlugin({
+        parallel: true,
+        terserOptions: {
+          compress: {
+            drop_console: true,
+            drop_debugger: true
+          }
+        }
+      }),
+      new CssMinimizerPlugin({
+        parallel: true
+      })
+    ],
+    splitChunks: {
+      chunks: 'all',
+      cacheGroups: {
+        vendor: {
+          test: /[\\/]node_modules[\\/]/,
+          name: 'vendors',
+          priority: 10,
+          reuseExistingChunk: true
+        },
+        react: {
+          test: /[\\/]node_modules[\\/](react|react-dom)[\\/]/,
+          name: 'react-vendor',
+          priority: 20,
+          reuseExistingChunk: true
+        },
+        common: {
+          minChunks: 2,
+          priority: 5,
+          reuseExistingChunk: true
+        }
+      }
+    },
+    runtimeChunk: {
+      name: 'runtime'
+    }
+  },
+  devServer: {
+    static: {
+      directory: path.join(__dirname, 'public')
+    },
+    hot: true,
+    port: 3000,
+    open: true,
+    historyApiFallback: true,
+    compress: true,
+    client: {
+      overlay: {
+        errors: true,
+        warnings: false
+      }
+    },
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        pathRewrite: {
+          '^/api': ''
+        }
+      }
+    }
+  },
+  performance: {
+    hints: isProduction ? 'warning' : false,
+    maxEntrypointSize: 512000,
+    maxAssetSize: 512000
+  },
+  cache: {
+    type: 'filesystem',
+    buildDependencies: {
+      config: [__filename]
+    }
+  }
+};
+```
+
+### Babel 配置
+
+```json
+// .babelrc
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "targets": {
+          "browsers": ["> 1%", "last 2 versions", "not dead"]
+        },
+        "modules": false,
+        "useBuiltIns": "usage",
+        "corejs": 3
+      }
+    ],
+    [
+      "@babel/preset-react",
+      {
+        "runtime": "automatic"
+      }
+    ],
+    "@babel/preset-typescript"
+  ],
+  "plugins": [
+    "@babel/plugin-transform-runtime",
+    "@babel/plugin-proposal-class-properties",
+    "@babel/plugin-proposal-object-rest-spread"
+  ]
+}
+```
+
+### PostCSS 配置
+
+```js
+// postcss.config.js
+module.exports = {
+  plugins: [
+    require('autoprefixer'),
+    require('cssnano')({
+      preset: 'default'
+    })
+  ]
+};
+```
+
+## 📝 实际应用示例
+
+### 1. 多页面应用配置
+
+```js
+// webpack.config.js
+const path = require('path');
+const HtmlWebpackPlugin = require('html-webpack-plugin');
+
+module.exports = {
+  entry: {
+    home: './src/pages/home/index.tsx',
+    about: './src/pages/about/index.tsx',
+    contact: './src/pages/contact/index.tsx'
+  },
+  plugins: [
+    new HtmlWebpackPlugin({
+      template: './src/pages/home/index.html',
+      filename: 'home.html',
+      chunks: ['home', 'vendor']
+    }),
+    new HtmlWebpackPlugin({
+      template: './src/pages/about/index.html',
+      filename: 'about.html',
+      chunks: ['about', 'vendor']
+    }),
+    new HtmlWebpackPlugin({
+      template: './src/pages/contact/index.html',
+      filename: 'contact.html',
+      chunks: ['contact', 'vendor']
+    })
+  ]
+};
+```
+
+### 2. 环境变量配置
+
+```js
+// webpack.config.js
+const webpack = require('webpack');
+const dotenv = require('dotenv');
+
+const env = dotenv.config().parsed;
+const envKeys = Object.keys(env).reduce((prev, next) => {
+  prev[`process.env.${next}`] = JSON.stringify(env[next]);
+  return prev;
+}, {});
+
+module.exports = {
+  plugins: [
+    new webpack.DefinePlugin(envKeys)
+  ]
+};
+```
+
+```bash
+# .env.development
+API_URL=http://localhost:3001/api
+APP_TITLE=React 19 Development
+```
+
+```bash
+# .env.production
+API_URL=https://api.example.com
+APP_TITLE=React 19 Production
+```
+
+### 3. 代码分割策略
+
+```js
+// webpack.config.js
+module.exports = {
+  optimization: {
+    splitChunks: {
+      chunks: 'all',
+      minSize: 30000,
+      maxSize: 244000,
+      minChunks: 1,
+      maxAsyncRequests: 30,
+      maxInitialRequests: 30,
+      automaticNameDelimiter: '~',
+      cacheGroups: {
+        vendors: {
+          test: /[\\/]node_modules[\\/]/,
+          priority: -10,
+          reuseExistingChunk: true
+        },
+        default: {
+          minChunks: 2,
+          priority: -20,
+          reuseExistingChunk: true
+        }
+      }
+    }
+  }
+};
+```
+
+### 4. 动态导入
+
+```jsx
+// src/App.jsx
+import { lazy, Suspense } from 'react';
+
+const Home = lazy(() => import('./pages/Home'));
+const About = lazy(() => import('./pages/About'));
+const Contact = lazy(() => import('./pages/Contact'));
+
+function App() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/about" element={<About />} />
+        <Route path="/contact" element={<Contact />} />
+      </Routes>
+    </Suspense>
+  );
+}
+
+export default App;
+```
+
+### 5. 预加载关键资源
+
+```js
+// webpack.config.js
+module.exports = {
+  plugins: [
+    new HtmlWebpackPlugin({
+      template: './public/index.html',
+      filename: 'index.html',
+      preload: {
+        test: /\.(js|css)$/,
+        include: 'all',
+        chunks: 'initial'
+      },
+      prefetch: {
+        test: /\.(js|css)$/,
+        include: 'async',
+        chunks: 'all'
+      }
+    })
+  ]
+};
+```
+
+### 6. PWA 支持
+
+```bash
+npm install workbox-webpack-plugin
+```
+
+```js
+// webpack.config.js
+const WorkboxWebpackPlugin = require('workbox-webpack-plugin');
+
+module.exports = {
+  plugins: [
+    new WorkboxWebpackPlugin.GenerateSW({
+      clientsClaim: true,
+      skipWaiting: true,
+      runtimeCaching: [
+        {
+          urlPattern: /^https:\/\/api\.example\.com\/.*$/,
+          handler: 'NetworkFirst',
+          options: {
+            cacheName: 'api-cache',
+            expiration: {
+              maxEntries: 100,
+              maxAgeSeconds: 60 * 60 * 24
+            }
+          }
+        },
+        {
+          urlPattern: /\.(?:png|jpg|jpeg|svg|gif)$/,
+          handler: 'CacheFirst',
+          options: {
+            cacheName: 'image-cache',
+            expiration: {
+              maxEntries: 60,
+              maxAgeSeconds: 60 * 60 * 24 * 30
+            }
+          }
+        }
+      ]
+    })
+  ]
+};
+```
+
+## 🎨 样式处理
+
+### CSS Modules
+
+```jsx
+// src/components/Button.module.css
+.button {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  background-color: #1976d2;
+  color: white;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.button:hover {
+  background-color: #1565c0;
+}
+```
+
+```jsx
+// src/components/Button.jsx
+import styles from './Button.module.css';
+
+function Button({ children, onClick }) {
+  return (
+    <button className={styles.button} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
+export default Button;
+```
+
+### Tailwind CSS 集成
+
+```bash
+npm install -D tailwindcss postcss autoprefixer
+npx tailwindcss init -p
+```
+
+```js
+// tailwind.config.js
+module.exports = {
+  content: [
+    "./src/**/*.{js,jsx,ts,tsx}",
+    "./public/index.html"
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+```
+
+```css
+/* src/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+## 🚀 性能优化
+
+### 1. 压缩优化
+
+```js
+// webpack.config.js
+const TerserPlugin = require('terser-webpack-plugin');
+const CssMinimizerPlugin = require('css-minimizer-webpack-plugin');
+
+module.exports = {
+  optimization: {
+    minimize: true,
+    minimizer: [
+      new TerserPlugin({
+        parallel: true,
+        terserOptions: {
+          compress: {
+            drop_console: true,
+            drop_debugger: true,
+            pure_funcs: ['console.log']
+          }
+        }
+      }),
+      new CssMinimizerPlugin({
+        parallel: true
+      })
+    ]
+  }
+};
+```
+
+### 2. 缓存策略
+
+```js
+// webpack.config.js
+module.exports = {
+  output: {
+    filename: 'js/[name].[contenthash:8].js',
+    chunkFilename: 'js/[name].[contenthash:8].chunk.js'
+  },
+  optimization: {
+    moduleIds: 'deterministic',
+    runtimeChunk: 'single',
+    splitChunks: {
+      cacheGroups: {
+        vendor: {
+          test: /[\\/]node_modules[\\/]/,
+          name: 'vendors',
+          chunks: 'all'
+        }
+      }
+    }
+  },
+  cache: {
+    type: 'filesystem',
+    buildDependencies: {
+      config: [__filename]
+    }
+  }
+};
+```
+
+### 3. Tree Shaking
+
+```js
+// webpack.config.js
+module.exports = {
+  optimization: {
+    usedExports: true,
+    sideEffects: false
+  }
+};
+```
+
+```json
+// package.json
+{
+  "sideEffects": [
+    "*.css",
+    "*.scss",
+    "*.less"
+  ]
+}
+```
+
+## 📊 构建分析
+
+```bash
+npm install -D webpack-bundle-analyzer
+```
+
+```js
+// webpack.config.js
+const { BundleAnalyzerPlugin } = require('webpack-bundle-analyzer');
+
+module.exports = {
+  plugins: [
+    new BundleAnalyzerPlugin({
+      analyzerMode: 'server',
+      analyzerPort: 8888,
+      openAnalyzer: true,
+      generateStatsFile: true,
+      statsOptions: {
+        source: false
+      }
+    })
+  ]
+};
+```
+
+## 🧪 测试配置
+
+```bash
+npm install -D jest @testing-library/react @testing-library/jest-dom @testing-library/user-event babel-jest
+```
+
+```js
+// jest.config.js
+module.exports = {
+  preset: 'ts-jest',
+  testEnvironment: 'jsdom',
+  setupFilesAfterEnv: ['<rootDir>/src/setupTests.js'],
+  moduleNameMapper: {
+    '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
+    '^@/(.*)$': '<rootDir>/src/$1'
+  },
+  transform: {
+    '^.+\\.(js|jsx|ts|tsx)$': 'babel-jest'
+  },
+  collectCoverageFrom: [
+    'src/**/*.{js,jsx,ts,tsx}',
+    '!src/**/*.d.ts',
+    '!src/**/*.stories.{js,jsx,ts,tsx}',
+    '!src/**/__tests__/**'
+  ]
+};
+```
+
+```js
+// src/setupTests.js
+import '@testing-library/jest-dom';
+```
+
+## 🔗 相关概念
+
+- **Vite**: 新一代构建工具，开发体验更佳
+- **Rollup**: Webpack 的替代方案，专注于 ESM
+- **esbuild**: 极速的 JavaScript 打包工具
+- **React 19 新 JSX Transform**: Webpack 通过 Babel 自动支持
+
+## 📚 学习检查点
+
+- [ ] 理解 Webpack 的核心概念和工作原理
+- [ ] 掌握 Webpack 的配置方法和优化策略
+- [ ] 能够配置代码分割和懒加载
+- [ ] 了解如何集成 React 19 和 TypeScript
+- [ ] 掌握环境变量和多环境配置
+- [ ] 能够配置 PWA 和性能优化
+- [ ] 了解构建分析和调试方法
+
+## 🚀 下一步
+
+→ [React 19 构建迁移](./react19-build-migration.mdx)  
+→ [CI/CD 流程](../02-cicd/cicd-overview.mdx)  
+→ [性能监控与优化](../03-monitoring/monitoring-overview.mdx)
+
+## 🎯 重点提示
+
+### Webpack 5 新特性
+- **模块联邦**: 允许多个 Webpack 构建一起工作
+- **更好的 Tree Shaking**: 更精确的依赖分析
+- **持久化缓存**: 提高构建速度
+- **微前端支持**: 更好的微前端架构支持
+
+### 配置最佳实践
+- **代码分割**: 合理配置代码分割，优化加载性能
+- **缓存策略**: 使用 contenthash 和持久化缓存
+- **环境隔离**: 为不同环境配置不同的构建选项
+- **性能监控**: 使用 Bundle Analyzer 分析包体积
+
+### React 19 集成要点
+- **Babel 配置**: 使用最新的 @babel/preset-react
+- **TypeScript 支持**: 正确配置 tsconfig.json
+- **新 JSX Transform**: 通过 Babel 自动启用
+- **构建验证**: 确保构建结果正常工作

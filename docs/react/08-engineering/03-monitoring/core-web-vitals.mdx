@@ -1,0 +1,850 @@
+# Core Web Vitals 详解
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+Core Web Vitals 是 Google 定义的一组关键性能指标，用于衡量真实用户体验。这些指标直接影响到网站的搜索排名和用户体验。Core Web Vitals 包括三个核心指标：LCP（Largest Contentful Paint）、INP（Interaction to Next Paint）和 CLS（Cumulative Layout Shift）。
+
+## 🎯 核心指标详解
+
+### 1. LCP（Largest Contentful Paint）
+
+LCP 衡量页面主要内容加载完成的时间，反映页面的加载性能。
+
+**目标值**：< 2.5 秒
+
+```jsx
+// src/utils/reportWebVitals.js
+export function reportWebVitals(onPerfEntry) {
+  if (onPerfEntry && onPerfEntry instanceof Function) {
+    import('web-vitals').then(({ getCLS, getFID, getFCP, getLCP, getTTFB, getINP }) => {
+      getCLS(onPerfEntry);
+      getFID(onPerfEntry);
+      getFCP(onPerfEntry);
+      getLCP(onPerfEntry);
+      getTTFB(onPerfEntry);
+      getINP(onPerfEntry);
+    });
+  }
+}
+
+// 自定义 LCP 监控
+export function trackLCP() {
+  new PerformanceObserver((list) => {
+    const entries = list.getEntries();
+    const lastEntry = entries[entries.length - 1];
+    
+    // 发送到分析服务
+    sendToAnalytics({
+      metric: 'LCP',
+      value: lastEntry.startTime,
+      element: lastEntry.element?.tagName,
+      url: lastEntry.url
+    });
+  }).observe({ type: 'largest-contentful-paint', buffered: true });
+}
+
+// 发送到分析服务
+function sendToAnalytics(metric) {
+  // 发送到 Google Analytics
+  if (window.gtag) {
+    window.gtag('event', metric.name, {
+      event_category: 'Web Vitals',
+      event_label: metric.id,
+      value: Math.round(metric.name === 'CLS' ? metric.value * 1000 : metric.value),
+      non_interaction: true,
+    });
+  }
+
+  // 发送到自定义分析服务
+  fetch('/api/analytics/web-vitals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(metric)
+  });
+}
+```
+
+### 2. INP（Interaction to Next Paint）
+
+INP 衡量用户交互到页面响应的时间，反映页面的交互性。
+
+**目标值**：< 200 毫秒
+
+```jsx
+// src/utils/trackINP.js
+export function trackINP() {
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      // 只关注交互事件
+      if (entry.interactionType) {
+        sendToAnalytics({
+          metric: 'INP',
+          value: entry.duration,
+          interactionType: entry.interactionType,
+          target: entry.target?.tagName
+        });
+      }
+    }
+  }).observe({ type: 'event', buffered: true });
+}
+
+// 优化交互性能
+export function optimizeInteractions() {
+  // 使用 requestIdleCallback 处理非紧急任务
+  function scheduleTask(task) {
+    if ('requestIdleCallback' in window) {
+      requestIdleCallback(task, { timeout: 2000 });
+    } else {
+      setTimeout(task, 1);
+    }
+  }
+
+  // 使用 startTransition 处理非紧急更新
+  import { startTransition } from 'react';
+  
+  function handleSearch(query) {
+    startTransition(() => {
+      // 非紧急的搜索更新
+      setSearchResults(query);
+    });
+  }
+
+  return { scheduleTask, handleSearch };
+}
+```
+
+### 3. CLS（Cumulative Layout Shift）
+
+CLS 衡量页面布局的稳定性，反映页面视觉稳定性。
+
+**目标值**：< 0.1
+
+```jsx
+// src/utils/trackCLS.js
+export function trackCLS() {
+  let clsValue = 0;
+  let clsEntries = [];
+
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      // 只关注没有最近用户输入的布局偏移
+      if (!entry.hadRecentInput) {
+        clsValue += entry.value;
+        clsEntries.push(entry);
+
+        // 发送到分析服务
+        sendToAnalytics({
+          metric: 'CLS',
+          value: clsValue,
+          entries: clsEntries
+        });
+      }
+    }
+  }).observe({ type: 'layout-shift', buffered: true });
+}
+
+// 优化布局稳定性
+export function optimizeLayoutStability() {
+  // 为图片预留空间
+  function ImageWithPlaceholder({ src, alt, width, height }) {
+    return (
+      <div style={{ width, height, backgroundColor: '#f0f0f0' }}>
+        <img 
+          src={src} 
+          alt={alt} 
+          width={width} 
+          height={height}
+          loading="lazy"
+        />
+      </div>
+    );
+  }
+
+  // 避免动态插入内容
+  function StableContainer({ children }) {
+    return (
+      <div style={{ minHeight: '100px' }}>
+        {children}
+      </div>
+    );
+  }
+
+  // 使用 CSS transform 进行动画
+  function AnimatedComponent({ children, isVisible }) {
+    return (
+      <div
+        style={{
+          transform: isVisible ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 0.3s ease-in-out'
+        }}
+      >
+        {children}
+      </div>
+    );
+  }
+
+  return { ImageWithPlaceholder, StableContainer, AnimatedComponent };
+}
+```
+
+## 🛠️ 完整监控实现
+
+### Web Vitals 监控组件
+
+```jsx
+// src/components/WebVitalsMonitor.jsx
+import { useEffect } from 'react';
+import { getCLS, getFID, getFCP, getLCP, getTTFB, getINP } from 'web-vitals';
+
+function WebVitalsMonitor() {
+  useEffect(() => {
+    const metrics = {};
+
+    const sendToAnalytics = (metric) => {
+      metrics[metric.name] = metric.value;
+
+      // 发送到 Google Analytics
+      if (window.gtag) {
+        window.gtag('event', metric.name, {
+          event_category: 'Web Vitals',
+          event_label: metric.id,
+          value: Math.round(metric.name === 'CLS' ? metric.value * 1000 : metric.value),
+          non_interaction: true,
+        });
+      }
+
+      // 发送到自定义分析服务
+      fetch('/api/analytics/web-vitals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: metric.name,
+          value: metric.value,
+          id: metric.id,
+          delta: metric.delta,
+          rating: metric.rating,
+          navigationType: metric.navigationType,
+          url: window.location.href,
+          timestamp: Date.now()
+        })
+      }).catch(error => {
+        console.error('Failed to send web vitals:', error);
+      });
+    };
+
+    // 监控所有 Core Web Vitals
+    getCLS(sendToAnalytics);
+    getFID(sendToAnalytics);
+    getFCP(sendToAnalytics);
+    getLCP(sendToAnalytics);
+    getTTFB(sendToAnalytics);
+    getINP(sendToAnalytics);
+
+    // 定期报告性能数据
+    const interval = setInterval(() => {
+      if (Object.keys(metrics).length > 0) {
+        console.log('Web Vitals:', metrics);
+      }
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return null;
+}
+
+export default WebVitalsMonitor;
+```
+
+### 性能分析服务
+
+```js
+// src/services/performanceService.js
+class PerformanceService {
+  constructor() {
+    this.metrics = new Map();
+    this.thresholds = {
+      LCP: { good: 2500, needsImprovement: 4000 },
+      INP: { good: 200, needsImprovement: 500 },
+      CLS: { good: 0.1, needsImprovement: 0.25 },
+      FCP: { good: 1800, needsImprovement: 3000 },
+      TTFB: { good: 800, needsImprovement: 1800 }
+    };
+  }
+
+  recordMetric(name, value, metadata = {}) {
+    this.metrics.set(name, {
+      value,
+      metadata,
+      timestamp: Date.now(),
+      rating: this.getRating(name, value)
+    });
+  }
+
+  getRating(metricName, value) {
+    const threshold = this.thresholds[metricName];
+    if (!threshold) return 'unknown';
+
+    if (value <= threshold.good) return 'good';
+    if (value <= threshold.needsImprovement) return 'needs-improvement';
+    return 'poor';
+  }
+
+  getMetrics() {
+    return Object.fromEntries(this.metrics);
+  }
+
+  getPerformanceScore() {
+    const metrics = this.getMetrics();
+    const ratings = Object.values(metrics).map(m => m.rating);
+    
+    const goodCount = ratings.filter(r => r === 'good').length;
+    const totalCount = ratings.length;
+    
+    return Math.round((goodCount / totalCount) * 100);
+  }
+
+  async sendToAnalytics() {
+    const metrics = this.getMetrics();
+    
+    try {
+      const response = await fetch('/api/analytics/performance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          metrics,
+          score: this.getPerformanceScore(),
+          url: window.location.href,
+          userAgent: navigator.userAgent,
+          timestamp: Date.now()
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send performance data');
+      }
+    } catch (error) {
+      console.error('Performance analytics error:', error);
+    }
+  }
+
+  clearMetrics() {
+    this.metrics.clear();
+  }
+}
+
+export const performanceService = new PerformanceService();
+```
+
+## 📝 实际应用示例
+
+### 1. LCP 优化
+
+```jsx
+// src/components/OptimizedImage.jsx
+import { useState, useEffect } from 'react';
+
+function OptimizedImage({ src, alt, width, height, priority = false }) {
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [imageSrc, setImageSrc] = useState(null);
+
+  useEffect(() => {
+    if (priority) {
+      // 优先加载关键图片
+      const img = new Image();
+      img.src = src;
+      img.onload = () => {
+        setImageSrc(src);
+        setIsLoaded(true);
+      };
+    } else {
+      // 延迟加载非关键图片
+      if ('loading' in HTMLImageElement.prototype) {
+        setImageSrc(src);
+      } else {
+        // 回退到懒加载库
+        import('lazysizes').then(() => {
+          setImageSrc(src);
+        });
+      }
+    }
+  }, [src, priority]);
+
+  return (
+    <div 
+      style={{ 
+        width: `${width}px`, 
+        height: `${height}px`,
+        backgroundColor: '#f0f0f0',
+        position: 'relative'
+      }}
+    >
+      {!isLoaded && (
+        <div 
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+        >
+          <span>Loading...</span>
+        </div>
+      )}
+      {imageSrc && (
+        <img
+          src={imageSrc}
+          alt={alt}
+          width={width}
+          height={height}
+          loading={priority ? 'eager' : 'lazy'}
+          style={{ 
+            opacity: isLoaded ? 1 : 0,
+            transition: 'opacity 0.3s ease-in'
+          }}
+          onLoad={() => setIsLoaded(true)}
+        />
+      )}
+    </div>
+  );
+}
+
+export default OptimizedImage;
+```
+
+### 2. INP 优化
+
+```jsx
+// src/components/OptimizedSearch.jsx
+import { useState, useTransition, useCallback } from 'react';
+
+function OptimizedSearch({ onSearch }) {
+  const [query, setQuery] = useState('');
+  const [isPending, startTransition] = useTransition();
+  const [results, setResults] = useState([]);
+
+  const handleInputChange = useCallback((e) => {
+    const value = e.target.value;
+    setQuery(value);
+
+    // 使用 startTransition 处理非紧急的搜索更新
+    startTransition(async () => {
+      const searchResults = await onSearch(value);
+      setResults(searchResults);
+    });
+  }, [onSearch]);
+
+  return (
+    <div>
+      <input
+        type="text"
+        value={query}
+        onChange={handleInputChange}
+        placeholder="Search..."
+        style={{ padding: '8px', fontSize: '16px' }}
+      />
+      {isPending && (
+        <div style={{ marginTop: '8px', color: '#666' }}>
+          Searching...
+        </div>
+      )}
+      {results.length > 0 && (
+        <ul style={{ marginTop: '8px' }}>
+          {results.map((result, index) => (
+            <li key={index}>{result.name}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export default OptimizedSearch;
+```
+
+### 3. CLS 优化
+
+```jsx
+// src/components/StableLayout.jsx
+import { useState } from 'react';
+
+function StableLayout({ children }) {
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  return (
+    <div 
+      style={{ 
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column'
+      }}
+    >
+      <header 
+        style={{ 
+          height: '60px',
+          backgroundColor: '#333',
+          color: 'white',
+          display: 'flex',
+          alignItems: 'center',
+          padding: '0 20px'
+        }}
+      >
+        <h1 style={{ fontSize: '20px', margin: 0 }}>Header</h1>
+      </header>
+
+      <main 
+        style={{ 
+          flex: 1,
+          padding: '20px',
+          opacity: isLoaded ? 1 : 0,
+          transition: 'opacity 0.3s ease-in'
+        }}
+      >
+        {children}
+      </main>
+
+      <footer 
+        style={{ 
+          height: '40px',
+          backgroundColor: '#f5f5f5',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '0 20px'
+        }}
+      >
+        <span style={{ fontSize: '14px' }}>Footer</span>
+      </footer>
+    </div>
+  );
+}
+
+// 图片卡片组件 - 预留空间避免 CLS
+function ImageCard({ image }) {
+  return (
+    <div 
+      style={{ 
+        width: '300px',
+        marginBottom: '20px'
+      }}
+    >
+      <div 
+        style={{ 
+          width: '100%',
+          paddingBottom: '66.67%', // 3:2 宽高比
+          backgroundColor: '#f0f0f0',
+          position: 'relative',
+          overflow: 'hidden'
+        }}
+      >
+        <img
+          src={image.url}
+          alt={image.alt}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover'
+          }}
+          loading="lazy"
+        />
+      </div>
+      <h3 style={{ margin: '10px 0 5px' }}>{image.title}</h3>
+      <p style={{ margin: 0, fontSize: '14px', color: '#666' }}>
+        {image.description}
+      </p>
+    </div>
+  );
+}
+
+export { StableLayout, ImageCard };
+```
+
+## 🎨 性能分析工具
+
+### 实时性能监控面板
+
+```jsx
+// src/components/PerformanceMonitor.jsx
+import { useState, useEffect } from 'react';
+
+function PerformanceMonitor() {
+  const [metrics, setMetrics] = useState({});
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    if (!isVisible) return;
+
+    const updateMetrics = () => {
+      const navigation = performance.getEntriesByType('navigation')[0];
+      const paint = performance.getEntriesByType('paint');
+      
+      const lcpEntry = performance.getEntriesByType('largest-contentful-paint').pop();
+      const clsEntries = performance.getEntriesByType('layout-shift');
+
+      const clsValue = clsEntries.reduce((sum, entry) => {
+        return sum + (entry.hadRecentInput ? 0 : entry.value);
+      }, 0);
+
+      setMetrics({
+        // 加载性能
+        domContentLoaded: navigation?.domContentLoadedEventEnd - navigation?.domContentLoadedEventStart,
+        loadComplete: navigation?.loadEventEnd - navigation?.loadEventStart,
+        firstPaint: paint.find(p => p.name === 'first-paint')?.startTime,
+        firstContentfulPaint: paint.find(p => p.name === 'first-contentful-paint')?.startTime,
+        
+        // Core Web Vitals
+        lcp: lcpEntry?.startTime,
+        cls: clsValue,
+        
+        // 其他指标
+        ttfb: navigation?.responseStart - navigation?.requestStart,
+        domInteractive: navigation?.domInteractive - navigation?.navigationStart,
+      });
+    };
+
+    updateMetrics();
+    const interval = setInterval(updateMetrics, 1000);
+
+    return () => clearInterval(interval);
+  }, [isVisible]);
+
+  if (!isVisible) {
+    return (
+      <button
+        onClick={() => setIsVisible(true)}
+        style={{
+          position: 'fixed',
+          bottom: '20px',
+          right: '20px',
+          padding: '10px 20px',
+          backgroundColor: '#1976d2',
+          color: 'white',
+          border: 'none',
+          borderRadius: '4px',
+          cursor: 'pointer',
+          zIndex: 9999
+        }}
+      >
+        Show Performance
+      </button>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        width: '300px',
+        backgroundColor: 'white',
+        border: '1px solid #ccc',
+        borderRadius: '4px',
+        padding: '15px',
+        zIndex: 9999,
+        maxHeight: '80vh',
+        overflow: 'auto'
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ margin: 0 }}>Performance Metrics</h3>
+        <button
+          onClick={() => setIsVisible(false)}
+          style={{
+            border: 'none',
+            background: 'none',
+            fontSize: '20px',
+            cursor: 'pointer'
+          }}
+        >
+          ×
+        </button>
+      </div>
+
+      <div style={{ marginTop: '15px' }}>
+        {Object.entries(metrics).map(([key, value]) => (
+          <div key={key} style={{ marginBottom: '10px' }}>
+            <div style={{ fontSize: '12px', color: '#666' }}>
+              {key.toUpperCase()}
+            </div>
+            <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+              {value ? `${Math.round(value)}ms` : 'N/A'}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default PerformanceMonitor;
+```
+
+## 🚀 性能优化策略
+
+### 1. 资源优化
+
+```jsx
+// src/utils/resourceOptimizer.js
+export function optimizeResources() {
+  // 预加载关键资源
+  function preloadResource(href, as) {
+    const link = document.createElement('link');
+    link.rel = 'preload';
+    link.href = href;
+    link.as = as;
+    document.head.appendChild(link);
+  }
+
+  // 预连接到重要域名
+  function preconnectToDomain(domain) {
+    const link = document.createElement('link');
+    link.rel = 'preconnect';
+    link.href = domain;
+    document.head.appendChild(link);
+  }
+
+  // 预取可能需要的资源
+  function prefetchResource(href) {
+    const link = document.createElement('link');
+    link.rel = 'prefetch';
+    link.href = href;
+    document.head.appendChild(link);
+  }
+
+  return {
+    preloadResource,
+    preconnectToDomain,
+    prefetchResource
+  };
+}
+
+// 使用示例
+export function setupResourceOptimization() {
+  const { preloadResource, preconnectToDomain, prefetchResource } = optimizeResources();
+
+  // 预加载关键 CSS
+  preloadResource('/styles/main.css', 'style');
+
+  // 预加载关键字体
+  preloadResource('/fonts/main.woff2', 'font');
+
+  // 预连接到 CDN
+  preconnectToDomain('https://cdn.example.com');
+
+  // 预取下一页资源
+  prefetchResource('/next-page-data.json');
+}
+```
+
+### 2. 代码分割优化
+
+```jsx
+// src/utils/codeSplitting.js
+import { lazy, Suspense } from 'react';
+
+// 懒加载路由组件
+export const Home = lazy(() => import('./pages/Home'));
+export const About = lazy(() => import('./pages/About'));
+export const Contact = lazy(() => import('./pages/Contact'));
+
+// 懒加载重型组件
+export const HeavyComponent = lazy(() => 
+  import('./components/HeavyComponent')
+);
+
+// 懒加载图表组件
+export const Chart = lazy(() => import('./components/Chart'));
+
+// 加载状态组件
+export function LoadingFallback() {
+  return (
+    <div style={{ 
+      display: 'flex', 
+      justifyContent: 'center', 
+      alignItems: 'center',
+      height: '200px'
+    }}>
+      <div>Loading...</div>
+    </div>
+  );
+}
+
+// 路由配置
+export function createRoutes() {
+  return [
+    {
+      path: '/',
+      element: (
+        <Suspense fallback={<LoadingFallback />}>
+          <Home />
+        </Suspense>
+      )
+    },
+    {
+      path: '/about',
+      element: (
+        <Suspense fallback={<LoadingFallback />}>
+          <About />
+        </Suspense>
+      )
+    },
+    {
+      path: '/contact',
+      element: (
+        <Suspense fallback={<LoadingFallback />}>
+          <Contact />
+        </Suspense>
+      )
+    }
+  ];
+}
+```
+
+## 🔗 相关概念
+
+- **LCP**: 最大内容绘制，衡量加载性能
+- **INP**: 交互到下次绘制，衡量交互性
+- **CLS**: 累积布局偏移，衡量视觉稳定性
+- **FCP**: 首次内容绘制，衡量首次渲染
+
+## 📚 学习检查点
+
+- [ ] 理解 Core Web Vitals 的三个核心指标
+- [ ] 掌握 LCP、INP、CLS 的优化方法
+- [ ] 能够实现 Web Vitals 监控
+- [ ] 了解性能分析工具的使用
+- [ ] 掌握资源优化策略
+- [ ] 能够实现代码分割优化
+- [ ] 了解性能监控的最佳实践
+
+## 🚀 下一步
+
+→ [性能优化策略](./performance-optimization.mdx)  
+→ [React 19.2 Performance Tracks](./react19-performance-tracks.mdx)  
+→ [安全性](../04-security/security-overview.mdx)
+
+## 🎯 重点提示
+
+### Core Web Vitals 重要性
+- **搜索排名**: 直接影响 Google 搜索排名
+- **用户体验**: 决定用户的第一印象
+- **转化率**: 影响用户转化和留存
+- **移动优先**: 移动设备的性能要求更高
+
+### 优化优先级
+1. **LCP 优先**: 优化加载性能最重要
+2. **INP 其次**: 确保快速响应用户交互
+3. **CLS 最后**: 避免布局跳动影响体验
+
+### React 19 优化要点
+- **新特性**: 利用 React 19 的新性能特性
+- **并发渲染**: 改进的并发渲染提升性能
+- **自动优化**: React Compiler 自动优化代码
+- **服务端渲染**: Server Components 提升首屏性能

@@ -1,0 +1,649 @@
+# React 19 构建迁移指南
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+React 19 引入了重要的构建要求变化，包括新 JSX Transform 的强制使用、UMD 构建的移除以及对 ESM 的全面支持。本指南将帮助你从 React 18 平滑迁移到 React 19，并确保构建配置符合新版本的要求。
+
+## 🎯 迁移前准备
+
+### 1. 检查当前版本
+
+```bash
+# 检查当前 React 版本
+npm list react react-dom
+
+# 检查 package.json
+cat package.json | grep -A 5 "dependencies"
+```
+
+### 2. 备份项目
+
+```bash
+# 创建备份分支
+git checkout -b backup/react18
+
+# 提交当前状态
+git add .
+git commit -m "Backup before React 19 migration"
+```
+
+### 3. 检查依赖兼容性
+
+```bash
+# 使用 npm-check-updates 检查依赖
+npx npm-check-updates
+
+# 检查过时的依赖
+npm outdated
+```
+
+## 🛠️ 升级步骤
+
+### 步骤 1：更新 React 依赖
+
+```bash
+# 升级到 React 19
+npm install react@19 react-dom@19
+
+# 如果使用 TypeScript，更新类型定义
+npm install -D @types/react@19 @types/react-dom@19
+
+# 更新相关依赖
+npm install react-router-dom@latest
+npm install @testing-library/react@latest @testing-library/jest-dom@latest
+```
+
+### 步骤 2：更新 TypeScript 配置
+
+```json
+// tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
+```
+
+**关键变更**：
+- `"jsx": "react-jsx"`：启用新 JSX Transform，这是 React 19 的必需配置
+- `"moduleResolution": "bundler"`：使用现代模块解析策略
+
+### 步骤 3：移除 React 导入
+
+React 19 的新 JSX Transform 不再需要手动导入 React：
+
+```jsx
+// ❌ 旧写法（React 18）
+import React from 'react';
+
+function App() {
+  return <div>Hello World</div>;
+}
+
+export default App;
+```
+
+```jsx
+// ✅ 新写法（React 19）
+function App() {
+  return <div>Hello World</div>;
+}
+
+export default App;
+```
+
+### 步骤 4：更新构建工具配置
+
+#### Vite 配置
+
+```js
+// vite.config.js
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [
+    react({
+      // React 19 自动支持新 JSX Transform，无需额外配置
+      babel: {
+        plugins: []
+      }
+    })
+  ],
+  optimizeDeps: {
+    include: ['react', 'react-dom']
+  }
+});
+```
+
+#### Webpack 配置
+
+```js
+// webpack.config.js
+module.exports = {
+  module: {
+    rules: [
+      {
+        test: /\.(js|jsx|ts|tsx)$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'babel-loader',
+          options: {
+            presets: [
+              ['@babel/preset-env', { targets: 'defaults' }],
+              ['@babel/preset-react', { 
+                runtime: 'automatic' 
+              }],
+              '@babel/preset-typescript'
+            ]
+          }
+        }
+      }
+    ]
+  }
+};
+```
+
+```json
+// .babelrc
+{
+  "presets": [
+    ["@babel/preset-react", {
+      "runtime": "automatic"
+    }]
+  ]
+}
+```
+
+### 步骤 5：移除废弃 API
+
+React 19 移除了一些废弃的 API，需要更新代码：
+
+```jsx
+// ❌ 旧写法（已废弃）
+import React, { PropTypes } from 'react';
+
+MyComponent.propTypes = {
+  name: PropTypes.string,
+  age: PropTypes.number
+};
+
+MyComponent.defaultProps = {
+  age: 18
+};
+```
+
+```jsx
+// ✅ 新写法
+import PropTypes from 'prop-types';
+
+MyComponent.propTypes = {
+  name: PropTypes.string,
+  age: PropTypes.number
+};
+
+MyComponent.defaultProps = {
+  age: 18
+};
+```
+
+### 步骤 6：更新测试配置
+
+```js
+// jest.config.js
+module.exports = {
+  preset: 'ts-jest',
+  testEnvironment: 'jsdom',
+  setupFilesAfterEnv: ['<rootDir>/src/setupTests.js'],
+  moduleNameMapper: {
+    '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
+    '^@/(.*)$': '<rootDir>/src/$1'
+  },
+  transform: {
+    '^.+\\.(js|jsx|ts|tsx)$': ['babel-jest', {
+      presets: [
+        ['@babel/preset-env', { targets: 'node: current' }],
+        ['@babel/preset-react', { runtime: 'automatic' }],
+        '@babel/preset-typescript'
+      ]
+    }]
+  }
+};
+```
+
+## 📝 迁移示例
+
+### 示例 1：迁移函数组件
+
+```jsx
+// ❌ 旧写法
+import React, { useState, useEffect } from 'react';
+
+function Counter() {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    document.title = `Count: ${count}`;
+  }, [count]);
+
+  return (
+    <div>
+      <p>Count: {count}</p>
+      <button onClick={() => setCount(count + 1)}>Increment</button>
+    </div>
+  );
+}
+
+export default Counter;
+```
+
+```jsx
+// ✅ 新写法
+import { useState, useEffect } from 'react';
+
+function Counter() {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    document.title = `Count: ${count}`;
+  }, [count]);
+
+  return (
+    <div>
+      <p>Count: {count}</p>
+      <button onClick={() => setCount(count + 1)}>Increment</button>
+    </div>
+  );
+}
+
+export default Counter;
+```
+
+### 示例 2：迁移类组件
+
+```jsx
+// ❌ 旧写法
+import React, { Component } from 'react';
+
+class Counter extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { count: 0 };
+  }
+
+  increment = () => {
+    this.setState(prevState => ({ count: prevState.count + 1 }));
+  };
+
+  render() {
+    return (
+      <div>
+        <p>Count: {this.state.count}</p>
+        <button onClick={this.increment}>Increment</button>
+      </div>
+    );
+  }
+}
+
+export default Counter;
+```
+
+```jsx
+// ✅ 新写法（推荐使用函数组件）
+import { useState } from 'react';
+
+function Counter() {
+  const [count, setCount] = useState(0);
+
+  const increment = () => {
+    setCount(prevCount => prevCount + 1);
+  };
+
+  return (
+    <div>
+      <p>Count: {count}</p>
+      <button onClick={increment}>Increment</button>
+    </div>
+  );
+}
+
+export default Counter;
+```
+
+### 示例 3：迁移 Context
+
+```jsx
+// ❌ 旧写法
+import React, { createContext, useContext } from 'react';
+
+const ThemeContext = createContext('light');
+
+function App() {
+  return (
+    <ThemeContext.Provider value="dark">
+      <ChildComponent />
+    </ThemeContext.Provider>
+  );
+}
+
+function ChildComponent() {
+  const theme = useContext(ThemeContext);
+  return <div>Theme: {theme}</div>;
+}
+```
+
+```jsx
+// ✅ 新写法（React 19 支持简化语法）
+import { createContext, useContext } from 'react';
+
+const ThemeContext = createContext('light');
+
+function App() {
+  return (
+    <ThemeContext value="dark">
+      <ChildComponent />
+    </ThemeContext>
+  );
+}
+
+function ChildComponent() {
+  const theme = useContext(ThemeContext);
+  return <div>Theme: {theme}</div>;
+}
+```
+
+### 示例 4：迁移 forwardRef
+
+```jsx
+// ❌ 旧写法
+import React, { forwardRef } from 'react';
+
+const Button = forwardRef((props, ref) => {
+  return <button ref={ref} {...props} />;
+});
+
+Button.displayName = 'Button';
+
+export default Button;
+```
+
+```jsx
+// ✅ 新写法（React 19 支持 ref 作为 prop）
+import { forwardRef } from 'react';
+
+function Button(props, ref) {
+  return <button ref={ref} {...props} />;
+}
+
+export default forwardRef(Button);
+```
+
+## 🚀 新特性使用
+
+### 使用 React 19 新 Hooks
+
+```jsx
+// useActionState 示例
+import { useActionState } from 'react';
+
+async function submitForm(prevState, formData) {
+  const name = formData.get('name');
+  const response = await fetch('/api/submit', {
+    method: 'POST',
+    body: formData
+  });
+  return response.json();
+}
+
+function ContactForm() {
+  const [state, submitAction, isPending] = useActionState(
+    submitForm,
+    { success: false, message: '' }
+  );
+
+  return (
+    <form action={submitAction}>
+      <input name="name" type="text" required />
+      <button type="submit" disabled={isPending}>
+        {isPending ? 'Submitting...' : 'Submit'}
+      </button>
+      {state.success && <p>{state.message}</p>}
+    </form>
+  );
+}
+
+export default ContactForm;
+```
+
+```jsx
+// useOptimistic 示例
+import { useOptimistic, useState } from 'react';
+
+function TodoList({ todos, addTodo }) {
+  const [optimisticTodos, addOptimisticTodo] = useOptimistic(
+    todos,
+    (state, newTodo) => [...state, { ...newTodo, pending: true }]
+  );
+
+  const [newTodo, setNewTodo] = useState('');
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    addOptimisticTodo({ id: Date.now(), text: newTodo });
+    setNewTodo('');
+    await addTodo(newTodo);
+  }
+
+  return (
+    <div>
+      <form onSubmit={handleSubmit}>
+        <input
+          value={newTodo}
+          onChange={(e) => setNewTodo(e.target.value)}
+          placeholder="Add todo"
+        />
+        <button type="submit">Add</button>
+      </form>
+      <ul>
+        {optimisticTodos.map(todo => (
+          <li key={todo.id}>
+            {todo.text}
+            {todo.pending && ' (saving...)'}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default TodoList;
+```
+
+## 🔍 常见问题解决
+
+### 问题 1：构建失败 - JSX Transform 错误
+
+**错误信息**：
+```
+React is not defined
+```
+
+**解决方案**：
+确保 `tsconfig.json` 中设置了 `"jsx": "react-jsx"`，并移除所有 `import React from 'react'`。
+
+### 问题 2：类型错误 - React 类型不匹配
+
+**错误信息**：
+```
+Type 'ReactElement' is not assignable to type 'ReactNode'
+```
+
+**解决方案**：
+更新 `@types/react` 和 `@types/react-dom` 到最新版本：
+
+```bash
+npm install -D @types/react@19 @types/react-dom@19
+```
+
+### 问题 3：测试失败 - React 19 兼容性问题
+
+**错误信息**：
+```
+React 19 requires the new JSX Transform
+```
+
+**解决方案**：
+更新测试配置，确保使用新 JSX Transform：
+
+```js
+// jest.config.js
+module.exports = {
+  transform: {
+    '^.+\\.(js|jsx|ts|tsx)$': ['babel-jest', {
+      presets: [
+        ['@babel/preset-react', { runtime: 'automatic' }]
+      ]
+    }]
+  }
+};
+```
+
+## 📊 验证迁移
+
+### 1. 运行开发服务器
+
+```bash
+npm run dev
+```
+
+检查控制台是否有错误，确保应用正常运行。
+
+### 2. 运行构建
+
+```bash
+npm run build
+```
+
+确保构建成功，没有警告或错误。
+
+### 3. 运行测试
+
+```bash
+npm test
+```
+
+确保所有测试通过。
+
+### 4. 检查构建产物
+
+```bash
+# 检查生成的文件
+ls -la dist/
+
+# 检查文件大小
+du -sh dist/
+```
+
+## 🎯 最佳实践
+
+### 1. 渐进式迁移
+
+不要一次性迁移整个项目，建议：
+
+1. 先升级依赖和配置
+2. 逐个模块更新代码
+3. 充分测试每个模块
+4. 最后处理复杂组件
+
+### 2. 使用 Codemods
+
+React 官方提供了 Codemods 工具来自动化迁移：
+
+```bash
+# 安装 codemod CLI
+npm install -g jscodeshift
+
+# 运行 React 19 codemods
+npx react-codemod@latest update-react-imports
+```
+
+### 3. 版本控制
+
+使用 Git 跟踪迁移过程：
+
+```bash
+# 创建迁移分支
+git checkout -b feature/react19-migration
+
+# 提交每个步骤
+git add package.json
+git commit -m "Update React to version 19"
+
+git add tsconfig.json
+git commit -m "Update TypeScript config for React 19"
+
+# 完成后合并到主分支
+git checkout main
+git merge feature/react19-migration
+```
+
+## 🔗 相关概念
+
+- **新 JSX Transform**: React 17+ 的新特性，React 19 强制要求
+- **ESM**: ECMAScript Modules，现代 JavaScript 模块系统
+- **UMD**: Universal Module Definition，已被 React 19 移除
+- **TypeScript**: 静态类型系统，与 React 19 完美集成
+
+## 📚 学习检查点
+
+- [ ] 理解 React 19 的构建要求变化
+- [ ] 掌握从 React 18 到 React 19 的迁移步骤
+- [ ] 能够更新 TypeScript 和构建工具配置
+- [ ] 了解如何移除废弃的 API
+- [ ] 掌握新特性的使用方法
+- [ ] 能够解决常见的迁移问题
+- [ ] 了解迁移的最佳实践
+
+## 🚀 下一步
+
+→ [CI/CD 流程](../02-cicd/cicd-overview.mdx)  
+→ [性能监控与优化](../03-monitoring/monitoring-overview.mdx)  
+→ [实战项目](../../10-practice/01-beginner-projects.mdx)
+
+## 🎯 重点提示
+
+### 关键变更
+- **新 JSX Transform 必需**: 必须在 `tsconfig.json` 中设置 `"jsx": "react-jsx"`
+- **移除 React 导入**: 不再需要 `import React from 'react'`
+- **UMD 构建移除**: React 19 不再提供 UMD 构建
+- **ESM 优先**: 全面支持 ESM 模块系统
+
+### 迁移要点
+- **备份项目**: 迁移前创建备份分支
+- **渐进式迁移**: 逐步迁移，充分测试
+- **使用 Codemods**: 利用自动化工具加速迁移
+- **版本控制**: 使用 Git 跟踪迁移过程
+
+### 兼容性
+- **TypeScript 5.0+**: 建议使用 TypeScript 5.0 或更高版本
+- **Node.js 18+**: React 19 需要 Node.js 18 或更高版本
+- **构建工具更新**: 确保构建工具支持 React 19

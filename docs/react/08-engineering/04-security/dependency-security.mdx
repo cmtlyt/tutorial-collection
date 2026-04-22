@@ -1,0 +1,881 @@
+# 依赖安全管理
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+依赖安全管理是保护 React 应用免受供应链攻击的关键。现代前端应用依赖大量的第三方库，这些库可能包含已知的安全漏洞。通过系统的依赖审计、漏洞扫描和自动化更新策略，可以显著降低安全风险。
+
+## 🎯 依赖审计工具
+
+### 1. npm audit
+
+npm 内置的安全审计工具，检查项目依赖中的已知漏洞：
+
+```bash
+# 运行安全审计
+npm audit
+
+# 只显示高危漏洞
+npm audit --audit-level=high
+
+# 自动修复可修复的漏洞
+npm audit fix
+
+# 强制修复（可能破坏性更改）
+npm audit fix --force
+
+# 生成详细的 JSON 报告
+npm audit --json > audit-report.json
+```
+
+### 2. Snyk 深度扫描
+
+Snyk 提供更全面的漏洞扫描和修复建议：
+
+```bash
+# 安装 Snyk CLI
+npm install -g snyk
+
+# 认证
+snyk auth
+
+# 扫描项目
+snyk test
+
+# 扫描并生成报告
+snyk test --json > snyk-report.json
+
+# 监控项目
+snyk monitor
+
+# 扫描许可证合规性
+snyk license
+```
+
+## 🛠️ 自动化安全检查
+
+### GitHub Actions 集成
+
+```yaml
+# .github/workflows/security-scan.yml
+name: Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * 1' # 每周一运行
+
+jobs:
+  npm-audit:
+    name: npm Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Generate audit report
+        if: always()
+        run: |
+          npm audit --json > audit-report.json
+          cat audit-report.json
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: audit-report.json
+
+  snyk-scan:
+    name: Snyk Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      - name: Upload Snyk results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk.sarif
+
+  dependency-check:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'react-app'
+          path: '.'
+          format: 'HTML'
+          out: 'reports'
+          args: >
+            --scan node_modules
+            --enableExperimental
+
+      - name: Upload dependency check report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/
+
+  license-check:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run license checker
+        run: |
+          npm install -g license-checker
+          license-checker --production --json > licenses.json
+          cat licenses.json
+
+      - name: Check for forbidden licenses
+        run: |
+          node scripts/check-licenses.js
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: licenses.json
+```
+
+### 许可证检查脚本
+
+```js
+// scripts/check-licenses.js
+const fs = require('fs');
+const licenseChecker = require('license-checker');
+
+// 禁止的许可证
+const FORBIDDEN_LICENSES = [
+  'GPL',
+  'AGPL',
+  'LGPL',
+  'MPL',
+  'CPL',
+  'EPL',
+  'ECLIPSE DISTRIBUTION LICENSE'
+];
+
+// 需要人工审查的许可证
+const REVIEW_LICENSES = [
+  'MIT',
+  'Apache-2.0',
+  'BSD',
+  'ISC'
+];
+
+async function checkLicenses() {
+  try {
+    const licenses = await new Promise((resolve, reject) => {
+      licenseChecker.init({ production: true }, (err, packages) => {
+        if (err) reject(err);
+        else resolve(packages);
+      });
+    });
+
+    let hasForbidden = false;
+    let needsReview = [];
+
+    Object.entries(licenses).forEach(([name, info]) => {
+      const licenses = info.licenses;
+      const licenseArray = Array.isArray(licenses) ? licenses : [licenses];
+
+      licenseArray.forEach(license => {
+        if (FORBIDDEN_LICENSES.some(forbidden => 
+          license.toLowerCase().includes(forbidden.toLowerCase())
+        )) {
+          console.error(`❌ Forbidden license found: ${name} - ${license}`);
+          hasForbidden = true;
+        }
+
+        if (REVIEW_LICENSES.some(review => 
+          license.toLowerCase().includes(review.toLowerCase())
+        )) {
+          needsReview.push({ name, license });
+        }
+      });
+    });
+
+    if (hasForbidden) {
+      console.error('\n❌ Found forbidden licenses. Please review and replace these packages.');
+      process.exit(1);
+    }
+
+    if (needsReview.length > 0) {
+      console.log('\n⚠️  Packages requiring license review:');
+      needsReview.forEach(({ name, license }) => {
+        console.log(`  - ${name}: ${license}`);
+      });
+    }
+
+    console.log('\n✅ License check passed.');
+  } catch (error) {
+    console.error('Error checking licenses:', error);
+    process.exit(1);
+  }
+}
+
+checkLicenses();
+```
+
+## 📝 实际应用示例
+
+### 1. 依赖更新策略
+
+```js
+// scripts/dependency-updater.js
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+class DependencyUpdater {
+  constructor() {
+    this.packageJsonPath = path.join(process.cwd(), 'package.json');
+    this.packageLockPath = path.join(process.cwd(), 'package-lock.json');
+    this.backupPath = path.join(process.cwd(), 'package.json.backup');
+  }
+
+  // 备份当前依赖
+  backupDependencies() {
+    const packageJson = JSON.parse(fs.readFileSync(this.packageJsonPath, 'utf8'));
+    fs.writeFileSync(this.backupPath, JSON.stringify(packageJson, null, 2));
+    console.log('✅ Backed up package.json');
+  }
+
+  // 恢复依赖
+  restoreDependencies() {
+    if (fs.existsSync(this.backupPath)) {
+      fs.copyFileSync(this.backupPath, this.packageJsonPath);
+      console.log('✅ Restored package.json from backup');
+    }
+  }
+
+  // 检查过时的依赖
+  checkOutdated() {
+    try {
+      const output = execSync('npm outdated --json', { encoding: 'utf8' });
+      const outdated = JSON.parse(output);
+      return outdated;
+    } catch (error) {
+      // npm outdated 在有过时依赖时会返回非零退出码
+      try {
+        return JSON.parse(error.stdout);
+      } catch {
+        return {};
+      }
+    }
+  }
+
+  // 更新依赖
+  updateDependencies(packages = []) {
+    try {
+      if (packages.length > 0) {
+        // 更新特定包
+        packages.forEach(pkg => {
+          console.log(`Updating ${pkg}...`);
+          execSync(`npm install ${pkg}@latest`, { stdio: 'inherit' });
+        });
+      } else {
+        // 更新所有依赖
+        console.log('Updating all dependencies...');
+        execSync('npm update', { stdio: 'inherit' });
+      }
+
+      console.log('✅ Dependencies updated successfully');
+    } catch (error) {
+      console.error('❌ Error updating dependencies:', error.message);
+      throw error;
+    }
+  }
+
+  // 运行安全审计
+  auditDependencies() {
+    try {
+      console.log('Running security audit...');
+      execSync('npm audit --audit-level=moderate', { stdio: 'inherit' });
+      console.log('✅ Security audit passed');
+    } catch (error) {
+      console.error('❌ Security audit failed:', error.message);
+      throw error;
+    }
+  }
+
+  // 运行测试
+  runTests() {
+    try {
+      console.log('Running tests...');
+      execSync('npm test', { stdio: 'inherit' });
+      console.log('✅ Tests passed');
+    } catch (error) {
+      console.error('❌ Tests failed:', error.message);
+      throw error;
+    }
+  }
+
+  // 完整的更新流程
+  async update(packages = []) {
+    try {
+      // 备份
+      this.backupDependencies();
+
+      // 检查过时的依赖
+      const outdated = this.checkOutdated();
+      console.log('Outdated dependencies:', Object.keys(outdated));
+
+      // 更新依赖
+      this.updateDependencies(packages);
+
+      // 安全审计
+      this.auditDependencies();
+
+      // 运行测试
+      this.runTests();
+
+      console.log('\n✅ Update completed successfully!');
+    } catch (error) {
+      console.error('\n❌ Update failed. Restoring dependencies...');
+      this.restoreDependencies();
+      throw error;
+    }
+  }
+}
+
+// 使用示例
+async function main() {
+  const updater = new DependencyUpdater();
+  
+  // 更新所有依赖
+  await updater.update();
+
+  // 或者更新特定依赖
+  // await updater.update(['react', 'react-dom']);
+}
+
+main().catch(error => {
+  console.error('Fatal error:', error);
+  process.exit(1);
+});
+```
+
+### 2. 安全报告生成器
+
+```js
+// scripts/security-report.js
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+class SecurityReportGenerator {
+  constructor() {
+    this.reportPath = path.join(process.cwd(), 'security-report.json');
+  }
+
+  // 生成安全报告
+  async generateReport() {
+    const report = {
+      timestamp: new Date().toISOString(),
+      project: {
+        name: process.env.npm_package_name || 'Unknown',
+        version: process.env.npm_package_version || 'Unknown'
+      },
+      vulnerabilities: {},
+      dependencies: {},
+      licenses: {},
+      summary: {}
+    };
+
+    // 收集 npm audit 数据
+    report.vulnerabilities.npmAudit = await this.getNpmAuditData();
+
+    // 收集依赖信息
+    report.dependencies = await this.getDependencyInfo();
+
+    // 收集许可证信息
+    report.licenses = await this.getLicenseInfo();
+
+    // 生成摘要
+    report.summary = this.generateSummary(report);
+
+    // 保存报告
+    fs.writeFileSync(this.reportPath, JSON.stringify(report, null, 2));
+    console.log(`✅ Security report generated: ${this.reportPath}`);
+
+    return report;
+  }
+
+  // 获取 npm audit 数据
+  async getNpmAuditData() {
+    try {
+      const output = execSync('npm audit --json', { encoding: 'utf8' });
+      return JSON.parse(output);
+    } catch (error) {
+      try {
+        return JSON.parse(error.stdout);
+      } catch {
+        return { vulnerabilities: {}, metadata: {} };
+      }
+    }
+  }
+
+  // 获取依赖信息
+  async getDependencyInfo() {
+    try {
+      const output = execSync('npm list --json --depth=0', { encoding: 'utf8' });
+      const data = JSON.parse(output);
+      
+      return {
+        total: Object.keys(data.dependencies || {}).length,
+        dependencies: data.dependencies || {},
+        outdated: await this.getOutdatedDependencies()
+      };
+    } catch (error) {
+      return { total: 0, dependencies: {}, outdated: {} };
+    }
+  }
+
+  // 获取过时的依赖
+  async getOutdatedDependencies() {
+    try {
+      const output = execSync('npm outdated --json', { encoding: 'utf8' });
+      return JSON.parse(output);
+    } catch (error) {
+      try {
+        return JSON.parse(error.stdout);
+      } catch {
+        return {};
+      }
+    }
+  }
+
+  // 获取许可证信息
+  async getLicenseInfo() {
+    try {
+      const licenseChecker = require('license-checker');
+      const licenses = await new Promise((resolve, reject) => {
+        licenseChecker.init({ production: true }, (err, packages) => {
+          if (err) reject(err);
+          else resolve(packages);
+        });
+      });
+
+      return {
+        total: Object.keys(licenses).length,
+        licenses: licenses
+      };
+    } catch (error) {
+      return { total: 0, licenses: {} };
+    }
+  }
+
+  // 生成摘要
+  generateSummary(report) {
+    const vulnerabilities = report.vulnerabilities.npmAudit?.vulnerabilities || {};
+    const dependencyCount = report.dependencies.total;
+    const outdatedCount = Object.keys(report.dependencies.outdated || {}).length;
+    const licenseCount = report.licenses.total;
+
+    const severityCount = {
+      low: 0,
+      moderate: 0,
+      high: 0,
+      critical: 0
+    };
+
+    Object.values(vulnerabilities).forEach(vuln => {
+      vuln.severity = vuln.severity.toLowerCase();
+      if (severityCount[vuln.severity] !== undefined) {
+        severityCount[vuln.severity]++;
+      }
+    });
+
+    return {
+      totalVulnerabilities: Object.keys(vulnerabilities).length,
+      severityBreakdown: severityCount,
+      totalDependencies: dependencyCount,
+      outdatedDependencies: outdatedCount,
+      totalLicenses: licenseCount,
+      riskLevel: this.calculateRiskLevel(severityCount)
+    };
+  }
+
+  // 计算风险等级
+  calculateRiskLevel(severityCount) {
+    if (severityCount.critical > 0) return 'CRITICAL';
+    if (severityCount.high > 0) return 'HIGH';
+    if (severityCount.moderate > 5) return 'MEDIUM';
+    if (severityCount.moderate > 0) return 'LOW';
+    return 'NONE';
+  }
+}
+
+// 使用示例
+async function main() {
+  const generator = new SecurityReportGenerator();
+  const report = await generator.generateReport();
+  
+  console.log('\n📊 Security Summary:');
+  console.log(`  Total Vulnerabilities: ${report.summary.totalVulnerabilities}`);
+  console.log(`  Critical: ${report.summary.severityBreakdown.critical}`);
+  console.log(`  High: ${report.summary.severityBreakdown.high}`);
+  console.log(`  Moderate: ${report.summary.severityBreakdown.moderate}`);
+  console.log(`  Low: ${report.summary.severityBreakdown.low}`);
+  console.log(`  Risk Level: ${report.summary.riskLevel}`);
+  console.log(`  Total Dependencies: ${report.summary.totalDependencies}`);
+  console.log(`  Outdated: ${report.summary.outdatedDependencies}`);
+}
+
+main().catch(error => {
+  console.error('Error generating security report:', error);
+  process.exit(1);
+});
+```
+
+## 🎨 依赖锁定策略
+
+### package.json 配置
+
+```json
+{
+  "name": "react-app",
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "overrides": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "react": "^19.0.0"
+    }
+  },
+  "scripts": {
+    "audit:fix": "npm audit fix",
+    "audit:check": "npm audit --audit-level=moderate",
+    "deps:update": "npm update",
+    "deps:check": "npm outdated",
+    "security:report": "node scripts/security-report.js",
+    "deps:update-safe": "node scripts/dependency-updater.js"
+  },
+  "devDependencies": {
+    "npm-audit-resolver": "^3.0.0",
+    "snyk": "^1.1200.0",
+    "license-checker": "^25.0.1",
+    "npm-check-updates": "^16.14.0"
+  }
+}
+```
+
+### Dependabot 配置
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  # npm 依赖更新
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 10
+    target-branch: "develop"
+    versioning-strategy: increase
+    ignore:
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "deps"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "security"
+    reviewers:
+      - "security-team"
+    assignees:
+      - "maintainer"
+
+  # GitHub Actions 更新
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:00"
+    labels:
+      - "ci"
+      - "github-actions"
+```
+
+## 🚀 持续安全监控
+
+### 实时漏洞通知
+
+```js
+// scripts/vulnerability-notifier.js
+const { execSync } = require('child_process');
+const https = require('https');
+
+class VulnerabilityNotifier {
+  constructor(webhookUrl) {
+    this.webhookUrl = webhookUrl;
+  }
+
+  // 检查漏洞
+  async checkVulnerabilities() {
+    try {
+      const output = execSync('npm audit --json', { encoding: 'utf8' });
+      const auditData = JSON.parse(output);
+      const vulnerabilities = auditData.vulnerabilities || {};
+
+      if (Object.keys(vulnerabilities).length > 0) {
+        await this.sendNotification(vulnerabilities, auditData);
+      }
+
+      return vulnerabilities;
+    } catch (error) {
+      try {
+        const auditData = JSON.parse(error.stdout);
+        const vulnerabilities = auditData.vulnerabilities || {};
+        
+        if (Object.keys(vulnerabilities).length > 0) {
+          await this.sendNotification(vulnerabilities, auditData);
+        }
+
+        return vulnerabilities;
+      } catch {
+        return {};
+      }
+    }
+  }
+
+  // 发送通知
+  async sendNotification(vulnerabilities, auditData) {
+    const severityCount = this.countSeverity(vulnerabilities);
+    
+    const message = {
+      text: '🚨 Security Vulnerabilities Detected',
+      attachments: [
+        {
+          color: this.getSeverityColor(severityCount),
+          fields: [
+            {
+              title: 'Critical',
+              value: severityCount.critical.toString(),
+              short: true
+            },
+            {
+              title: 'High',
+              value: severityCount.high.toString(),
+              short: true
+            },
+            {
+              title: 'Moderate',
+              value: severityCount.moderate.toString(),
+              short: true
+            },
+            {
+              title: 'Low',
+              value: severityCount.low.toString(),
+              short: true
+            }
+          ],
+          footer: 'React App Security Monitor',
+          ts: new Date().toISOString()
+        }
+      ]
+    };
+
+    await this.sendToWebhook(message);
+  }
+
+  // 统计严重程度
+  countSeverity(vulnerabilities) {
+    const count = {
+      low: 0,
+      moderate: 0,
+      high: 0,
+      critical: 0
+    };
+
+    Object.values(vulnerabilities).forEach(vuln => {
+      const severity = vuln.severity.toLowerCase();
+      if (count[severity] !== undefined) {
+        count[severity]++;
+      }
+    });
+
+    return count;
+  }
+
+  // 获取严重程度颜色
+  getSeverityColor(severityCount) {
+    if (severityCount.critical > 0) return '#e74c3c';
+    if (severityCount.high > 0) return '#f39c12';
+    if (severityCount.moderate > 0) return '#f1c40f';
+    return '#3498db';
+  }
+
+  // 发送到 Webhook
+  async sendToWebhook(message) {
+    return new Promise((resolve, reject) => {
+      const data = JSON.stringify(message);
+      const url = new URL(this.webhookUrl);
+
+      const options = {
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: url.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(data)
+        }
+      };
+
+      const req = https.request(options, (res) => {
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(body);
+          } else {
+            reject(new Error(`HTTP ${res.statusCode}`));
+          }
+        });
+      });
+
+      req.on('error', reject);
+      req.write(data);
+      req.end();
+    });
+  }
+}
+
+// 使用示例
+async function main() {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  
+  if (!webhookUrl) {
+    console.error('SLACK_WEBHOOK_URL environment variable is required');
+    process.exit(1);
+  }
+
+  const notifier = new VulnerabilityNotifier(webhookUrl);
+  await notifier.checkVulnerabilities();
+}
+
+main().catch(error => {
+  console.error('Error:', error);
+  process.exit(1);
+});
+```
+
+## 🔗 相关概念
+
+- **npm audit**: npm 内置的安全审计工具
+- **Snyk**: 第三方漏洞扫描服务
+- **Dependabot**: GitHub 的自动依赖更新工具
+- **CPE**: 通用平台枚举，用于标识产品
+
+## 📚 学习检查点
+
+- [ ] 理解依赖安全的重要性
+- [ ] 掌握 npm audit 的使用方法
+- [ ] 了解 Snyk 等第三方工具
+- [ ] 能够配置自动化安全检查
+- [ ] 掌握许可证合规性检查
+- [ ] 了解依赖更新策略
+- [ ] 能够建立持续安全监控
+
+## 🚀 下一步
+
+→ [实战项目](../../10-practice/01-beginner-projects.mdx)  
+→ [职业发展](../../10-practice/06-career-development.mdx)  
+
+## 🎯 重点提示
+
+### 依赖安全原则
+- **定期审计**: 定期运行安全审计工具
+- **自动更新**: 使用 Dependabot 自动更新依赖
+- **版本锁定**: 使用 package-lock.json 锁定版本
+- **许可证合规**: 检查依赖的许可证合规性
+
+### 工具选择
+- **npm audit**: 基础安全检查，npm 内置
+- **Snyk**: 更全面的漏洞扫描和修复建议
+- **Dependabot**: GitHub 集成的自动更新工具
+- **OWASP Dependency Check**: 开源的依赖检查工具
+
+### 最佳实践
+- **自动化**: 将安全检查集成到 CI/CD 流程
+- **监控**: 建立实时的安全监控系统
+- **备份**: 更新依赖前备份当前版本
+- **测试**: 更新后运行完整的测试套件

@@ -1,0 +1,740 @@
+# 自动化测试
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+自动化测试是现代软件开发的重要组成部分，通过编写测试代码来验证应用程序的功能和性能。对于 React 19 应用，我们可以使用 Vitest、Jest、React Testing Library 等工具来构建完整的测试体系。
+
+## 🎯 测试类型
+
+### 1. 单元测试
+
+测试单个函数、组件或模块的行为：
+
+```jsx
+// src/utils/math.test.js
+import { describe, it, expect } from 'vitest';
+import { add, multiply, divide } from './math';
+
+describe('Math utilities', () => {
+  describe('add', () => {
+    it('should add two numbers correctly', () => {
+      expect(add(2, 3)).toBe(5);
+      expect(add(-1, 1)).toBe(0);
+      expect(add(0, 0)).toBe(0);
+    });
+
+    it('should handle decimal numbers', () => {
+      expect(add(0.1, 0.2)).toBeCloseTo(0.3);
+    });
+  });
+
+  describe('multiply', () => {
+    it('should multiply two numbers correctly', () => {
+      expect(multiply(2, 3)).toBe(6);
+      expect(multiply(-2, 3)).toBe(-6);
+      expect(multiply(0, 5)).toBe(0);
+    });
+  });
+
+  describe('divide', () => {
+    it('should divide two numbers correctly', () => {
+      expect(divide(6, 2)).toBe(3);
+      expect(divide(-6, 2)).toBe(-3);
+    });
+
+    it('should throw error when dividing by zero', () => {
+      expect(() => divide(5, 0)).toThrow('Cannot divide by zero');
+    });
+  });
+});
+```
+
+```js
+// src/utils/math.js
+export function add(a, b) {
+  return a + b;
+}
+
+export function multiply(a, b) {
+  return a * b;
+}
+
+export function divide(a, b) {
+  if (b === 0) {
+    throw new Error('Cannot divide by zero');
+  }
+  return a / b;
+}
+```
+
+### 2. 组件测试
+
+测试 React 组件的渲染和交互：
+
+```jsx
+// src/components/Button.test.jsx
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import Button from './Button';
+
+describe('Button Component', () => {
+  it('should render button with text', () => {
+    render(<Button>Click me</Button>);
+    expect(screen.getByText('Click me')).toBeInTheDocument();
+  });
+
+  it('should call onClick when clicked', () => {
+    const handleClick = vi.fn();
+    render(<Button onClick={handleClick}>Click me</Button>);
+    
+    fireEvent.click(screen.getByText('Click me'));
+    expect(handleClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('should be disabled when disabled prop is true', () => {
+    render(<Button disabled>Click me</Button>);
+    const button = screen.getByText('Click me');
+    expect(button).toBeDisabled();
+  });
+
+  it('should apply custom className', () => {
+    render(<Button className="custom-class">Click me</Button>);
+    const button = screen.getByText('Click me');
+    expect(button).toHaveClass('custom-class');
+  });
+
+  it('should render with different variants', () => {
+    render(<Button variant="primary">Primary</Button>);
+    const button = screen.getByText('Primary');
+    expect(button).toHaveClass('button-primary');
+  });
+});
+```
+
+```jsx
+// src/components/Button.jsx
+import { forwardRef } from 'react';
+import styles from './Button.module.css';
+
+function Button({ 
+  children, 
+  onClick, 
+  disabled = false, 
+  variant = 'default',
+  className = '',
+  ...props 
+}, ref) {
+  const buttonClasses = [
+    styles.button,
+    styles[`button-${variant}`],
+    disabled && styles.disabled,
+    className
+  ].filter(Boolean).join(' ');
+
+  return (
+    <button
+      ref={ref}
+      className={buttonClasses}
+      onClick={onClick}
+      disabled={disabled}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+export default forwardRef(Button);
+```
+
+### 3. 集成测试
+
+测试多个组件或模块之间的交互：
+
+```jsx
+// src/features/counter/Counter.test.jsx
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import Counter from './Counter';
+import * as counterApi from './counterApi';
+
+vi.mock('./counterApi');
+
+describe('Counter Integration Test', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should increment counter and sync with server', async () => {
+    const mockValue = 5;
+    counterApi.fetchCounter.mockResolvedValue({ value: mockValue });
+    counterApi.updateCounter.mockResolvedValue({ value: mockValue + 1 });
+
+    render(<Counter />);
+
+    // Wait for initial fetch
+    await waitFor(() => {
+      expect(screen.getByText(`Count: ${mockValue}`)).toBeInTheDocument();
+    });
+
+    // Click increment button
+    fireEvent.click(screen.getByText('Increment'));
+
+    // Wait for update
+    await waitFor(() => {
+      expect(screen.getByText(`Count: ${mockValue + 1}`)).toBeInTheDocument();
+    });
+
+    expect(counterApi.updateCounter).toHaveBeenCalledWith(mockValue + 1);
+  });
+
+  it('should handle server errors gracefully', async () => {
+    counterApi.fetchCounter.mockRejectedValue(new Error('Network error'));
+
+    render(<Counter />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Error loading counter')).toBeInTheDocument();
+    });
+  });
+});
+```
+
+## 🛠️ 完整测试配置
+
+### Vitest 配置
+
+```js
+// vitest.config.js
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+import path from 'path';
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.js'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+      exclude: [
+        'node_modules/',
+        'src/test/',
+        '**/*.d.ts',
+        '**/*.config.*',
+        '**/mockData',
+        'dist/'
+      ],
+      thresholds: {
+        lines: 80,
+        functions: 80,
+        branches: 75,
+        statements: 80
+      }
+    },
+    include: ['src/**/*.{test,spec}.{js,jsx,ts,tsx}'],
+    exclude: ['node_modules', 'dist', '.idea', '.git', '.cache']
+  },
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+      '@components': path.resolve(__dirname, './src/components'),
+      '@utils': path.resolve(__dirname, './src/utils'),
+      '@hooks': path.resolve(__dirname, './src/hooks')
+    }
+  }
+});
+```
+
+```js
+// src/test/setup.js
+import '@testing-library/jest-dom';
+import { vi } from 'vitest';
+
+// Mock IntersectionObserver
+global.IntersectionObserver = vi.fn(() => ({
+  observe: vi.fn(),
+  unobserve: vi.fn(),
+  disconnect: vi.fn()
+}));
+
+// Mock ResizeObserver
+global.ResizeObserver = vi.fn(() => ({
+  observe: vi.fn(),
+  unobserve: vi.fn(),
+  disconnect: vi.fn()
+}));
+
+// Mock matchMedia
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  value: vi.fn().mockImplementation(query => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn()
+  }))
+});
+
+// Mock localStorage
+const localStorageMock = {
+  getItem: vi.fn(),
+  setItem: vi.fn(),
+  removeItem: vi.fn(),
+  clear: vi.fn(),
+};
+global.localStorage = localStorageMock;
+```
+
+### Jest 配置（替代方案）
+
+```js
+// jest.config.js
+const nextJest = require('next/jest');
+
+const createJestConfig = nextJest({
+  dir: './',
+});
+
+const customJestConfig = {
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
+  testEnvironment: 'jest-environment-jsdom',
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/src/$1',
+    '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
+  },
+  collectCoverageFrom: [
+    'src/**/*.{js,jsx,ts,tsx}',
+    '!src/**/*.d.ts',
+    '!src/**/*.stories.{js,jsx,ts,tsx}',
+    '!src/**/__tests__/**',
+    '!src/test/**',
+  ],
+  coverageThresholds: {
+    global: {
+      branches: 75,
+      functions: 80,
+      lines: 80,
+      statements: 80,
+    },
+  },
+  transform: {
+    '^.+\\.(js|jsx|ts|tsx)$': ['@swc/jest', {
+      jsc: {
+        transform: {
+          react: {
+            runtime: 'automatic',
+          },
+        },
+      },
+    }],
+  },
+};
+
+module.exports = createJestConfig(customJestConfig);
+```
+
+## 📝 实际应用示例
+
+### 1. React 19 Hooks 测试
+
+```jsx
+// src/hooks/useCounter.test.jsx
+import { renderHook, act, waitFor } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { useCounter } from './useCounter';
+
+describe('useCounter Hook', () => {
+  it('should initialize with default value', () => {
+    const { result } = renderHook(() => useCounter());
+    expect(result.current.count).toBe(0);
+  });
+
+  it('should initialize with custom value', () => {
+    const { result } = renderHook(() => useCounter(5));
+    expect(result.current.count).toBe(5);
+  });
+
+  it('should increment count', () => {
+    const { result } = renderHook(() => useCounter());
+    
+    act(() => {
+      result.current.increment();
+    });
+    
+    expect(result.current.count).toBe(1);
+  });
+
+  it('should decrement count', () => {
+    const { result } = renderHook(() => useCounter(5));
+    
+    act(() => {
+      result.current.decrement();
+    });
+    
+    expect(result.current.count).toBe(4);
+  });
+
+  it('should reset count', () => {
+    const { result } = renderHook(() => useCounter(10));
+    
+    act(() => {
+      result.current.reset();
+    });
+    
+    expect(result.current.count).toBe(0);
+  });
+});
+```
+
+```jsx
+// src/hooks/useCounter.jsx
+import { useState, useCallback } from 'react';
+
+export function useCounter(initialValue = 0) {
+  const [count, setCount] = useState(initialValue);
+
+  const increment = useCallback(() => {
+    setCount(prev => prev + 1);
+  }, []);
+
+  const decrement = useCallback(() => {
+    setCount(prev => prev - 1);
+  }, []);
+
+  const reset = useCallback(() => {
+    setCount(initialValue);
+  }, [initialValue]);
+
+  return {
+    count,
+    increment,
+    decrement,
+    reset
+  };
+}
+```
+
+### 2. 异步操作测试
+
+```jsx
+// src/components/UserProfile.test.jsx
+import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import UserProfile from './UserProfile';
+import * as userApi from './userApi';
+
+vi.mock('./userApi');
+
+describe('UserProfile Component', () => {
+  const mockUser = {
+    id: 1,
+    name: 'John Doe',
+    email: 'john@example.com',
+    avatar: 'https://example.com/avatar.jpg'
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should show loading state initially', () => {
+    userApi.fetchUser.mockImplementation(
+      () => new Promise(resolve => setTimeout(() => resolve(mockUser), 1000))
+    );
+
+    render(<UserProfile userId={1} />);
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+  });
+
+  it('should display user data after loading', async () => {
+    userApi.fetchUser.mockResolvedValue(mockUser);
+
+    render(<UserProfile userId={1} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(mockUser.name)).toBeInTheDocument();
+      expect(screen.getByText(mockUser.email)).toBeInTheDocument();
+    });
+  });
+
+  it('should display error message on failure', async () => {
+    userApi.fetchUser.mockRejectedValue(new Error('Failed to fetch user'));
+
+    render(<UserProfile userId={1} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/error/i)).toBeInTheDocument();
+    });
+  });
+});
+```
+
+### 3. 表单测试
+
+```jsx
+// src/components/ContactForm.test.jsx
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import ContactForm from './ContactForm';
+import * as formApi from './formApi';
+
+vi.mock('./formApi');
+
+describe('ContactForm Component', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should validate required fields', async () => {
+    render(<ContactForm />);
+
+    const submitButton = screen.getByText('Submit');
+    fireEvent.click(submitButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Name is required')).toBeInTheDocument();
+      expect(screen.getByText('Email is required')).toBeInTheDocument();
+    });
+  });
+
+  it('should submit form with valid data', async () => {
+    formApi.submitForm.mockResolvedValue({ success: true });
+
+    render(<ContactForm />);
+
+    fireEvent.change(screen.getByLabelText(/name/i), {
+      target: { value: 'John Doe' }
+    });
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: { value: 'john@example.com' }
+    });
+    fireEvent.change(screen.getByLabelText(/message/i), {
+      target: { value: 'Test message' }
+    });
+
+    fireEvent.click(screen.getByText('Submit'));
+
+    await waitFor(() => {
+      expect(formApi.submitForm).toHaveBeenCalledWith({
+        name: 'John Doe',
+        email: 'john@example.com',
+        message: 'Test message'
+      });
+      expect(screen.getByText('Form submitted successfully!')).toBeInTheDocument();
+    });
+  });
+});
+```
+
+### 4. 路由测试
+
+```jsx
+// src/App.test.jsx
+import { render, screen } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import App from './App';
+import Home from './pages/Home';
+import About from './pages/About';
+import NotFound from './pages/NotFound';
+
+describe('App Routing', () => {
+  it('should render home page on root path', () => {
+    render(
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    );
+    expect(screen.getByText(/welcome/i)).toBeInTheDocument();
+  });
+
+  it('should render about page on /about path', () => {
+    render(
+      <BrowserRouter initialEntries={['/about']}>
+        <App />
+      </BrowserRouter>
+    );
+    expect(screen.getByText(/about us/i)).toBeInTheDocument();
+  });
+
+  it('should render 404 page on unknown path', () => {
+    render(
+      <BrowserRouter initialEntries={['/unknown']}>
+        <App />
+      </BrowserRouter>
+    );
+    expect(screen.getByText(/page not found/i)).toBeInTheDocument();
+  });
+
+  it('should navigate between pages', async () => {
+    render(
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    );
+
+    const aboutLink = screen.getByText(/about/i);
+    fireEvent.click(aboutLink);
+
+    await waitFor(() => {
+      expect(screen.getByText(/about us/i)).toBeInTheDocument();
+    });
+  });
+});
+```
+
+## 🎨 测试工具
+
+### React Testing Library
+
+```jsx
+// 常用查询方法
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+
+// 查询元素
+screen.getByText('Hello');
+screen.getByRole('button');
+screen.getByLabelText('Username');
+screen.getByPlaceholderText('Enter email');
+screen.getByTestId('submit-button');
+
+// 事件模拟
+fireEvent.click(element);
+fireEvent.change(input, { target: { value: 'test' } });
+fireEvent.submit(form);
+
+// 等待异步操作
+await waitFor(() => {
+  expect(element).toBeInTheDocument();
+});
+
+// 断言
+expect(element).toBeInTheDocument();
+expect(element).toHaveTextContent('Hello');
+expect(element).toHaveClass('active');
+expect(element).toBeDisabled();
+expect(element).toBeVisible();
+```
+
+### 用户交互测试
+
+```jsx
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+
+describe('User Interactions', () => {
+  it('should handle user typing', async () => {
+    const user = userEvent.setup();
+    render(<MyComponent />);
+
+    const input = screen.getByRole('textbox');
+    await user.type(input, 'Hello World');
+
+    expect(input).toHaveValue('Hello World');
+  });
+
+  it('should handle keyboard interactions', async () => {
+    const user = userEvent.setup();
+    render(<MyComponent />);
+
+    const input = screen.getByRole('textbox');
+    await user.click(input);
+    await user.keyboard('Hello{Enter}');
+
+    expect(screen.getByText('Submitted: Hello')).toBeInTheDocument();
+  });
+
+  it('should handle drag and drop', async () => {
+    const user = userEvent.setup();
+    render(<DragDropComponent />);
+
+    const draggable = screen.getByTestId('draggable');
+    const droppable = screen.getByTestId('droppable');
+
+    await user.drag(draggable, droppable);
+
+    expect(droppable).toHaveClass('drag-over');
+  });
+});
+```
+
+## 🚀 性能测试
+
+### 组件渲染性能
+
+```jsx
+// src/components/HeavyComponent.test.jsx
+import { render, screen } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import HeavyComponent from './HeavyComponent';
+
+describe('HeavyComponent Performance', () => {
+  it('should render within acceptable time', () => {
+    const startTime = performance.now();
+    render(<HeavyComponent />);
+    const endTime = performance.now();
+    
+    const renderTime = endTime - startTime;
+    expect(renderTime).toBeLessThan(1000); // 1 second
+  });
+
+  it('should not re-render unnecessarily', () => {
+    const { rerender } = render(<HeavyComponent value={1} />);
+    const initialRenderCount = HeavyComponent.renderCount;
+    
+    rerender(<HeavyComponent value={1} />);
+    expect(HeavyComponent.renderCount).toBe(initialRenderCount);
+  });
+});
+```
+
+## 🔗 相关概念
+
+- **单元测试**: 测试最小的可测试单元
+- **集成测试**: 测试多个组件的交互
+- **端到端测试**: 测试完整的用户流程
+- **测试覆盖率**: 代码被测试覆盖的程度
+
+## 📚 学习检查点
+
+- [ ] 理解不同类型的测试及其用途
+- [ ] 掌握 Vitest/Jest 的配置方法
+- [ ] 能够编写单元测试和组件测试
+- [ ] 了解如何测试异步操作
+- [ ] 掌握 React Testing Library 的使用
+- [ ] 能够测试表单和路由
+- [ ] 了解性能测试的方法
+
+## 🚀 下一步
+
+→ [部署策略](./deployment-strategies.mdx)  
+→ [性能监控与优化](../03-monitoring/monitoring-overview.mdx)  
+→ [安全性](../04-security/security-overview.mdx)
+
+## 🎯 重点提示
+
+### 测试最佳实践
+- **测试用户行为**: 测试用户如何使用应用，而不是实现细节
+- **保持测试简单**: 每个测试应该只验证一件事
+- **使用描述性名称**: 测试名称应该清楚说明测试的内容
+- **避免测试实现细节**: 关注功能而不是内部实现
+
+### Vitest vs Jest
+- **Vitest**: 更快，与 Vite 无缝集成，推荐用于新项目
+- **Jest**: 成熟稳定，生态丰富，适合现有项目
+- **迁移**: 可以从 Jest 迁移到 Vitest，享受更好的性能
+
+### React 19 测试要点
+- **新 Hooks 测试**: 测试 useActionState、useOptimistic 等新 Hooks
+- **Actions 测试**: 测试表单 Actions 和异步转换
+- **类型安全**: 利用 TypeScript 提高测试的可靠性

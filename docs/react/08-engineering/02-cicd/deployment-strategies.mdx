@@ -1,0 +1,875 @@
+# 部署策略
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+部署策略决定了如何将新版本的应用发布到生产环境。选择合适的部署策略可以最小化停机时间、降低风险，并提供更好的用户体验。本章节将介绍蓝绿部署、金丝雀发布、滚动更新等主流部署策略。
+
+## 🎯 核心部署策略
+
+### 1. 蓝绿部署（Blue-Green Deployment）
+
+蓝绿部署维护两个完全相同的生产环境：蓝色环境（当前生产版本）和绿色环境（新版本）。
+
+```yaml
+# .github/workflows/blue-green-deploy.yml
+name: Blue-Green Deployment
+
+on:
+  push:
+    branches: [main]
+
+env:
+  BLUE_ENVIRONMENT: production-blue
+  GREEN_ENVIRONMENT: production-green
+
+jobs:
+  deploy-green:
+    name: Deploy to Green Environment
+    runs-on: ubuntu-latest
+    environment:
+      name: green
+      url: https://green.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Deploy to green environment
+        run: |
+          # Deploy to green environment
+          aws s3 sync dist/ s3://${{ secrets.AWS_S3_BUCKET_GREEN }} --delete
+          
+          # Invalidate CloudFront cache
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_GREEN }} \
+            --paths "/*"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: 'us-east-1'
+
+      - name: Run smoke tests on green
+        run: |
+          # Wait for deployment to be ready
+          sleep 30
+          
+          # Run smoke tests
+          npm run test:smoke -- --base-url https://green.example.com
+
+      - name: Notify green deployment ready
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: 'Green environment is ready for traffic switch',
+              attachments: [{
+                color: 'good',
+                text: 'Please review and approve the deployment',
+                actions: [{
+                  type: 'button',
+                  text: 'Switch to Green',
+                  url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+                }]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  switch-traffic:
+    name: Switch Traffic to Green
+    runs-on: ubuntu-latest
+    needs: deploy-green
+    environment:
+      name: production
+      url: https://example.com
+    steps:
+      - name: Wait for manual approval
+        run: echo "Waiting for manual approval to switch traffic"
+
+      - name: Switch DNS to green
+        run: |
+          # Update Route53 to point to green environment
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id ${{ secrets.AWS_HOSTED_ZONE_ID }} \
+            --change-batch file://route53-change.json
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Monitor green environment
+        run: |
+          # Monitor for 5 minutes
+          for i in {1..30}; do
+            if curl -f https://example.com/health; then
+              echo "Health check passed ($i/30)"
+            else
+              echo "Health check failed, rolling back"
+              # Rollback logic here
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Notify successful deployment
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: 'Successfully switched to green environment',
+              attachments: [{
+                color: 'good',
+                text: 'Production is now running on green environment'
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+### 2. 金丝雀发布（Canary Deployment）
+
+金丝雀发布逐步将新版本发布给一小部分用户，监控问题后再逐步扩大范围。
+
+```yaml
+# .github/workflows/canary-deploy.yml
+name: Canary Deployment
+
+on:
+  push:
+    branches: [main]
+
+env:
+  CANARY_PERCENTAGES: [5, 10, 25, 50, 100]
+
+jobs:
+  deploy-canary:
+    name: Deploy Canary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        percentage: ${{ env.CANARY_PERCENTAGES }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Deploy canary version
+        run: |
+          # Deploy canary version
+          aws s3 sync dist/ s3://${{ secrets.AWS_S3_BUCKET_CANARY }} --delete
+          
+          # Update canary percentage
+          aws lambda invoke \
+            --function-name update-canary-traffic \
+            --payload '{"percentage": ${{ matrix.percentage }}}' \
+            response.json
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: 'us-east-1'
+
+      - name: Wait for deployment
+        run: sleep 60
+
+      - name: Monitor canary metrics
+        run: |
+          # Check error rates
+          ERROR_RATE=$(aws cloudwatch get-metric-statistics \
+            --namespace AWS/ApplicationELB \
+            --metric-name HTTPCode_ELB_5XX_Count \
+            --dimensions Name=LoadBalancer,Value=${{ secrets.LOAD_BALANCER }} \
+            --start-time $(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%S) \
+            --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+            --period 60 \
+            --statistics Sum | jq -r '.Datapoints[0].Sum')
+          
+          # Check if error rate is acceptable
+          if [ "$ERROR_RATE" -gt 10 ]; then
+            echo "Error rate too high: $ERROR_RATE"
+            exit 1
+          fi
+
+      - name: Check canary success
+        if: matrix.percentage == 100
+        run: |
+          # If canary reaches 100%, promote to stable
+          aws s3 sync s3://${{ secrets.AWS_S3_BUCKET_CANARY }}/ s3://${{ secrets.AWS_S3_BUCKET_STABLE }}/ --delete
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          # Rollback to stable version
+          aws lambda invoke \
+            --function-name update-canary-traffic \
+            --payload '{"percentage": 0}' \
+            response.json
+          
+          # Notify rollback
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H 'Content-Type: application/json' \
+            -d '{"text": "Canary deployment failed, rolled back to stable version"}'
+```
+
+### 3. 滚动更新（Rolling Update）
+
+滚动更新逐个替换应用实例，确保始终有可用的实例。
+
+```yaml
+# .github/workflows/rolling-update.yml
+name: Rolling Update Deployment
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy-rolling:
+    name: Rolling Update
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Build and push Docker image
+        run: |
+          docker build -t ${{ secrets.ECR_REGISTRY }}/react-app:${{ github.sha }} .
+          docker push ${{ secrets.ECR_REGISTRY }}/react-app:${{ github.sha }}
+
+      - name: Update ECS task definition
+        run: |
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition react-app-task \
+            --query 'taskDefinition' \
+            --output json)
+          
+          NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | \
+            jq --arg IMAGE "${{ secrets.ECR_REGISTRY }}/react-app:${{ github.sha }}" \
+            '.containerDefinitions[0].image = $IMAGE' | \
+            jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+          
+          aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEFINITION"
+
+      - name: Get current task definition
+        id: task-def
+        run: |
+          TASK_ARN=$(aws ecs describe-task-definition \
+            --task-definition react-app-task \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "task_arn=$TASK_ARN" >> $GITHUB_OUTPUT
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster react-app-cluster \
+            --service react-app-service \
+            --task-definition ${{ steps.task-def.outputs.task_arn }} \
+            --deployment-configuration maximumPercent=200,minimumHealthyPercent=100
+
+      - name: Wait for deployment to complete
+        run: |
+          aws ecs wait services-stable \
+            --cluster react-app-cluster \
+            --services react-app-service
+
+      - name: Verify deployment
+        run: |
+          # Health check
+          for i in {1..30}; do
+            if curl -f https://example.com/health; then
+              echo "Health check passed ($i/30)"
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Notify deployment success
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: 'Rolling update completed successfully',
+              attachments: [{
+                color: 'good',
+                text: 'All instances have been updated to the new version'
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+## 📝 实际应用示例
+
+### 1. 多环境部署
+
+```yaml
+# .github/workflows/multi-env-deploy.yml
+name: Multi-Environment Deployment
+
+on:
+  push:
+    branches: [main, develop, staging]
+
+jobs:
+  deploy:
+    name: Deploy to ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - branch: develop
+            environment: development
+            url: https://dev.example.com
+            bucket: dev-bucket
+            distribution: DEV_DISTRIBUTION_ID
+          - branch: staging
+            environment: staging
+            url: https://staging.example.com
+            bucket: staging-bucket
+            distribution: STAGING_DISTRIBUTION_ID
+          - branch: main
+            environment: production
+            url: https://example.com
+            bucket: prod-bucket
+            distribution: PROD_DISTRIBUTION_ID
+    environment:
+      name: ${{ matrix.environment }}
+      url: ${{ matrix.url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ secrets[format('{0}_API_URL', matrix.environment)] }}
+
+      - name: Deploy to S3
+        run: |
+          aws s3 sync dist/ s3://${{ matrix.bucket }} --delete
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets[matrix.distribution] }} \
+            --paths "/*"
+```
+
+### 2. 特性标志部署
+
+```jsx
+// src/utils/featureFlags.js
+export const featureFlags = {
+  NEW_DASHBOARD: process.env.VITE_NEW_DASHBOARD === 'true',
+  DARK_MODE: process.env.VITE_DARK_MODE === 'true',
+  BETA_FEATURES: process.env.VITE_BETA_FEATURES === 'true'
+};
+
+export function isFeatureEnabled(featureName) {
+  return featureFlags[featureName] || false;
+}
+```
+
+```jsx
+// src/components/Dashboard.jsx
+import { isFeatureEnabled } from '../utils/featureFlags';
+
+function Dashboard() {
+  if (isFeatureEnabled('NEW_DASHBOARD')) {
+    return <NewDashboard />;
+  }
+  return <OldDashboard />;
+}
+```
+
+```yaml
+# .github/workflows/feature-flag-deploy.yml
+name: Feature Flag Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      feature:
+        description: 'Feature flag to toggle'
+        required: true
+        type: choice
+        options:
+          - NEW_DASHBOARD
+          - DARK_MODE
+          - BETA_FEATURES
+      enabled:
+        description: 'Enable or disable feature'
+        required: true
+        type: boolean
+
+jobs:
+  update-feature-flag:
+    name: Update Feature Flag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update feature flag
+        run: |
+          # Update environment variables in deployment config
+          aws ssm put-parameter \
+            --name "/react-app/${{ inputs.feature }}" \
+            --value "${{ inputs.enabled }}" \
+            --type String \
+            --overwrite
+
+      - name: Trigger deployment
+        run: |
+          # Trigger deployment with updated feature flags
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/deploy.yml/dispatches \
+            -d '{"ref":"main"}'
+```
+
+### 3. A/B 测试部署
+
+```jsx
+// src/utils/abTesting.js
+export function getABTestVariant(testName) {
+  const variants = {
+    'landing-page': ['control', 'variant-a', 'variant-b'],
+    'checkout-flow': ['control', 'variant-a']
+  };
+
+  const testVariants = variants[testName];
+  if (!testVariants) return 'control';
+
+  const userId = getUserId();
+  const hash = hashCode(userId + testName);
+  const index = Math.abs(hash) % testVariants.length;
+  
+  return testVariants[index];
+}
+
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return hash;
+}
+
+function getUserId() {
+  return localStorage.getItem('userId') || generateUserId();
+}
+
+function generateUserId() {
+  const userId = 'user_' + Math.random().toString(36).substr(2, 9);
+  localStorage.setItem('userId', userId);
+  return userId;
+}
+```
+
+```jsx
+// src/components/LandingPage.jsx
+import { getABTestVariant } from '../utils/abTesting';
+
+function LandingPage() {
+  const variant = getABTestVariant('landing-page');
+
+  switch (variant) {
+    case 'variant-a':
+      return <LandingPageVariantA />;
+    case 'variant-b':
+      return <LandingPageVariantB />;
+    default:
+      return <LandingPageControl />;
+  }
+}
+```
+
+## 🎨 监控和回滚
+
+### 部署监控
+
+```yaml
+# .github/workflows/deploy-monitor.yml
+name: Deployment Monitoring
+
+on:
+  workflow_run:
+    workflows: ['Deploy to Production']
+    types: [completed]
+
+jobs:
+  monitor-deployment:
+    name: Monitor Deployment
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Wait for deployment to stabilize
+        run: sleep 300
+
+      - name: Check error rates
+        id: error-check
+        run: |
+          ERROR_RATE=$(aws cloudwatch get-metric-statistics \
+            --namespace AWS/ApplicationELB \
+            --metric-name HTTPCode_ELB_5XX_Count \
+            --dimensions Name=LoadBalancer,Value=${{ secrets.LOAD_BALANCER }} \
+            --start-time $(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%S) \
+            --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+            --period 60 \
+            --statistics Sum | jq -r '.Datapoints | map(.Sum) | add // 0')
+          
+          echo "error_rate=$ERROR_RATE" >> $GITHUB_OUTPUT
+          
+          if [ "$ERROR_RATE" -gt 50 ]; then
+            echo "Error rate too high: $ERROR_RATE"
+            exit 1
+          fi
+
+      - name: Check response times
+        id: latency-check
+        run: |
+          LATENCY=$(aws cloudwatch get-metric-statistics \
+            --namespace AWS/ApplicationELB \
+            --metric-name TargetResponseTime \
+            --dimensions Name=LoadBalancer,Value=${{ secrets.LOAD_BALANCER }} \
+            --start-time $(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%S) \
+            --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+            --period 60 \
+            --statistics Average | jq -r '.Datapoints | map(.Average) | add / length | * 1000 | floor // 0')
+          
+          echo "latency=$LATENCY" >> $GITHUB_OUTPUT
+          
+          if [ "$LATENCY" -gt 1000 ]; then
+            echo "Latency too high: ${LATENCY}ms"
+            exit 1
+          fi
+
+      - name: Rollback on issues
+        if: failure()
+        run: |
+          # Rollback to previous version
+          aws ecs update-service \
+            --cluster react-app-cluster \
+            --service react-app-service \
+            --task-definition react-app-task:previous
+
+          # Notify team
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"Deployment rolled back due to issues\",
+              \"attachments\": [{
+                \"color\": \"danger\",
+                \"text\": \"Error rate: ${{ steps.error-check.outputs.error_rate }}, Latency: ${{ steps.latency-check.outputs.latency }}ms\"
+              }]
+            }"
+
+      - name: Report metrics
+        if: success()
+        run: |
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"Deployment monitoring completed successfully\",
+              \"attachments\": [{
+                \"color\": \"good\",
+                \"fields\": [{
+                  \"title\": \"Error Rate\",
+                  \"value\": \"${{ steps.error-check.outputs.error_rate }}\",
+                  \"short\": true
+                }, {
+                  \"title\": \"Latency\",
+                  \"value\": \"${{ steps.latency-check.outputs.latency }}ms\",
+                  \"short\": true
+                }]
+              }]
+            }"
+```
+
+### 自动回滚
+
+```yaml
+# .github/workflows/auto-rollback.yml
+name: Auto Rollback
+
+on:
+  workflow_run:
+    workflows: ['Deploy to Production']
+    types: [completed]
+
+jobs:
+  auto-rollback:
+    name: Automatic Rollback
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Monitor for issues
+        id: monitor
+        run: |
+          # Monitor for 10 minutes
+          for i in {1..60}; do
+            ERROR_COUNT=$(curl -s https://example.com/api/health | jq -r '.error_count')
+            
+            if [ "$ERROR_COUNT" -gt 100 ]; then
+              echo "Too many errors: $ERROR_COUNT"
+              echo "needs_rollback=true" >> $GITHUB_OUTPUT
+              break
+            fi
+            
+            sleep 10
+          done
+
+      - name: Rollback deployment
+        if: steps.monitor.outputs.needs_rollback == 'true'
+        run: |
+          # Get previous task definition
+          PREVIOUS_TASK=$(aws ecs describe-task-definition \
+            --task-definition react-app-task \
+            --query 'taskDefinition.revision' \
+            --output json | jq '. - 1')
+          
+          # Rollback to previous version
+          aws ecs update-service \
+            --cluster react-app-cluster \
+            --service react-app-service \
+            --task-definition react-app-task:$PREVIOUS_TASK
+
+      - name: Notify rollback
+        if: steps.monitor.outputs.needs_rollback == 'true'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: 'Automatic rollback triggered',
+              attachments: [{
+                color: 'danger',
+                text: 'Deployment rolled back due to high error rate'
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+## 🚀 最佳实践
+
+### 1. 部署前检查清单
+
+```yaml
+# .github/workflows/pre-deploy-checks.yml
+name: Pre-Deployment Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  pre-deploy-checks:
+    name: Run Pre-Deployment Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run security scan
+        run: |
+          npm audit --audit-level=moderate
+
+      - name: Run tests
+        run: |
+          npm test -- --coverage
+
+      - name: Check coverage thresholds
+        run: |
+          COVERAGE=$(cat coverage/coverage-summary.json | jq -r '.total.lines.pct')
+          
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "Coverage too low: $COVERAGE%"
+            exit 1
+          fi
+
+      - name: Run linter
+        run: |
+          npm run lint
+
+      - name: Build application
+        run: |
+          npm run build
+
+      - name: Check bundle size
+        run: |
+          BUNDLE_SIZE=$(du -sh dist/ | cut -f1)
+          echo "Bundle size: $BUNDLE_SIZE"
+          
+          # Alert if bundle size increased significantly
+          # (Compare with previous build)
+```
+
+### 2. 部署后验证
+
+```yaml
+# .github/workflows/post-deploy-verification.yml
+name: Post-Deployment Verification
+
+on:
+  workflow_run:
+    workflows: ['Deploy to Production']
+    types: [completed]
+
+jobs:
+  verify-deployment:
+    name: Verify Deployment
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Run smoke tests
+        run: |
+          npm run test:smoke -- --base-url https://example.com
+
+      - name: Check API endpoints
+        run: |
+          curl -f https://example.com/api/health || exit 1
+          curl -f https://example.com/api/users || exit 1
+
+      - name: Check critical paths
+        run: |
+          curl -f https://example.com/ || exit 1
+          curl -f https://example.com/dashboard || exit 1
+          curl -f https://example.com/settings || exit 1
+
+      - name: Verify performance
+        run: |
+          # Check Lighthouse score
+          lighthouse https://example.com --output=json --output-path=lighthouse-report.json
+          
+          SCORE=$(cat lighthouse-report.json | jq -r '.categories.performance.score * 100')
+          
+          if [ "$SCORE" -lt 80 ]; then
+            echo "Performance score too low: $SCORE"
+            exit 1
+          fi
+
+      - name: Generate deployment report
+        run: |
+          cat > deployment-report.md << EOF
+          # Deployment Report
+          
+          - **Commit**: ${{ github.sha }}
+          - **Branch**: ${{ github.ref }}
+          - **Deployed at**: $(date)
+          - **Status**: Success
+          
+          ## Verification Results
+          
+          - Smoke tests: ✅ Passed
+          - API endpoints: ✅ Passed
+          - Critical paths: ✅ Passed
+          - Performance score: $SCORE/100
+          EOF
+
+      - name: Upload deployment report
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-report
+          path: deployment-report.md
+```
+
+## 🔗 相关概念
+
+- **蓝绿部署**: 零停机时间的部署策略
+- **金丝雀发布**: 逐步放量，降低风险
+- **滚动更新**: 逐个更新实例
+- **特性标志**: 动态控制功能开关
+
+## 📚 学习检查点
+
+- [ ] 理解不同部署策略的优缺点
+- [ ] 掌握蓝绿部署的实现方法
+- [ ] 了解金丝雀发布的配置
+- [ ] 能够配置滚动更新
+- [ ] 掌握多环境部署的方法
+- [ ] 了解特性标志和 A/B 测试
+- [ ] 能够实现监控和自动回滚
+
+## 🚀 下一步
+
+→ [性能监控与优化](../03-monitoring/monitoring-overview.mdx)  
+→ [安全性](../04-security/security-overview.mdx)  
+→ [实战项目](../../10-practice/01-beginner-projects.mdx)
+
+## 🎯 重点提示
+
+### 部署策略选择
+- **蓝绿部署**: 适合关键业务，需要零停机时间
+- **金丝雀发布**: 适合需要逐步验证的场景
+- **滚动更新**: 适合无状态应用，资源有限的情况
+- **多环境部署**: 适合需要严格测试流程的项目
+
+### 风险控制
+- **监控**: 部署后持续监控关键指标
+- **回滚**: 准备好快速回滚方案
+- **验证**: 部署后进行充分验证
+- **通知**: 及时通知相关人员部署状态
+
+### React 19 部署要点
+- **新特性验证**: 确保新特性在生产环境正常工作
+- **性能监控**: 监控新特性的性能影响
+- **兼容性测试**: 确保与现有功能兼容
+- **渐进式发布**: 使用金丝雀发布降低风险

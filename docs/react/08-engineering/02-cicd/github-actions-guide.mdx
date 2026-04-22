@@ -1,0 +1,711 @@
+# GitHub Actions 实践指南
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+GitHub Actions 是 GitHub 提供的 CI/CD 平台，允许你直接在 GitHub 仓库中自动化软件开发工作流程。通过 YAML 配置文件，你可以定义在代码推送、拉取请求等事件触发时自动执行的构建、测试和部署任务。
+
+## 🎯 核心概念
+
+### 1. Workflow（工作流）
+
+工作流是一个可配置的自动化过程，由一个或多个作业组成：
+
+```yaml
+# .github/workflows/ci.yml
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: npm test
+```
+
+### 2. Job（作业）
+
+作业是工作流中的执行单元，可以并行或串行运行：
+
+```yaml
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run linter
+        run: npm run lint
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: npm test
+```
+
+### 3. Step（步骤）
+
+步骤是作业中的原子操作，可以是运行命令或使用预构建的 Action：
+
+```yaml
+steps:
+  - name: Checkout code
+    uses: actions/checkout@v4
+
+  - name: Setup Node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: '20'
+      cache: 'npm'
+
+  - name: Install dependencies
+    run: npm ci
+
+  - name: Run tests
+    run: npm test
+```
+
+## 🛠️ 完整 CI/CD 配置
+
+### React 19 项目完整工作流
+
+```yaml
+# .github/workflows/ci-cd.yml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  lint:
+    name: Lint Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run Prettier check
+        run: npm run format:check
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run integration tests
+        run: npm run test:integration
+
+      - name: Generate coverage report
+        run: npm run test:coverage
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+          flags: unittests
+          name: codecov-umbrella
+
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+        env:
+          VITE_API_URL: https://api.example.com
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: dist/
+          retention-days: 7
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Upload Snyk results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk.sarif
+
+  docker-build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [test, build, docker-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Deploy to AWS S3
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl public-read --follow-symlinks --delete
+        env:
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET_STAGING }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: 'us-east-1'
+          SOURCE_DIR: 'dist'
+
+      - name: Invalidate CloudFront cache
+        uses: chetan/invalidate-cloudfront-action@v2
+        env:
+          DISTRIBUTION: ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_STAGING }}
+          PATHS: '/*'
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: 'us-east-1'
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [test, build, docker-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Deploy to AWS S3
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl public-read --follow-symlinks --delete
+        env:
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET_PRODUCTION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: 'us-east-1'
+          SOURCE_DIR: 'dist'
+
+      - name: Invalidate CloudFront cache
+        uses: chetan/invalidate-cloudfront-action@v2
+        env:
+          DISTRIBUTION: ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_PRODUCTION }}
+          PATHS: '/*'
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: 'us-east-1'
+
+      - name: Notify deployment success
+        uses: 8398a7/action-slack@v3
+        if: success()
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: 'Production deployment successful!',
+              attachments: [{
+                color: 'good',
+                text: `Deployed to production: ${{ github.sha }}`,
+                fields: [{
+                  title: 'Commit',
+                  value: `${{ github.event.head_commit.message }}`,
+                  short: true
+                }, {
+                  title: 'Author',
+                  value: `${{ github.actor }}`,
+                  short: true
+                }]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+## 📝 实际应用示例
+
+### 1. 缓存优化
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js with cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Cache build output
+        uses: actions/cache@v4
+        with:
+          path: dist
+          key: ${{ runner.os }}-build-${{ github.sha }}
+```
+
+### 2. 矩阵测试
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        browser: [chrome, firefox, safari]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests on ${{ matrix.browser }}
+        run: npm test -- --browser ${{ matrix.browser }}
+```
+
+### 3. 条件执行
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      !contains(github.event.head_commit.message, '[skip ci]')
+    steps:
+      - name: Deploy
+        run: echo 'Deploying to production'
+```
+
+### 4. 依赖更新检测
+
+```yaml
+name: Dependency Check
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Check for outdated dependencies
+        id: outdated
+        run: |
+          OUTDATED=$(npm outdated --json)
+          echo "outdated=$OUTDATED" >> $GITHUB_OUTPUT
+
+      - name: Create issue if dependencies are outdated
+        if: steps.outdated.outputs.outdated != '{}'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Outdated dependencies detected',
+              body: 'The following dependencies are outdated:\n\n' + '${{ steps.outdated.outputs.outdated }}',
+              labels: ['dependencies', 'maintenance']
+            })
+```
+
+### 5. 性能测试
+
+```yaml
+name: Performance Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lighthouse:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Run Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v10
+        with:
+          urls: |
+            http://localhost:3000
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+
+      - name: Comment PR with Lighthouse results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('./.lighthouseci/lhr-report.json', 'utf8'));
+            const score = results.categories.performance.score * 100;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Lighthouse Performance Score\n\n**Score:** ${score}/100\n\n[View full report](https://storage.googleapis.com/lighthouse-infrastructure.appspot.com/reports/${{ github.run_id }}.report.html)`
+            });
+```
+
+## 🎨 环境配置
+
+### Secrets 管理
+
+在 GitHub 仓库设置中配置 Secrets：
+
+```yaml
+# Settings > Secrets and variables > Actions
+# 添加以下 secrets：
+# - AWS_ACCESS_KEY_ID
+# - AWS_SECRET_ACCESS_KEY
+# - AWS_S3_BUCKET_PRODUCTION
+# - AWS_S3_BUCKET_STAGING
+# - AWS_CLOUDFRONT_DISTRIBUTION_PRODUCTION
+# - AWS_CLOUDFRONT_DISTRIBUTION_STAGING
+# - CODECOV_TOKEN
+# - SNYK_TOKEN
+# - SLACK_WEBHOOK_URL
+```
+
+### 环境变量
+
+```yaml
+env:
+  NODE_ENV: production
+  API_URL: https://api.example.com
+  CDN_URL: https://cdn.example.com
+```
+
+### 环境保护规则
+
+在 GitHub 仓库设置中配置环境保护规则：
+
+```yaml
+# Settings > Environments > production
+# 添加保护规则：
+# - Required reviewers: 1
+# - Wait timer: 30 minutes
+# - Deployment branches: main
+```
+
+## 🚀 性能优化
+
+### 1. 并行执行
+
+```yaml
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm run lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm test
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm run build
+```
+
+### 2. 自托管运行器
+
+```yaml
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm run build
+```
+
+### 3. 工作流复用
+
+```yaml
+# .github/workflows/reusable-build.yml
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+      - run: npm run build
+```
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      node-version: '20'
+```
+
+## 🔧 高级功能
+
+### 1. 状态徽章
+
+```markdown
+![CI Status](https://github.com/username/repo/workflows/CI%20Pipeline/badge.svg)
+![Coverage](https://codecov.io/gh/username/repo/branch/main/graph/badge.svg)
+```
+
+### 2. 手动触发
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+```
+
+### 3. 定时任务
+
+```yaml
+on:
+  schedule:
+    - cron: '0 0 * * *'
+```
+
+## 🔗 相关概念
+
+- **持续集成（CI）**: 频繁集成代码，自动运行测试
+- **持续部署（CD）**: 自动部署到生产环境
+- **工作流**: 自动化的任务序列
+- **Action**: 可复用的工作流组件
+
+## 📚 学习检查点
+
+- [ ] 理解 GitHub Actions 的核心概念
+- [ ] 掌握工作流配置的语法和结构
+- [ ] 能够配置完整的 CI/CD 流程
+- [ ] 了解如何使用缓存优化性能
+- [ ] 掌握矩阵测试和条件执行
+- [ ] 了解 Secrets 和环境变量的管理
+- [ ] 能够配置部署流程和通知
+
+## 🚀 下一步
+
+→ [自动化测试](./automated-testing.mdx)  
+→ [部署策略](./deployment-strategies.mdx)  
+→ [性能监控与优化](../03-monitoring/monitoring-overview.mdx)
+
+## 🎯 重点提示
+
+### GitHub Actions 优势
+- **与 GitHub 集成**: 无缝集成，无需额外配置
+- **免费额度高**: 公开项目免费，私有项目有免费额度
+- **丰富的 Actions 市场**: 大量现成的 Actions 可用
+- **支持多种操作系统**: Linux、macOS、Windows
+
+### 最佳实践
+- **使用缓存**: 缓存依赖和构建产物，提高速度
+- **并行执行**: 充分利用并行执行提高效率
+- **保护 Secrets**: 使用 GitHub Secrets 保护敏感信息
+- **环境隔离**: 为不同环境配置不同的部署流程
+
+### 性能优化
+- **缓存策略**: 合理配置缓存，减少重复工作
+- **并行执行**: 并行运行独立的作业
+- **条件执行**: 只在必要时运行作业
+- **自托管运行器**: 对于特殊需求使用自托管运行器

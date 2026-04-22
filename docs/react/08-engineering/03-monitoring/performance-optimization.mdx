@@ -1,0 +1,981 @@
+# 性能优化策略
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+性能优化是提升 React 应用用户体验的关键。通过合理的优化策略，可以显著提高应用的加载速度、交互响应和运行效率。本章节将介绍首屏加载优化、运行时性能优化、内存泄漏排查等核心优化技术。
+
+## 🎯 首屏加载优化
+
+### 1. 代码分割与懒加载
+
+```jsx
+// src/utils/codeSplitting.js
+import { lazy, Suspense } from 'react';
+
+// 路由级代码分割
+export const Home = lazy(() => import('./pages/Home'));
+export const About = lazy(() => import('./pages/About'));
+export const Contact = lazy(() => import('./pages/Contact'));
+export const Dashboard = lazy(() => import('./pages/Dashboard'));
+
+// 组件级代码分割
+export const HeavyChart = lazy(() => 
+  import('./components/HeavyChart')
+);
+export const RichTextEditor = lazy(() => 
+  import('./components/RichTextEditor')
+);
+export const DataGrid = lazy(() => 
+  import('./components/DataGrid')
+);
+
+// 加载状态组件
+export function LoadingSpinner() {
+  return (
+    <div style={{ 
+      display: 'flex', 
+      justifyContent: 'center', 
+      alignItems: 'center',
+      height: '200px'
+    }}>
+      <div style={{
+        width: '40px',
+        height: '40px',
+        border: '4px solid #f3f3f3',
+        borderTop: '4px solid #3498db',
+        borderRadius: '50%',
+        animation: 'spin 1s linear infinite'
+      }} />
+      <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// 错误边界
+export function ErrorFallback({ error, resetErrorBoundary }) {
+  return (
+    <div style={{ 
+      padding: '20px',
+      textAlign: 'center',
+      color: '#e74c3c'
+    }}>
+      <h2>Something went wrong!</h2>
+      <p>{error.message}</p>
+      <button
+        onClick={resetErrorBoundary}
+        style={{
+          padding: '10px 20px',
+          backgroundColor: '#3498db',
+          color: 'white',
+          border: 'none',
+          borderRadius: '4px',
+          cursor: 'pointer'
+        }}
+      >
+        Try again
+      </button>
+    </div>
+  );
+}
+
+// 带错误边界的懒加载包装器
+export function LazyWrapper({ children, fallback = <LoadingSpinner /> }) {
+  return (
+    <Suspense fallback={fallback}>
+      {children}
+    </Suspense>
+  );
+}
+```
+
+### 2. 资源预加载
+
+```jsx
+// src/utils/resourcePreloader.js
+export class ResourcePreloader {
+  constructor() {
+    this.preloadedResources = new Set();
+  }
+
+  // 预加载图片
+  preloadImage(src) {
+    if (this.preloadedResources.has(src)) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        this.preloadedResources.add(src);
+        resolve();
+      };
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  // 预加载字体
+  preloadFont(fontFamily, src) {
+    if (this.preloadedResources.has(src)) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const font = new FontFace(fontFamily, `url(${src})`);
+      font.load()
+        .then(() => {
+          document.fonts.add(font);
+          this.preloadedResources.add(src);
+          resolve();
+        })
+        .catch(reject);
+    });
+  }
+
+  // 预加载脚本
+  preloadScript(src) {
+    if (this.preloadedResources.has(src)) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.onload = () => {
+        this.preloadedResources.add(src);
+        resolve();
+      };
+      script.onerror = reject;
+      script.src = src;
+      document.head.appendChild(script);
+    });
+  }
+
+  // 预加载样式表
+  preloadStylesheet(href) {
+    if (this.preloadedResources.has(href)) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const link = document.createElement('link');
+      link.rel = 'preload';
+      link.as = 'style';
+      link.href = href;
+      link.onload = () => {
+        this.preloadedResources.add(href);
+        resolve();
+      };
+      link.onerror = reject;
+      document.head.appendChild(link);
+    });
+  }
+
+  // 预连接到域名
+  preconnectToDomain(domain) {
+    const link = document.createElement('link');
+    link.rel = 'preconnect';
+    link.href = domain;
+    document.head.appendChild(link);
+  }
+
+  // DNS 预解析
+  dnsPrefetch(domain) {
+    const link = document.createElement('link');
+    link.rel = 'dns-prefetch';
+    link.href = domain;
+    document.head.appendChild(link);
+  }
+}
+
+// 使用示例
+export const preloader = new ResourcePreloader();
+
+export function setupCriticalResourcePreloading() {
+  // 预连接到 CDN
+  preloader.preconnectToDomain('https://cdn.example.com');
+  
+  // DNS 预解析
+  preloader.dnsPrefetch('https://api.example.com');
+  
+  // 预加载关键字体
+  preloader.preloadFont('Inter', '/fonts/inter.woff2');
+  
+  // 预加载关键图片
+  preloader.preloadImage('/images/hero-bg.jpg');
+  
+  // 预加载关键脚本
+  preloader.preloadScript('/scripts/analytics.js');
+}
+```
+
+### 3. 图片优化
+
+```jsx
+// src/components/OptimizedImage.jsx
+import { useState, useEffect, useRef } from 'react';
+
+function OptimizedImage({ 
+  src, 
+  alt, 
+  width, 
+  height, 
+  priority = false,
+  placeholder = 'blur',
+  sizes = '100vw',
+  quality = 75
+}) {
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [isInView, setIsInView] = useState(false);
+  const imgRef = useRef(null);
+
+  useEffect(() => {
+    if (!imgRef.current) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsInView(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    observer.observe(imgRef.current);
+
+    return () => observer.disconnect();
+  }, []);
+
+  if (!isInView && !priority) {
+    return (
+      <div 
+        ref={imgRef}
+        style={{ 
+          width: `${width}px`, 
+          height: `${height}px`,
+          backgroundColor: '#f0f0f0'
+        }}
+      />
+    );
+  }
+
+  // 生成响应式图片 URL
+  const generateSrcSet = (baseSrc, quality) => {
+    const widths = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+    return widths
+      .map(w => `${baseSrc}?w=${w}&q=${quality} ${w}w`)
+      .join(', ');
+  };
+
+  return (
+    <div 
+      style={{ 
+        width: `${width}px`, 
+        height: `${height}px`,
+        position: 'relative',
+        overflow: 'hidden',
+        backgroundColor: '#f0f0f0'
+      }}
+    >
+      {/* 占位符 */}
+      {!isLoaded && placeholder === 'blur' && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundImage: `url(${src}?w=20&q=10&blur=10)`,
+            backgroundSize: 'cover',
+            filter: 'blur(20px)',
+            transform: 'scale(1.1)'
+          }}
+        />
+      )}
+
+      {/* 实际图片 */}
+      <img
+        src={`${src}?w=${Math.min(width, 1920)}&q=${quality}`}
+        srcSet={generateSrcSet(src, quality)}
+        sizes={sizes}
+        alt={alt}
+        width={width}
+        height={height}
+        loading={priority ? 'eager' : 'lazy'}
+        decoding={priority ? 'sync' : 'async'}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          opacity: isLoaded ? 1 : 0,
+          transition: 'opacity 0.3s ease-in'
+        }}
+        onLoad={() => setIsLoaded(true)}
+      />
+    </div>
+  );
+}
+
+export default OptimizedImage;
+```
+
+## 🛠️ 运行时性能优化
+
+### 1. React 19 并发特性
+
+```jsx
+// src/hooks/useOptimizedTransition.js
+import { useState, useTransition, useCallback } from 'react';
+
+export function useOptimizedTransition() {
+  const [isPending, startTransition] = useTransition();
+
+  const runTransition = useCallback((callback) => {
+    startTransition(() => {
+      callback();
+    });
+  }, [startTransition]);
+
+  return { isPending, runTransition };
+}
+
+// 使用示例：优化搜索
+export function OptimizedSearch({ onSearch }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const { isPending, runTransition } = useOptimizedTransition();
+
+  const handleSearch = useCallback((value) => {
+    setQuery(value);
+
+    runTransition(async () => {
+      const searchResults = await onSearch(value);
+      setResults(searchResults);
+    });
+  }, [onSearch, runTransition]);
+
+  return (
+    <div>
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => handleSearch(e.target.value)}
+        placeholder="Search..."
+        style={{ padding: '8px', fontSize: '16px' }}
+      />
+      {isPending && (
+        <div style={{ marginTop: '8px', color: '#666' }}>
+          Searching...
+        </div>
+      )}
+      <ul style={{ marginTop: '8px' }}>
+        {results.map((result, index) => (
+          <li key={index}>{result.name}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+### 2. 虚拟列表优化
+
+```jsx
+// src/components/VirtualList.jsx
+import { useState, useRef, useEffect, useCallback } from 'react';
+
+function VirtualList({ 
+  items, 
+  itemHeight = 50, 
+  containerHeight = 400,
+  renderItem 
+}) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const containerRef = useRef(null);
+
+  const visibleCount = Math.ceil(containerHeight / itemHeight);
+  const startIndex = Math.floor(scrollTop / itemHeight);
+  const endIndex = Math.min(startIndex + visibleCount + 2, items.length);
+
+  const visibleItems = items.slice(startIndex, endIndex);
+
+  const handleScroll = useCallback((e) => {
+    setScrollTop(e.target.scrollTop);
+  }, []);
+
+  const offsetY = startIndex * itemHeight;
+
+  return (
+    <div
+      ref={containerRef}
+      onScroll={handleScroll}
+      style={{
+        height: `${containerHeight}px`,
+        overflow: 'auto',
+        position: 'relative'
+      }}
+    >
+      <div style={{ height: `${items.length * itemHeight}px` }}>
+        <div
+          style={{
+            transform: `translateY(${offsetY}px)`,
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0
+          }}
+        >
+          {visibleItems.map((item, index) => (
+            <div
+              key={startIndex + index}
+              style={{ height: `${itemHeight}px` }}
+            >
+              {renderItem(item, startIndex + index)}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 使用示例
+export function LargeDataList() {
+  const items = Array.from({ length: 10000 }, (_, i) => ({
+    id: i,
+    name: `Item ${i}`,
+    value: Math.random() * 100
+  }));
+
+  return (
+    <VirtualList
+      items={items}
+      itemHeight={50}
+      containerHeight={400}
+      renderItem={(item) => (
+        <div style={{ 
+          padding: '10px', 
+          borderBottom: '1px solid #eee',
+          display: 'flex',
+          justifyContent: 'space-between'
+        }}>
+          <span>{item.name}</span>
+          <span>{item.value.toFixed(2)}</span>
+        </div>
+      )}
+    />
+  );
+}
+
+export default VirtualList;
+```
+
+### 3. 状态管理优化
+
+```jsx
+// src/hooks/useOptimizedState.js
+import { useState, useCallback, useMemo } from 'react';
+
+// 避免不必要的重新渲染
+export function useOptimizedState(initialValue, options = {}) {
+  const [state, setState] = useState(initialValue);
+  const { shouldUpdate } = options;
+
+  const setOptimizedState = useCallback((newValue) => {
+    setState(prevState => {
+      const nextValue = typeof newValue === 'function' 
+        ? newValue(prevState) 
+        : newValue;
+      
+      // 检查是否需要更新
+      if (shouldUpdate && !shouldUpdate(prevState, nextValue)) {
+        return prevState;
+      }
+      
+      return nextValue;
+    });
+  }, [shouldUpdate]);
+
+  return [state, setOptimizedState];
+}
+
+// 深度比较的状态更新
+export function useDeepEqualState(initialValue) {
+  return useOptimizedState(initialValue, {
+    shouldUpdate: (prev, next) => {
+      return JSON.stringify(prev) !== JSON.stringify(next);
+    }
+  });
+}
+
+// 使用示例
+export function OptimizedComponent() {
+  const [data, setData] = useDeepEqualState({
+    users: [],
+    loading: false,
+    error: null
+  });
+
+  const updateUser = useCallback((userId, updates) => {
+    setData(prev => ({
+      ...prev,
+      users: prev.users.map(user =>
+        user.id === userId ? { ...user, ...updates } : user
+      )
+    }));
+  }, [setData]);
+
+  return (
+    <div>
+      {data.users.map(user => (
+        <div key={user.id}>
+          {user.name}
+          <button onClick={() => updateUser(user.id, { active: !user.active })}>
+            Toggle Active
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+## 📝 内存优化
+
+### 1. 内存泄漏排查
+
+```jsx
+// src/utils/memoryMonitor.js
+export class MemoryMonitor {
+  constructor() {
+    this.snapshots = [];
+    this.isMonitoring = false;
+  }
+
+  startMonitoring(interval = 5000) {
+    if (this.isMonitoring) return;
+
+    this.isMonitoring = true;
+    this.intervalId = setInterval(() => {
+      this.takeSnapshot();
+    }, interval);
+  }
+
+  stopMonitoring() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.isMonitoring = false;
+    }
+  }
+
+  takeSnapshot() {
+    if (performance.memory) {
+      const snapshot = {
+        timestamp: Date.now(),
+        usedJSHeapSize: performance.memory.usedJSHeapSize,
+        totalJSHeapSize: performance.memory.totalJSHeapSize,
+        jsHeapSizeLimit: performance.memory.jsHeapSizeLimit
+      };
+
+      this.snapshots.push(snapshot);
+
+      // 保留最近 20 个快照
+      if (this.snapshots.length > 20) {
+        this.snapshots.shift();
+      }
+
+      // 检查内存泄漏
+      this.checkMemoryLeak();
+    }
+  }
+
+  checkMemoryLeak() {
+    if (this.snapshots.length < 5) return;
+
+    const recent = this.snapshots.slice(-5);
+    const first = recent[0];
+    const last = recent[recent.length - 1];
+
+    const growth = last.usedJSHeapSize - first.usedJSHeapSize;
+    const growthRate = (growth / first.usedJSHeapSize) * 100;
+
+    if (growthRate > 20) {
+      console.warn(`Possible memory leak detected: ${growthRate.toFixed(2)}% growth`);
+    }
+  }
+
+  getMemoryUsage() {
+    if (this.snapshots.length === 0) return null;
+
+    const latest = this.snapshots[this.snapshots.length - 1];
+    return {
+      used: (latest.usedJSHeapSize / 1024 / 1024).toFixed(2),
+      total: (latest.totalJSHeapSize / 1024 / 1024).toFixed(2),
+      limit: (latest.jsHeapSizeLimit / 1024 / 1024).toFixed(2),
+      usage: ((latest.usedJSHeapSize / latest.jsHeapSizeLimit) * 100).toFixed(2)
+    };
+  }
+
+  getSnapshots() {
+    return this.snapshots;
+  }
+}
+
+export const memoryMonitor = new MemoryMonitor();
+```
+
+### 2. 组件清理优化
+
+```jsx
+// src/hooks/useCleanup.js
+import { useEffect, useRef } from 'react';
+
+// 自动清理的 useEffect
+export function useCleanupEffect(effect, deps) {
+  useEffect(() => {
+    const cleanup = effect();
+    return () => {
+      if (cleanup && typeof cleanup === 'function') {
+        cleanup();
+      }
+    };
+  }, deps);
+}
+
+// 清理定时器
+export function useTimeout(callback, delay) {
+  const timeoutRef = useRef(null);
+
+  useEffect(() => {
+    timeoutRef.current = setTimeout(callback, delay);
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, [callback, delay]);
+}
+
+// 清理事件监听器
+export function useEventListener(target, event, handler, options) {
+  useEffect(() => {
+    const element = typeof target === 'string' 
+      ? document.querySelector(target) 
+      : target;
+
+    if (!element) return;
+
+    element.addEventListener(event, handler, options);
+    return () => {
+      element.removeEventListener(event, handler, options);
+    };
+  }, [target, event, handler, options]);
+}
+
+// 清理订阅
+export function useSubscription(subscribe, unsubscribe) {
+  useEffect(() => {
+    const unsubscribeFn = subscribe();
+    return () => {
+      if (unsubscribeFn) {
+        unsubscribeFn();
+      }
+    };
+  }, [subscribe, unsubscribe]);
+}
+
+// 使用示例
+export function ComponentWithCleanup() {
+  useCleanupEffect(() => {
+    console.log('Component mounted');
+    
+    // 设置定时器
+    const intervalId = setInterval(() => {
+      console.log('Tick');
+    }, 1000);
+
+    // 添加事件监听
+    const handleResize = () => {
+      console.log('Window resized');
+    };
+    window.addEventListener('resize', handleResize);
+
+    // 返回清理函数
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener('resize', handleResize);
+      console.log('Component unmounted');
+    };
+  }, []);
+
+  return <div>Component with cleanup</div>;
+}
+```
+
+## 🎨 网络优化
+
+### 1. 请求优化
+
+```js
+// src/utils/requestOptimizer.js
+export class RequestOptimizer {
+  constructor() {
+    this.pendingRequests = new Map();
+    this.requestCache = new Map();
+    this.cacheTimeout = 5 * 60 * 1000; // 5 分钟
+  }
+
+  // 防止重复请求
+  async request(key, requestFn) {
+    // 检查缓存
+    const cached = this.requestCache.get(key);
+    if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
+      return cached.data;
+    }
+
+    // 检查是否有正在进行的请求
+    if (this.pendingRequests.has(key)) {
+      return this.pendingRequests.get(key);
+    }
+
+    // 发起新请求
+    const promise = requestFn()
+      .then(data => {
+        // 缓存结果
+        this.requestCache.set(key, {
+          data,
+          timestamp: Date.now()
+        });
+        this.pendingRequests.delete(key);
+        return data;
+      })
+      .catch(error => {
+        this.pendingRequests.delete(key);
+        throw error;
+      });
+
+    this.pendingRequests.set(key, promise);
+    return promise;
+  }
+
+  // 批量请求
+  async batchRequest(requests, concurrency = 5) {
+    const results = [];
+    const executing = [];
+
+    for (const request of requests) {
+      const promise = request().then(result => {
+        results.push(result);
+        executing.splice(executing.indexOf(promise), 1);
+      });
+
+      executing.push(promise);
+
+      if (executing.length >= concurrency) {
+        await Promise.race(executing);
+      }
+    }
+
+    await Promise.all(executing);
+    return results;
+  }
+
+  // 清除缓存
+  clearCache(key) {
+    if (key) {
+      this.requestCache.delete(key);
+    } else {
+      this.requestCache.clear();
+    }
+  }
+}
+
+export const requestOptimizer = new RequestOptimizer();
+```
+
+### 2. 数据预取
+
+```jsx
+// src/hooks/useDataPrefetch.js
+import { useEffect, useRef } from 'react';
+
+export function useDataPrefetch(fetchFn, trigger, deps = []) {
+  const hasFetched = useRef(false);
+
+  useEffect(() => {
+    if (trigger && !hasFetched.current) {
+      fetchFn();
+      hasFetched.current = true;
+    }
+  }, [trigger, fetchFn, ...deps]);
+}
+
+// 预取链接组件
+export function PrefetchLink({ href, children, prefetch = 'hover' }) {
+  const handleMouseEnter = () => {
+    if (prefetch === 'hover') {
+      // 预取页面数据
+      fetch(`/api/prefetch?page=${href}`)
+        .then(response => response.json())
+        .then(data => {
+          // 缓存预取的数据
+          sessionStorage.setItem(`prefetch:${href}`, JSON.stringify(data));
+        });
+    }
+  };
+
+  return (
+    <a
+      href={href}
+      onMouseEnter={handleMouseEnter}
+      style={{ textDecoration: 'none', color: 'inherit' }}
+    >
+      {children}
+    </a>
+  );
+}
+
+// 使用示例
+export function Navigation() {
+  return (
+    <nav>
+      <PrefetchLink href="/about">About</PrefetchLink>
+      <PrefetchLink href="/contact">Contact</PrefetchLink>
+      <PrefetchLink href="/dashboard">Dashboard</PrefetchLink>
+    </nav>
+  );
+}
+```
+
+## 🚀 性能监控
+
+### 实时性能监控
+
+```jsx
+// src/components/PerformanceDashboard.jsx
+import { useState, useEffect } from 'react';
+
+function PerformanceDashboard() {
+  const [metrics, setMetrics] = useState({
+    fps: 0,
+    memory: 0,
+    renderTime: 0,
+    interactionDelay: 0
+  });
+
+  useEffect(() => {
+    let frameCount = 0;
+    let lastTime = performance.now();
+    let animationFrameId;
+
+    const measureFPS = () => {
+      frameCount++;
+      const currentTime = performance.now();
+      
+      if (currentTime - lastTime >= 1000) {
+        const fps = frameCount;
+        setMetrics(prev => ({ ...prev, fps }));
+        frameCount = 0;
+        lastTime = currentTime;
+      }
+      
+      animationFrameId = requestAnimationFrame(measureFPS);
+    };
+
+    measureFPS();
+
+    // 监控内存
+    const memoryInterval = setInterval(() => {
+      if (performance.memory) {
+        const usedMB = (performance.memory.usedJSHeapSize / 1024 / 1024).toFixed(2);
+        setMetrics(prev => ({ ...prev, memory: parseFloat(usedMB) }));
+      }
+    }, 1000);
+
+    // 监控渲染时间
+    const observer = new PerformanceObserver((list) => {
+      const entries = list.getEntries();
+      const renderTime = entries.reduce((sum, entry) => sum + entry.duration, 0);
+      setMetrics(prev => ({ ...prev, renderTime }));
+    });
+
+    observer.observe({ entryTypes: ['measure'] });
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      clearInterval(memoryInterval);
+      observer.disconnect();
+    };
+  }, []);
+
+  return (
+    <div style={{
+      position: 'fixed',
+      top: '10px',
+      right: '10px',
+      backgroundColor: 'rgba(0, 0, 0, 0.8)',
+      color: 'white',
+      padding: '15px',
+      borderRadius: '8px',
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      zIndex: 9999
+    }}>
+      <div>FPS: {metrics.fps}</div>
+      <div>Memory: {metrics.memory} MB</div>
+      <div>Render Time: {metrics.renderTime.toFixed(2)} ms</div>
+    </div>
+  );
+}
+
+export default PerformanceDashboard;
+```
+
+## 🔗 相关概念
+
+- **代码分割**: 将代码分成小块，按需加载
+- **懒加载**: 延迟加载非关键资源
+- **虚拟列表**: 只渲染可见区域的项目
+- **内存泄漏**: 未正确清理的内存占用
+
+## 📚 学习检查点
+
+- [ ] 理解首屏加载优化的方法
+- [ ] 掌握代码分割和懒加载技术
+- [ ] 了解资源预加载和图片优化
+- [ ] 掌握运行时性能优化策略
+- [ ] 能够实现虚拟列表优化
+- [ ] 了解内存泄漏的排查方法
+- [ ] 掌握网络优化技术
+
+## 🚀 下一步
+
+→ [React 19.2 Performance Tracks](./react19-performance-tracks.mdx)  
+→ [安全性](../04-security/security-overview.mdx)  
+→ [实战项目](../../10-practice/01-beginner-projects.mdx)
+
+## 🎯 重点提示
+
+### 优化优先级
+1. **首屏加载**: 优化 LCP 最重要
+2. **交互响应**: 优化 INP 提升用户体验
+3. **内存管理**: 避免内存泄漏保持性能稳定
+4. **网络优化**: 减少请求次数和数据量
+
+### React 19 优化要点
+- **并发渲染**: 利用 React 19 的并发特性
+- **自动优化**: React Compiler 自动优化代码
+- **新 Hooks**: 使用 useOptimistic 等新 Hooks
+- **Server Components**: 利用服务端组件提升性能
+
+### 性能监控
+- **实时监控**: 使用 Performance Dashboard 实时监控
+- **定期检查**: 定期检查内存使用和性能指标
+- **用户反馈**: 收集真实用户的性能数据
+- **持续优化**: 建立持续优化的流程

@@ -1,0 +1,967 @@
+# React 19.2 Performance Tracks
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+React 19.2 引入了强大的 Performance Tracks 功能，与 Chrome DevTools Performance 面板深度集成。这个功能提供了前所未有的 React 应用性能可视化能力，包括 Scheduler 轨道、Components 轨道和 Server 轨道，帮助开发者深入理解应用的性能特征。
+
+## 🎯 Performance Tracks 核心功能
+
+### 1. Scheduler 轨道
+
+Scheduler 轨道显示 React 的调度器工作情况，包括不同优先级的任务执行。
+
+```jsx
+// src/components/PerformanceScheduler.jsx
+import { useState, useTransition, useDeferredValue } from 'react';
+
+function PerformanceScheduler() {
+  const [items, setItems] = useState([]);
+  const [isPending, startTransition] = useTransition();
+  const deferredItems = useDeferredValue(items);
+
+  const addItems = useCallback(() => {
+    const newItems = Array.from({ length: 1000 }, (_, i) => ({
+      id: Date.now() + i,
+      name: `Item ${items.length + i}`,
+      value: Math.random() * 100
+    }));
+
+    // 使用 startTransition 标记非紧急更新
+    startTransition(() => {
+      setItems(prev => [...prev, ...newItems]);
+    });
+  }, [items.length]);
+
+  const handleSearch = useCallback((query) => {
+    // 搜索操作使用低优先级
+    startTransition(() => {
+      const filtered = items.filter(item => 
+        item.name.toLowerCase().includes(query.toLowerCase())
+      );
+      setItems(filtered);
+    });
+  }, [items]);
+
+  return (
+    <div>
+      <div style={{ marginBottom: '20px' }}>
+        <button 
+          onClick={addItems}
+          disabled={isPending}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: '#1976d2',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: isPending ? 'not-allowed' : 'pointer',
+            opacity: isPending ? 0.6 : 1
+          }}
+        >
+          {isPending ? 'Adding items...' : 'Add 1000 Items'}
+        </button>
+
+        <input
+          type="text"
+          placeholder="Search items..."
+          onChange={(e) => handleSearch(e.target.value)}
+          style={{
+            marginLeft: '10px',
+            padding: '8px',
+            fontSize: '16px'
+          }}
+        />
+      </div>
+
+      <div style={{ maxHeight: '400px', overflow: 'auto' }}>
+        {deferredItems.map(item => (
+          <div 
+            key={item.id}
+            style={{
+              padding: '10px',
+              borderBottom: '1px solid #eee',
+              display: 'flex',
+              justifyContent: 'space-between'
+            }}
+          >
+            <span>{item.name}</span>
+            <span>{item.value.toFixed(2)}</span>
+          </div>
+        ))}
+      </div>
+
+      {isPending && (
+        <div style={{ 
+          marginTop: '10px', 
+          color: '#666',
+          fontStyle: 'italic'
+        }}>
+          Processing updates...
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default PerformanceScheduler;
+```
+
+### 2. Components 轨道
+
+Components 轨道显示组件的渲染性能，包括渲染时间、Effect 执行时间等。
+
+```jsx
+// src/components/PerformanceProfiler.jsx
+import { Profiler } from 'react';
+
+function onRenderCallback(
+  id,
+  phase,
+  actualDuration,
+  baseDuration,
+  startTime,
+  commitTime
+) {
+  // 发送到分析服务
+  if (typeof window !== 'undefined' && window.gtag) {
+    window.gtag('event', 'component_render', {
+      event_category: 'Performance',
+      event_label: id,
+      value: Math.round(actualDuration),
+      custom_map: {
+        phase,
+        base_duration: Math.round(baseDuration),
+        start_time: Math.round(startTime),
+        commit_time: Math.round(commitTime)
+      }
+    });
+  }
+
+  // 记录到控制台（开发模式）
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`${id} ${phase}:`, {
+      actualDuration: `${actualDuration.toFixed(2)}ms`,
+      baseDuration: `${baseDuration.toFixed(2)}ms`,
+      startTime: `${startTime.toFixed(2)}ms`,
+      commitTime: `${commitTime.toFixed(2)}ms`
+    });
+  }
+}
+
+export function PerformanceProfiler({ children, id }) {
+  return (
+    <Profiler id={id} onRender={onRenderCallback}>
+      {children}
+    </Profiler>
+  );
+}
+
+// 使用示例
+export function OptimizedComponent() {
+  return (
+    <PerformanceProfiler id="OptimizedComponent">
+      <div>
+        {/* 组件内容 */}
+      </div>
+    </PerformanceProfiler>
+  );
+}
+```
+
+### 3. Server 轨道
+
+Server 轨道显示服务端组件和 Server Actions 的性能。
+
+```jsx
+// src/app/dashboard/page.jsx
+// Server Component 示例
+async function DashboardPage() {
+  // 并行获取数据
+  const [users, stats, recentActivity] = await Promise.all([
+    fetchUsers(),
+    fetchStats(),
+    fetchRecentActivity()
+  ]);
+
+  return (
+    <div>
+      <h1>Dashboard</h1>
+      <StatsOverview stats={stats} />
+      <UserList users={users} />
+      <ActivityFeed activities={recentActivity} />
+    </div>
+  );
+}
+
+// Server Action 示例
+'use server';
+
+async function updateUserAction(formData) {
+  const userId = formData.get('userId');
+  const updates = {
+    name: formData.get('name'),
+    email: formData.get('email')
+  };
+
+  // 更新用户数据
+  const updatedUser = await updateUser(userId, updates);
+
+  // 重新验证相关数据
+  revalidatePath('/dashboard');
+
+  return updatedUser;
+}
+
+// 客户端组件中使用 Server Action
+export function UserForm({ user }) {
+  return (
+    <form action={updateUserAction}>
+      <input name="userId" type="hidden" value={user.id} />
+      <input name="name" defaultValue={user.name} />
+      <input name="email" defaultValue={user.email} />
+      <button type="submit">Update</button>
+    </form>
+  );
+}
+```
+
+## 🛠️ 完整监控实现
+
+### Performance Tracks 集成
+
+```jsx
+// src/components/PerformanceTracksMonitor.jsx
+import { useState, useEffect, Profiler } from 'react';
+
+function PerformanceTracksMonitor() {
+  const [isVisible, setIsVisible] = useState(false);
+  const [performanceData, setPerformanceData] = useState({
+    components: [],
+    scheduler: [],
+    server: []
+  });
+
+  useEffect(() => {
+    if (!isVisible) return;
+
+    // 收集性能数据
+    const collectPerformanceData = () => {
+      // 获取组件性能数据
+      const componentEntries = performance.getEntriesByType('measure')
+        .filter(entry => entry.name.startsWith('react-component-'));
+
+      // 获取调度器数据
+      const schedulerEntries = performance.getEntriesByType('measure')
+        .filter(entry => entry.name.startsWith('react-scheduler-'));
+
+      // 获取服务端数据
+      const serverEntries = performance.getEntriesByType('resource')
+        .filter(entry => entry.name.includes('/api/'));
+
+      setPerformanceData({
+        components: componentEntries,
+        scheduler: schedulerEntries,
+        server: serverEntries
+      });
+    };
+
+    collectPerformanceData();
+    const interval = setInterval(collectPerformanceData, 1000);
+
+    return () => clearInterval(interval);
+  }, [isVisible]);
+
+  if (!isVisible) {
+    return (
+      <button
+        onClick={() => setIsVisible(true)}
+        style={{
+          position: 'fixed',
+          bottom: '20px',
+          right: '20px',
+          padding: '10px 20px',
+          backgroundColor: '#9c27b0',
+          color: 'white',
+          border: 'none',
+          borderRadius: '4px',
+          cursor: 'pointer',
+          zIndex: 9999
+        }}
+      >
+        Show Performance Tracks
+      </button>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        width: '400px',
+        backgroundColor: 'white',
+        border: '1px solid #ccc',
+        borderRadius: '4px',
+        padding: '15px',
+        zIndex: 9999,
+        maxHeight: '80vh',
+        overflow: 'auto'
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ margin: 0 }}>Performance Tracks</h3>
+        <button
+          onClick={() => setIsVisible(false)}
+          style={{
+            border: 'none',
+            background: 'none',
+            fontSize: '20px',
+            cursor: 'pointer'
+          }}
+        >
+          ×
+        </button>
+      </div>
+
+      {/* Components 轨道 */}
+      <div style={{ marginTop: '15px' }}>
+        <h4 style={{ margin: '0 0 10px 0', color: '#1976d2' }}>
+          Components Track
+        </h4>
+        {performanceData.components.length === 0 ? (
+          <p style={{ fontSize: '12px', color: '#666' }}>
+            No component data available
+          </p>
+        ) : (
+          <ul style={{ margin: 0, padding: '0 0 0 20px', fontSize: '12px' }}>
+            {performanceData.components.map((entry, index) => (
+              <li key={index} style={{ marginBottom: '5px' }}>
+                <strong>{entry.name}</strong>: {entry.duration.toFixed(2)}ms
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Scheduler 轨道 */}
+      <div style={{ marginTop: '15px' }}>
+        <h4 style={{ margin: '0 0 10px 0', color: '#ff9800' }}>
+          Scheduler Track
+        </h4>
+        {performanceData.scheduler.length === 0 ? (
+          <p style={{ fontSize: '12px', color: '#666' }}>
+            No scheduler data available
+          </p>
+        ) : (
+          <ul style={{ margin: 0, padding: '0 0 0 20px', fontSize: '12px' }}>
+            {performanceData.scheduler.map((entry, index) => (
+              <li key={index} style={{ marginBottom: '5px' }}>
+                <strong>{entry.name}</strong>: {entry.duration.toFixed(2)}ms
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Server 轨道 */}
+      <div style={{ marginTop: '15px' }}>
+        <h4 style={{ margin: '0 0 10px 0', color: '#4caf50' }}>
+          Server Track
+        </h4>
+        {performanceData.server.length === 0 ? (
+          <p style={{ fontSize: '12px', color: '#666' }}>
+            No server data available
+          </p>
+        ) : (
+          <ul style={{ margin: 0, padding: '0 0 0 20px', fontSize: '12px' }}>
+            {performanceData.server.map((entry, index) => (
+              <li key={index} style={{ marginBottom: '5px' }}>
+                <strong>{entry.name}</strong>: {entry.duration.toFixed(2)}ms
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default PerformanceTracksMonitor;
+```
+
+## 📝 实际应用示例
+
+### 1. 使用 Activity 组件优化性能
+
+```jsx
+// src/components/OptimizedTabs.jsx
+import { useState } from 'react';
+import { Activity } from 'react';
+
+function OptimizedTabs({ tabs }) {
+  const [activeTab, setActiveTab] = useState(0);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', borderBottom: '1px solid #eee' }}>
+        {tabs.map((tab, index) => (
+          <button
+            key={index}
+            onClick={() => setActiveTab(index)}
+            style={{
+              padding: '10px 20px',
+              border: 'none',
+              backgroundColor: activeTab === index ? '#1976d2' : 'transparent',
+              color: activeTab === index ? 'white' : '#333',
+              cursor: 'pointer',
+              borderBottom: activeTab === index ? '2px solid #1976d2' : 'none'
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ marginTop: '20px' }}>
+        {tabs.map((tab, index) => (
+          <Activity
+            key={index}
+            mode={activeTab === index ? 'visible' : 'hidden'}
+          >
+            <div style={{ 
+              padding: '20px',
+              border: '1px solid #eee',
+              borderRadius: '4px'
+            }}>
+              {tab.content}
+            </div>
+          </Activity>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 使用示例
+export function TabContainer() {
+  const tabs = [
+    {
+      label: 'Overview',
+      content: (
+        <div>
+          <h2>Overview</h2>
+          <p>This is the overview tab content.</p>
+        </div>
+      )
+    },
+    {
+      label: 'Details',
+      content: (
+        <div>
+          <h2>Details</h2>
+          <p>This is the details tab content.</p>
+        </div>
+      )
+    },
+    {
+      label: 'Settings',
+      content: (
+        <div>
+          <h2>Settings</h2>
+          <p>This is the settings tab content.</p>
+        </div>
+      )
+    }
+  ];
+
+  return <OptimizedTabs tabs={tabs} />;
+}
+
+export default OptimizedTabs;
+```
+
+### 2. useEffectEvent 优化 Effect
+
+```jsx
+// src/hooks/useOptimizedEffect.jsx
+import { useState, useEffect, useEffectEvent } from 'react';
+
+function useOptimizedEffect(callback, deps) {
+  const handleEvent = useEffectEvent(callback);
+
+  useEffect(() => {
+    handleEvent();
+  }, deps);
+}
+
+// 使用示例：避免因事件处理函数变化导致 Effect 重新运行
+export function ChatRoom({ roomId }) {
+  const [messages, setMessages] = useState([]);
+
+  const onMessage = useEffectEvent((msg) => {
+    setMessages(prev => [...prev, msg]);
+  });
+
+  useEffect(() => {
+    const connection = createChatConnection(roomId);
+    connection.on('message', onMessage);
+    connection.connect();
+
+    return () => {
+      connection.disconnect();
+    };
+  }, [roomId, onMessage]);
+
+  return (
+    <div>
+      <h2>Chat Room: {roomId}</h2>
+      <div style={{ maxHeight: '400px', overflow: 'auto' }}>
+        {messages.map((msg, index) => (
+          <div key={index} style={{ marginBottom: '10px' }}>
+            <strong>{msg.user}:</strong> {msg.text}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 辅助函数
+function createChatConnection(roomId) {
+  return {
+    connect() {
+      console.log(`Connected to room ${roomId}`);
+    },
+    disconnect() {
+      console.log(`Disconnected from room ${roomId}`);
+    },
+    on(event, callback) {
+      console.log(`Listening for ${event} events`);
+    }
+  };
+}
+
+export default ChatRoom;
+```
+
+### 3. 性能追踪集成
+
+```jsx
+// src/utils/performanceTracker.js
+export class PerformanceTracker {
+  constructor() {
+    this.metrics = new Map();
+    this.isEnabled = process.env.NODE_ENV === 'development';
+  }
+
+  // 标记组件渲染开始
+  markComponentRender(componentName) {
+    if (!this.isEnabled) return;
+
+    const markName = `react-component-${componentName}-start`;
+    performance.mark(markName);
+  }
+
+  // 标记组件渲染结束
+  measureComponentRender(componentName) {
+    if (!this.isEnabled) return;
+
+    const startMark = `react-component-${componentName}-start`;
+    const endMark = `react-component-${componentName}-end`;
+    const measureName = `react-component-${componentName}`;
+
+    performance.mark(endMark);
+    performance.measure(measureName, startMark, endMark);
+
+    const measure = performance.getEntriesByName(measureName)[0];
+    
+    this.metrics.set(componentName, {
+      duration: measure.duration,
+      startTime: measure.startTime,
+      endTime: measure.endTime
+    });
+
+    // 清理 marks
+    performance.clearMarks(startMark);
+    performance.clearMarks(endMark);
+  }
+
+  // 标记调度器任务
+  markSchedulerTask(taskName, priority) {
+    if (!this.isEnabled) return;
+
+    const markName = `react-scheduler-${taskName}-${priority}`;
+    performance.mark(markName);
+  }
+
+  // 测量调度器任务
+  measureSchedulerTask(taskName, priority) {
+    if (!this.isEnabled) return;
+
+    const startMark = `react-scheduler-${taskName}-${priority}-start`;
+    const endMark = `react-scheduler-${taskName}-${priority}-end`;
+    const measureName = `react-scheduler-${taskName}-${priority}`;
+
+    performance.mark(endMark);
+    performance.measure(measureName, startMark, endMark);
+
+    const measure = performance.getEntriesByName(measureName)[0];
+    
+    return {
+      taskName,
+      priority,
+      duration: measure.duration
+    };
+  }
+
+  // 获取所有指标
+  getMetrics() {
+    return Object.fromEntries(this.metrics);
+  }
+
+  // 清除所有指标
+  clearMetrics() {
+    this.metrics.clear();
+    performance.clearMarks();
+    performance.clearMeasures();
+  }
+
+  // 导出性能报告
+  exportReport() {
+    const metrics = this.getMetrics();
+    const report = {
+      timestamp: Date.now(),
+      metrics,
+      summary: this.generateSummary(metrics)
+    };
+
+    return JSON.stringify(report, null, 2);
+  }
+
+  // 生成摘要
+  generateSummary(metrics) {
+    const entries = Object.entries(metrics);
+    
+    if (entries.length === 0) {
+      return { totalComponents: 0, averageRenderTime: 0 };
+    }
+
+    const totalDuration = entries.reduce((sum, [, value]) => sum + value.duration, 0);
+    const averageRenderTime = totalDuration / entries.length;
+    
+    const slowestComponent = entries.reduce((slowest, [name, value]) => 
+      value.duration > slowest.duration ? { name, duration: value.duration } : slowest,
+      { name: '', duration: 0 }
+    );
+
+    return {
+      totalComponents: entries.length,
+      totalDuration,
+      averageRenderTime,
+      slowestComponent
+    };
+  }
+}
+
+export const performanceTracker = new PerformanceTracker();
+```
+
+## 🎨 Chrome DevTools 集成
+
+### 性能录制分析
+
+```jsx
+// src/utils/devToolsIntegration.js
+export class DevToolsIntegration {
+  constructor() {
+    this.isRecording = false;
+    this.performanceData = [];
+  }
+
+  // 开始性能录制
+  startRecording() {
+    if (this.isRecording) return;
+
+    this.isRecording = true;
+    this.performanceData = [];
+
+    // 清除之前的性能数据
+    performance.clearMarks();
+    performance.clearMeasures();
+
+    // 开始录制
+    if (window.performance && window.performance.mark) {
+      performance.mark('recording-start');
+    }
+  }
+
+  // 停止性能录制
+  stopRecording() {
+    if (!this.isRecording) return;
+
+    this.isRecording = false;
+
+    // 标记录制结束
+    if (window.performance && window.performance.mark) {
+      performance.mark('recording-end');
+      performance.measure('recording-duration', 'recording-start', 'recording-end');
+    }
+
+    // 收集性能数据
+    this.collectPerformanceData();
+
+    return this.getReport();
+  }
+
+  // 收集性能数据
+  collectPerformanceData() {
+    // 收集所有 measures
+    const measures = performance.getEntriesByType('measure');
+    
+    // 收集所有 marks
+    const marks = performance.getEntriesByType('mark');
+    
+    // 收集所有资源加载
+    const resources = performance.getEntriesByType('resource');
+    
+    // 收集所有导航
+    const navigation = performance.getEntriesByType('navigation')[0];
+
+    this.performanceData = {
+      measures,
+      marks,
+      resources,
+      navigation
+    };
+  }
+
+  // 获取性能报告
+  getReport() {
+    if (this.performanceData.length === 0) {
+      return null;
+    }
+
+    const { measures, marks, resources, navigation } = this.performanceData;
+
+    return {
+      timestamp: Date.now(),
+      summary: {
+        totalMeasures: measures.length,
+        totalMarks: marks.length,
+        totalResources: resources.length,
+        pageLoadTime: navigation?.loadEventEnd - navigation?.navigationStart,
+        domContentLoadedTime: navigation?.domContentLoadedEventEnd - navigation?.domContentLoadedEventStart
+      },
+      details: {
+        measures: measures.map(m => ({
+          name: m.name,
+          duration: m.duration,
+          startTime: m.startTime
+        })),
+        resources: resources.map(r => ({
+          name: r.name,
+          duration: r.duration,
+          size: r.transferSize,
+          type: r.initiatorType
+        }))
+      }
+    };
+  }
+
+  // 导出为 Chrome DevTools 格式
+  exportForDevTools() {
+    const report = this.getReport();
+    
+    if (!report) return null;
+
+    return {
+      traceEvents: this.generateTraceEvents(report)
+    };
+  }
+
+  // 生成 trace events
+  generateTraceEvents(report) {
+    const events = [];
+
+    // 添加导航事件
+    if (report.details.navigation) {
+      events.push({
+        name: 'Navigation',
+        ph: 'X',
+        ts: report.details.navigation.startTime * 1000,
+        dur: report.details.navigation.duration * 1000,
+        pid: 1,
+        tid: 1
+      });
+    }
+
+    // 添加资源加载事件
+    report.details.resources.forEach(resource => {
+      events.push({
+        name: resource.name,
+        ph: 'X',
+        ts: resource.startTime * 1000,
+        dur: resource.duration * 1000,
+        pid: 1,
+        tid: 1,
+        args: {
+          size: resource.size,
+          type: resource.type
+        }
+      });
+    });
+
+    // 添加自定义测量事件
+    report.details.measures.forEach(measure => {
+      events.push({
+        name: measure.name,
+        ph: 'X',
+        ts: measure.startTime * 1000,
+        dur: measure.duration * 1000,
+        pid: 1,
+        tid: 1
+      });
+    });
+
+    return events;
+  }
+}
+
+export const devToolsIntegration = new DevToolsIntegration();
+```
+
+## 🚀 性能优化建议
+
+### 基于性能数据的优化
+
+```jsx
+// src/components/PerformanceOptimizedList.jsx
+import { useState, useMemo, useCallback } from 'react';
+
+function PerformanceOptimizedList({ items }) {
+  const [filter, setFilter] = useState('');
+  const [sortBy, setSortBy] = useState('name');
+
+  // 使用 useMemo 缓存过滤和排序结果
+  const filteredAndSortedItems = useMemo(() => {
+    let result = [...items];
+
+    // 过滤
+    if (filter) {
+      result = result.filter(item =>
+        item.name.toLowerCase().includes(filter.toLowerCase())
+      );
+    }
+
+    // 排序
+    result.sort((a, b) => {
+      if (sortBy === 'name') {
+        return a.name.localeCompare(b.name);
+      } else if (sortBy === 'value') {
+        return a.value - b.value;
+      }
+      return 0;
+    });
+
+    return result;
+  }, [items, filter, sortBy]);
+
+  // 使用 useCallback 避免不必要的函数重新创建
+  const handleFilterChange = useCallback((e) => {
+    setFilter(e.target.value);
+  }, []);
+
+  const handleSortChange = useCallback((e) => {
+    setSortBy(e.target.value);
+  }, []);
+
+  return (
+    <div>
+      <div style={{ marginBottom: '20px' }}>
+        <input
+          type="text"
+          placeholder="Filter items..."
+          value={filter}
+          onChange={handleFilterChange}
+          style={{ padding: '8px', fontSize: '16px' }}
+        />
+
+        <select
+          value={sortBy}
+          onChange={handleSortChange}
+          style={{ marginLeft: '10px', padding: '8px' }}
+        >
+          <option value="name">Sort by Name</option>
+          <option value="value">Sort by Value</option>
+        </select>
+      </div>
+
+      <ul style={{ margin: 0, padding: 0 }}>
+        {filteredAndSortedItems.map(item => (
+          <li 
+            key={item.id}
+            style={{
+              padding: '10px',
+              borderBottom: '1px solid #eee',
+              display: 'flex',
+              justifyContent: 'space-between'
+            }}
+          >
+            <span>{item.name}</span>
+            <span>{item.value.toFixed(2)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default PerformanceOptimizedList;
+```
+
+## 🔗 相关概念
+
+- **Scheduler Track**: 显示 React 调度器的工作情况
+- **Components Track**: 显示组件渲染性能
+- **Server Track**: 显示服务端组件和 Actions 性能
+- **Performance Profiler**: React 的性能分析工具
+
+## 📚 学习检查点
+
+- [ ] 理解 Performance Tracks 的三个核心轨道
+- [ ] 掌握 Scheduler 轨道的使用方法
+- [ ] 了解 Components 轨道的性能分析
+- [ ] 能够使用 Server 轨道监控服务端性能
+- [ ] 掌握 Activity 组件的性能优化
+- [ ] 了解 useEffectEvent 的使用场景
+- [ ] 能够集成 Chrome DevTools 进行性能分析
+
+## 🚀 下一步
+
+→ [安全性](../04-security/security-overview.mdx)  
+→ [实战项目](../../10-practice/01-beginner-projects.mdx)  
+→ [职业发展](../../10-practice/06-career-development.mdx)
+
+## 🎯 重点提示
+
+### Performance Tracks 优势
+- **可视化**: 直观显示性能数据
+- **实时**: 实时监控应用性能
+- **详细**: 提供详细的性能指标
+- **集成**: 与 Chrome DevTools 无缝集成
+
+### 使用要点
+- **开发模式**: 仅在开发和 profiling 构建中启用
+- **性能影响**: profiling 会增加额外开销
+- **数据分析**: 结合其他工具进行综合分析
+- **持续优化**: 建立持续优化的流程
+
+### React 19.2 新特性
+- **Activity 组件**: 优化隐藏和显示组件的性能
+- **useEffectEvent**: 分离 Effect 中的事件逻辑
+- **性能追踪**: 更强大的性能分析能力
+- **Chrome DevTools 集成**: 与 DevTools 深度集成

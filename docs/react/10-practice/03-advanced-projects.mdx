@@ -1,0 +1,2623 @@
+# 高级项目实战
+
+> **版本**: v1.0  
+> **最后更新**: 2026-04-22
+
+## 📚 概念介绍
+
+高级项目实战将带你深入探索 React 19 的最前沿特性和复杂架构设计，包括微前端架构、实时协作、AI 集成和跨平台开发。这些项目展示了 React 19 在企业级复杂场景中的应用。
+
+## 🎯 项目一：微前端架构系统
+
+### 项目概述
+
+使用 React 19 构建的微前端架构系统，展示模块联邦、应用间通信、状态共享和路由管理的高级实现。
+
+### 核心特性
+
+- 基于 Module Federation 的微前端架构
+- 应用间状态共享和通信
+- 统一路由管理和导航
+- 共享依赖和公共组件
+- 独立部署和版本管理
+- 性能优化和懒加载
+
+### 完整代码实现
+
+```tsx
+// types.ts
+export interface MicroApp {
+  name: string;
+  entry: string;
+  activeWhen: string[];
+  container: string;
+}
+
+export interface SharedState {
+  user: User | null;
+  theme: 'light' | 'dark';
+  language: 'zh' | 'en';
+}
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  roles: string[];
+}
+
+export interface AppMessage {
+  type: 'STATE_UPDATE' | 'NAVIGATION' | 'EVENT';
+  payload: any;
+  source: string;
+}
+
+// host-app/src/App.tsx
+import { useState, useEffect, useRef } from 'react';
+import { MicroApp, SharedState, User, AppMessage } from './types';
+
+const microApps: MicroApp[] = [
+  {
+    name: 'dashboard',
+    entry: 'http://localhost:3001/remoteEntry.js',
+    activeWhen: ['/dashboard'],
+    container: 'dashboard-container',
+  },
+  {
+    name: 'settings',
+    entry: 'http://localhost:3002/remoteEntry.js',
+    activeWhen: ['/settings'],
+    container: 'settings-container',
+  },
+];
+
+export function App() {
+  const [sharedState, setSharedState] = useState<SharedState>({
+    user: null,
+    theme: 'light',
+    language: 'zh',
+  });
+  const [activeApp, setActiveApp] = useState<string | null>(null);
+  const messageChannelRef = useRef<BroadcastChannel | null>(null);
+
+  useEffect(() => {
+    // 初始化消息通道
+    messageChannelRef.current = new BroadcastChannel('micro-apps-channel');
+    
+    messageChannelRef.current.onmessage = (event: MessageEvent<AppMessage>) => {
+      const { type, payload, source } = event.data;
+      
+      switch (type) {
+        case 'STATE_UPDATE':
+          setSharedState(prev => ({ ...prev, ...payload }));
+          break;
+        case 'NAVIGATION':
+          setActiveApp(payload.app);
+          break;
+        default:
+          console.log('Unknown message type:', type);
+      }
+    };
+
+    return () => {
+      messageChannelRef.current?.close();
+    };
+  }, []);
+
+  const broadcastMessage = (message: AppMessage) => {
+    messageChannelRef.current?.postMessage(message);
+  };
+
+  const handleUserLogin = (user: User) => {
+    const newState = { ...sharedState, user };
+    setSharedState(newState);
+    broadcastMessage({
+      type: 'STATE_UPDATE',
+      payload: { user },
+      source: 'host',
+    });
+  };
+
+  const handleThemeToggle = () => {
+    const newTheme = sharedState.theme === 'light' ? 'dark' : 'light';
+    const newState = { ...sharedState, theme: newTheme };
+    setSharedState(newState);
+    broadcastMessage({
+      type: 'STATE_UPDATE',
+      payload: { theme: newTheme },
+      source: 'host',
+    });
+  };
+
+  const loadMicroApp = async (app: MicroApp) => {
+    try {
+      // 动态加载微应用
+      await loadScript(app.entry);
+      setActiveApp(app.name);
+    } catch (error) {
+      console.error(`Failed to load micro-app ${app.name}:`, error);
+    }
+  };
+
+  return (
+    <div className={`micro-frontend-app ${sharedState.theme}`}>
+      <Header 
+        user={sharedState.user}
+        theme={sharedState.theme}
+        onThemeToggle={handleThemeToggle}
+        onUserLogin={handleUserLogin}
+      />
+      
+      <main className="main-content">
+        <Sidebar 
+          apps={microApps}
+          activeApp={activeApp}
+          onAppSelect={(app) => loadMicroApp(app)}
+        />
+        
+        <div className="content-area">
+          {activeApp === 'dashboard' && (
+            <div id="dashboard-container" className="micro-app-container" />
+          )}
+          {activeApp === 'settings' && (
+            <div id="settings-container" className="micro-app-container" />
+          )}
+          {!activeApp && (
+            <WelcomeScreen onUserLogin={handleUserLogin} />
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
+// host-app/src/components/Header.tsx
+interface HeaderProps {
+  user: User | null;
+  theme: 'light' | 'dark';
+  onThemeToggle: () => void;
+  onUserLogin: (user: User) => void;
+}
+
+export function Header({ user, theme, onThemeToggle, onUserLogin }: HeaderProps) {
+  const handleLogin = () => {
+    const mockUser: User = {
+      id: '1',
+      name: '张三',
+      email: 'zhangsan@example.com',
+      roles: ['admin'],
+    };
+    onUserLogin(mockUser);
+  };
+
+  return (
+    <header className="app-header">
+      <div className="header-brand">
+        <h1>🚀 微前端平台</h1>
+      </div>
+      
+      <nav className="header-nav">
+        <button className="nav-button">首页</button>
+        <button className="nav-button">应用</button>
+        <button className="nav-button">文档</button>
+      </nav>
+      
+      <div className="header-actions">
+        <button 
+          className="theme-toggle"
+          onClick={onThemeToggle}
+        >
+          {theme === 'light' ? '🌙' : '☀️'}
+        </button>
+        
+        {user ? (
+          <div className="user-menu">
+            <span className="user-name">{user.name}</span>
+            <button className="logout-button">退出</button>
+          </div>
+        ) : (
+          <button className="login-button" onClick={handleLogin}>
+            登录
+          </button>
+        )}
+      </div>
+    </header>
+  );
+}
+
+// host-app/src/components/Sidebar.tsx
+interface SidebarProps {
+  apps: MicroApp[];
+  activeApp: string | null;
+  onAppSelect: (app: MicroApp) => void;
+}
+
+export function Sidebar({ apps, activeApp, onAppSelect }: SidebarProps) {
+  return (
+    <aside className="app-sidebar">
+      <h2>应用列表</h2>
+      <nav className="sidebar-nav">
+        {apps.map(app => (
+          <button
+            key={app.name}
+            className={`nav-item ${activeApp === app.name ? 'active' : ''}`}
+            onClick={() => onAppSelect(app)}
+          >
+            <span className="app-icon">📦</span>
+            <span className="app-name">{app.name}</span>
+          </button>
+        ))}
+      </nav>
+    </aside>
+  );
+}
+
+// host-app/src/components/WelcomeScreen.tsx
+interface WelcomeScreenProps {
+  onUserLogin: (user: User) => void;
+}
+
+export function WelcomeScreen({ onUserLogin }: WelcomeScreenProps) {
+  const handleLogin = () => {
+    const mockUser: User = {
+      id: '1',
+      name: '张三',
+      email: 'zhangsan@example.com',
+      roles: ['admin'],
+    };
+    onUserLogin(mockUser);
+  };
+
+  return (
+    <div className="welcome-screen">
+      <div className="welcome-content">
+        <h1>欢迎来到微前端平台</h1>
+        <p>选择一个应用开始使用</p>
+        <button className="login-button" onClick={handleLogin}>
+          登录开始使用
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// micro-app-dashboard/src/App.tsx
+import { useEffect, useState } from 'react';
+
+interface SharedState {
+  user: User | null;
+  theme: 'light' | 'dark';
+  language: 'zh' | 'en';
+}
+
+export function DashboardApp() {
+  const [sharedState, setSharedState] = useState<SharedState>({
+    user: null,
+    theme: 'light',
+    language: 'zh',
+  });
+
+  useEffect(() => {
+    const channel = new BroadcastChannel('micro-apps-channel');
+    
+    channel.onmessage = (event) => {
+      if (event.data.type === 'STATE_UPDATE') {
+        setSharedState(prev => ({ ...prev, ...event.data.payload }));
+      }
+    };
+
+    // 通知宿主应用已加载
+    channel.postMessage({
+      type: 'NAVIGATION',
+      payload: { app: 'dashboard' },
+      source: 'dashboard',
+    });
+
+    return () => channel.close();
+  }, []);
+
+  return (
+    <div className={`dashboard-app ${sharedState.theme}`}>
+      <h2>📊 仪表盘应用</h2>
+      
+      {sharedState.user ? (
+        <div className="dashboard-content">
+          <p>欢迎, {sharedState.user.name}!</p>
+          <div className="stats-grid">
+            <StatCard title="总访问量" value="125,843" trend="+12.5%" />
+            <StatCard title="活跃用户" value="8,543" trend="+8.3%" />
+            <StatCard title="转化率" value="3.2%" trend="-2.1%" />
+          </div>
+        </div>
+      ) : (
+        <div className="login-prompt">
+          <p>请先登录</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatCard({ title, value, trend }: {
+  title: string;
+  value: string;
+  trend: string;
+}) {
+  const isPositive = trend.startsWith('+');
+  
+  return (
+    <div className="stat-card">
+      <h3>{title}</h3>
+      <p className="stat-value">{value}</p>
+      <span className={`stat-trend ${isPositive ? 'positive' : 'negative'}`}>
+        {trend}
+      </span>
+    </div>
+  );
+}
+```
+
+## 🎯 项目二：实时协作平台
+
+### 项目概述
+
+使用 React 19 和 WebSocket 构建的实时协作平台，展示实时数据同步、冲突解决、协作编辑和状态管理。
+
+### 完整代码实现
+
+```tsx
+// types.ts
+export interface Document {
+  id: string;
+  title: string;
+  content: string;
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+  collaborators: Collaborator[];
+}
+
+export interface Collaborator {
+  id: string;
+  name: string;
+  color: string;
+  cursor: Cursor | null;
+}
+
+export interface Cursor {
+  position: number;
+  selection: number;
+}
+
+export interface Operation {
+  type: 'insert' | 'delete' | 'retain';
+  content?: string;
+  length?: number;
+  userId: string;
+  timestamp: Date;
+}
+
+export interface WebSocketMessage {
+  type: 'DOCUMENT_UPDATE' | 'CURSOR_MOVE' | 'USER_JOIN' | 'USER_LEAVE';
+  payload: any;
+  userId: string;
+}
+
+// DocumentEditor.tsx
+'use client';
+
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Document, Collaborator, Operation, WebSocketMessage } from './types';
+
+interface DocumentEditorProps {
+  document: Document;
+  currentUser: { id: string; name: string };
+  onDocumentUpdate: (document: Document) => void;
+}
+
+export function DocumentEditor({ document, currentUser, onDocumentUpdate }: DocumentEditorProps) {
+  const [content, setContent] = useState(document.content);
+  const [collaborators, setCollaborators] = useState<Collaborator[]>(document.collaborators);
+  const [isConnected, setIsConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // 建立 WebSocket 连接
+  useEffect(() => {
+    const ws = new WebSocket('ws://localhost:8080/collaboration');
+    
+    ws.onopen = () => {
+      setIsConnected(true);
+      console.log('WebSocket connected');
+      
+      // 发送加入文档消息
+      ws.send(JSON.stringify({
+        type: 'JOIN_DOCUMENT',
+        payload: {
+          documentId: document.id,
+          userId: currentUser.id,
+          userName: currentUser.name,
+        },
+      }));
+    };
+    
+    ws.onmessage = (event) => {
+      const message: WebSocketMessage = JSON.parse(event.data);
+      
+      switch (message.type) {
+        case 'DOCUMENT_UPDATE':
+          handleRemoteUpdate(message.payload);
+          break;
+        case 'CURSOR_MOVE':
+          handleCursorMove(message.payload);
+          break;
+        case 'USER_JOIN':
+          handleUserJoin(message.payload);
+          break;
+        case 'USER_LEAVE':
+          handleUserLeave(message.payload);
+          break;
+      }
+    };
+    
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setIsConnected(false);
+    };
+    
+    ws.onclose = () => {
+      setIsConnected(false);
+      console.log('WebSocket disconnected');
+    };
+    
+    wsRef.current = ws;
+    
+    return () => {
+      ws.close();
+    };
+  }, [document.id, currentUser]);
+
+  const handleRemoteUpdate = useCallback((payload: { operation: Operation; newContent: string }) => {
+    const { operation, newContent } = payload;
+    
+    // 如果不是当前用户的操作，则应用远程更新
+    if (operation.userId !== currentUser.id) {
+      setContent(newContent);
+      onDocumentUpdate({
+        ...document,
+        content: newContent,
+        updatedAt: new Date(),
+      });
+    }
+  }, [currentUser.id, document, onDocumentUpdate]);
+
+  const handleCursorMove = useCallback((payload: { userId: string; cursor: Cursor }) => {
+    setCollaborators(prev =>
+      prev.map(collaborator =>
+        collaborator.id === payload.userId
+          ? { ...collaborator, cursor: payload.cursor }
+          : collaborator
+      )
+    );
+  }, []);
+
+  const handleUserJoin = useCallback((payload: { user: Collaborator }) => {
+    setCollaborators(prev => {
+      const exists = prev.some(c => c.id === payload.user.id);
+      if (exists) return prev;
+      return [...prev, payload.user];
+    });
+  }, []);
+
+  const handleUserLeave = useCallback((payload: { userId: string }) => {
+    setCollaborators(prev => prev.filter(c => c.id !== payload.userId));
+  }, []);
+
+  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newContent = e.target.value;
+    const cursorPosition = e.target.selectionStart;
+    
+    setContent(newContent);
+    
+    // 发送更新到服务器
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const operation: Operation = {
+        type: 'insert',
+        content: newContent,
+        userId: currentUser.id,
+        timestamp: new Date(),
+      };
+      
+      wsRef.current.send(JSON.stringify({
+        type: 'DOCUMENT_UPDATE',
+        payload: {
+          documentId: document.id,
+          operation,
+          newContent,
+        },
+      }));
+    }
+    
+    onDocumentUpdate({
+      ...document,
+      content: newContent,
+      updatedAt: new Date(),
+    });
+  };
+
+  const handleCursorChange = useCallback(() => {
+    if (!textareaRef.current) return;
+    
+    const cursor: Cursor = {
+      position: textareaRef.current.selectionStart,
+      selection: textareaRef.current.selectionEnd,
+    };
+    
+    // 发送光标位置
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'CURSOR_MOVE',
+        payload: {
+          documentId: document.id,
+          cursor,
+        },
+      }));
+    }
+  }, [document.id]);
+
+  return (
+    <div className="document-editor">
+      <div className="editor-header">
+        <div className="connection-status">
+          <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`} />
+          <span>{isConnected ? '已连接' : '未连接'}</span>
+        </div>
+        
+        <div className="collaborators">
+          {collaborators.map(collaborator => (
+            <div
+              key={collaborator.id}
+              className="collaborator-badge"
+              style={{ backgroundColor: collaborator.color }}
+              title={collaborator.name}
+            >
+              {collaborator.name.charAt(0)}
+            </div>
+          ))}
+        </div>
+        
+        <div className="document-info">
+          <span className="last-updated">
+            最后更新: {document.updatedAt.toLocaleTimeString('zh-CN')}
+          </span>
+        </div>
+      </div>
+
+      <div className="editor-content">
+        <textarea
+          ref={textareaRef}
+          value={content}
+          onChange={handleContentChange}
+          onSelect={handleCursorChange}
+          onKeyUp={handleCursorChange}
+          className="editor-textarea"
+          placeholder="开始编辑文档..."
+          spellCheck={false}
+        />
+        
+        {collaborators.map(collaborator => (
+          collaborator.cursor && collaborator.id !== currentUser.id && (
+            <RemoteCursor
+              key={collaborator.id}
+              cursor={collaborator.cursor}
+              color={collaborator.color}
+              name={collaborator.name}
+            />
+          )
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RemoteCursor({ cursor, color, name }: {
+  cursor: Cursor;
+  color: string;
+  name: string;
+}) {
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+
+  useEffect(() => {
+    // 计算光标位置（简化版本）
+    const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement;
+    if (textarea) {
+      const text = textarea.value.substring(0, cursor.position);
+      const lines = text.split('\n');
+      const lineHeight = 24; // 假设行高
+      const charWidth = 14; // 假设字符宽度
+      
+      setPosition({
+        top: lines.length * lineHeight - lineHeight,
+        left: lines[lines.length - 1].length * charWidth,
+      });
+    }
+  }, [cursor.position]);
+
+  return (
+    <div
+      className="remote-cursor"
+      style={{
+        top: `${position.top}px`,
+        left: `${position.left}px`,
+        borderLeftColor: color,
+      }}
+    >
+      <div className="cursor-flag" style={{ backgroundColor: color }}>
+        {name}
+      </div>
+    </div>
+  );
+}
+
+// CollaborationPlatform.tsx
+'use client';
+
+import { useState } from 'react';
+import { DocumentEditor } from './DocumentEditor';
+import { Document } from './types';
+
+export function CollaborationPlatform() {
+  const [documents, setDocuments] = useState<Document[]>([
+    {
+      id: '1',
+      title: '项目需求文档',
+      content: '这是一个协作编辑的文档示例...',
+      createdBy: '张三',
+      createdAt: new Date('2026-04-20'),
+      updatedAt: new Date('2026-04-22'),
+      collaborators: [
+        {
+          id: '2',
+          name: '李四',
+          color: '#e74c3c',
+          cursor: null,
+        },
+        {
+          id: '3',
+          name: '王五',
+          color: '#3498db',
+          cursor: null,
+        },
+      ],
+    },
+  ]);
+  
+  const [activeDocument, setActiveDocument] = useState<Document | null>(documents[0]);
+  const currentUser = {
+    id: '1',
+    name: '张三',
+  };
+
+  const handleDocumentUpdate = (updatedDocument: Document) => {
+    setDocuments(prev =>
+      prev.map(doc =>
+        doc.id === updatedDocument.id ? updatedDocument : doc
+      )
+    );
+  };
+
+  const createNewDocument = () => {
+    const newDocument: Document = {
+      id: Date.now().toString(),
+      title: `新文档 ${documents.length + 1}`,
+      content: '',
+      createdBy: currentUser.name,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      collaborators: [],
+    };
+    
+    setDocuments([...documents, newDocument]);
+    setActiveDocument(newDocument);
+  };
+
+  return (
+    <div className="collaboration-platform">
+      <header className="platform-header">
+        <h1>🤝 实时协作平台</h1>
+        <button className="btn-create" onClick={createNewDocument}>
+          + 新建文档
+        </button>
+      </header>
+
+      <div className="platform-content">
+        <aside className="document-sidebar">
+          <h2>文档列表</h2>
+          <div className="document-list">
+            {documents.map(doc => (
+              <div
+                key={doc.id}
+                className={`document-item ${activeDocument?.id === doc.id ? 'active' : ''}`}
+                onClick={() => setActiveDocument(doc)}
+              >
+                <h3>{doc.title}</h3>
+                <div className="document-meta">
+                  <span>创建者: {doc.createdBy}</span>
+                  <span>协作者: {doc.collaborators.length}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
+
+        <main className="editor-area">
+          {activeDocument ? (
+            <DocumentEditor
+              document={activeDocument}
+              currentUser={currentUser}
+              onDocumentUpdate={handleDocumentUpdate}
+            />
+          ) : (
+            <div className="empty-state">
+              <p>选择或创建一个文档开始协作</p>
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+```
+
+## 🎯 项目三：AI 对话应用（集成 AI）
+
+### 项目概述
+
+使用 React 19 和 AI API 构建的智能对话应用，展示流式响应、上下文管理、多模态交互和性能优化。
+
+### 完整代码实现
+
+```tsx
+// types.ts
+export interface Message {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: Date;
+  attachments?: Attachment[];
+}
+
+export interface Attachment {
+  type: 'image' | 'file' | 'code';
+  content: string;
+  name?: string;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  messages: Message[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface AIResponse {
+  content: string;
+  done: boolean;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+}
+
+// ChatInterface.tsx
+'use client';
+
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { Message, Conversation, AIResponse, Attachment } from './types';
+
+interface ChatInterfaceProps {
+  conversation: Conversation;
+  onSendMessage: (message: Message) => Promise<void>;
+  onUpdateConversation: (conversation: Conversation) => void;
+}
+
+export function ChatInterface({ conversation, onSendMessage, onUpdateConversation }: ChatInterfaceProps) {
+  const [inputText, setInputText] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [conversation.messages, scrollToBottom]);
+
+  const handleSendMessage = async () => {
+    if (!inputText.trim() && attachments.length === 0) return;
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: inputText,
+      timestamp: new Date(),
+      attachments: attachments.length > 0 ? attachments : undefined,
+    };
+
+    setInputText('');
+    setAttachments([]);
+    setIsTyping(true);
+
+    // 创建助手消息占位符
+    const assistantMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+    };
+
+    const updatedMessages = [...conversation.messages, userMessage, assistantMessage];
+    onUpdateConversation({
+      ...conversation,
+      messages: updatedMessages,
+      updatedAt: new Date(),
+    });
+
+    try {
+      // 调用 AI API（模拟）
+      const response = await fetchAIResponse(userMessage, conversation.messages);
+      
+      // 流式更新响应
+      await streamResponse(response, assistantMessage.id);
+    } catch (error) {
+      console.error('Failed to get AI response:', error);
+      
+      // 更新为错误消息
+      const errorMessage: Message = {
+        ...assistantMessage,
+        content: '抱歉，我遇到了一些问题。请稍后再试。',
+      };
+      
+      onUpdateConversation({
+        ...conversation,
+        messages: [...updatedMessages.slice(0, -1), errorMessage],
+        updatedAt: new Date(),
+      });
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  const fetchAIResponse = async (userMessage: Message, history: Message[]): Promise<AIResponse> => {
+    // 模拟 AI API 调用
+    // 实际应用中，这里会调用 OpenAI、Claude 或其他 AI 服务
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    return {
+      content: generateMockResponse(userMessage.content),
+      done: true,
+      usage: {
+        promptTokens: userMessage.content.length,
+        completionTokens: 100,
+        totalTokens: userMessage.content.length + 100,
+      },
+    };
+  };
+
+  const streamResponse = async (response: AIResponse, messageId: string) => {
+    const content = response.content;
+    const chunks = content.split('').map((char, index) => 
+      content.substring(0, index + 1)
+    );
+
+    for (const chunk of chunks) {
+      await new Promise(resolve => setTimeout(resolve, 30)); // 模拟流式延迟
+      
+      onUpdateConversation(prev => ({
+        ...prev,
+        messages: prev.messages.map(msg =>
+          msg.id === messageId ? { ...msg, content: chunk } : msg
+        ),
+        updatedAt: new Date(),
+      }));
+    }
+  };
+
+  const generateMockResponse = (userInput: string): string => {
+    // 简单的模拟响应生成
+    const responses = [
+      `我理解你的问题是关于"${userInput}"。让我为你详细解答...`,
+      `这是一个很好的问题！关于"${userInput}"，我可以提供以下信息...`,
+      `感谢你的提问。针对"${userInput}"，我的建议是...`,
+    ];
+    
+    return responses[Math.floor(Math.random() * responses.length)] + 
+      '\n\n这里是一些详细的内容...' +
+      '\n\n1. 第一点说明\n2. 第二点说明\n3. 第三点说明' +
+      '\n\n希望这对你有帮助！还有什么其他问题吗？';
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    Array.from(files).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const newAttachment: Attachment = {
+          type: file.type.startsWith('image/') ? 'image' : 'file',
+          content: event.target?.result as string,
+          name: file.name,
+        };
+        setAttachments(prev => [...prev, newAttachment]);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  return (
+    <div className="chat-interface">
+      <div className="messages-container">
+        {conversation.messages.map((message, index) => (
+          <MessageBubble key={message.id} message={message} isLast={index === conversation.messages.length - 1} />
+        ))}
+        
+        {isTyping && (
+          <div className="typing-indicator">
+            <div className="typing-dots">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <span>AI 正在思考...</span>
+          </div>
+        )}
+        
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div className="input-area">
+        {attachments.length > 0 && (
+          <div className="attachments-preview">
+            {attachments.map((attachment, index) => (
+              <div key={index} className="attachment-item">
+                {attachment.type === 'image' ? (
+                  <img src={attachment.content} alt={attachment.name} className="attachment-image" />
+                ) : (
+                  <div className="attachment-file">
+                    <span>📄</span>
+                    <span>{attachment.name}</span>
+                  </div>
+                )}
+                <button 
+                  className="remove-attachment"
+                  onClick={() => removeAttachment(index)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="input-wrapper">
+          <button
+            className="attach-button"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📎
+          </button>
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            multiple
+            className="hidden-input"
+          />
+          
+          <textarea
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyPress={handleKeyPress}
+            placeholder="输入消息... (Shift+Enter 换行)"
+            className="message-input"
+            rows={1}
+          />
+          
+          <button
+            className="send-button"
+            onClick={handleSendMessage}
+            disabled={!inputText.trim() && attachments.length === 0}
+          >
+            发送
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MessageBubble({ message, isLast }: { message: Message; isLast: boolean }) {
+  const isUser = message.role === 'user';
+
+  return (
+    <div className={`message-bubble ${isUser ? 'user' : 'assistant'}`}>
+      <div className="message-header">
+        <span className="message-role">
+          {isUser ? '👤 用户' : '🤖 AI 助手'}
+        </span>
+        <span className="message-time">
+          {message.timestamp.toLocaleTimeString('zh-CN')}
+        </span>
+      </div>
+      
+      <div className="message-content">
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="message-attachments">
+            {message.attachments.map((attachment, index) => (
+              <div key={index} className="message-attachment">
+                {attachment.type === 'image' ? (
+                  <img src={attachment.content} alt={attachment.name} />
+                ) : (
+                  <div className="file-attachment">
+                    <span>📄</span>
+                    <span>{attachment.name}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        
+        <div className="message-text">
+          {message.content}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// AIChatApp.tsx
+'use client';
+
+import { useState } from 'react';
+import { ChatInterface } from './ChatInterface';
+import { Conversation, Message } from './types';
+
+export function AIChatApp() {
+  const [conversations, setConversations] = useState<Conversation[]>([
+    {
+      id: '1',
+      title: '新建对话',
+      messages: [
+        {
+          id: '1',
+          role: 'assistant',
+          content: '你好！我是你的 AI 助手。有什么可以帮助你的吗？',
+          timestamp: new Date(),
+        },
+      ],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ]);
+  
+  const [activeConversation, setActiveConversation] = useState<Conversation>(conversations[0]);
+
+  const handleSendMessage = async (message: Message) => {
+    // 实际的消息发送逻辑在 ChatInterface 中处理
+  };
+
+  const handleUpdateConversation = (updatedConversation: Conversation) => {
+    setConversations(prev =>
+      prev.map(conv =>
+        conv.id === updatedConversation.id ? updatedConversation : conv
+      )
+    );
+    setActiveConversation(updatedConversation);
+  };
+
+  const createNewConversation = () => {
+    const newConversation: Conversation = {
+      id: Date.now().toString(),
+      title: `对话 ${conversations.length + 1}`,
+      messages: [
+        {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: '你好！我是你的 AI 助手。有什么可以帮助你的吗？',
+          timestamp: new Date(),
+        },
+      ],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    
+    setConversations([...conversations, newConversation]);
+    setActiveConversation(newConversation);
+  };
+
+  const deleteConversation = (conversationId: string) => {
+    setConversations(prev => prev.filter(conv => conv.id !== conversationId));
+    
+    if (activeConversation.id === conversationId && conversations.length > 1) {
+      setActiveConversation(conversations[0]);
+    }
+  };
+
+  return (
+    <div className="ai-chat-app">
+      <aside className="conversation-sidebar">
+        <div className="sidebar-header">
+          <h1>🤖 AI 对话</h1>
+          <button className="btn-new" onClick={createNewConversation}>
+            + 新建对话
+          </button>
+        </div>
+        
+        <div className="conversation-list">
+          {conversations.map(conversation => (
+            <div
+              key={conversation.id}
+              className={`conversation-item ${activeConversation.id === conversation.id ? 'active' : ''}`}
+              onClick={() => setActiveConversation(conversation)}
+            >
+              <h3>{conversation.title}</h3>
+              <p className="conversation-preview">
+                {conversation.messages[conversation.messages.length - 1]?.content.slice(0, 50)}...
+              </p>
+              <div className="conversation-meta">
+                <span>{conversation.messages.length} 条消息</span>
+                <span>{conversation.updatedAt.toLocaleDateString('zh-CN')}</span>
+              </div>
+              <button
+                className="btn-delete"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteConversation(conversation.id);
+                }}
+              >
+                🗑️
+              </button>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      <main className="chat-area">
+        <ChatInterface
+          conversation={activeConversation}
+          onSendMessage={handleSendMessage}
+          onUpdateConversation={handleUpdateConversation}
+        />
+      </main>
+    </div>
+  );
+}
+```
+
+## 🎯 项目四：跨平台应用
+
+### 项目概述
+
+使用 React 19 和 React Native 构建的跨平台应用，展示代码复用、平台适配、原生集成和性能优化。
+
+### 完整代码实现
+
+```tsx
+// types.ts
+export interface PlatformConfig {
+  platform: 'web' | 'ios' | 'android';
+  features: {
+    pushNotifications: boolean;
+    biometrics: boolean;
+    camera: boolean;
+    location: boolean;
+  };
+}
+
+export interface AppTheme {
+  colors: {
+    primary: string;
+    secondary: string;
+    background: string;
+    text: string;
+  };
+  spacing: {
+    small: number;
+    medium: number;
+    large: number;
+  };
+}
+
+// platform-config.ts
+export const platformConfigs: Record<string, PlatformConfig> = {
+  web: {
+    platform: 'web',
+    features: {
+      pushNotifications: false,
+      biometrics: false,
+      camera: true,
+      location: true,
+    },
+  },
+  ios: {
+    platform: 'ios',
+    features: {
+      pushNotifications: true,
+      biometrics: true,
+      camera: true,
+      location: true,
+    },
+  },
+  android: {
+    platform: 'android',
+    features: {
+      pushNotifications: true,
+      biometrics: true,
+      camera: true,
+      location: true,
+    },
+  },
+};
+
+export const getPlatformConfig = (): PlatformConfig => {
+  if (typeof window !== 'undefined') {
+    return platformConfigs.web;
+  }
+  
+  // React Native 环境检测
+  if (typeof Platform !== 'undefined') {
+    return Platform.OS === 'ios' ? platformConfigs.ios : platformConfigs.android;
+  }
+  
+  return platformConfigs.web;
+};
+
+// CrossPlatformApp.tsx
+'use client';
+
+import { useState, useEffect } from 'react';
+import { getPlatformConfig, PlatformConfig } from './platform-config';
+
+export function CrossPlatformApp() {
+  const [platformConfig, setPlatformConfig] = useState<PlatformConfig>(getPlatformConfig());
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+
+  useEffect(() => {
+    // 检测平台特性
+    detectPlatformFeatures();
+    
+    // 请求位置权限（如果支持）
+    if (platformConfig.features.location) {
+      requestLocation();
+    }
+  }, [platformConfig]);
+
+  const detectPlatformFeatures = () => {
+    const config = getPlatformConfig();
+    setPlatformConfig(config);
+    
+    console.log('Platform:', config.platform);
+    console.log('Available features:', config.features);
+  };
+
+  const requestLocation = async () => {
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserLocation({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+          });
+        },
+        (error) => {
+          console.error('Location error:', error);
+        }
+      );
+    }
+  };
+
+  const handleCameraCapture = async () => {
+    if (platformConfig.features.camera) {
+      // 平台特定的相机实现
+      if (platformConfig.platform === 'web') {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.capture = 'environment';
+        input.click();
+      } else {
+        // React Native 相机实现
+        console.log('Opening camera...');
+      }
+    }
+  };
+
+  const handleBiometricAuth = async () => {
+    if (platformConfig.features.biometrics) {
+      // 平台特定的生物识别实现
+      if (platformConfig.platform === 'web') {
+        alert('Web 平台不支持生物识别');
+      } else {
+        // React Native 生物识别实现
+        console.log('Requesting biometric auth...');
+      }
+    }
+  };
+
+  return (
+    <div className="cross-platform-app">
+      <header className="app-header">
+        <h1>📱 跨平台应用</h1>
+        <div className="platform-badge">
+          {platformConfig.platform.toUpperCase()}
+        </div>
+      </header>
+
+      <main className="app-content">
+        <section className="feature-section">
+          <h2>平台特性</h2>
+          <div className="features-grid">
+            <FeatureCard
+              icon="🔔"
+              title="推送通知"
+              available={platformConfig.features.pushNotifications}
+            />
+            <FeatureCard
+              icon="🔐"
+              title="生物识别"
+              available={platformConfig.features.biometrics}
+              onAction={handleBiometricAuth}
+            />
+            <FeatureCard
+              icon="📷"
+              title="相机"
+              available={platformConfig.features.camera}
+              onAction={handleCameraCapture}
+            />
+            <FeatureCard
+              icon="📍"
+              title="位置服务"
+              available={platformConfig.features.location}
+            />
+          </div>
+        </section>
+
+        {userLocation && (
+          <section className="location-section">
+            <h2>当前位置</h2>
+            <div className="location-info">
+              <p>纬度: {userLocation.lat.toFixed(6)}</p>
+              <p>经度: {userLocation.lng.toFixed(6)}</p>
+            </div>
+          </section>
+        )}
+
+        <section className="demo-section">
+          <h2>功能演示</h2>
+          <PlatformSpecificContent platform={platformConfig.platform} />
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function FeatureCard({ icon, title, available, onAction }: {
+  icon: string;
+  title: string;
+  available: boolean;
+  onAction?: () => void;
+}) {
+  return (
+    <div className={`feature-card ${available ? 'available' : 'unavailable'}`}>
+      <span className="feature-icon">{icon}</span>
+      <h3>{title}</h3>
+      <span className={`availability-badge ${available ? 'available' : 'unavailable'}`}>
+        {available ? '✓ 可用' : '✗ 不可用'}
+      </span>
+      {available && onAction && (
+        <button className="feature-action" onClick={onAction}>
+          测试
+        </button>
+      )}
+    </div>
+  );
+}
+
+function PlatformSpecificContent({ platform }: { platform: string }) {
+  switch (platform) {
+    case 'web':
+      return (
+        <div className="platform-content web">
+          <h3>Web 平台特性</h3>
+          <ul>
+            <li>响应式设计</li>
+            <li>PWA 支持</li>
+            <li>浏览器 API 集成</li>
+            <li>离线功能</li>
+          </ul>
+        </div>
+      );
+    
+    case 'ios':
+      return (
+        <div className="platform-content ios">
+          <h3>iOS 平台特性</h3>
+          <ul>
+            <li>原生 UI 组件</li>
+            <li>Face ID / Touch ID</li>
+            <li>推送通知</li>
+            <li>深度链接</li>
+          </ul>
+        </div>
+      );
+    
+    case 'android':
+      return (
+        <div className="platform-content android">
+          <h3>Android 平台特性</h3>
+          <ul>
+            <li>Material Design</li>
+            <li>指纹识别</li>
+            <li>后台服务</li>
+            <li>通知渠道</li>
+          </ul>
+        </div>
+      );
+    
+    default:
+      return null;
+  }
+}
+```
+
+## 📝 完整样式代码
+
+```css
+/* 微前端架构样式 */
+.micro-frontend-app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.micro-frontend-app.light {
+  background-color: #f5f7fa;
+  color: #2c3e50;
+}
+
+.micro-frontend-app.dark {
+  background-color: #1a1a2e;
+  color: #eaeaea;
+}
+
+.app-header {
+  background-color: white;
+  padding: 16px 24px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 100;
+}
+
+.dark .app-header {
+  background-color: #16213e;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.header-brand h1 {
+  margin: 0;
+  font-size: 24px;
+  color: #3498db;
+}
+
+.header-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.nav-button {
+  padding: 10px 20px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #2c3e50;
+  transition: background-color 0.2s;
+}
+
+.nav-button:hover {
+  background-color: #f8f9fa;
+}
+
+.dark .nav-button {
+  color: #eaeaea;
+}
+
+.dark .nav-button:hover {
+  background-color: #1f4068;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.theme-toggle {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 50%;
+  transition: background-color 0.2s;
+}
+
+.theme-toggle:hover {
+  background-color: #f8f9fa;
+}
+
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.user-name {
+  font-weight: 500;
+}
+
+.login-button,
+.logout-button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.login-button {
+  background-color: #3498db;
+  color: white;
+  border: none;
+}
+
+.login-button:hover {
+  background-color: #2980b9;
+}
+
+.logout-button {
+  background-color: #e74c3c;
+  color: white;
+  border: none;
+}
+
+.logout-button:hover {
+  background-color: #c0392b;
+}
+
+.main-content {
+  display: flex;
+  flex: 1;
+}
+
+.app-sidebar {
+  width: 250px;
+  background-color: white;
+  padding: 20px;
+  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.1);
+}
+
+.dark .app-sidebar {
+  background-color: #16213e;
+  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.3);
+}
+
+.app-sidebar h2 {
+  margin: 0 0 20px 0;
+  font-size: 18px;
+  color: #2c3e50;
+}
+
+.dark .app-sidebar h2 {
+  color: #eaeaea;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+  color: #2c3e50;
+  transition: all 0.2s;
+}
+
+.nav-item:hover {
+  background-color: #f8f9fa;
+}
+
+.nav-item.active {
+  background-color: #e3f2fd;
+  color: #1976d2;
+}
+
+.dark .nav-item {
+  color: #eaeaea;
+}
+
+.dark .nav-item:hover {
+  background-color: #1f4068;
+}
+
+.dark .nav-item.active {
+  background-color: #0f3460;
+  color: #4fc3f7;
+}
+
+.app-icon {
+  font-size: 18px;
+}
+
+.content-area {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.micro-app-container {
+  min-height: 400px;
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.dark .micro-app-container {
+  background-color: #16213e;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.welcome-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+}
+
+.welcome-content {
+  text-align: center;
+}
+
+.welcome-content h1 {
+  margin: 0 0 16px 0;
+  color: #2c3e50;
+}
+
+.dark .welcome-content h1 {
+  color: #eaeaea;
+}
+
+.welcome-content p {
+  margin: 0 0 24px 0;
+  color: #7f8c8d;
+}
+
+.dark .welcome-content p {
+  color: #b0bec5;
+}
+
+/* 仪表盘微应用样式 */
+.dashboard-app {
+  padding: 24px;
+}
+
+.dashboard-app.dark {
+  background-color: #1a1a2e;
+}
+
+.dashboard-app h2 {
+  margin: 0 0 24px 0;
+  color: #2c3e50;
+}
+
+.dark .dashboard-app h2 {
+  color: #eaeaea;
+}
+
+.dashboard-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 20px;
+}
+
+.stat-card {
+  background-color: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.dark .stat-card {
+  background-color: #16213e;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.stat-card h3 {
+  margin: 0 0 12px 0;
+  color: #7f8c8d;
+  font-size: 14px;
+}
+
+.dark .stat-card h3 {
+  color: #b0bec5;
+}
+
+.stat-value {
+  font-size: 32px;
+  font-weight: bold;
+  color: #2c3e50;
+  margin: 0 0 8px 0;
+}
+
+.dark .stat-value {
+  color: #eaeaea;
+}
+
+.stat-trend {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.stat-trend.positive {
+  color: #2ecc71;
+}
+
+.stat-trend.negative {
+  color: #e74c3c;
+}
+
+.login-prompt {
+  text-align: center;
+  padding: 40px;
+  color: #7f8c8d;
+}
+
+/* 实时协作平台样式 */
+.collaboration-platform {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background-color: #f5f7fa;
+}
+
+.platform-header {
+  background-color: white;
+  padding: 16px 24px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.platform-header h1 {
+  margin: 0;
+  color: #2c3e50;
+}
+
+.btn-create {
+  background-color: #3498db;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.btn-create:hover {
+  background-color: #2980b9;
+}
+
+.platform-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.document-sidebar {
+  width: 300px;
+  background-color: white;
+  border-right: 1px solid #ecf0f1;
+  display: flex;
+  flex-direction: column;
+}
+
+.document-sidebar h2 {
+  padding: 16px;
+  margin: 0;
+  color: #2c3e50;
+  border-bottom: 1px solid #ecf0f1;
+}
+
+.document-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.document-item {
+  padding: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  margin-bottom: 8px;
+}
+
+.document-item:hover {
+  background-color: #f8f9fa;
+}
+
+.document-item.active {
+  background-color: #e3f2fd;
+}
+
+.document-item h3 {
+  margin: 0 0 8px 0;
+  color: #2c3e50;
+  font-size: 14px;
+}
+
+.document-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #7f8c8d;
+}
+
+.editor-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: white;
+}
+
+.document-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid #ecf0f1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #f8f9fa;
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #7f8c8d;
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #e74c3c;
+  animation: pulse 2s infinite;
+}
+
+.status-indicator.connected {
+  background-color: #2ecc71;
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.collaborators {
+  display: flex;
+  gap: 8px;
+}
+
+.collaborator-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: bold;
+  font-size: 12px;
+}
+
+.document-info {
+  font-size: 12px;
+  color: #7f8c8d;
+}
+
+.editor-content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.editor-textarea {
+  width: 100%;
+  height: 100%;
+  padding: 20px;
+  border: none;
+  resize: none;
+  font-size: 16px;
+  line-height: 1.6;
+  font-family: 'Monaco', 'Courier New', monospace;
+  outline: none;
+}
+
+.remote-cursor {
+  position: absolute;
+  width: 2px;
+  height: 20px;
+  border-left: 2px solid;
+  pointer-events: none;
+}
+
+.cursor-flag {
+  position: absolute;
+  top: -24px;
+  left: 0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: white;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #7f8c8d;
+}
+
+/* AI 对话应用样式 */
+.ai-chat-app {
+  display: flex;
+  height: 100vh;
+  background-color: #f5f7fa;
+}
+
+.conversation-sidebar {
+  width: 300px;
+  background-color: white;
+  border-right: 1px solid #ecf0f1;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid #ecf0f1;
+}
+
+.sidebar-header h1 {
+  margin: 0 0 12px 0;
+  color: #2c3e50;
+  font-size: 20px;
+}
+
+.btn-new {
+  width: 100%;
+  background-color: #3498db;
+  color: white;
+  border: none;
+  padding: 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.btn-new:hover {
+  background-color: #2980b9;
+}
+
+.conversation-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.conversation-item {
+  padding: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  margin-bottom: 8px;
+  position: relative;
+}
+
+.conversation-item:hover {
+  background-color: #f8f9fa;
+}
+
+.conversation-item.active {
+  background-color: #e3f2fd;
+}
+
+.conversation-item h3 {
+  margin: 0 0 8px 0;
+  color: #2c3e50;
+  font-size: 14px;
+}
+
+.conversation-preview {
+  margin: 0 0 8px 0;
+  color: #7f8c8d;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.conversation-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #95a5a6;
+}
+
+.btn-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.conversation-item:hover .btn-delete {
+  opacity: 1;
+}
+
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: white;
+}
+
+.chat-interface {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.message-bubble {
+  max-width: 80%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message-bubble.user {
+  align-self: flex-end;
+  background-color: #3498db;
+  color: white;
+}
+
+.message-bubble.assistant {
+  align-self: flex-start;
+  background-color: #f8f9fa;
+  color: #2c3e50;
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.message-role {
+  font-weight: 500;
+}
+
+.message-time {
+  opacity: 0.7;
+}
+
+.message-content {
+  line-height: 1.6;
+}
+
+.message-attachments {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.message-attachment img {
+  max-width: 200px;
+  border-radius: 8px;
+}
+
+.file-attachment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
+}
+
+.message-text {
+  white-space: pre-wrap;
+}
+
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background-color: #f8f9fa;
+  border-radius: 12px;
+  align-self: flex-start;
+}
+
+.typing-dots {
+  display: flex;
+  gap: 4px;
+}
+
+.typing-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #3498db;
+  animation: typing 1.4s infinite;
+}
+
+.typing-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typing {
+  0%, 60%, 100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-4px);
+  }
+}
+
+.input-area {
+  padding: 16px;
+  border-top: 1px solid #ecf0f1;
+  background-color: #f8f9fa;
+}
+
+.attachments-preview {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.attachment-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.attachment-image {
+  max-width: 100px;
+  border-radius: 8px;
+}
+
+.attachment-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: white;
+  border-radius: 6px;
+  border: 1px solid #e0e0e0;
+}
+
+.remove-attachment {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background-color: #e74c3c;
+  color: white;
+  border: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.input-wrapper {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.attach-button {
+  padding: 10px;
+  background-color: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 18px;
+  transition: background-color 0.2s;
+}
+
+.attach-button:hover {
+  background-color: #f8f9fa;
+}
+
+.hidden-input {
+  display: none;
+}
+
+.message-input {
+  flex: 1;
+  padding: 10px 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  resize: none;
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.message-input:focus {
+  border-color: #3498db;
+}
+
+.send-button {
+  padding: 10px 20px;
+  background-color: #3498db;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.send-button:hover:not(:disabled) {
+  background-color: #2980b9;
+}
+
+.send-button:disabled {
+  background-color: #b3d7ff;
+  cursor: not-allowed;
+}
+
+/* 跨平台应用样式 */
+.cross-platform-app {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 20px;
+}
+
+.app-header {
+  background: rgba(255, 255, 255, 0.95);
+  padding: 20px 30px;
+  border-radius: 12px;
+  margin-bottom: 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.app-header h1 {
+  margin: 0;
+  color: #2c3e50;
+}
+
+.platform-badge {
+  background-color: #3498db;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.app-content {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.feature-section {
+  background: rgba(255, 255, 255, 0.95);
+  padding: 24px;
+  border-radius: 12px;
+  margin-bottom: 24px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.feature-section h2 {
+  margin: 0 0 20px 0;
+  color: #2c3e50;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+}
+
+.feature-card {
+  padding: 20px;
+  border-radius: 8px;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.feature-card.available {
+  background-color: #e8f5e9;
+  border: 2px solid #4caf50;
+}
+
+.feature-card.unavailable {
+  background-color: #ffebee;
+  border: 2px solid #f44336;
+  opacity: 0.7;
+}
+
+.feature-icon {
+  font-size: 32px;
+  display: block;
+  margin-bottom: 12px;
+}
+
+.feature-card h3 {
+  margin: 0 0 12px 0;
+  color: #2c3e50;
+}
+
+.availability-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.availability-badge.available {
+  background-color: #4caf50;
+  color: white;
+}
+
+.availability-badge.unavailable {
+  background-color: #f44336;
+  color: white;
+}
+
+.feature-action {
+  background-color: #3498db;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.feature-action:hover {
+  background-color: #2980b9;
+}
+
+.location-section {
+  background: rgba(255, 255, 255, 0.95);
+  padding: 24px;
+  border-radius: 12px;
+  margin-bottom: 24px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.location-section h2 {
+  margin: 0 0 16px 0;
+  color: #2c3e50;
+}
+
+.location-info {
+  background-color: #f8f9fa;
+  padding: 16px;
+  border-radius: 8px;
+}
+
+.location-info p {
+  margin: 8px 0;
+  color: #2c3e50;
+}
+
+.demo-section {
+  background: rgba(255, 255, 255, 0.95);
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.demo-section h2 {
+  margin: 0 0 20px 0;
+  color: #2c3e50;
+}
+
+.platform-content {
+  padding: 16px;
+  border-radius: 8px;
+}
+
+.platform-content.web {
+  background-color: #e3f2fd;
+}
+
+.platform-content.ios {
+  background-color: #f3e5f5;
+}
+
+.platform-content.android {
+  background-color: #fff3e0;
+}
+
+.platform-content h3 {
+  margin: 0 0 12px 0;
+  color: #2c3e50;
+}
+
+.platform-content ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.platform-content li {
+  margin: 8px 0;
+  color: #2c3e50;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .app-sidebar,
+  .document-sidebar,
+  .conversation-sidebar {
+    width: 100%;
+    position: fixed;
+    left: -100%;
+    top: 0;
+    height: 100%;
+    z-index: 1000;
+    transition: left 0.3s;
+  }
+  
+  .app-sidebar.open,
+  .document-sidebar.open,
+  .conversation-sidebar.open {
+    left: 0;
+  }
+  
+  .message-bubble {
+    max-width: 90%;
+  }
+  
+  .features-grid {
+    grid-template-columns: 1fr;
+  }
+}
+```
+
+## 📚 学习检查点
+
+- [ ] 理解微前端架构的设计原理
+- [ ] 掌握 Module Federation 的配置和使用
+- [ ] 理解应用间状态共享和通信机制
+- [ ] 掌握 WebSocket 实时协作的实现
+- [ ] 理解冲突解决和同步策略
+- [ ] 掌握 AI API 集成和流式响应
+- [ ] 理解跨平台开发的最佳实践
+- [ ] 掌握平台特性检测和适配
+- [ ] 理解性能优化和代码复用
+- [ ] 掌握企业级应用的架构设计
+
+## 🚀 下一步
+
+→ [React 19 专项项目](./04-react-19-special-projects.mdx)
