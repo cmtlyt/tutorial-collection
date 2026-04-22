@@ -1,12 +1,587 @@
 # Node.js 类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍Node.js 类型的核心概念和实践方法。
+在 Node.js 项目中使用 TypeScript，需要借助 `@types/node` 提供的类型定义来获取 Node.js 内置模块的类型支持。本节将介绍如何配置 Node.js 类型环境、使用内置模块类型（`fs`、`path`、`http` 等）、处理 `Buffer` 与 `Stream` 类型，以及实现环境变量的类型安全。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 @types/node 使用
+
+### 安装与配置
+
+```bash
+# 安装 @types/node
+npm install -D @types/node typescript
+
+# 初始化 tsconfig.json
+npx tsc --init
+```
+
+在 `tsconfig.json` 中启用 Node.js 类型支持：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "strict": true,
+    "outDir": "./dist",
+    "types": ["node"]
+  },
+  "include": ["src/**/*"]
+}
+```
+
+### 版本对应关系
+
+`@types/node` 的版本应与项目使用的 Node.js 版本匹配：
+
+```bash
+# 查看当前 Node.js 版本
+node --version
+
+# 安装对应版本的类型定义
+npm install -D @types/node@20  # 对应 Node.js 20.x
+npm install -D @types/node@22  # 对应 Node.js 22.x
+```
+
+### 全局类型
+
+`@types/node` 提供了许多全局可用的类型：
+
+```ts
+// process 全局对象
+const nodeVersion: string = process.version;
+const platform: NodeJS.Platform = process.platform;
+const pid: number = process.pid;
+
+// __dirname 和 __filename（CommonJS 模块中可用）
+// ESM 中使用 import.meta.url 替代
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+
+const currentFilePath = fileURLToPath(import.meta.url);
+const currentDirPath = dirname(currentFilePath);
+
+// setTimeout / setInterval 的返回类型
+const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+  console.log('timeout');
+}, 1000);
+
+clearTimeout(timer);
+```
+
+## 🎯 内置模块类型
+
+### fs 模块
+
+```ts
+import { readFile, writeFile, readdir, stat, mkdir } from 'node:fs/promises';
+import { existsSync, createReadStream, createWriteStream } from 'node:fs';
+import { join } from 'node:path';
+
+// 读取文件 — 返回 Buffer 或 string
+async function readTextFile(filePath: string): Promise<string> {
+  const content = await readFile(filePath, { encoding: 'utf-8' });
+  return content;
+}
+
+// 写入文件
+async function writeTextFile(filePath: string, content: string): Promise<void> {
+  await writeFile(filePath, content, { encoding: 'utf-8' });
+}
+
+// 读取目录
+async function listDirectory(dirPath: string): Promise<string[]> {
+  const entries = await readdir(dirPath, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name);
+}
+
+// 文件信息
+import type { Stats } from 'node:fs';
+
+async function getFileInfo(filePath: string): Promise<{
+  size: number;
+  isDirectory: boolean;
+  modifiedAt: Date;
+}> {
+  const fileStat: Stats = await stat(filePath);
+  return {
+    size: fileStat.size,
+    isDirectory: fileStat.isDirectory(),
+    modifiedAt: fileStat.mtime,
+  };
+}
+
+// 确保目录存在
+async function ensureDir(dirPath: string): Promise<void> {
+  if (!existsSync(dirPath)) {
+    await mkdir(dirPath, { recursive: true });
+  }
+}
+```
+
+### path 模块
+
+```ts
+import { join, resolve, basename, extname, dirname, parse, format } from 'node:path';
+import type { ParsedPath } from 'node:path';
+
+// 路径拼接
+const configPath: string = join('/app', 'config', 'settings.json');
+// → '/app/config/settings.json'
+
+// 解析绝对路径
+const absolutePath: string = resolve('src', 'index.ts');
+// → '/Users/xxx/project/src/index.ts'
+
+// 路径解析
+const parsed: ParsedPath = parse('/home/user/file.txt');
+// { root: '/', dir: '/home/user', base: 'file.txt', ext: '.txt', name: 'file' }
+
+// 路径重组
+const formattedPath: string = format({
+  dir: '/home/user',
+  name: 'output',
+  ext: '.log',
+});
+// → '/home/user/output.log'
+
+// 提取文件名和扩展名
+const fileName: string = basename('/path/to/file.ts');        // 'file.ts'
+const fileExt: string = extname('/path/to/file.ts');           // '.ts'
+const dirName: string = dirname('/path/to/file.ts');           // '/path/to'
+```
+
+### http 模块
+
+```ts
+import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse, Server } from 'node:http';
+
+// 创建 HTTP 服务器
+const server: Server = createServer(
+  (req: IncomingMessage, res: ServerResponse) => {
+    const method: string | undefined = req.method;
+    const url: string | undefined = req.url;
+    const headers: IncomingMessage['headers'] = req.headers;
+
+    console.log(`${method} ${url}`);
+    console.log('Content-Type:', headers['content-type']);
+
+    // 读取请求体
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      const body: string = Buffer.concat(chunks).toString('utf-8');
+
+      // 设置响应
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'Hello', receivedBody: body }));
+    });
+  }
+);
+
+server.listen(3000, () => {
+  const address = server.address();
+  if (address && typeof address === 'object') {
+    console.log(`Server running at http://localhost:${address.port}`);
+  }
+});
+```
+
+### url 与 querystring 模块
+
+```ts
+import { URL, URLSearchParams } from 'node:url';
+
+// URL 解析
+const myUrl = new URL('https://example.com/path?name=alice&age=25');
+
+const protocol: string = myUrl.protocol;    // 'https:'
+const hostname: string = myUrl.hostname;    // 'example.com'
+const pathname: string = myUrl.pathname;    // '/path'
+const searchParams: URLSearchParams = myUrl.searchParams;
+
+const name: string | null = searchParams.get('name');    // 'alice'
+const age: string | null = searchParams.get('age');      // '25'
+
+// 构建 URL
+const apiUrl = new URL('/api/users', 'https://api.example.com');
+apiUrl.searchParams.set('page', '1');
+apiUrl.searchParams.set('limit', '20');
+console.log(apiUrl.toString());
+// → 'https://api.example.com/api/users?page=1&limit=20'
+```
+
+## 🎯 Buffer 与 Stream 类型
+
+### Buffer
+
+```ts
+// 创建 Buffer
+const bufferFromString: Buffer = Buffer.from('Hello, TypeScript!', 'utf-8');
+const bufferAlloc: Buffer = Buffer.alloc(16);             // 16 字节的零填充 Buffer
+const bufferAllocUnsafe: Buffer = Buffer.allocUnsafe(16); // 16 字节未初始化的 Buffer
+
+// Buffer 操作
+const length: number = bufferFromString.length;
+const str: string = bufferFromString.toString('utf-8');
+const base64: string = bufferFromString.toString('base64');
+const hex: string = bufferFromString.toString('hex');
+
+// Buffer 拼接
+const buf1: Buffer = Buffer.from('Hello ');
+const buf2: Buffer = Buffer.from('World');
+const combined: Buffer = Buffer.concat([buf1, buf2]);
+console.log(combined.toString()); // 'Hello World'
+
+// Buffer 比较
+const isEqual: boolean = buf1.equals(Buffer.from('Hello '));
+const comparison: number = buf1.compare(buf2); // -1, 0, 或 1
+
+// 在实际应用中处理二进制数据
+async function readBinaryFile(filePath: string): Promise<{
+  data: Buffer;
+  sizeInKB: number;
+  base64Content: string;
+}> {
+  const { readFile } = await import('node:fs/promises');
+  const data: Buffer = await readFile(filePath);
+
+  return {
+    data,
+    sizeInKB: data.length / 1024,
+    base64Content: data.toString('base64'),
+  };
+}
+```
+
+### Stream
+
+```ts
+import { createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { createGzip, createGunzip } from 'node:zlib';
+import type { Readable, Writable, Transform } from 'node:stream';
+
+// 可读流
+const readStream: Readable = createReadStream('/path/to/input.txt', {
+  encoding: 'utf-8',
+  highWaterMark: 64 * 1024, // 64KB 块大小
+});
+
+readStream.on('data', (chunk: string) => {
+  console.log('Received chunk:', chunk.length, 'characters');
+});
+
+readStream.on('end', () => {
+  console.log('Read complete');
+});
+
+readStream.on('error', (err: Error) => {
+  console.error('Read error:', err.message);
+});
+
+// 可写流
+const writeStream: Writable = createWriteStream('/path/to/output.txt');
+
+writeStream.write('Line 1\n');
+writeStream.write('Line 2\n');
+writeStream.end('Last line\n');
+
+// 使用 pipeline 链接流（推荐，自动处理错误和清理）
+async function compressFile(inputPath: string, outputPath: string): Promise<void> {
+  const source: Readable = createReadStream(inputPath);
+  const gzip: Transform = createGzip();
+  const destination: Writable = createWriteStream(outputPath);
+
+  await pipeline(source, gzip, destination);
+  console.log(`Compressed: ${inputPath} → ${outputPath}`);
+}
+
+async function decompressFile(inputPath: string, outputPath: string): Promise<void> {
+  const source: Readable = createReadStream(inputPath);
+  const gunzip: Transform = createGunzip();
+  const destination: Writable = createWriteStream(outputPath);
+
+  await pipeline(source, gunzip, destination);
+  console.log(`Decompressed: ${inputPath} → ${outputPath}`);
+}
+```
+
+## 🎯 环境变量类型安全
+
+### 基本类型声明
+
+Node.js 的 `process.env` 中所有值都是 `string | undefined`。为了实现类型安全，可以通过扩展全局类型来声明环境变量：
+
+```ts
+// env.d.ts — 全局类型声明文件
+declare namespace NodeJS {
+  interface ProcessEnv {
+    NODE_ENV: 'development' | 'production' | 'test';
+    PORT: string;
+    DATABASE_URL: string;
+    API_KEY: string;
+    LOG_LEVEL?: 'debug' | 'info' | 'warn' | 'error';
+  }
+}
+```
+
+### 运行时验证
+
+仅靠类型声明无法保证环境变量在运行时确实存在，推荐在应用启动时进行验证：
+
+```ts
+// config.ts — 带运行时验证的配置加载
+interface AppConfig {
+  nodeEnv: 'development' | 'production' | 'test';
+  port: number;
+  databaseUrl: string;
+  apiKey: string;
+  logLevel: 'debug' | 'info' | 'warn' | 'error';
+}
+
+function getRequiredEnv(key: string): string {
+  const value = process.env[key];
+  if (value === undefined || value === '') {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return value;
+}
+
+function loadConfig(): AppConfig {
+  const nodeEnv = getRequiredEnv('NODE_ENV');
+
+  if (!['development', 'production', 'test'].includes(nodeEnv)) {
+    throw new Error(`Invalid NODE_ENV: ${nodeEnv}`);
+  }
+
+  const portStr = getRequiredEnv('PORT');
+  const port = parseInt(portStr, 10);
+  if (Number.isNaN(port) || port < 0 || port > 65535) {
+    throw new Error(`Invalid PORT: ${portStr}`);
+  }
+
+  return {
+    nodeEnv: nodeEnv as AppConfig['nodeEnv'],
+    port,
+    databaseUrl: getRequiredEnv('DATABASE_URL'),
+    apiKey: getRequiredEnv('API_KEY'),
+    logLevel: (process.env.LOG_LEVEL as AppConfig['logLevel']) || 'info',
+  };
+}
+
+// 在应用启动时立即验证
+const config: AppConfig = loadConfig();
+
+console.log(`Starting in ${config.nodeEnv} mode on port ${config.port}`);
+
+export { config };
+export type { AppConfig };
+```
+
+### 使用第三方库（推荐）
+
+在实际项目中，推荐使用 [zod](https://zod.dev) 等 schema 验证库来同时实现类型生成和运行时验证：
+
+```ts
+import { z } from 'zod';
+
+// 定义环境变量 schema
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'production', 'test']),
+  PORT: z.string().transform(Number).pipe(z.number().int().min(0).max(65535)),
+  DATABASE_URL: z.string().url(),
+  API_KEY: z.string().min(1),
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+});
+
+// 从 schema 推断类型
+type Env = z.infer<typeof envSchema>;
+
+// 解析并验证（失败时抛出详细错误信息）
+const env: Env = envSchema.parse(process.env);
+
+// 现在 env 拥有完整的类型信息且保证了运行时安全
+console.log(env.PORT);      // number（已自动转换）
+console.log(env.NODE_ENV);  // 'development' | 'production' | 'test'
+
+export { env };
+export type { Env };
+```
+
+## 📝 实际应用示例
+
+### 综合示例：类型安全的文件处理工具
+
+```ts
+import { readFile, writeFile, readdir, stat, mkdir } from 'node:fs/promises';
+import { join, extname, basename, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
+
+// 文件信息类型
+interface FileInfo {
+  name: string;
+  path: string;
+  extension: string;
+  sizeInBytes: number;
+  isDirectory: boolean;
+  modifiedAt: Date;
+}
+
+// 搜索选项
+interface SearchOptions {
+  extensions?: string[];
+  recursive?: boolean;
+  maxDepth?: number;
+  minSize?: number;
+  maxSize?: number;
+}
+
+// 搜索结果
+interface SearchResult {
+  files: FileInfo[];
+  totalSize: number;
+  searchPath: string;
+  searchDuration: number;
+}
+
+// 获取单个文件信息
+async function getFileInfo(filePath: string): Promise<FileInfo> {
+  const fileStat = await stat(filePath);
+
+  return {
+    name: basename(filePath),
+    path: filePath,
+    extension: extname(filePath).toLowerCase(),
+    sizeInBytes: fileStat.size,
+    isDirectory: fileStat.isDirectory(),
+    modifiedAt: fileStat.mtime,
+  };
+}
+
+// 递归搜索文件
+async function searchFiles(
+  dirPath: string,
+  options: SearchOptions = {},
+  currentDepth = 0
+): Promise<FileInfo[]> {
+  const { extensions, recursive = true, maxDepth = 10, minSize, maxSize } = options;
+
+  if (currentDepth > maxDepth) return [];
+
+  const entries = await readdir(dirPath, { withFileTypes: true });
+  const results: FileInfo[] = [];
+
+  for (const entry of entries) {
+    const fullPath = join(dirPath, entry.name);
+
+    if (entry.isDirectory() && recursive) {
+      const subResults = await searchFiles(fullPath, options, currentDepth + 1);
+      results.push(...subResults);
+      continue;
+    }
+
+    if (!entry.isFile()) continue;
+
+    const ext = extname(entry.name).toLowerCase();
+    if (extensions && !extensions.includes(ext)) continue;
+
+    const info = await getFileInfo(fullPath);
+
+    if (minSize !== undefined && info.sizeInBytes < minSize) continue;
+    if (maxSize !== undefined && info.sizeInBytes > maxSize) continue;
+
+    results.push(info);
+  }
+
+  return results;
+}
+
+// 执行搜索
+async function performSearch(
+  searchPath: string,
+  options: SearchOptions
+): Promise<SearchResult> {
+  const startTime = Date.now();
+  const files = await searchFiles(searchPath, options);
+  const totalSize = files.reduce((sum, file) => sum + file.sizeInBytes, 0);
+
+  return {
+    files,
+    totalSize,
+    searchPath,
+    searchDuration: Date.now() - startTime,
+  };
+}
+
+// 将搜索结果写入文件
+async function saveSearchResult(
+  result: SearchResult,
+  outputPath: string
+): Promise<void> {
+  const outputDir = dirname(outputPath);
+  if (!existsSync(outputDir)) {
+    await mkdir(outputDir, { recursive: true });
+  }
+
+  const report = {
+    searchPath: result.searchPath,
+    totalFiles: result.files.length,
+    totalSizeKB: Math.round(result.totalSize / 1024),
+    searchDurationMs: result.searchDuration,
+    files: result.files.map((f) => ({
+      name: f.name,
+      path: f.path,
+      sizeKB: Math.round(f.sizeInBytes / 1024),
+      modified: f.modifiedAt.toISOString(),
+    })),
+  };
+
+  await writeFile(outputPath, JSON.stringify(report, null, 2), 'utf-8');
+}
+
+// 使用
+async function main() {
+  const result = await performSearch('./src', {
+    extensions: ['.ts', '.tsx'],
+    recursive: true,
+    maxDepth: 5,
+  });
+
+  console.log(`Found ${result.files.length} files in ${result.searchDuration}ms`);
+  console.log(`Total size: ${Math.round(result.totalSize / 1024)} KB`);
+
+  await saveSearchResult(result, './output/search-result.json');
+}
+
+main().catch(console.error);
+```
+
+## 🔗 相关概念
+
+- **[Web 框架类型](./02-web-framework-types.mdx)**：Express、Koa、Fastify、NestJS 的类型用法
+- **[ORM 与数据库](./03-orm-database.mdx)**：Prisma、Drizzle 等类型安全的数据库操作
+
+## 📚 学习检查点
+
+- [ ] 理解 `@types/node` 的作用和版本对应关系
+- [ ] 能够使用 `fs/promises`、`path`、`http` 等内置模块的类型
+- [ ] 掌握 `Buffer` 的创建、转换和操作
+- [ ] 理解 `Readable`、`Writable`、`Transform` Stream 类型
+- [ ] 能够实现环境变量的类型安全（声明 + 运行时验证）
+
+## 🚀 下一步
+
+→ [Web 框架类型](./02-web-framework-types.mdx)

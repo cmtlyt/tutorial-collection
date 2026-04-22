@@ -1,12 +1,819 @@
 # Hooks 类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍Hooks 类型的核心概念和实践方法。
+React Hooks 是函数组件中管理状态和副作用的核心机制。TypeScript 为每个内置 Hook 都提供了完善的泛型支持，使得状态管理、DOM 引用、上下文传递等操作都能获得完整的类型推断和类型安全。本节将逐一讲解常用 Hook 的类型用法。
+
+## 🎯 useState 泛型
+
+### 基本类型推断
+
+`useState` 会根据初始值自动推断状态类型：
+
+```tsx
+import { useState } from 'react';
+
+function Counter() {
+  // 自动推断为 number
+  const [count, setCount] = useState(0);
+
+  // 自动推断为 string
+  const [name, setName] = useState('Alice');
+
+  // 自动推断为 boolean
+  const [isVisible, setIsVisible] = useState(false);
+
+  return (
+    <div>
+      <p>{name}: {count}</p>
+      <button onClick={() => setCount(count + 1)}>+1</button>
+      <button onClick={() => setCount((prev) => prev - 1)}>-1</button>
+      <button onClick={() => setIsVisible(!isVisible)}>Toggle</button>
+      {isVisible && <p>Visible!</p>}
+    </div>
+  );
+}
+```
+
+### 显式指定泛型
+
+当初始值无法表达完整类型时，需要显式指定泛型参数：
+
+```tsx
+import { useState } from 'react';
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+function UserProfile() {
+  // 初始值为 null，需要显式指定类型
+  const [user, setUser] = useState<User | null>(null);
+
+  // 联合类型
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+
+  // 数组类型
+  const [items, setItems] = useState<string[]>([]);
+
+  const loadUser = () => {
+    setStatus('loading');
+    // 模拟加载
+    setUser({ id: 1, name: 'Alice', email: 'alice@example.com' });
+    setStatus('success');
+  };
+
+  const addItem = (item: string) => {
+    setItems((prev) => [...prev, item]);
+  };
+
+  return (
+    <div>
+      <p>Status: {status}</p>
+      {user && <p>User: {user.name} ({user.email})</p>}
+      <button onClick={loadUser}>Load User</button>
+      <button onClick={() => addItem('New Item')}>Add Item</button>
+      <ul>
+        {items.map((item, index) => (
+          <li key={index}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+### 惰性初始化
+
+```tsx
+import { useState } from 'react';
+
+interface AppSettings {
+  theme: 'light' | 'dark';
+  language: string;
+  fontSize: number;
+}
+
+function SettingsPanel() {
+  // 惰性初始化：传入函数，仅在首次渲染时执行
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    const saved = localStorage.getItem('settings');
+    if (saved) {
+      return JSON.parse(saved) as AppSettings;
+    }
+    return { theme: 'light', language: 'en', fontSize: 14 };
+  });
+
+  const updateTheme = (theme: 'light' | 'dark') => {
+    setSettings((prev) => ({ ...prev, theme }));
+  };
+
+  return (
+    <div>
+      <p>Theme: {settings.theme}</p>
+      <button onClick={() => updateTheme('dark')}>Dark Mode</button>
+      <button onClick={() => updateTheme('light')}>Light Mode</button>
+    </div>
+  );
+}
+```
+
+## 🎯 useRef 泛型与 DOM 类型
+
+### 引用 DOM 元素
+
+```tsx
+import { useRef, useEffect } from 'react';
+
+function TextInput() {
+  // 引用 DOM 元素时，初始值为 null，类型为具体的 HTML 元素类型
+  const inputRef = useRef<HTMLInputElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    // 访问 DOM 元素前需要进行 null 检查
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = 'blue';
+        ctx.fillRect(0, 0, 100, 100);
+      }
+    }
+  }, []);
+
+  return (
+    <div>
+      <input ref={inputRef} type="text" placeholder="Auto-focused" />
+      <canvas ref={canvasRef} width={200} height={200} />
+      <video ref={videoRef} src="/video.mp4" />
+    </div>
+  );
+}
+```
+
+### 存储可变值
+
+```tsx
+import { useRef, useEffect, useState } from 'react';
+
+function Timer() {
+  const [seconds, setSeconds] = useState(0);
+  const [isRunning, setIsRunning] = useState(false);
+
+  // 存储可变值（不触发重渲染），使用非 null 初始值
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevSecondsRef = useRef<number>(0);
+
+  useEffect(() => {
+    prevSecondsRef.current = seconds;
+  }, [seconds]);
+
+  const start = () => {
+    if (intervalRef.current) return;
+    setIsRunning(true);
+    intervalRef.current = setInterval(() => {
+      setSeconds((prev) => prev + 1);
+    }, 1000);
+  };
+
+  const stop = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    setIsRunning(false);
+  };
+
+  const reset = () => {
+    stop();
+    setSeconds(0);
+  };
+
+  return (
+    <div>
+      <p>Current: {seconds}s (Previous: {prevSecondsRef.current}s)</p>
+      <button onClick={start} disabled={isRunning}>Start</button>
+      <button onClick={stop} disabled={!isRunning}>Stop</button>
+      <button onClick={reset}>Reset</button>
+    </div>
+  );
+}
+```
 
 :::tip
-本文档正在编写中，敬请期待。
+**DOM 引用** 使用 `useRef<HTMLXxxElement>(null)` — 返回的 `.current` 是只读的，由 React 管理。  
+**可变值** 使用 `useRef<Type>(initialValue)` — 返回的 `.current` 可以自由赋值。
 :::
+
+## 🎯 useReducer 类型
+
+### 基本用法
+
+```tsx
+import { useReducer } from 'react';
+
+// 定义 State 类型
+interface CounterState {
+  count: number;
+}
+
+// 定义 Action 类型（使用可辨识联合类型）
+type CounterAction =
+  | { type: 'increment' }
+  | { type: 'decrement' }
+  | { type: 'reset'; payload: number };
+
+// reducer 函数的参数和返回值都有完整的类型约束
+function counterReducer(state: CounterState, action: CounterAction): CounterState {
+  switch (action.type) {
+    case 'increment':
+      return { count: state.count + 1 };
+    case 'decrement':
+      return { count: state.count - 1 };
+    case 'reset':
+      return { count: action.payload };
+  }
+}
+
+function Counter() {
+  const [state, dispatch] = useReducer(counterReducer, { count: 0 });
+
+  return (
+    <div>
+      <p>Count: {state.count}</p>
+      <button onClick={() => dispatch({ type: 'increment' })}>+1</button>
+      <button onClick={() => dispatch({ type: 'decrement' })}>-1</button>
+      <button onClick={() => dispatch({ type: 'reset', payload: 0 })}>Reset</button>
+    </div>
+  );
+}
+```
+
+### 复杂状态管理
+
+```tsx
+import { useReducer } from 'react';
+
+interface Todo {
+  id: number;
+  text: string;
+  completed: boolean;
+}
+
+interface TodoState {
+  todos: Todo[];
+  filter: 'all' | 'active' | 'completed';
+}
+
+type TodoAction =
+  | { type: 'add'; payload: string }
+  | { type: 'toggle'; payload: number }
+  | { type: 'remove'; payload: number }
+  | { type: 'setFilter'; payload: TodoState['filter'] };
+
+let nextId = 1;
+
+function todoReducer(state: TodoState, action: TodoAction): TodoState {
+  switch (action.type) {
+    case 'add':
+      return {
+        ...state,
+        todos: [...state.todos, { id: nextId++, text: action.payload, completed: false }],
+      };
+    case 'toggle':
+      return {
+        ...state,
+        todos: state.todos.map((todo) =>
+          todo.id === action.payload
+            ? { ...todo, completed: !todo.completed }
+            : todo
+        ),
+      };
+    case 'remove':
+      return {
+        ...state,
+        todos: state.todos.filter((todo) => todo.id !== action.payload),
+      };
+    case 'setFilter':
+      return { ...state, filter: action.payload };
+  }
+}
+
+function TodoApp() {
+  const [state, dispatch] = useReducer(todoReducer, {
+    todos: [],
+    filter: 'all',
+  });
+
+  const filteredTodos = state.todos.filter((todo) => {
+    if (state.filter === 'active') return !todo.completed;
+    if (state.filter === 'completed') return todo.completed;
+    return true;
+  });
+
+  return (
+    <div>
+      <button onClick={() => dispatch({ type: 'add', payload: 'New Todo' })}>
+        Add Todo
+      </button>
+      <div>
+        <button onClick={() => dispatch({ type: 'setFilter', payload: 'all' })}>All</button>
+        <button onClick={() => dispatch({ type: 'setFilter', payload: 'active' })}>Active</button>
+        <button onClick={() => dispatch({ type: 'setFilter', payload: 'completed' })}>Done</button>
+      </div>
+      <ul>
+        {filteredTodos.map((todo) => (
+          <li key={todo.id}>
+            <span
+              style={{ textDecoration: todo.completed ? 'line-through' : 'none' }}
+              onClick={() => dispatch({ type: 'toggle', payload: todo.id })}
+            >
+              {todo.text}
+            </span>
+            <button onClick={() => dispatch({ type: 'remove', payload: todo.id })}>✕</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+## 🎯 useContext 泛型
+
+### 创建类型安全的 Context
+
+```tsx
+import { createContext, useContext, useState, ReactNode } from 'react';
+
+// 定义 Context 值的类型
+interface ThemeContextValue {
+  theme: 'light' | 'dark';
+  toggleTheme: () => void;
+}
+
+// 创建 Context，使用 null 作为默认值
+const ThemeContext = createContext<ThemeContextValue | null>(null);
+
+// 自定义 Hook 封装 null 检查
+function useTheme(): ThemeContextValue {
+  const context = useContext(ThemeContext);
+  if (context === null) {
+    throw new Error('useTheme must be used within a ThemeProvider');
+  }
+  return context;
+}
+
+// Provider 组件
+function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+  };
+
+  return (
+    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  );
+}
+
+// 消费组件
+function ThemeToggle() {
+  const { theme, toggleTheme } = useTheme();
+
+  return (
+    <button onClick={toggleTheme}>
+      Current: {theme} (Click to toggle)
+    </button>
+  );
+}
+
+// 使用
+function App() {
+  return (
+    <ThemeProvider>
+      <ThemeToggle />
+    </ThemeProvider>
+  );
+}
+```
+
+### 多 Context 组合
+
+```tsx
+import { createContext, useContext, useState, useReducer, ReactNode } from 'react';
+
+// Auth Context
+interface AuthContextValue {
+  user: { id: number; name: string } | null;
+  login: (name: string) => void;
+  logout: () => void;
+}
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+function useAuth(): AuthContextValue {
+  const context = useContext(AuthContext);
+  if (context === null) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+}
+
+function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<{ id: number; name: string } | null>(null);
+
+  const login = (name: string) => setUser({ id: Date.now(), name });
+  const logout = () => setUser(null);
+
+  return (
+    <AuthContext.Provider value={{ user, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+// Notification Context
+interface Notification {
+  id: number;
+  message: string;
+  type: 'info' | 'success' | 'error';
+}
+
+interface NotificationContextValue {
+  notifications: Notification[];
+  addNotification: (message: string, type: Notification['type']) => void;
+  removeNotification: (id: number) => void;
+}
+
+const NotificationContext = createContext<NotificationContextValue | null>(null);
+
+function useNotifications(): NotificationContextValue {
+  const context = useContext(NotificationContext);
+  if (context === null) {
+    throw new Error('useNotifications must be used within a NotificationProvider');
+  }
+  return context;
+}
+
+// 组合使用
+function Dashboard() {
+  const { user, logout } = useAuth();
+  const { addNotification } = useNotifications();
+
+  if (!user) {
+    return <p>Please login</p>;
+  }
+
+  const handleLogout = () => {
+    logout();
+    addNotification('Logged out successfully', 'info');
+  };
+
+  return (
+    <div>
+      <p>Welcome, {user.name}!</p>
+      <button onClick={handleLogout}>Logout</button>
+    </div>
+  );
+}
+```
+
+## 🎯 自定义 Hook 类型
+
+### 基础自定义 Hook
+
+```tsx
+import { useState, useCallback } from 'react';
+
+// 返回类型通过元组自动推断
+function useToggle(initialValue = false) {
+  const [value, setValue] = useState(initialValue);
+
+  const toggle = useCallback(() => setValue((prev) => !prev), []);
+  const setTrue = useCallback(() => setValue(true), []);
+  const setFalse = useCallback(() => setValue(false), []);
+
+  return { value, toggle, setTrue, setFalse } as const;
+}
+
+// 使用
+function Modal() {
+  const { value: isOpen, toggle, setFalse: close } = useToggle(false);
+
+  return (
+    <div>
+      <button onClick={toggle}>Toggle Modal</button>
+      {isOpen && (
+        <div className="modal">
+          <p>Modal Content</p>
+          <button onClick={close}>Close</button>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+### 泛型自定义 Hook
+
+```tsx
+import { useState, useCallback } from 'react';
+
+// 带泛型参数的自定义 Hook
+function useArray<T>(initialValue: T[] = []) {
+  const [array, setArray] = useState<T[]>(initialValue);
+
+  const push = useCallback((item: T) => {
+    setArray((prev) => [...prev, item]);
+  }, []);
+
+  const removeAt = useCallback((index: number) => {
+    setArray((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const updateAt = useCallback((index: number, item: T) => {
+    setArray((prev) => prev.map((v, i) => (i === index ? item : v)));
+  }, []);
+
+  const clear = useCallback(() => setArray([]), []);
+
+  return { array, setArray, push, removeAt, updateAt, clear };
+}
+
+// 使用 — 泛型参数自动从初始值推断
+function TagList() {
+  const { array: tags, push, removeAt } = useArray(['react', 'typescript']);
+
+  return (
+    <div>
+      {tags.map((tag, index) => (
+        <span key={index}>
+          {tag}
+          <button onClick={() => removeAt(index)}>✕</button>
+        </span>
+      ))}
+      <button onClick={() => push('new-tag')}>Add Tag</button>
+    </div>
+  );
+}
+```
+
+### 返回异步数据的自定义 Hook
+
+```tsx
+import { useState, useEffect, useCallback } from 'react';
+
+interface UseFetchResult<T> {
+  data: T | null;
+  loading: boolean;
+  error: string | null;
+  refetch: () => void;
+}
+
+function useFetch<T>(url: string): UseFetchResult<T> {
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error: ${response.status}`);
+      }
+      const json = (await response.json()) as T;
+      setData(json);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, [url]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  return { data, loading, error, refetch: fetchData };
+}
+
+// 使用
+interface Post {
+  id: number;
+  title: string;
+  body: string;
+}
+
+function PostList() {
+  const { data: posts, loading, error, refetch } = useFetch<Post[]>(
+    'https://jsonplaceholder.typicode.com/posts'
+  );
+
+  if (loading) return <p>Loading...</p>;
+  if (error) return <p>Error: {error}</p>;
+  if (!posts) return null;
+
+  return (
+    <div>
+      <button onClick={refetch}>Refresh</button>
+      <ul>
+        {posts.slice(0, 5).map((post) => (
+          <li key={post.id}>{post.title}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+## 📝 实际应用示例
+
+### 综合示例：类型安全的表单 Hook
+
+```tsx
+import { useState, useCallback, ChangeEvent, FormEvent } from 'react';
+
+// 表单验证规则
+interface ValidationRule<T> {
+  validate: (value: T) => boolean;
+  message: string;
+}
+
+// 表单字段错误
+type FormErrors<T> = Partial<Record<keyof T, string>>;
+
+// 泛型表单 Hook
+function useForm<T extends Record<string, string>>(
+  initialValues: T,
+  validationRules?: Partial<Record<keyof T, ValidationRule<string>[]>>
+) {
+  const [values, setValues] = useState<T>(initialValues);
+  const [errors, setErrors] = useState<FormErrors<T>>({});
+  const [touched, setTouched] = useState<Partial<Record<keyof T, boolean>>>({});
+
+  const handleChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+      const { name, value } = event.target;
+      setValues((prev) => ({ ...prev, [name]: value }));
+
+      // 清除该字段的错误
+      if (errors[name as keyof T]) {
+        setErrors((prev) => {
+          const next = { ...prev };
+          delete next[name as keyof T];
+          return next;
+        });
+      }
+    },
+    [errors]
+  );
+
+  const handleBlur = useCallback(
+    (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+      const { name } = event.target;
+      setTouched((prev) => ({ ...prev, [name]: true }));
+    },
+    []
+  );
+
+  const validate = useCallback((): boolean => {
+    if (!validationRules) return true;
+
+    const newErrors: FormErrors<T> = {};
+    let isValid = true;
+
+    for (const [field, rules] of Object.entries(validationRules)) {
+      const fieldRules = rules as ValidationRule<string>[] | undefined;
+      if (!fieldRules) continue;
+
+      for (const rule of fieldRules) {
+        if (!rule.validate(values[field as keyof T])) {
+          newErrors[field as keyof T] = rule.message;
+          isValid = false;
+          break;
+        }
+      }
+    }
+
+    setErrors(newErrors);
+    return isValid;
+  }, [values, validationRules]);
+
+  const handleSubmit = useCallback(
+    (onSubmit: (values: T) => void) => {
+      return (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (validate()) {
+          onSubmit(values);
+        }
+      };
+    },
+    [values, validate]
+  );
+
+  const reset = useCallback(() => {
+    setValues(initialValues);
+    setErrors({});
+    setTouched({});
+  }, [initialValues]);
+
+  return {
+    values,
+    errors,
+    touched,
+    handleChange,
+    handleBlur,
+    handleSubmit,
+    reset,
+    validate,
+  };
+}
+
+// 使用
+interface LoginFormValues {
+  email: string;
+  password: string;
+}
+
+function LoginForm() {
+  const { values, errors, handleChange, handleBlur, handleSubmit, reset } =
+    useForm<LoginFormValues>(
+      { email: '', password: '' },
+      {
+        email: [
+          { validate: (v) => v.length > 0, message: 'Email is required' },
+          { validate: (v) => v.includes('@'), message: 'Invalid email format' },
+        ],
+        password: [
+          { validate: (v) => v.length > 0, message: 'Password is required' },
+          { validate: (v) => v.length >= 8, message: 'Password must be at least 8 characters' },
+        ],
+      }
+    );
+
+  const onSubmit = (formValues: LoginFormValues) => {
+    console.log('Login:', formValues);
+  };
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <div>
+        <input
+          name="email"
+          type="email"
+          value={values.email}
+          onChange={handleChange}
+          onBlur={handleBlur}
+          placeholder="Email"
+        />
+        {errors.email && <span className="error">{errors.email}</span>}
+      </div>
+      <div>
+        <input
+          name="password"
+          type="password"
+          value={values.password}
+          onChange={handleChange}
+          onBlur={handleBlur}
+          placeholder="Password"
+        />
+        {errors.password && <span className="error">{errors.password}</span>}
+      </div>
+      <button type="submit">Login</button>
+      <button type="button" onClick={reset}>Reset</button>
+    </form>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **[React 类型基础](./01-react-type-basics.mdx)**：组件、Props、事件的基本类型
+- **[高级 React 类型模式](./03-advanced-react-patterns.mdx)**：泛型组件、多态组件等高级模式
+
+## 📚 学习检查点
+
+- [ ] 理解 `useState` 何时需要显式指定泛型参数
+- [ ] 掌握 `useRef` 的两种用法：DOM 引用和可变值存储
+- [ ] 能够使用可辨识联合类型定义 `useReducer` 的 Action
+- [ ] 理解如何创建类型安全的 Context 及自定义消费 Hook
+- [ ] 能够编写带泛型参数的自定义 Hook
+
+## 🚀 下一步
+
+→ [高级 React 类型模式](./03-advanced-react-patterns.mdx)

@@ -1,12 +1,841 @@
 # Mock 类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍Mock 类型的核心概念和实践方法。
+在 TypeScript 测试中，Mock 的类型安全至关重要 — 如果 Mock 对象的类型与真实对象不一致，测试通过了但上线仍可能出错。本节将介绍如何创建**类型安全的 Mock**（确保 Mock 对象严格匹配接口定义），以及 **Partial Mock 技巧**（只 Mock 需要的部分，同时保持类型正确性）。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 类型安全的 Mock
+
+### vi.fn() 类型推导
+
+Vitest 的 `vi.fn()` 支持泛型参数，可以精确指定函数签名：
+
+```ts
+import { vi, describe, it, expect } from 'vitest';
+
+// 原始函数类型
+type FetchUser = (id: number) => Promise<{ id: number; name: string }>;
+type CalculatePrice = (base: number, discount: number) => number;
+
+describe('vi.fn() type inference', () => {
+  it('should create typed mock function', () => {
+    // 方式一：通过泛型参数指定函数类型
+    const fetchUser = vi.fn<FetchUser>();
+    fetchUser.mockResolvedValue({ id: 1, name: 'Alice' });
+
+    // 方式二：通过 mockImplementation 推断类型
+    const calculatePrice = vi.fn<CalculatePrice>().mockImplementation(
+      (base, discount) => base * (1 - discount)
+    );
+
+    // TypeScript 会检查参数类型
+    expect(calculatePrice(100, 0.2)).toBe(80);
+  });
+
+  it('should enforce return type', () => {
+    const getName = vi.fn<() => string>();
+
+    // 正确：返回 string
+    getName.mockReturnValue('Alice');
+
+    // TypeScript 错误（如果取消注释）：
+    // getName.mockReturnValue(42);  // 类型 'number' 不能赋给 'string'
+
+    expect(getName()).toBe('Alice');
+  });
+});
+```
+
+### vi.mocked() 类型转换
+
+`vi.mocked()` 用于将已 Mock 的模块或函数转换为带有 Mock 类型信息的版本：
+
+```ts
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+
+// 模拟的模块
+const httpClient = {
+  get: async (url: string): Promise<{ data: unknown; status: number }> => {
+    const response = await fetch(url);
+    return { data: await response.json(), status: response.status };
+  },
+  post: async (url: string, body: unknown): Promise<{ data: unknown; status: number }> => {
+    const response = await fetch(url, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return { data: await response.json(), status: response.status };
+  },
+};
+
+// 被测服务
+interface Product {
+  id: number;
+  name: string;
+  price: number;
+}
+
+class ProductService {
+  constructor(private client: typeof httpClient) {}
+
+  async getProduct(id: number): Promise<Product> {
+    const response = await this.client.get(`/api/products/${id}`);
+    return response.data as Product;
+  }
+
+  async createProduct(data: Omit<Product, 'id'>): Promise<Product> {
+    const response = await this.client.post('/api/products', data);
+    return response.data as Product;
+  }
+}
+
+describe('ProductService with vi.mocked', () => {
+  let service: ProductService;
+  let mockClient: typeof httpClient;
+
+  beforeEach(() => {
+    mockClient = {
+      get: vi.fn(),
+      post: vi.fn(),
+    };
+    service = new ProductService(mockClient);
+  });
+
+  it('should get product', async () => {
+    const mockProduct: Product = { id: 1, name: 'Laptop', price: 999 };
+
+    // vi.mocked 保留了原始类型信息 + 添加 Mock 方法
+    vi.mocked(mockClient.get).mockResolvedValue({
+      data: mockProduct,
+      status: 200,
+    });
+
+    const product = await service.getProduct(1);
+
+    expect(product).toEqual(mockProduct);
+    expect(mockClient.get).toHaveBeenCalledWith('/api/products/1');
+  });
+
+  it('should create product', async () => {
+    const newProduct: Product = { id: 2, name: 'Phone', price: 699 };
+
+    vi.mocked(mockClient.post).mockResolvedValue({
+      data: newProduct,
+      status: 201,
+    });
+
+    const product = await service.createProduct({ name: 'Phone', price: 699 });
+
+    expect(product).toEqual(newProduct);
+    expect(mockClient.post).toHaveBeenCalledWith('/api/products', {
+      name: 'Phone',
+      price: 699,
+    });
+  });
+});
+```
+
+### 基于接口的类型安全 Mock
+
+```ts
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+
+// 定义接口
+interface Logger {
+  info(message: string, meta?: Record<string, unknown>): void;
+  warn(message: string, meta?: Record<string, unknown>): void;
+  error(message: string, error?: Error): void;
+}
+
+interface Cache {
+  get<T>(key: string): Promise<T | null>;
+  set<T>(key: string, value: T, ttlSeconds?: number): Promise<void>;
+  delete(key: string): Promise<boolean>;
+  clear(): Promise<void>;
+}
+
+interface NotificationService {
+  sendEmail(to: string, subject: string, body: string): Promise<boolean>;
+  sendSMS(to: string, message: string): Promise<boolean>;
+}
+
+// 类型安全的 Mock 工厂
+function createMockLogger(): { [K in keyof Logger]: ReturnType<typeof vi.fn> } {
+  return {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+}
+
+function createMockCache(): { [K in keyof Cache]: ReturnType<typeof vi.fn> } {
+  return {
+    get: vi.fn(),
+    set: vi.fn(),
+    delete: vi.fn(),
+    clear: vi.fn(),
+  };
+}
+
+function createMockNotification(): {
+  [K in keyof NotificationService]: ReturnType<typeof vi.fn>;
+} {
+  return {
+    sendEmail: vi.fn(),
+    sendSMS: vi.fn(),
+  };
+}
+
+// 被测服务
+class OrderService {
+  constructor(
+    private cache: Cache,
+    private logger: Logger,
+    private notification: NotificationService
+  ) {}
+
+  async placeOrder(userId: string, items: string[]): Promise<string> {
+    const orderId = `order-${Date.now()}`;
+
+    this.logger.info('Placing order', { userId, itemCount: items.length });
+
+    await this.cache.set(`order:${orderId}`, { userId, items, status: 'pending' }, 3600);
+
+    const emailSent = await this.notification.sendEmail(
+      `${userId}@example.com`,
+      'Order Confirmation',
+      `Your order ${orderId} has been placed.`
+    );
+
+    if (!emailSent) {
+      this.logger.warn('Failed to send confirmation email', { orderId, userId });
+    }
+
+    return orderId;
+  }
+}
+
+describe('OrderService', () => {
+  let service: OrderService;
+  let mockCache: ReturnType<typeof createMockCache>;
+  let mockLogger: ReturnType<typeof createMockLogger>;
+  let mockNotification: ReturnType<typeof createMockNotification>;
+
+  beforeEach(() => {
+    mockCache = createMockCache();
+    mockLogger = createMockLogger();
+    mockNotification = createMockNotification();
+    service = new OrderService(mockCache, mockLogger, mockNotification);
+  });
+
+  it('should place order and send notification', async () => {
+    mockCache.set.mockResolvedValue(undefined);
+    mockNotification.sendEmail.mockResolvedValue(true);
+
+    const orderId = await service.placeOrder('user-1', ['item-a', 'item-b']);
+
+    expect(orderId).toMatch(/^order-/);
+    expect(mockCache.set).toHaveBeenCalledOnce();
+    expect(mockNotification.sendEmail).toHaveBeenCalledWith(
+      'user-1@example.com',
+      'Order Confirmation',
+      expect.stringContaining(orderId)
+    );
+    expect(mockLogger.info).toHaveBeenCalledWith('Placing order', {
+      userId: 'user-1',
+      itemCount: 2,
+    });
+  });
+
+  it('should log warning when email fails', async () => {
+    mockCache.set.mockResolvedValue(undefined);
+    mockNotification.sendEmail.mockResolvedValue(false);
+
+    await service.placeOrder('user-2', ['item-c']);
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      'Failed to send confirmation email',
+      expect.objectContaining({ userId: 'user-2' })
+    );
+  });
+});
+```
+
+## 🎯 Partial Mock 技巧
+
+### 只 Mock 部分方法
+
+在测试中，有时只需要 Mock 对象的部分方法，保留其他方法的真实实现：
+
+```ts
+import { vi, describe, it, expect } from 'vitest';
+
+// 工具类 — 同时有纯计算方法和 I/O 方法
+class DataProcessor {
+  // 纯计算 — 不需要 Mock
+  normalize(values: number[]): number[] {
+    const max = Math.max(...values);
+    const min = Math.min(...values);
+    const range = max - min;
+    if (range === 0) return values.map(() => 0);
+    return values.map((v) => (v - min) / range);
+  }
+
+  // 纯计算 — 不需要 Mock
+  average(values: number[]): number {
+    if (values.length === 0) return 0;
+    return values.reduce((sum, v) => sum + v, 0) / values.length;
+  }
+
+  // I/O 操作 — 需要 Mock
+  async fetchData(url: string): Promise<number[]> {
+    const response = await fetch(url);
+    const json = await response.json();
+    return json as number[];
+  }
+
+  // 组合方法 — 调用了 I/O 方法，测试时只需 Mock fetchData
+  async processRemoteData(url: string): Promise<{
+    normalized: number[];
+    avg: number;
+  }> {
+    const data = await this.fetchData(url);
+    const normalized = this.normalize(data);
+    const avg = this.average(data);
+    return { normalized, avg };
+  }
+}
+
+describe('DataProcessor - Partial Mock', () => {
+  it('should process remote data with mocked fetch', async () => {
+    const processor = new DataProcessor();
+
+    // 使用 vi.spyOn 只 Mock fetchData 方法，保留其他方法的真实实现
+    const fetchSpy = vi
+      .spyOn(processor, 'fetchData')
+      .mockResolvedValue([10, 20, 30, 40, 50]);
+
+    const result = await processor.processRemoteData('https://api.example.com/data');
+
+    // fetchData 被 Mock 了
+    expect(fetchSpy).toHaveBeenCalledWith('https://api.example.com/data');
+
+    // normalize 和 average 使用了真实实现
+    expect(result.normalized).toEqual([0, 0.25, 0.5, 0.75, 1]);
+    expect(result.avg).toBe(30);
+
+    fetchSpy.mockRestore();
+  });
+});
+```
+
+### 使用 Partial 类型 Mock 复杂对象
+
+```ts
+import { vi, describe, it, expect } from 'vitest';
+
+// 复杂接口
+interface DatabaseConnection {
+  query<T>(sql: string, params?: unknown[]): Promise<T[]>;
+  execute(sql: string, params?: unknown[]): Promise<{ affectedRows: number }>;
+  transaction<T>(callback: (conn: DatabaseConnection) => Promise<T>): Promise<T>;
+  close(): Promise<void>;
+  isConnected(): boolean;
+  getPoolSize(): number;
+}
+
+// 辅助类型：将接口的所有方法转为 vi.fn() Mock
+type MockedInterface<T> = {
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R
+    ? ReturnType<typeof vi.fn<(...args: A) => R>>
+    : T[K];
+};
+
+// 创建 Partial Mock — 只实现需要的方法
+function createPartialMock<T extends Record<string, unknown>>(
+  overrides: Partial<MockedInterface<T>>
+): T {
+  return overrides as T;
+}
+
+// 被测服务
+class UserRepository {
+  constructor(private db: DatabaseConnection) {}
+
+  async findById(id: number): Promise<{ id: number; name: string } | null> {
+    const rows = await this.db.query<{ id: number; name: string }>(
+      'SELECT id, name FROM users WHERE id = $1',
+      [id]
+    );
+    return rows[0] ?? null;
+  }
+
+  async create(name: string): Promise<{ id: number; name: string }> {
+    const result = await this.db.execute(
+      'INSERT INTO users (name) VALUES ($1)',
+      [name]
+    );
+
+    if (result.affectedRows === 0) {
+      throw new Error('Failed to create user');
+    }
+
+    // 简化：实际中会返回插入的数据
+    return { id: Date.now(), name };
+  }
+}
+
+describe('UserRepository with Partial Mock', () => {
+  it('should find user by id', async () => {
+    // 只 Mock query 方法
+    const mockDb = createPartialMock<DatabaseConnection>({
+      query: vi.fn().mockResolvedValue([{ id: 1, name: 'Alice' }]),
+    });
+
+    const repo = new UserRepository(mockDb);
+    const user = await repo.findById(1);
+
+    expect(user).toEqual({ id: 1, name: 'Alice' });
+    expect(mockDb.query).toHaveBeenCalledWith(
+      'SELECT id, name FROM users WHERE id = $1',
+      [1]
+    );
+  });
+
+  it('should return null when user not found', async () => {
+    const mockDb = createPartialMock<DatabaseConnection>({
+      query: vi.fn().mockResolvedValue([]),
+    });
+
+    const repo = new UserRepository(mockDb);
+    const user = await repo.findById(999);
+
+    expect(user).toBeNull();
+  });
+
+  it('should create user', async () => {
+    const mockDb = createPartialMock<DatabaseConnection>({
+      execute: vi.fn().mockResolvedValue({ affectedRows: 1 }),
+    });
+
+    const repo = new UserRepository(mockDb);
+    const user = await repo.create('Bob');
+
+    expect(user.name).toBe('Bob');
+    expect(mockDb.execute).toHaveBeenCalledWith(
+      'INSERT INTO users (name) VALUES ($1)',
+      ['Bob']
+    );
+  });
+});
+```
+
+### Mock 模块导出
+
+```ts
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+
+// src/utils/date-utils.ts
+function getCurrentTimestamp(): number {
+  return Date.now();
+}
+
+function formatDate(timestamp: number): string {
+  return new Date(timestamp).toISOString().split('T')[0];
+}
+
+function isWeekend(date: Date): boolean {
+  const day = date.getDay();
+  return day === 0 || day === 6;
+}
+
+export { getCurrentTimestamp, formatDate, isWeekend };
+
+// src/services/report-service.ts
+class ReportService {
+  generateReport(data: number[]): {
+    timestamp: number;
+    date: string;
+    total: number;
+    average: number;
+  } {
+    const timestamp = getCurrentTimestamp();
+    return {
+      timestamp,
+      date: formatDate(timestamp),
+      total: data.reduce((sum, v) => sum + v, 0),
+      average: data.length > 0
+        ? data.reduce((sum, v) => sum + v, 0) / data.length
+        : 0,
+    };
+  }
+}
+```
+
+```ts
+// src/services/report-service.test.ts
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+
+// Mock 整个模块
+vi.mock('../utils/date-utils', () => ({
+  getCurrentTimestamp: vi.fn(),
+  formatDate: vi.fn(),
+  // isWeekend 不 Mock — 如果测试中用到，会抛出 undefined 错误
+}));
+
+// 导入 Mock 后的模块
+import { getCurrentTimestamp, formatDate } from '../utils/date-utils';
+import { ReportService } from './report-service';
+
+describe('ReportService', () => {
+  let service: ReportService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new ReportService();
+  });
+
+  it('should generate report with fixed timestamp', () => {
+    // 控制时间相关函数的返回值
+    const fixedTimestamp = 1700000000000;
+    vi.mocked(getCurrentTimestamp).mockReturnValue(fixedTimestamp);
+    vi.mocked(formatDate).mockReturnValue('2023-11-14');
+
+    const report = service.generateReport([10, 20, 30]);
+
+    expect(report).toEqual({
+      timestamp: fixedTimestamp,
+      date: '2023-11-14',
+      total: 60,
+      average: 20,
+    });
+  });
+
+  it('should handle empty data', () => {
+    vi.mocked(getCurrentTimestamp).mockReturnValue(0);
+    vi.mocked(formatDate).mockReturnValue('1970-01-01');
+
+    const report = service.generateReport([]);
+
+    expect(report.total).toBe(0);
+    expect(report.average).toBe(0);
+  });
+});
+```
+
+### Spy 与 Mock 的区别
+
+```ts
+import { vi, describe, it, expect } from 'vitest';
+
+class Calculator {
+  add(a: number, b: number): number {
+    return a + b;
+  }
+
+  multiply(a: number, b: number): number {
+    return a * b;
+  }
+
+  complexCalculation(a: number, b: number): number {
+    const sum = this.add(a, b);
+    const product = this.multiply(a, b);
+    return sum + product;
+  }
+}
+
+describe('Spy vs Mock', () => {
+  it('vi.spyOn — preserves original implementation, tracks calls', () => {
+    const calc = new Calculator();
+
+    // Spy：保留原始实现，但可以跟踪调用
+    const addSpy = vi.spyOn(calc, 'add');
+
+    const result = calc.complexCalculation(3, 4);
+
+    // 原始实现被执行了
+    expect(result).toBe(3 + 4 + 3 * 4); // 7 + 12 = 19
+
+    // 同时可以验证调用
+    expect(addSpy).toHaveBeenCalledWith(3, 4);
+
+    addSpy.mockRestore();
+  });
+
+  it('vi.spyOn + mockImplementation — replaces implementation', () => {
+    const calc = new Calculator();
+
+    // Mock：替换实现
+    const addSpy = vi.spyOn(calc, 'add').mockReturnValue(100);
+
+    const result = calc.complexCalculation(3, 4);
+
+    // add 返回了 Mock 值，multiply 仍然是真实实现
+    expect(result).toBe(100 + 3 * 4); // 100 + 12 = 112
+
+    addSpy.mockRestore();
+  });
+
+  it('vi.fn — creates standalone mock function', () => {
+    // vi.fn 创建一个全新的 Mock 函数，不依附于任何对象
+    const mockCallback = vi.fn<(value: number) => string>();
+    mockCallback.mockImplementation((v) => `value: ${v}`);
+
+    const results = [1, 2, 3].map(mockCallback);
+
+    expect(results).toEqual(['value: 1', 'value: 2', 'value: 3']);
+    expect(mockCallback).toHaveBeenCalledTimes(3);
+  });
+});
+```
+
+## 📝 实际应用示例
+
+### 综合示例：类型安全的集成测试 Mock 套件
+
+```ts
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+
+// 领域模型
+interface Product {
+  id: string;
+  name: string;
+  price: number;
+  stock: number;
+}
+
+interface OrderItem {
+  productId: string;
+  quantity: number;
+}
+
+interface Order {
+  id: string;
+  userId: string;
+  items: OrderItem[];
+  total: number;
+  status: 'pending' | 'confirmed' | 'shipped';
+  createdAt: Date;
+}
+
+// 服务接口
+interface ProductRepository {
+  findById(id: string): Promise<Product | null>;
+  updateStock(id: string, quantity: number): Promise<void>;
+}
+
+interface OrderRepository {
+  create(order: Omit<Order, 'id' | 'createdAt'>): Promise<Order>;
+  findByUserId(userId: string): Promise<Order[]>;
+}
+
+interface PaymentGateway {
+  charge(userId: string, amount: number): Promise<{ transactionId: string; success: boolean }>;
+  refund(transactionId: string): Promise<boolean>;
+}
+
+// 类型安全的 Mock 工厂
+function createMockProductRepo(): {
+  [K in keyof ProductRepository]: ReturnType<typeof vi.fn>;
+} {
+  return {
+    findById: vi.fn(),
+    updateStock: vi.fn(),
+  };
+}
+
+function createMockOrderRepo(): {
+  [K in keyof OrderRepository]: ReturnType<typeof vi.fn>;
+} {
+  return {
+    create: vi.fn(),
+    findByUserId: vi.fn(),
+  };
+}
+
+function createMockPaymentGateway(): {
+  [K in keyof PaymentGateway]: ReturnType<typeof vi.fn>;
+} {
+  return {
+    charge: vi.fn(),
+    refund: vi.fn(),
+  };
+}
+
+// 被测服务
+class CheckoutService {
+  constructor(
+    private productRepo: ProductRepository,
+    private orderRepo: OrderRepository,
+    private paymentGateway: PaymentGateway
+  ) {}
+
+  async checkout(
+    userId: string,
+    items: OrderItem[]
+  ): Promise<{ orderId: string; transactionId: string }> {
+    // 验证库存
+    let total = 0;
+    for (const item of items) {
+      const product = await this.productRepo.findById(item.productId);
+      if (!product) {
+        throw new Error(`Product ${item.productId} not found`);
+      }
+      if (product.stock < item.quantity) {
+        throw new Error(`Insufficient stock for ${product.name}`);
+      }
+      total += product.price * item.quantity;
+    }
+
+    // 支付
+    const payment = await this.paymentGateway.charge(userId, total);
+    if (!payment.success) {
+      throw new Error('Payment failed');
+    }
+
+    // 扣减库存
+    for (const item of items) {
+      const product = await this.productRepo.findById(item.productId);
+      if (product) {
+        await this.productRepo.updateStock(item.productId, product.stock - item.quantity);
+      }
+    }
+
+    // 创建订单
+    const order = await this.orderRepo.create({
+      userId,
+      items,
+      total,
+      status: 'confirmed',
+    });
+
+    return { orderId: order.id, transactionId: payment.transactionId };
+  }
+}
+
+// 测试数据工厂
+function createProduct(overrides: Partial<Product> = {}): Product {
+  return {
+    id: 'prod-1',
+    name: 'Test Product',
+    price: 100,
+    stock: 10,
+    ...overrides,
+  };
+}
+
+describe('CheckoutService', () => {
+  let service: CheckoutService;
+  let mockProductRepo: ReturnType<typeof createMockProductRepo>;
+  let mockOrderRepo: ReturnType<typeof createMockOrderRepo>;
+  let mockPaymentGateway: ReturnType<typeof createMockPaymentGateway>;
+
+  beforeEach(() => {
+    mockProductRepo = createMockProductRepo();
+    mockOrderRepo = createMockOrderRepo();
+    mockPaymentGateway = createMockPaymentGateway();
+    service = new CheckoutService(mockProductRepo, mockOrderRepo, mockPaymentGateway);
+  });
+
+  it('should complete checkout successfully', async () => {
+    const product = createProduct({ id: 'prod-1', price: 50, stock: 10 });
+
+    mockProductRepo.findById.mockResolvedValue(product);
+    mockProductRepo.updateStock.mockResolvedValue(undefined);
+    mockPaymentGateway.charge.mockResolvedValue({
+      transactionId: 'tx-123',
+      success: true,
+    });
+    mockOrderRepo.create.mockResolvedValue({
+      id: 'order-1',
+      userId: 'user-1',
+      items: [{ productId: 'prod-1', quantity: 2 }],
+      total: 100,
+      status: 'confirmed',
+      createdAt: new Date(),
+    });
+
+    const result = await service.checkout('user-1', [
+      { productId: 'prod-1', quantity: 2 },
+    ]);
+
+    expect(result).toEqual({ orderId: 'order-1', transactionId: 'tx-123' });
+
+    // 验证支付金额正确
+    expect(mockPaymentGateway.charge).toHaveBeenCalledWith('user-1', 100);
+
+    // 验证库存被扣减
+    expect(mockProductRepo.updateStock).toHaveBeenCalledWith('prod-1', 8);
+
+    // 验证订单被创建
+    expect(mockOrderRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        total: 100,
+        status: 'confirmed',
+      })
+    );
+  });
+
+  it('should throw when product not found', async () => {
+    mockProductRepo.findById.mockResolvedValue(null);
+
+    await expect(
+      service.checkout('user-1', [{ productId: 'unknown', quantity: 1 }])
+    ).rejects.toThrow('Product unknown not found');
+
+    // 不应该触发支付
+    expect(mockPaymentGateway.charge).not.toHaveBeenCalled();
+  });
+
+  it('should throw when stock is insufficient', async () => {
+    const product = createProduct({ stock: 1 });
+    mockProductRepo.findById.mockResolvedValue(product);
+
+    await expect(
+      service.checkout('user-1', [{ productId: 'prod-1', quantity: 5 }])
+    ).rejects.toThrow('Insufficient stock');
+
+    expect(mockPaymentGateway.charge).not.toHaveBeenCalled();
+  });
+
+  it('should throw when payment fails', async () => {
+    const product = createProduct();
+    mockProductRepo.findById.mockResolvedValue(product);
+    mockPaymentGateway.charge.mockResolvedValue({
+      transactionId: '',
+      success: false,
+    });
+
+    await expect(
+      service.checkout('user-1', [{ productId: 'prod-1', quantity: 1 }])
+    ).rejects.toThrow('Payment failed');
+
+    // 不应该扣减库存
+    expect(mockProductRepo.updateStock).not.toHaveBeenCalled();
+
+    // 不应该创建订单
+    expect(mockOrderRepo.create).not.toHaveBeenCalled();
+  });
+});
+```
+
+## 🔗 相关概念
+
+- **[测试框架类型](./01-testing-frameworks.mdx)**：Vitest、Jest 配置与类型测试
+- **[高级 React 类型模式](/typescript/04-framework-integration/01-typescript-react/03-advanced-react-patterns)**：在组件测试中 Mock 复杂 Props
+
+## 📚 学习检查点
+
+- [ ] 理解 `vi.fn()` 的泛型参数和类型推导
+- [ ] 能够使用 `vi.mocked()` 将 Mock 函数转换为类型安全版本
+- [ ] 掌握基于接口创建类型安全 Mock 工厂的方法
+- [ ] 理解 `vi.spyOn` (Spy) 和 `vi.fn` (Mock) 的区别和使用场景
+- [ ] 能够使用 Partial Mock 技巧只替换需要的方法
+
+## 🚀 下一步
+
+恭喜你完成了第四阶段的所有学习内容！你已经掌握了 TypeScript 与主流框架（React、Node.js）以及测试工具的集成方法。建议回顾整个阶段的知识点，并在实际项目中进行练习巩固。

@@ -1,12 +1,908 @@
 # 高级 React 类型模式
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍高级 React 类型模式的核心概念和实践方法。
+当 React 组件的复用性和灵活性要求增加时，简单的 Props 类型定义已经不够用了。本节介绍五种高级类型模式：**泛型组件**让组件适配不同数据类型、**多态组件**让组件渲染为不同 HTML 元素、**Render Props** 将渲染逻辑交给使用者、**高阶组件（HOC）**实现逻辑复用，以及 **forwardRef** 实现 ref 转发的类型安全。
+
+## 🎯 泛型组件
+
+泛型组件允许组件在不同的数据类型下复用，同时保持类型安全。
+
+### 基本泛型组件
+
+```tsx
+import { ReactNode } from 'react';
+
+interface ListProps<T> {
+  items: T[];
+  renderItem: (item: T, index: number) => ReactNode;
+  keyExtractor: (item: T) => string | number;
+}
+
+// 泛型组件不能使用 React.FC，必须使用函数声明或箭头函数
+function List<T>({ items, renderItem, keyExtractor }: ListProps<T>) {
+  return (
+    <ul>
+      {items.map((item, index) => (
+        <li key={keyExtractor(item)}>{renderItem(item, index)}</li>
+      ))}
+    </ul>
+  );
+}
+
+// 使用 — TypeScript 从 items 自动推断 T 的类型
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+const users: User[] = [
+  { id: 1, name: 'Alice', email: 'alice@example.com' },
+  { id: 2, name: 'Bob', email: 'bob@example.com' },
+];
+
+function App() {
+  return (
+    <List
+      items={users}
+      keyExtractor={(user) => user.id}
+      renderItem={(user) => (
+        <span>{user.name} - {user.email}</span>
+      )}
+    />
+  );
+}
+```
+
+### 泛型 Select 组件
+
+```tsx
+interface SelectProps<T> {
+  options: T[];
+  value: T | null;
+  onChange: (value: T) => void;
+  getLabel: (option: T) => string;
+  getValue: (option: T) => string | number;
+  placeholder?: string;
+}
+
+function Select<T>({
+  options,
+  value,
+  onChange,
+  getLabel,
+  getValue,
+  placeholder = 'Select...',
+}: SelectProps<T>) {
+  const selectedValue = value ? String(getValue(value)) : '';
+
+  const handleChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const selected = options.find(
+      (opt) => String(getValue(opt)) === event.target.value
+    );
+    if (selected) {
+      onChange(selected);
+    }
+  };
+
+  return (
+    <select value={selectedValue} onChange={handleChange}>
+      <option value="">{placeholder}</option>
+      {options.map((option) => (
+        <option key={getValue(option)} value={getValue(option)}>
+          {getLabel(option)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+// 使用
+interface Country {
+  code: string;
+  name: string;
+  population: number;
+}
+
+const countries: Country[] = [
+  { code: 'CN', name: 'China', population: 1400000000 },
+  { code: 'US', name: 'United States', population: 330000000 },
+  { code: 'JP', name: 'Japan', population: 125000000 },
+];
+
+function CountryPicker() {
+  const [selected, setSelected] = React.useState<Country | null>(null);
+
+  return (
+    <div>
+      <Select
+        options={countries}
+        value={selected}
+        onChange={setSelected}
+        getLabel={(c) => `${c.name} (${c.population.toLocaleString()})`}
+        getValue={(c) => c.code}
+        placeholder="Choose a country"
+      />
+      {selected && <p>Selected: {selected.name}</p>}
+    </div>
+  );
+}
+```
+
+### 带约束的泛型组件
+
+```tsx
+// 通过 extends 约束泛型参数必须具有 id 属性
+interface HasId {
+  id: string | number;
+}
+
+interface DataTableProps<T extends HasId> {
+  data: T[];
+  columns: {
+    key: keyof T;
+    header: string;
+    render?: (value: T[keyof T], item: T) => ReactNode;
+  }[];
+  onRowClick?: (item: T) => void;
+}
+
+function DataTable<T extends HasId>({
+  data,
+  columns,
+  onRowClick,
+}: DataTableProps<T>) {
+  return (
+    <table>
+      <thead>
+        <tr>
+          {columns.map((col) => (
+            <th key={String(col.key)}>{col.header}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {data.map((item) => (
+          <tr key={item.id} onClick={() => onRowClick?.(item)}>
+            {columns.map((col) => (
+              <td key={String(col.key)}>
+                {col.render
+                  ? col.render(item[col.key], item)
+                  : String(item[col.key])}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+// 使用
+interface Product {
+  id: number;
+  name: string;
+  price: number;
+  inStock: boolean;
+}
+
+function ProductTable() {
+  const products: Product[] = [
+    { id: 1, name: 'Laptop', price: 999, inStock: true },
+    { id: 2, name: 'Phone', price: 699, inStock: false },
+  ];
+
+  return (
+    <DataTable
+      data={products}
+      columns={[
+        { key: 'name', header: 'Product Name' },
+        { key: 'price', header: 'Price', render: (value) => `${value}` },
+        {
+          key: 'inStock',
+          header: 'Status',
+          render: (value) => (value ? '✅ In Stock' : '❌ Out of Stock'),
+        },
+      ]}
+      onRowClick={(product) => console.log('Clicked:', product.name)}
+    />
+  );
+}
+```
+
+## 🎯 多态组件（as prop 模式）
+
+多态组件允许使用者通过 `as` prop 指定组件渲染的 HTML 元素类型，并自动推断对应的属性类型。
+
+### 基本实现
+
+```tsx
+import {
+  ComponentPropsWithoutRef,
+  ElementType,
+  ReactNode,
+} from 'react';
+
+// 定义基础 Props，as 的类型为泛型
+type BoxProps<E extends ElementType> = {
+  as?: E;
+  children?: ReactNode;
+  className?: string;
+} & Omit<ComponentPropsWithoutRef<E>, 'as' | 'children' | 'className'>;
+
+function Box<E extends ElementType = 'div'>({
+  as,
+  children,
+  className,
+  ...restProps
+}: BoxProps<E>) {
+  const Component = as || 'div';
+
+  return (
+    <Component className={className} {...restProps}>
+      {children}
+    </Component>
+  );
+}
+
+// 使用 — 默认渲染为 div
+<Box className="container">Default div</Box>
+
+// 渲染为 button，自动获得 button 的属性类型
+<Box as="button" onClick={() => console.log('clicked')} type="submit">
+  I am a button
+</Box>
+
+// 渲染为 a 标签，自动获得 anchor 的属性类型
+<Box as="a" href="https://example.com" target="_blank">
+  I am a link
+</Box>
+
+// 渲染为 section
+<Box as="section" id="hero">
+  I am a section
+</Box>
+```
+
+### 带样式变体的多态组件
+
+```tsx
+import { ComponentPropsWithoutRef, ElementType, ReactNode } from 'react';
+
+type TextVariant = 'h1' | 'h2' | 'h3' | 'body' | 'caption';
+
+type TextProps<E extends ElementType> = {
+  as?: E;
+  variant?: TextVariant;
+  color?: 'primary' | 'secondary' | 'muted';
+  children: ReactNode;
+} & Omit<ComponentPropsWithoutRef<E>, 'as' | 'variant' | 'color' | 'children'>;
+
+// 映射 variant 到默认的 HTML 元素
+const variantToElement: Record<TextVariant, ElementType> = {
+  h1: 'h1',
+  h2: 'h2',
+  h3: 'h3',
+  body: 'p',
+  caption: 'span',
+};
+
+const variantToFontSize: Record<TextVariant, string> = {
+  h1: '2.5rem',
+  h2: '2rem',
+  h3: '1.5rem',
+  body: '1rem',
+  caption: '0.875rem',
+};
+
+function Text<E extends ElementType = 'p'>({
+  as,
+  variant = 'body',
+  color = 'primary',
+  children,
+  ...restProps
+}: TextProps<E>) {
+  const Component = as || variantToElement[variant];
+  const style = { fontSize: variantToFontSize[variant] };
+
+  return (
+    <Component style={style} data-color={color} {...restProps}>
+      {children}
+    </Component>
+  );
+}
+
+// 使用
+<Text variant="h1">Page Title</Text>
+<Text variant="body" color="secondary">Body text</Text>
+<Text as="label" htmlFor="name">Label text</Text>
+```
+
+## 🎯 Render Props 类型
+
+Render Props 模式将渲染逻辑以函数形式传入组件，使组件的展示完全由使用者控制。
+
+```tsx
+import { useState, useEffect, ReactNode } from 'react';
+
+// 鼠标位置追踪组件
+interface MousePosition {
+  x: number;
+  y: number;
+}
+
+interface MouseTrackerProps {
+  children: (position: MousePosition) => ReactNode;
+}
+
+function MouseTracker({ children }: MouseTrackerProps) {
+  const [position, setPosition] = useState<MousePosition>({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const handleMouseMove = (event: globalThis.MouseEvent) => {
+      setPosition({ x: event.clientX, y: event.clientY });
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, []);
+
+  return <>{children(position)}</>;
+}
+
+// 使用
+function App() {
+  return (
+    <MouseTracker>
+      {({ x, y }) => (
+        <div>
+          Mouse position: ({x}, {y})
+        </div>
+      )}
+    </MouseTracker>
+  );
+}
+```
+
+### 泛型 Render Props
+
+```tsx
+import { useState, ReactNode } from 'react';
+
+interface ToggleRenderProps {
+  isOn: boolean;
+  toggle: () => void;
+  setOn: () => void;
+  setOff: () => void;
+}
+
+interface ToggleProps {
+  initialValue?: boolean;
+  children: (props: ToggleRenderProps) => ReactNode;
+}
+
+function Toggle({ initialValue = false, children }: ToggleProps) {
+  const [isOn, setIsOn] = useState(initialValue);
+
+  const renderProps: ToggleRenderProps = {
+    isOn,
+    toggle: () => setIsOn((prev) => !prev),
+    setOn: () => setIsOn(true),
+    setOff: () => setIsOn(false),
+  };
+
+  return <>{children(renderProps)}</>;
+}
+
+// 使用
+function App() {
+  return (
+    <Toggle initialValue={false}>
+      {({ isOn, toggle }) => (
+        <button onClick={toggle}>
+          {isOn ? '🌙 Dark Mode' : '☀️ Light Mode'}
+        </button>
+      )}
+    </Toggle>
+  );
+}
+```
+
+## 🎯 HOC 类型
+
+高阶组件（Higher-Order Component）是一个接收组件并返回新组件的函数。为 HOC 正确定义类型是 TypeScript 中较有挑战性的部分。
+
+### 基本 HOC
+
+```tsx
+import { ComponentType } from 'react';
+
+// 注入的 Props 类型
+interface WithLoadingProps {
+  loading: boolean;
+}
+
+// HOC：为被包裹组件添加 loading 状态展示
+function withLoading<P extends object>(
+  WrappedComponent: ComponentType<P>
+) {
+  // 返回的组件接收原始 Props + loading
+  function WithLoadingComponent(props: P & WithLoadingProps) {
+    const { loading, ...restProps } = props;
+
+    if (loading) {
+      return <div className="spinner">Loading...</div>;
+    }
+
+    return <WrappedComponent {...(restProps as P)} />;
+  }
+
+  WithLoadingComponent.displayName = `withLoading(${
+    WrappedComponent.displayName || WrappedComponent.name || 'Component'
+  })`;
+
+  return WithLoadingComponent;
+}
+
+// 被包裹的组件
+interface UserListProps {
+  users: { id: number; name: string }[];
+}
+
+function UserList({ users }: UserListProps) {
+  return (
+    <ul>
+      {users.map((user) => (
+        <li key={user.id}>{user.name}</li>
+      ))}
+    </ul>
+  );
+}
+
+// 增强后的组件自动拥有 loading 属性
+const UserListWithLoading = withLoading(UserList);
+
+// 使用
+<UserListWithLoading
+  loading={false}
+  users={[{ id: 1, name: 'Alice' }]}
+/>
+```
+
+### 注入 Props 的 HOC
+
+```tsx
+import { ComponentType, useEffect, useState } from 'react';
+
+// 注入的 Props
+interface WithWindowSizeProps {
+  windowWidth: number;
+  windowHeight: number;
+}
+
+// HOC：自动注入窗口尺寸信息
+function withWindowSize<P extends WithWindowSizeProps>(
+  WrappedComponent: ComponentType<P>
+) {
+  // 返回的组件不需要外部传入 windowWidth/windowHeight
+  type ExternalProps = Omit<P, keyof WithWindowSizeProps>;
+
+  function WithWindowSizeComponent(props: ExternalProps) {
+    const [size, setSize] = useState({
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+    });
+
+    useEffect(() => {
+      const handleResize = () => {
+        setSize({
+          windowWidth: window.innerWidth,
+          windowHeight: window.innerHeight,
+        });
+      };
+
+      window.addEventListener('resize', handleResize);
+      return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
+    // 合并外部 Props 和注入的 Props
+    const mergedProps = { ...props, ...size } as P;
+    return <WrappedComponent {...mergedProps} />;
+  }
+
+  WithWindowSizeComponent.displayName = `withWindowSize(${
+    WrappedComponent.displayName || WrappedComponent.name || 'Component'
+  })`;
+
+  return WithWindowSizeComponent;
+}
+
+// 被包裹的组件需要声明包含注入的 Props
+interface ResponsiveLayoutProps extends WithWindowSizeProps {
+  title: string;
+}
+
+function ResponsiveLayout({ title, windowWidth, windowHeight }: ResponsiveLayoutProps) {
+  const isMobile = windowWidth < 768;
+
+  return (
+    <div>
+      <h1>{title}</h1>
+      <p>Window: {windowWidth} × {windowHeight}</p>
+      <p>Layout: {isMobile ? 'Mobile' : 'Desktop'}</p>
+    </div>
+  );
+}
+
+const EnhancedLayout = withWindowSize(ResponsiveLayout);
+
+// 使用 — 只需传入 title，windowWidth/windowHeight 由 HOC 注入
+<EnhancedLayout title="Dashboard" />
+```
 
 :::tip
-本文档正在编写中，敬请期待。
+在现代 React 开发中，**自定义 Hook** 通常是比 HOC 更好的逻辑复用方案。HOC 存在 Props 命名冲突、嵌套地狱等问题，而 Hook 则更加简洁和灵活。但理解 HOC 的类型定义仍然很重要，因为许多现有库仍在使用这种模式。
 :::
+
+## 🎯 forwardRef 泛型
+
+`forwardRef` 用于将 `ref` 从父组件转发到子组件内部的 DOM 元素或组件实例。
+
+### 基本 forwardRef
+
+```tsx
+import { forwardRef, useRef, InputHTMLAttributes } from 'react';
+
+// 扩展原生 input 的属性
+interface CustomInputProps extends InputHTMLAttributes<HTMLInputElement> {
+  label: string;
+  error?: string;
+}
+
+// forwardRef 的泛型参数：<ref 的类型, Props 的类型>
+const CustomInput = forwardRef<HTMLInputElement, CustomInputProps>(
+  ({ label, error, ...inputProps }, ref) => {
+    return (
+      <div className="form-field">
+        <label>{label}</label>
+        <input ref={ref} {...inputProps} />
+        {error && <span className="error">{error}</span>}
+      </div>
+    );
+  }
+);
+
+CustomInput.displayName = 'CustomInput';
+
+// 使用
+function Form() {
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  const handleFocus = () => {
+    nameRef.current?.focus();
+  };
+
+  return (
+    <div>
+      <CustomInput ref={nameRef} label="Name" placeholder="Enter your name" />
+      <button onClick={handleFocus}>Focus Name Input</button>
+    </div>
+  );
+}
+```
+
+### 结合 useImperativeHandle
+
+```tsx
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+
+// 定义暴露给父组件的方法接口
+interface ModalHandle {
+  open: () => void;
+  close: () => void;
+  toggle: () => void;
+}
+
+interface ModalProps {
+  title: string;
+  children: React.ReactNode;
+}
+
+const Modal = forwardRef<ModalHandle, ModalProps>(({ title, children }, ref) => {
+  const [isOpen, setIsOpen] = useState(false);
+
+  // 通过 useImperativeHandle 自定义暴露的方法
+  useImperativeHandle(ref, () => ({
+    open: () => setIsOpen(true),
+    close: () => setIsOpen(false),
+    toggle: () => setIsOpen((prev) => !prev),
+  }));
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal">
+        <h2>{title}</h2>
+        <div>{children}</div>
+        <button onClick={() => setIsOpen(false)}>Close</button>
+      </div>
+    </div>
+  );
+});
+
+Modal.displayName = 'Modal';
+
+// 使用 — ref 类型为 ModalHandle，可以调用自定义方法
+function App() {
+  const modalRef = useRef<ModalHandle>(null);
+
+  return (
+    <div>
+      <button onClick={() => modalRef.current?.open()}>Open Modal</button>
+      <button onClick={() => modalRef.current?.close()}>Close Modal</button>
+      <Modal ref={modalRef} title="Settings">
+        <p>Modal content here</p>
+      </Modal>
+    </div>
+  );
+}
+```
+
+### 泛型 forwardRef 组件
+
+标准的 `forwardRef` 不支持泛型参数，需要通过类型断言来实现：
+
+```tsx
+import { forwardRef, Ref, ReactNode } from 'react';
+
+interface GenericListProps<T> {
+  items: T[];
+  renderItem: (item: T) => ReactNode;
+  keyExtractor: (item: T) => string | number;
+}
+
+// 内部实现函数
+function GenericListInner<T>(
+  { items, renderItem, keyExtractor }: GenericListProps<T>,
+  ref: Ref<HTMLUListElement>
+) {
+  return (
+    <ul ref={ref}>
+      {items.map((item) => (
+        <li key={keyExtractor(item)}>{renderItem(item)}</li>
+      ))}
+    </ul>
+  );
+}
+
+// 类型断言保留泛型能力
+const GenericList = forwardRef(GenericListInner) as <T>(
+  props: GenericListProps<T> & { ref?: Ref<HTMLUListElement> }
+) => ReactNode;
+
+// 使用
+function App() {
+  const listRef = useRef<HTMLUListElement>(null);
+
+  return (
+    <GenericList
+      ref={listRef}
+      items={[1, 2, 3]}
+      renderItem={(item) => <span>{item}</span>}
+      keyExtractor={(item) => item}
+    />
+  );
+}
+```
+
+## 📝 实际应用示例
+
+### 综合示例：类型安全的表格组件
+
+```tsx
+import {
+  forwardRef,
+  useImperativeHandle,
+  useState,
+  useRef,
+  ReactNode,
+  Ref,
+} from 'react';
+
+// 表格列定义
+interface Column<T> {
+  key: keyof T & string;
+  header: string;
+  width?: number;
+  render?: (value: T[keyof T], record: T) => ReactNode;
+  sortable?: boolean;
+}
+
+// 表格暴露的方法
+interface TableHandle {
+  scrollToTop: () => void;
+  getSelectedRows: () => number[];
+  clearSelection: () => void;
+}
+
+// 表格 Props
+interface TableProps<T extends { id: number }> {
+  columns: Column<T>[];
+  dataSource: T[];
+  selectable?: boolean;
+  onRowClick?: (record: T) => void;
+}
+
+// 内部实现
+function TableInner<T extends { id: number }>(
+  { columns, dataSource, selectable = false, onRowClick }: TableProps<T>,
+  ref: Ref<TableHandle>
+) {
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    scrollToTop: () => containerRef.current?.scrollTo(0, 0),
+    getSelectedRows: () => Array.from(selectedIds),
+    clearSelection: () => setSelectedIds(new Set()),
+  }));
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortOrder('asc');
+    }
+  };
+
+  const sortedData = sortKey
+    ? [...dataSource].sort((a, b) => {
+        const aVal = a[sortKey as keyof T];
+        const bVal = b[sortKey as keyof T];
+        const comparison = String(aVal).localeCompare(String(bVal));
+        return sortOrder === 'asc' ? comparison : -comparison;
+      })
+    : dataSource;
+
+  return (
+    <div ref={containerRef} style={{ overflow: 'auto', maxHeight: 400 }}>
+      <table>
+        <thead>
+          <tr>
+            {selectable && <th>Select</th>}
+            {columns.map((col) => (
+              <th
+                key={col.key}
+                style={{ width: col.width, cursor: col.sortable ? 'pointer' : 'default' }}
+                onClick={() => col.sortable && handleSort(col.key)}
+              >
+                {col.header}
+                {col.sortable && sortKey === col.key && (sortOrder === 'asc' ? ' ↑' : ' ↓')}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sortedData.map((record) => (
+            <tr
+              key={record.id}
+              onClick={() => onRowClick?.(record)}
+              style={{ cursor: onRowClick ? 'pointer' : 'default' }}
+            >
+              {selectable && (
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(record.id)}
+                    onChange={() => toggleSelect(record.id)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </td>
+              )}
+              {columns.map((col) => (
+                <td key={col.key}>
+                  {col.render
+                    ? col.render(record[col.key], record)
+                    : String(record[col.key] ?? '')}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// 导出泛型 forwardRef 组件
+const Table = forwardRef(TableInner) as <T extends { id: number }>(
+  props: TableProps<T> & { ref?: Ref<TableHandle> }
+) => ReactNode;
+
+// 使用
+interface Employee {
+  id: number;
+  name: string;
+  department: string;
+  salary: number;
+}
+
+function EmployeeTable() {
+  const tableRef = useRef<TableHandle>(null);
+
+  const employees: Employee[] = [
+    { id: 1, name: 'Alice', department: 'Engineering', salary: 120000 },
+    { id: 2, name: 'Bob', department: 'Marketing', salary: 95000 },
+    { id: 3, name: 'Charlie', department: 'Engineering', salary: 110000 },
+  ];
+
+  const columns: Column<Employee>[] = [
+    { key: 'name', header: 'Name', sortable: true },
+    { key: 'department', header: 'Department', sortable: true },
+    {
+      key: 'salary',
+      header: 'Salary',
+      sortable: true,
+      render: (value) => `${Number(value).toLocaleString()}`,
+    },
+  ];
+
+  return (
+    <div>
+      <div>
+        <button onClick={() => tableRef.current?.scrollToTop()}>Scroll to Top</button>
+        <button onClick={() => {
+          const selected = tableRef.current?.getSelectedRows();
+          console.log('Selected:', selected);
+        }}>Get Selected</button>
+        <button onClick={() => tableRef.current?.clearSelection()}>Clear</button>
+      </div>
+      <Table
+        ref={tableRef}
+        columns={columns}
+        dataSource={employees}
+        selectable
+        onRowClick={(emp) => console.log('Clicked:', emp.name)}
+      />
+    </div>
+  );
+}
+```
+
+## 🔗 相关概念
+
+- **[React 类型基础](./01-react-type-basics.mdx)**：组件、Props、事件的基本类型
+- **[Hooks 类型](./02-hooks-types.mdx)**：useState、useRef 等 Hook 的类型用法
+- **[TypeScript 与 Node.js](/typescript/04-framework-integration/02-typescript-nodejs/01-nodejs-types)**：服务端 TypeScript 类型
+
+## 📚 学习检查点
+
+- [ ] 能够编写泛型组件并理解泛型约束（`extends`）的作用
+- [ ] 理解多态组件（`as` prop）的类型实现原理
+- [ ] 能够为 Render Props 模式定义正确的类型
+- [ ] 理解 HOC 中注入 Props 的类型推导
+- [ ] 掌握 `forwardRef` + `useImperativeHandle` 的类型用法
+
+## 🚀 下一步
+
+→ [Node.js 类型](/typescript/04-framework-integration/02-typescript-nodejs/01-nodejs-types)

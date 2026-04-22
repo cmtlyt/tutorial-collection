@@ -1,12 +1,720 @@
 # 测试框架类型
 
-> **版本**: v1.0
+> **版本**: v1.0  
 > **最后更新**: 2026-04-22
 
 ## 📚 概念介绍
 
-本节将介绍测试框架类型的核心概念和实践方法。
+TypeScript 与测试框架结合，不仅能确保运行时逻辑的正确性，还能在编译阶段验证类型的正确性。本节将介绍三个方面：**Vitest** 的原生 TypeScript 支持、**Jest + ts-jest** 的配置方式，以及**类型测试**（`expectTypeOf`、`assertType`）这一独特的 TypeScript 测试能力。
 
-:::tip
-本文档正在编写中，敬请期待。
-:::
+## 🎯 Vitest 类型支持
+
+Vitest 由 Vite 驱动，对 TypeScript 提供开箱即用的原生支持，无需额外配置转译工具。
+
+### 安装与配置
+
+```bash
+npm install -D vitest
+```
+
+```ts
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    globals: true,        // 启用全局 API（describe、it、expect 等）
+    environment: 'node',
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+    },
+  },
+});
+```
+
+启用 `globals: true` 后，在 `tsconfig.json` 中添加 Vitest 的类型引用：
+
+```json
+{
+  "compilerOptions": {
+    "types": ["vitest/globals"]
+  }
+}
+```
+
+### 基本测试
+
+```ts
+// src/utils/math.ts
+function add(a: number, b: number): number {
+  return a + b;
+}
+
+function divide(a: number, b: number): number {
+  if (b === 0) {
+    throw new Error('Division by zero');
+  }
+  return a / b;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+export { add, divide, clamp };
+```
+
+```ts
+// src/utils/math.test.ts
+import { describe, it, expect } from 'vitest';
+import { add, divide, clamp } from './math';
+
+describe('add', () => {
+  it('should add two positive numbers', () => {
+    expect(add(1, 2)).toBe(3);
+  });
+
+  it('should handle negative numbers', () => {
+    expect(add(-1, -2)).toBe(-3);
+  });
+
+  it('should handle zero', () => {
+    expect(add(0, 5)).toBe(5);
+  });
+});
+
+describe('divide', () => {
+  it('should divide two numbers', () => {
+    expect(divide(10, 2)).toBe(5);
+  });
+
+  it('should throw on division by zero', () => {
+    expect(() => divide(10, 0)).toThrow('Division by zero');
+  });
+
+  it('should return float results', () => {
+    expect(divide(1, 3)).toBeCloseTo(0.333, 2);
+  });
+});
+
+describe('clamp', () => {
+  it('should clamp value within range', () => {
+    expect(clamp(5, 0, 10)).toBe(5);
+    expect(clamp(-5, 0, 10)).toBe(0);
+    expect(clamp(15, 0, 10)).toBe(10);
+  });
+});
+```
+
+### 异步测试
+
+```ts
+// src/services/user-service.ts
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+interface UserRepository {
+  findById(id: number): Promise<User | null>;
+  findAll(): Promise<User[]>;
+  create(data: Omit<User, 'id'>): Promise<User>;
+}
+
+class UserService {
+  constructor(private repository: UserRepository) {}
+
+  async getUser(id: number): Promise<User> {
+    const user = await this.repository.findById(id);
+    if (!user) {
+      throw new Error(`User with id ${id} not found`);
+    }
+    return user;
+  }
+
+  async getAllUsers(): Promise<User[]> {
+    return this.repository.findAll();
+  }
+
+  async createUser(name: string, email: string): Promise<User> {
+    if (!email.includes('@')) {
+      throw new Error('Invalid email');
+    }
+    return this.repository.create({ name, email });
+  }
+}
+
+export { UserService };
+export type { User, UserRepository };
+```
+
+```ts
+// src/services/user-service.test.ts
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { UserService } from './user-service';
+import type { UserRepository, User } from './user-service';
+
+describe('UserService', () => {
+  let service: UserService;
+  let mockRepo: UserRepository;
+
+  beforeEach(() => {
+    // 创建类型安全的 Mock
+    mockRepo = {
+      findById: vi.fn(),
+      findAll: vi.fn(),
+      create: vi.fn(),
+    };
+    service = new UserService(mockRepo);
+  });
+
+  describe('getUser', () => {
+    it('should return user when found', async () => {
+      const mockUser: User = { id: 1, name: 'Alice', email: 'alice@example.com' };
+      vi.mocked(mockRepo.findById).mockResolvedValue(mockUser);
+
+      const user = await service.getUser(1);
+
+      expect(user).toEqual(mockUser);
+      expect(mockRepo.findById).toHaveBeenCalledWith(1);
+    });
+
+    it('should throw when user not found', async () => {
+      vi.mocked(mockRepo.findById).mockResolvedValue(null);
+
+      await expect(service.getUser(999)).rejects.toThrow('User with id 999 not found');
+    });
+  });
+
+  describe('createUser', () => {
+    it('should create user with valid email', async () => {
+      const newUser: User = { id: 1, name: 'Bob', email: 'bob@example.com' };
+      vi.mocked(mockRepo.create).mockResolvedValue(newUser);
+
+      const result = await service.createUser('Bob', 'bob@example.com');
+
+      expect(result).toEqual(newUser);
+      expect(mockRepo.create).toHaveBeenCalledWith({
+        name: 'Bob',
+        email: 'bob@example.com',
+      });
+    });
+
+    it('should reject invalid email', async () => {
+      await expect(service.createUser('Bob', 'invalid-email')).rejects.toThrow(
+        'Invalid email'
+      );
+      expect(mockRepo.create).not.toHaveBeenCalled();
+    });
+  });
+});
+```
+
+### 参数化测试
+
+```ts
+import { describe, it, expect } from 'vitest';
+
+// 被测函数
+function formatCurrency(amount: number, currency: string): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+  }).format(amount);
+}
+
+describe('formatCurrency', () => {
+  // it.each 实现参数化测试
+  it.each([
+    { amount: 100, currency: 'USD', expected: '$100.00' },
+    { amount: 1000.5, currency: 'USD', expected: '$1,000.50' },
+    { amount: 0, currency: 'USD', expected: '$0.00' },
+    { amount: 99.99, currency: 'EUR', expected: '€99.99' },
+    { amount: 1234, currency: 'JPY', expected: '¥1,234' },
+  ])(
+    'should format $amount $currency as $expected',
+    ({ amount, currency, expected }) => {
+      expect(formatCurrency(amount, currency)).toBe(expected);
+    }
+  );
+});
+```
+
+## 🎯 Jest + ts-jest 配置
+
+Jest 需要通过 `ts-jest` 插件来支持 TypeScript。
+
+### 安装与配置
+
+```bash
+npm install -D jest ts-jest @types/jest
+```
+
+```ts
+// jest.config.ts
+import type { Config } from 'jest';
+
+const config: Config = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  roots: ['<rootDir>/src'],
+  testMatch: ['**/__tests__/**/*.ts', '**/*.{test,spec}.ts'],
+  moduleNameMapper: {
+    // 路径别名映射
+    '^@/(.*)
+: '<rootDir>/src/$1',
+  },
+  collectCoverage: true,
+  coverageDirectory: 'coverage',
+  coverageReporters: ['text', 'lcov'],
+  coverageThreshold: {
+    global: {
+      branches: 80,
+      functions: 80,
+      lines: 80,
+      statements: 80,
+    },
+  },
+};
+
+export default config;
+```
+
+### Jest 类型化测试
+
+```ts
+// src/utils/string-utils.ts
+function capitalize(str: string): string {
+  if (str.length === 0) return str;
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+function truncate(str: string, maxLength: number, suffix = '...'): string {
+  if (str.length <= maxLength) return str;
+  return str.slice(0, maxLength - suffix.length) + suffix;
+}
+
+function slugify(str: string): string {
+  return str
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+export { capitalize, truncate, slugify };
+```
+
+```ts
+// src/utils/string-utils.test.ts
+import { capitalize, truncate, slugify } from './string-utils';
+
+describe('capitalize', () => {
+  test('should capitalize first letter', () => {
+    expect(capitalize('hello')).toBe('Hello');
+  });
+
+  test('should handle empty string', () => {
+    expect(capitalize('')).toBe('');
+  });
+
+  test('should lowercase remaining letters', () => {
+    expect(capitalize('HELLO')).toBe('Hello');
+  });
+});
+
+describe('truncate', () => {
+  test('should truncate long strings', () => {
+    expect(truncate('Hello World', 8)).toBe('Hello...');
+  });
+
+  test('should not truncate short strings', () => {
+    expect(truncate('Hi', 10)).toBe('Hi');
+  });
+
+  test('should use custom suffix', () => {
+    expect(truncate('Hello World', 9, '…')).toBe('Hello Wo…');
+  });
+});
+
+describe('slugify', () => {
+  test('should convert to slug', () => {
+    expect(slugify('Hello World')).toBe('hello-world');
+  });
+
+  test('should remove special characters', () => {
+    expect(slugify('Hello, World!')).toBe('hello-world');
+  });
+
+  test('should handle multiple spaces', () => {
+    expect(slugify('  Hello   World  ')).toBe('hello-world');
+  });
+});
+```
+
+### Jest 自定义 Matcher 类型
+
+```ts
+// src/testing/custom-matchers.ts
+interface CustomMatchers<R = unknown> {
+  toBeWithinRange(floor: number, ceiling: number): R;
+  toBeValidEmail(): R;
+}
+
+// 扩展 Jest 的 Matcher 类型
+declare module 'expect' {
+  interface AsymmetricMatchers extends CustomMatchers {}
+  interface Matchers<R> extends CustomMatchers<R> {}
+}
+
+// 实现自定义 Matcher
+expect.extend({
+  toBeWithinRange(received: number, floor: number, ceiling: number) {
+    const pass = received >= floor && received <= ceiling;
+    return {
+      pass,
+      message: () =>
+        `expected ${received} ${pass ? 'not ' : ''}to be within range ${floor} - ${ceiling}`,
+    };
+  },
+
+  toBeValidEmail(received: string) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const pass = emailRegex.test(received);
+    return {
+      pass,
+      message: () =>
+        `expected "${received}" ${pass ? 'not ' : ''}to be a valid email`,
+    };
+  },
+});
+
+export {};
+```
+
+```ts
+// 使用自定义 Matcher
+describe('custom matchers', () => {
+  test('toBeWithinRange', () => {
+    expect(5).toBeWithinRange(1, 10);
+    expect(11).not.toBeWithinRange(1, 10);
+  });
+
+  test('toBeValidEmail', () => {
+    expect('alice@example.com').toBeValidEmail();
+    expect('invalid-email').not.toBeValidEmail();
+  });
+});
+```
+
+## 🎯 类型测试
+
+类型测试是 TypeScript 独有的测试方式，用于验证类型系统的行为是否符合预期。Vitest 内置了 `expectTypeOf` 和 `assertType` 支持。
+
+### expectTypeOf
+
+`expectTypeOf` 用于断言值或类型的类型关系：
+
+```ts
+import { describe, it, expectTypeOf } from 'vitest';
+
+// 被测类型
+type Result<T, E = Error> = { success: true; data: T } | { success: false; error: E };
+
+type ExtractData<R> = R extends { success: true; data: infer D } ? D : never;
+type ExtractError<R> = R extends { success: false; error: infer E } ? E : never;
+
+// 被测函数
+function createSuccess<T>(data: T): Result<T> {
+  return { success: true, data };
+}
+
+function createFailure<E = Error>(error: E): Result<never, E> {
+  return { success: false, error };
+}
+
+function parseNumber(str: string): Result<number> {
+  const num = Number(str);
+  if (Number.isNaN(num)) {
+    return { success: false, error: new Error(`Cannot parse "${str}" as number`) };
+  }
+  return { success: true, data: num };
+}
+
+describe('type tests with expectTypeOf', () => {
+  it('should infer correct return types', () => {
+    // 验证函数返回类型
+    expectTypeOf(createSuccess).returns.toEqualTypeOf<Result<unknown>>();
+    expectTypeOf(createSuccess(42)).toEqualTypeOf<Result<number>>();
+    expectTypeOf(createSuccess('hello')).toEqualTypeOf<Result<string>>();
+
+    expectTypeOf(parseNumber).returns.toEqualTypeOf<Result<number>>();
+    expectTypeOf(parseNumber).parameter(0).toBeString();
+  });
+
+  it('should validate utility type behavior', () => {
+    // 验证工具类型
+    expectTypeOf<ExtractData<Result<string>>>().toEqualTypeOf<string>();
+    expectTypeOf<ExtractData<Result<number>>>().toEqualTypeOf<number>();
+    expectTypeOf<ExtractError<Result<string, TypeError>>>().toEqualTypeOf<TypeError>();
+  });
+
+  it('should check type assignability', () => {
+    // 验证类型兼容性
+    expectTypeOf<string>().toMatchTypeOf<string | number>();
+    expectTypeOf<'hello'>().toMatchTypeOf<string>();
+
+    // 验证不可赋值
+    expectTypeOf<string | number>().not.toMatchTypeOf<string>();
+  });
+
+  it('should check object shapes', () => {
+    interface User {
+      id: number;
+      name: string;
+      email: string;
+    }
+
+    expectTypeOf<User>().toHaveProperty('id');
+    expectTypeOf<User>().toHaveProperty('name');
+    expectTypeOf<User>().toHaveProperty('email');
+  });
+});
+```
+
+### assertType
+
+`assertType` 用于在类型层面断言某个值符合指定的类型：
+
+```ts
+import { describe, it, assertType } from 'vitest';
+
+// 工具类型
+type Prettify<T> = { [K in keyof T]: T[K] } & {};
+
+type DeepReadonly<T> = {
+  readonly [K in keyof T]: T[K] extends object ? DeepReadonly<T[K]> : T[K];
+};
+
+type RequireKeys<T, K extends keyof T> = Omit<T, K> & Required<Pick<T, K>>;
+
+describe('assertType tests', () => {
+  it('should validate Prettify produces equivalent type', () => {
+    type Original = { a: string } & { b: number };
+    type Prettified = Prettify<Original>;
+
+    // assertType 验证类型赋值兼容性
+    const value: Prettified = { a: 'hello', b: 42 };
+    assertType<{ a: string; b: number }>(value);
+  });
+
+  it('should validate DeepReadonly', () => {
+    interface Config {
+      db: { host: string; port: number };
+      app: { name: string };
+    }
+
+    type ReadonlyConfig = DeepReadonly<Config>;
+
+    const config: ReadonlyConfig = {
+      db: { host: 'localhost', port: 5432 },
+      app: { name: 'MyApp' },
+    };
+
+    assertType<{ readonly db: { readonly host: string; readonly port: number } }>(config);
+  });
+
+  it('should validate RequireKeys', () => {
+    interface FormData {
+      name?: string;
+      email?: string;
+      age?: number;
+    }
+
+    type RequiredForm = RequireKeys<FormData, 'name' | 'email'>;
+
+    const form: RequiredForm = { name: 'Alice', email: 'alice@example.com' };
+    assertType<{ name: string; email: string; age?: number }>(form);
+  });
+});
+```
+
+### 独立的类型测试文件
+
+对于复杂的类型工具库，推荐创建独立的 `.test-d.ts` 文件：
+
+```ts
+// src/types/utils.ts
+type IsNever<T> = [T] extends [never] ? true : false;
+type IsAny<T> = 0 extends 1 & T ? true : false;
+
+type Entries<T> = {
+  [K in keyof T]-?: [K, T[K]];
+}[keyof T];
+
+type FromEntries<T extends [string, unknown]> = {
+  [K in T[0]]: Extract<T, [K, unknown]>[1];
+};
+
+type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (
+  k: infer I
+) => void
+  ? I
+  : never;
+
+export type { IsNever, IsAny, Entries, FromEntries, UnionToIntersection };
+```
+
+```ts
+// src/types/utils.test-d.ts
+import { expectTypeOf, describe, it } from 'vitest';
+import type { IsNever, IsAny, Entries, FromEntries, UnionToIntersection } from './utils';
+
+describe('Type utility tests', () => {
+  it('IsNever should detect never type', () => {
+    expectTypeOf<IsNever<never>>().toEqualTypeOf<true>();
+    expectTypeOf<IsNever<string>>().toEqualTypeOf<false>();
+    expectTypeOf<IsNever<undefined>>().toEqualTypeOf<false>();
+  });
+
+  it('IsAny should detect any type', () => {
+    expectTypeOf<IsAny<any>>().toEqualTypeOf<true>();
+    expectTypeOf<IsAny<unknown>>().toEqualTypeOf<false>();
+    expectTypeOf<IsAny<string>>().toEqualTypeOf<false>();
+  });
+
+  it('Entries should extract key-value tuples', () => {
+    type Result = Entries<{ a: string; b: number }>;
+    expectTypeOf<Result>().toEqualTypeOf<['a', string] | ['b', number]>();
+  });
+
+  it('FromEntries should reconstruct object from tuples', () => {
+    type Result = FromEntries<['a', string] | ['b', number]>;
+    expectTypeOf<Result>().toEqualTypeOf<{ a: string; b: number }>();
+  });
+
+  it('UnionToIntersection should convert union to intersection', () => {
+    type Result = UnionToIntersection<{ a: string } | { b: number }>;
+    expectTypeOf<Result>().toEqualTypeOf<{ a: string } & { b: number }>();
+  });
+});
+```
+
+## 📝 实际应用示例
+
+### 综合示例：类型安全的测试工具集
+
+```ts
+// src/testing/test-helpers.ts
+import { vi } from 'vitest';
+
+// 类型安全的工厂函数 — 方便创建测试数据
+function createFactory<T extends Record<string, unknown>>(defaults: T) {
+  return (overrides: Partial<T> = {}): T => ({
+    ...defaults,
+    ...overrides,
+  });
+}
+
+// 类型安全的 Mock 服务工厂
+type MockOf<T> = {
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R
+    ? ReturnType<typeof vi.fn<(...args: A) => R>>
+    : T[K];
+};
+
+function createMockService<T extends Record<string, (...args: any[]) => any>>(
+  _service: new (...args: any[]) => T
+): MockOf<T> {
+  const mock = {} as MockOf<T>;
+  const proto = _service.prototype as Record<string, unknown>;
+
+  for (const key of Object.getOwnPropertyNames(proto)) {
+    if (key !== 'constructor' && typeof proto[key] === 'function') {
+      (mock as Record<string, unknown>)[key] = vi.fn();
+    }
+  }
+
+  return mock;
+}
+
+export { createFactory, createMockService };
+export type { MockOf };
+```
+
+```ts
+// src/testing/test-helpers.test.ts
+import { describe, it, expect, expectTypeOf } from 'vitest';
+import { createFactory } from './test-helpers';
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+}
+
+const createUser = createFactory<User>({
+  id: 1,
+  name: 'Test User',
+  email: 'test@example.com',
+  role: 'user',
+});
+
+describe('createFactory', () => {
+  it('should create object with defaults', () => {
+    const user = createUser();
+
+    expect(user).toEqual({
+      id: 1,
+      name: 'Test User',
+      email: 'test@example.com',
+      role: 'user',
+    });
+  });
+
+  it('should allow partial overrides', () => {
+    const admin = createUser({ role: 'admin', name: 'Admin' });
+
+    expect(admin.role).toBe('admin');
+    expect(admin.name).toBe('Admin');
+    expect(admin.email).toBe('test@example.com'); // 保留默认值
+  });
+
+  it('should return correct type', () => {
+    const user = createUser();
+    expectTypeOf(user).toEqualTypeOf<User>();
+    expectTypeOf(user.role).toEqualTypeOf<'admin' | 'user'>();
+  });
+
+  it('should create multiple independent instances', () => {
+    const user1 = createUser({ id: 1, name: 'Alice' });
+    const user2 = createUser({ id: 2, name: 'Bob' });
+
+    expect(user1.name).toBe('Alice');
+    expect(user2.name).toBe('Bob');
+    expect(user1).not.toBe(user2);
+  });
+});
+```
+
+## 🔗 相关概念
+
+- **[Mock 类型](./02-mock-types.mdx)**：类型安全的 Mock 技巧
+- **[高级类型模式](/typescript/04-framework-integration/01-typescript-react/03-advanced-react-patterns)**：在组件测试中使用的高级类型
+
+## 📚 学习检查点
+
+- [ ] 能够配置 Vitest 和 Jest 的 TypeScript 测试环境
+- [ ] 理解 `vi.fn()` 和 `vi.mocked()` 的类型推导
+- [ ] 能够使用 `expectTypeOf` 验证类型关系（`toEqualTypeOf`、`toMatchTypeOf`）
+- [ ] 能够使用 `assertType` 断言值的类型
+- [ ] 理解 `.test-d.ts` 类型测试文件的用途
+
+## 🚀 下一步
+
+→ [Mock 类型](./02-mock-types.mdx)
