@@ -5,13 +5,285 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解智能指针中的「Drop 与析构顺序」相关知识。
+`Drop` trait 是 Rust 的 RAII（Resource Acquisition Is Initialization）机制的核心。当一个值离开作用域时，Rust 会自动调用其 `drop` 方法来释放资源。这确保了内存、文件句柄、网络连接等资源的确定性清理，无需手动管理。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Drop trait 基本用法
+
+```rust
+struct Resource {
+    name: String,
+}
+
+impl Resource {
+    fn new(name: &str) -> Self {
+        println!("创建资源: {}", name);
+        Resource {
+            name: String::from(name),
+        }
+    }
+}
+
+impl Drop for Resource {
+    fn drop(&mut self) {
+        println!("释放资源: {}", self.name);
+    }
+}
+
+fn main() {
+    let r1 = Resource::new("数据库连接");
+    let r2 = Resource::new("文件句柄");
+    let r3 = Resource::new("网络套接字");
+
+    println!("--- 使用资源 ---");
+
+    // 离开作用域时按声明的逆序析构
+    // 输出顺序：r3 -> r2 -> r1
+}
+```
+
+## 🎯 析构顺序规则
+
+### 变量按声明逆序析构
+
+```rust
+struct Numbered {
+    id: u32,
+}
+
+impl Drop for Numbered {
+    fn drop(&mut self) {
+        println!("析构 #{}", self.id);
+    }
+}
+
+fn main() {
+    let a = Numbered { id: 1 };
+    let b = Numbered { id: 2 };
+    let c = Numbered { id: 3 };
+
+    println!("变量已创建");
+
+    // 析构顺序：c(3) -> b(2) -> a(1)
+    // 后声明的先析构（栈的 LIFO 特性）
+    let _ = (a, b, c); // 保持变量不被提前析构
+}
+```
+
+### 结构体字段按声明顺序析构
+
+```rust
+struct Container {
+    first: Numbered,
+    second: Numbered,
+    third: Numbered,
+}
+
+struct Numbered {
+    label: String,
+}
+
+impl Drop for Numbered {
+    fn drop(&mut self) {
+        println!("析构字段: {}", self.label);
+    }
+}
+
+impl Drop for Container {
+    fn drop(&mut self) {
+        println!("析构 Container 本身");
+        // 注意：Container 的 drop 先执行
+        // 然后字段按声明顺序析构：first -> second -> third
+    }
+}
+
+fn main() {
+    let _container = Container {
+        first: Numbered { label: String::from("第一个字段") },
+        second: Numbered { label: String::from("第二个字段") },
+        third: Numbered { label: String::from("第三个字段") },
+    };
+
+    println!("Container 已创建");
+    // 输出顺序：
+    // Container 本身 -> first -> second -> third
+}
+```
+
+### 元组和数组按元素顺序析构
+
+```rust
+struct Item {
+    name: String,
+}
+
+impl Drop for Item {
+    fn drop(&mut self) {
+        println!("析构 Item: {}", self.name);
+    }
+}
+
+fn main() {
+    // 元组：按元素顺序析构
+    let _tuple = (
+        Item { name: String::from("元组第1个") },
+        Item { name: String::from("元组第2个") },
+        Item { name: String::from("元组第3个") },
+    );
+
+    println!("元组已创建");
+}
+```
+
+## 🎯 手动提前释放：std::mem::drop
+
+Rust 不允许直接调用 `drop` 方法，但可以使用 `std::mem::drop` 函数提前释放资源。
+
+```rust
+struct Connection {
+    name: String,
+}
+
+impl Connection {
+    fn new(name: &str) -> Self {
+        println!("建立连接: {}", name);
+        Connection {
+            name: String::from(name),
+        }
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        println!("关闭连接: {}", self.name);
+    }
+}
+
+fn main() {
+    let conn1 = Connection::new("主连接");
+    let conn2 = Connection::new("备用连接");
+
+    println!("使用主连接...");
+
+    // 提前释放主连接
+    drop(conn1);
+    println!("主连接已释放，继续使用备用连接...");
+
+    // conn1.name; // 编译错误：值已被移动
+
+    println!("程序结束");
+    // conn2 在这里自动析构
+}
+```
+
+### ManuallyDrop：阻止自动析构
+
+```rust
+use std::mem::ManuallyDrop;
+
+struct Sensor {
+    name: String,
+}
+
+impl Drop for Sensor {
+    fn drop(&mut self) {
+        println!("关闭传感器: {}", self.name);
+    }
+}
+
+fn main() {
+    // 正常析构
+    let normal = Sensor { name: String::from("温度传感器") };
+
+    // ManuallyDrop 阻止自动析构
+    let manual = ManuallyDrop::new(Sensor {
+        name: String::from("压力传感器"),
+    });
+
+    println!("传感器名称: {}", manual.name);
+    println!("--- 离开作用域 ---");
+
+    // normal 会自动析构
+    // manual 不会自动析构（需要手动处理，否则会泄漏）
+    drop(normal);
+
+    // 如果需要手动析构 ManuallyDrop 中的值：
+    // unsafe { ManuallyDrop::drop(&mut manual); }
+    // 这里我们故意让它泄漏来演示
+}
+```
+
+## 📝 实际应用示例
+
+### RAII 资源守卫
+
+```rust
+use std::time::Instant;
+
+struct Timer {
+    label: String,
+    start: Instant,
+}
+
+impl Timer {
+    fn new(label: &str) -> Self {
+        println!("[{}] 计时开始", label);
+        Timer {
+            label: String::from(label),
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed();
+        println!("[{}] 耗时: {:.2}ms", self.label, elapsed.as_secs_f64() * 1000.0);
+    }
+}
+
+fn heavy_computation() -> u64 {
+    let _timer = Timer::new("heavy_computation");
+
+    let mut sum = 0u64;
+    for i in 0..1_000_000 {
+        sum += i;
+    }
+    sum
+    // _timer 在这里自动析构，打印耗时
+}
+
+fn main() {
+    let _total = Timer::new("整体流程");
+
+    let result = heavy_computation();
+    println!("计算结果: {}", result);
+
+    {
+        let _phase = Timer::new("第二阶段");
+        let mut data = Vec::new();
+        for i in 0..10_000 {
+            data.push(i);
+        }
+        println!("生成了 {} 个元素", data.len());
+    }
+
+    println!("流程结束");
+}
+```
+
+## 🔗 相关概念
+
+- **[Deref 与自动解引用](./07-deref-auto-dereferencing)**：`Deref` 和 `Drop` 共同构成智能指针的核心行为
+- **[Box（堆分配）](./02-box-heap-allocation)**：`Box<T>` 在 `drop` 时释放堆内存
+- **[Rc（引用计数）](./03-rc-reference-counting)**：`Rc<T>` 在引用计数归零时调用 `drop`
 
 ## 📝 学习检查点
 
-- [ ] 理解Drop 与析构顺序的核心概念
-- [ ] 能够在实际项目中应用Drop 与析构顺序
+- [ ] 理解 `Drop` trait 的作用和 RAII 模式
+- [ ] 掌握析构顺序规则（变量逆序、字段正序）
+- [ ] 能够使用 `std::mem::drop` 提前释放资源
+- [ ] 理解 `ManuallyDrop` 的用途
+
+## 🚀 下一步
+
+→ [弱引用与循环引用防护](./09-weak-circular-reference-prevention)

@@ -5,13 +5,276 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「join! 并行等待」相关知识。
+`tokio::join!` 宏允许**同时并发运行**多个异步任务，并等待**所有任务完成**后返回结果。与 `select!`（等待任一）不同，`join!` 确保所有任务都执行完毕。它是将多个独立的异步操作并行化的最简单方式。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 基本用法
+
+```rust
+use tokio::time::{sleep, Duration, Instant};
+
+async fn fetch_user() -> String {
+    sleep(Duration::from_millis(100)).await;
+    String::from("Alice")
+}
+
+async fn fetch_email() -> String {
+    sleep(Duration::from_millis(150)).await;
+    String::from("alice@example.com")
+}
+
+async fn fetch_avatar() -> String {
+    sleep(Duration::from_millis(80)).await;
+    String::from("avatar.png")
+}
+
+#[tokio::main]
+async fn main() {
+    let start = Instant::now();
+
+    // join! 并发执行所有任务，总耗时 ≈ max(100, 150, 80) = 150ms
+    let (user, email, avatar) = tokio::join!(
+        fetch_user(),
+        fetch_email(),
+        fetch_avatar(),
+    );
+
+    println!("用户: {}", user);
+    println!("邮箱: {}", email);
+    println!("头像: {}", avatar);
+    println!("并发耗时: {:?}", start.elapsed());
+}
+```
+
+## 🎯 join! vs 顺序 await
+
+```rust
+use tokio::time::{sleep, Duration, Instant};
+
+async fn task(name: &str, ms: u64) -> String {
+    sleep(Duration::from_millis(ms)).await;
+    format!("{} 完成", name)
+}
+
+#[tokio::main]
+async fn main() {
+    // 顺序执行：总耗时 = 100 + 200 + 150 = 450ms
+    let start = Instant::now();
+    let a = task("A", 100).await;
+    let b = task("B", 200).await;
+    let c = task("C", 150).await;
+    println!("顺序: {}, {}, {} ({:?})", a, b, c, start.elapsed());
+
+    // 并发执行：总耗时 ≈ max(100, 200, 150) = 200ms
+    let start = Instant::now();
+    let (a, b, c) = tokio::join!(
+        task("A", 100),
+        task("B", 200),
+        task("C", 150),
+    );
+    println!("并发: {}, {}, {} ({:?})", a, b, c, start.elapsed());
+}
+```
+
+## 🎯 try_join! 处理 Result
+
+`tokio::try_join!` 在任何一个任务返回 `Err` 时立即停止并返回错误。
+
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn fetch_config() -> Result<String, String> {
+    sleep(Duration::from_millis(50)).await;
+    Ok(String::from("config loaded"))
+}
+
+async fn fetch_data() -> Result<Vec<i32>, String> {
+    sleep(Duration::from_millis(100)).await;
+    Ok(vec![1, 2, 3])
+}
+
+async fn fetch_permissions() -> Result<Vec<String>, String> {
+    sleep(Duration::from_millis(80)).await;
+    // 模拟错误
+    // Err(String::from("权限服务不可用"))
+    Ok(vec![String::from("read"), String::from("write")])
+}
+
+#[tokio::main]
+async fn main() {
+    // try_join! 所有成功时返回 Ok
+    match tokio::try_join!(
+        fetch_config(),
+        fetch_data(),
+        fetch_permissions(),
+    ) {
+        Ok((config, data, perms)) => {
+            println!("配置: {}", config);
+            println!("数据: {:?}", data);
+            println!("权限: {:?}", perms);
+        }
+        Err(e) => {
+            println!("加载失败: {}", e);
+        }
+    }
+}
+```
+
+## 🎯 动态数量的并行任务
+
+`join!` 宏只能处理固定数量的 Future。对于动态数量，使用 `futures::future::join_all`。
+
+```rust
+use tokio::time::{sleep, Duration, Instant};
+
+async fn process_item(id: usize) -> (usize, u64) {
+    sleep(Duration::from_millis(50 + (id as u64) * 10)).await;
+    let result = (id as u64 + 1) * 100;
+    (id, result)
+}
+
+#[tokio::main]
+async fn main() {
+    let start = Instant::now();
+
+    // 动态数量的并行任务
+    let item_count = 8;
+    let futures: Vec<_> = (0..item_count)
+        .map(|i| process_item(i))
+        .collect();
+
+    let results = futures::future::join_all(futures).await;
+
+    for (id, value) in &results {
+        println!("任务 {}: {}", id, value);
+    }
+
+    println!("处理 {} 个任务，总耗时: {:?}", item_count, start.elapsed());
+}
+```
+
+:::info 依赖说明
+使用 `join_all` 需要在 `Cargo.toml` 中添加：
+```toml
+[dependencies]
+futures = "0.3"
+```
 :::
+
+### try_join_all：带错误处理的动态并行
+
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn validate_item(id: usize) -> Result<String, String> {
+    sleep(Duration::from_millis(30)).await;
+    if id == 5 {
+        Err(format!("项目 {} 验证失败", id))
+    } else {
+        Ok(format!("项目 {} 验证通过", id))
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    // 所有成功的情况
+    let futures: Vec<_> = (0..4).map(|i| validate_item(i)).collect();
+    match futures::future::try_join_all(futures).await {
+        Ok(results) => {
+            for r in &results {
+                println!("{}", r);
+            }
+        }
+        Err(e) => println!("失败: {}", e),
+    }
+
+    // 包含失败的情况
+    let futures: Vec<_> = (0..8).map(|i| validate_item(i)).collect();
+    match futures::future::try_join_all(futures).await {
+        Ok(results) => println!("全部成功: {} 个", results.len()),
+        Err(e) => println!("遇到错误: {}", e),
+    }
+}
+```
+
+## 🎯 join! vs select! vs spawn 对比
+
+| 特性 | `join!` | `select!` | `spawn` |
+|------|---------|-----------|---------|
+| **等待策略** | 等待全部完成 | 等待任一完成 | 独立运行 |
+| **取消行为** | 不取消 | 取消其他分支 | 手动取消 |
+| **返回值** | 所有结果元组 | 首个完成的结果 | JoinHandle |
+| **任务数量** | 编译期固定 | 编译期固定 | 动态 |
+| **线程** | 当前任务 | 当前任务 | 可能不同线程 |
+
+## 📝 实际应用示例
+
+### 并行数据聚合
+
+```rust
+use tokio::time::{sleep, Duration, Instant};
+
+async fn fetch_sales(region: &str) -> (String, f64) {
+    sleep(Duration::from_millis(80)).await;
+    let amount = match region {
+        "华东" => 150_000.0,
+        "华北" => 120_000.0,
+        "华南" => 180_000.0,
+        _ => 50_000.0,
+    };
+    (region.to_string(), amount)
+}
+
+async fn fetch_costs() -> f64 {
+    sleep(Duration::from_millis(60)).await;
+    200_000.0
+}
+
+async fn fetch_headcount() -> usize {
+    sleep(Duration::from_millis(40)).await;
+    85
+}
+
+#[tokio::main]
+async fn main() {
+    let start = Instant::now();
+
+    // 并行获取所有数据
+    let (sales_east, sales_north, sales_south, costs, headcount) = tokio::join!(
+        fetch_sales("华东"),
+        fetch_sales("华北"),
+        fetch_sales("华南"),
+        fetch_costs(),
+        fetch_headcount(),
+    );
+
+    let total_sales = sales_east.1 + sales_north.1 + sales_south.1;
+    let profit = total_sales - costs;
+
+    println!("=== 业务报告 ===");
+    println!("{}: {:.0}元", sales_east.0, sales_east.1);
+    println!("{}: {:.0}元", sales_north.0, sales_north.1);
+    println!("{}: {:.0}元", sales_south.0, sales_south.1);
+    println!("总销售额: {:.0}元", total_sales);
+    println!("总成本: {:.0}元", costs);
+    println!("利润: {:.0}元", profit);
+    println!("员工数: {} 人", headcount);
+    println!("数据获取耗时: {:?}", start.elapsed());
+}
+```
+
+## 🔗 相关概念
+
+- **[select! 多路复用](./10-select-multiplexing)**：等待任一任务完成
+- **[tokio::spawn](./09-tokio-spawn)**：创建独立运行的并发任务
+- **[Stream 异步迭代器](./12-stream-async-iterator)**：处理异步数据流
 
 ## 📝 学习检查点
 
-- [ ] 理解join! 并行等待的核心概念
-- [ ] 能够在实际项目中应用join! 并行等待
+- [ ] 理解 `join!` 并发等待所有任务完成的行为
+- [ ] 掌握 `try_join!` 的错误处理语义
+- [ ] 能够使用 `futures::future::join_all` 处理动态数量的任务
+- [ ] 区分 `join!`、`select!`、`spawn` 的适用场景
+
+## 🚀 下一步
+
+→ [Stream 异步迭代器](./12-stream-async-iterator)

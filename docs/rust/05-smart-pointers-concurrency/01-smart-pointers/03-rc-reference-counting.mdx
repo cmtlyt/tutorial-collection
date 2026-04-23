@@ -5,13 +5,303 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解智能指针中的「Rc（引用计数）」相关知识。
+`Rc<T>`（Reference Counting）是 Rust 中的引用计数智能指针，允许一个值拥有**多个所有者**。每当克隆一个 `Rc` 时，引用计数加 1；当一个 `Rc` 被丢弃时，引用计数减 1。当引用计数归零时，值被释放。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+:::warning 注意
+`Rc<T>` 仅适用于**单线程**场景。如果需要跨线程共享数据，请使用 `Arc<T>`。
 :::
+
+## 🎯 基本用法
+
+### 创建与克隆
+
+```rust
+use std::rc::Rc;
+
+fn main() {
+    let original = Rc::new(String::from("共享数据"));
+    println!("创建后引用计数: {}", Rc::strong_count(&original));
+
+    // 克隆 Rc，引用计数 +1（不会克隆底层数据）
+    let clone1 = Rc::clone(&original);
+    println!("第一次克隆后引用计数: {}", Rc::strong_count(&original));
+
+    let clone2 = Rc::clone(&original);
+    println!("第二次克隆后引用计数: {}", Rc::strong_count(&original));
+
+    // 所有克隆共享同一份数据
+    println!("original: {}", original);
+    println!("clone1: {}", clone1);
+    println!("clone2: {}", clone2);
+
+    // 验证它们指向同一份数据
+    println!(
+        "指向同一地址: {}",
+        Rc::ptr_eq(&original, &clone1)
+    );
+
+    drop(clone2);
+    println!("drop clone2 后引用计数: {}", Rc::strong_count(&original));
+
+    drop(clone1);
+    println!("drop clone1 后引用计数: {}", Rc::strong_count(&original));
+
+    // original 离开作用域时，引用计数归零，数据被释放
+}
+```
+
+### Rc::clone vs .clone()
+
+```rust
+use std::rc::Rc;
+
+fn main() {
+    let data = Rc::new(vec![1, 2, 3]);
+
+    // 推荐：Rc::clone 语义清晰，表明只是增加引用计数
+    let shared1 = Rc::clone(&data);
+
+    // 不推荐：data.clone() 也能工作，但可能与深拷贝混淆
+    let shared2 = data.clone();
+
+    // 两者效果相同，都只是增加引用计数
+    println!("引用计数: {}", Rc::strong_count(&data));
+    println!("shared1: {:?}", shared1);
+    println!("shared2: {:?}", shared2);
+}
+```
+
+## 🎯 多所有者场景
+
+### 共享图节点
+
+```rust
+use std::rc::Rc;
+
+#[derive(Debug)]
+struct Node {
+    value: i32,
+    children: Vec<Rc<Node>>,
+}
+
+impl Node {
+    fn new(value: i32) -> Rc<Node> {
+        Rc::new(Node {
+            value,
+            children: Vec::new(),
+        })
+    }
+
+    fn with_children(value: i32, children: Vec<Rc<Node>>) -> Rc<Node> {
+        Rc::new(Node { value, children })
+    }
+}
+
+fn print_tree(node: &Rc<Node>, indent: usize) {
+    let prefix = " ".repeat(indent);
+    println!(
+        "{}Node({}) [引用计数: {}]",
+        prefix,
+        node.value,
+        Rc::strong_count(node)
+    );
+    for child in &node.children {
+        print_tree(child, indent + 2);
+    }
+}
+
+fn main() {
+    // 创建共享的叶子节点
+    let shared_leaf = Node::new(10);
+
+    // 两个父节点共享同一个子节点
+    let parent1 = Node::with_children(1, vec![Rc::clone(&shared_leaf)]);
+    let parent2 = Node::with_children(2, vec![Rc::clone(&shared_leaf)]);
+
+    let root = Node::with_children(0, vec![parent1, parent2]);
+
+    println!("shared_leaf 的引用计数: {}", Rc::strong_count(&shared_leaf));
+    print_tree(&root, 0);
+}
+```
+
+### 共享配置
+
+```rust
+use std::rc::Rc;
+
+#[derive(Debug)]
+struct AppConfig {
+    database_url: String,
+    max_connections: u32,
+    debug_mode: bool,
+}
+
+struct DatabaseService {
+    config: Rc<AppConfig>,
+}
+
+impl DatabaseService {
+    fn new(config: Rc<AppConfig>) -> Self {
+        DatabaseService { config }
+    }
+
+    fn connect(&self) {
+        println!(
+            "连接数据库: {} (最大连接数: {})",
+            self.config.database_url, self.config.max_connections
+        );
+    }
+}
+
+struct LoggingService {
+    config: Rc<AppConfig>,
+}
+
+impl LoggingService {
+    fn new(config: Rc<AppConfig>) -> Self {
+        LoggingService { config }
+    }
+
+    fn log(&self, message: &str) {
+        if self.config.debug_mode {
+            println!("[DEBUG] {}", message);
+        } else {
+            println!("[INFO] {}", message);
+        }
+    }
+}
+
+fn main() {
+    let config = Rc::new(AppConfig {
+        database_url: String::from("postgres://localhost/mydb"),
+        max_connections: 10,
+        debug_mode: true,
+    });
+
+    println!("初始引用计数: {}", Rc::strong_count(&config));
+
+    let db_service = DatabaseService::new(Rc::clone(&config));
+    let log_service = LoggingService::new(Rc::clone(&config));
+
+    println!("服务创建后引用计数: {}", Rc::strong_count(&config));
+
+    db_service.connect();
+    log_service.log("应用启动成功");
+    log_service.log("数据库连接建立完成");
+}
+```
+
+## 🎯 Rc 的不可变性
+
+`Rc<T>` 中的数据默认是不可变的。如果需要通过 `Rc` 修改数据，需要结合 `RefCell` 使用。
+
+```rust
+use std::rc::Rc;
+
+fn main() {
+    let data = Rc::new(vec![1, 2, 3]);
+
+    // 编译错误：不能通过 Rc 获取可变引用
+    // data.push(4);
+
+    // 只能读取数据
+    println!("数据长度: {}", data.len());
+    println!("第一个元素: {}", data[0]);
+
+    // 如果需要修改，需要使用 Rc<RefCell<T>>
+    // 详见「Cell / RefCell（内部可变性）」章节
+}
+```
+
+## 📝 实际应用示例
+
+### 使用 Rc 实现双亲树
+
+```rust
+use std::rc::Rc;
+
+#[derive(Debug)]
+struct Employee {
+    name: String,
+    role: String,
+    reports: Vec<Rc<Employee>>,
+}
+
+impl Employee {
+    fn new(name: &str, role: &str) -> Rc<Employee> {
+        Rc::new(Employee {
+            name: String::from(name),
+            role: String::from(role),
+            reports: Vec::new(),
+        })
+    }
+
+    fn with_reports(name: &str, role: &str, reports: Vec<Rc<Employee>>) -> Rc<Employee> {
+        Rc::new(Employee {
+            name: String::from(name),
+            role: String::from(role),
+            reports,
+        })
+    }
+
+    fn print_org_chart(employee: &Rc<Employee>, level: usize) {
+        let indent = "  ".repeat(level);
+        println!(
+            "{}{} ({}) [refs: {}]",
+            indent,
+            employee.name,
+            employee.role,
+            Rc::strong_count(employee)
+        );
+        for report in &employee.reports {
+            Employee::print_org_chart(report, level + 1);
+        }
+    }
+}
+
+fn main() {
+    let dev1 = Employee::new("张三", "开发工程师");
+    let dev2 = Employee::new("李四", "开发工程师");
+
+    // dev1 同时向两个经理汇报
+    let manager1 = Employee::with_reports(
+        "王经理",
+        "技术经理",
+        vec![Rc::clone(&dev1), Rc::clone(&dev2)],
+    );
+    let manager2 = Employee::with_reports(
+        "赵经理",
+        "产品经理",
+        vec![Rc::clone(&dev1)],
+    );
+
+    let ceo = Employee::with_reports(
+        "CEO",
+        "首席执行官",
+        vec![manager1, manager2],
+    );
+
+    println!("=== 组织架构 ===");
+    Employee::print_org_chart(&ceo, 0);
+    println!("\n张三的引用计数: {}", Rc::strong_count(&dev1));
+}
+```
+
+## 🔗 相关概念
+
+- **[Box（堆分配）](./02-box-heap-allocation)**：单一所有者的堆分配指针
+- **[Arc（原子引用计数）](./04-arc-atomic-reference-counting)**：线程安全版本的 `Rc`
+- **[Cell / RefCell](./05-cell-refcell-interior-mutability)**：与 `Rc` 组合实现共享可变数据
+- **[Weak 与循环引用防护](./09-weak-circular-reference-prevention)**：防止 `Rc` 造成的循环引用内存泄漏
 
 ## 📝 学习检查点
 
-- [ ] 理解Rc（引用计数）的核心概念
-- [ ] 能够在实际项目中应用Rc（引用计数）
+- [ ] 理解 `Rc<T>` 的引用计数机制
+- [ ] 知道何时使用 `Rc` 而非 `Box`
+- [ ] 掌握 `Rc::clone` 与 `Rc::strong_count` 的用法
+- [ ] 理解 `Rc<T>` 仅适用于单线程场景
+
+## 🚀 下一步
+
+→ [Arc（原子引用计数）](./04-arc-atomic-reference-counting)

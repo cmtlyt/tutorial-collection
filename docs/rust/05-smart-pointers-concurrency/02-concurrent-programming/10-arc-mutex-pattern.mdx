@@ -5,13 +5,339 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「Arc + Mutex 组合模式」相关知识。
+`Arc<Mutex<T>>` 是 Rust 多线程编程中最常用的模式，它解决了两个核心问题：
+- **`Arc`**：允许多个线程共享同一数据的所有权（通过原子引用计数）
+- **`Mutex`**：确保同一时刻只有一个线程可以修改数据（通过互斥锁）
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+两者的组合使得多个线程可以安全地共享和修改同一份数据。
+
+## 🎯 为什么需要 Arc + Mutex
+
+### 单独使用的局限
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn main() {
+    // 只有 Mutex：无法跨线程共享所有权
+    // let data = Mutex::new(0);
+    // let data_ref = &data;
+    // thread::spawn(move || { data_ref.lock(); }); // 编译错误：借用不满足 'static
+
+    // 只有 Arc：无法修改数据
+    // let data = Arc::new(0);
+    // let data_clone = Arc::clone(&data);
+    // thread::spawn(move || { *data_clone += 1; }); // 编译错误：Arc 不提供可变访问
+
+    // Arc + Mutex：完美组合
+    let data = Arc::new(Mutex::new(0));
+    let data_clone = Arc::clone(&data);
+    let handle = thread::spawn(move || {
+        let mut value = data_clone.lock().unwrap();
+        *value += 1;
+    });
+    handle.join().unwrap();
+    println!("值: {}", *data.lock().unwrap());
+}
+```
+
+## 🎯 常见使用模式
+
+### 共享集合
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn main() {
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = vec![];
+
+    for i in 0..8 {
+        let results = Arc::clone(&results);
+        let handle = thread::spawn(move || {
+            let computed = i * i;
+            results.lock().unwrap().push((i, computed));
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let mut data = results.lock().unwrap();
+    data.sort_by_key(|&(id, _)| id);
+    for (id, value) in data.iter() {
+        println!("线程 {}: {} 的平方 = {}", id, id, value);
+    }
+}
+```
+
+### 共享状态机
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+#[derive(Debug, Clone, PartialEq)]
+enum AppState {
+    Idle,
+    Loading,
+    Ready,
+    Error(String),
+}
+
+struct StateMachine {
+    state: Mutex<AppState>,
+}
+
+impl StateMachine {
+    fn new() -> Self {
+        StateMachine {
+            state: Mutex::new(AppState::Idle),
+        }
+    }
+
+    fn transition(&self, new_state: AppState) {
+        let mut state = self.state.lock().unwrap();
+        println!("状态转换: {:?} -> {:?}", *state, new_state);
+        *state = new_state;
+    }
+
+    fn current(&self) -> AppState {
+        self.state.lock().unwrap().clone()
+    }
+}
+
+fn main() {
+    let machine = Arc::new(StateMachine::new());
+
+    let m = Arc::clone(&machine);
+    let loader = thread::spawn(move || {
+        m.transition(AppState::Loading);
+        thread::sleep(Duration::from_millis(100));
+        m.transition(AppState::Ready);
+    });
+
+    let m = Arc::clone(&machine);
+    let monitor = thread::spawn(move || {
+        for _ in 0..5 {
+            println!("监控: 当前状态 = {:?}", m.current());
+            thread::sleep(Duration::from_millis(30));
+        }
+    });
+
+    loader.join().unwrap();
+    monitor.join().unwrap();
+
+    println!("最终状态: {:?}", machine.current());
+}
+```
+
+## 🎯 性能优化技巧
+
+### 最小化锁持有时间
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn main() {
+    let data = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = vec![];
+
+    for i in 0..4 {
+        let data = Arc::clone(&data);
+        let handle = thread::spawn(move || {
+            // 先在锁外进行耗时计算
+            let mut local_results = Vec::new();
+            for j in 0..1000 {
+                local_results.push(i * 1000 + j);
+            }
+
+            // 只在写入时短暂持有锁
+            let mut vec = data.lock().unwrap();
+            vec.extend(local_results);
+            // 锁立即释放
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("总元素数: {}", data.lock().unwrap().len());
+}
+```
+
+### 细粒度锁
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+// 粗粒度：整个结构体一把锁
+struct CoarseGrained {
+    users: Mutex<Vec<String>>,
+    logs: Mutex<Vec<String>>,
+}
+
+impl CoarseGrained {
+    fn new() -> Self {
+        CoarseGrained {
+            users: Mutex::new(Vec::new()),
+            logs: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn add_user(&self, name: &str) {
+        self.users.lock().unwrap().push(name.to_string());
+        // users 锁已释放
+        self.logs
+            .lock()
+            .unwrap()
+            .push(format!("添加用户: {}", name));
+        // logs 锁已释放
+    }
+
+    fn user_count(&self) -> usize {
+        self.users.lock().unwrap().len()
+    }
+
+    fn log_count(&self) -> usize {
+        self.logs.lock().unwrap().len()
+    }
+}
+
+fn main() {
+    let service = Arc::new(CoarseGrained::new());
+    let mut handles = vec![];
+
+    for i in 0..4 {
+        let service = Arc::clone(&service);
+        let handle = thread::spawn(move || {
+            service.add_user(&format!("user_{}", i));
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("用户数: {}", service.user_count());
+    println!("日志数: {}", service.log_count());
+}
+```
+
+## 📝 实际应用示例
+
+### 线程安全的任务管理器
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone)]
+struct Task {
+    id: usize,
+    name: String,
+    status: String,
+}
+
+struct TaskManager {
+    tasks: Mutex<Vec<Task>>,
+    completed_count: Mutex<usize>,
+}
+
+impl TaskManager {
+    fn new() -> Self {
+        TaskManager {
+            tasks: Mutex::new(Vec::new()),
+            completed_count: Mutex::new(0),
+        }
+    }
+
+    fn add_task(&self, id: usize, name: &str) {
+        self.tasks.lock().unwrap().push(Task {
+            id,
+            name: name.to_string(),
+            status: String::from("pending"),
+        });
+    }
+
+    fn complete_task(&self, id: usize) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(task) = tasks.iter_mut().find(|t| t.id == id) {
+            task.status = String::from("completed");
+        }
+        drop(tasks); // 显式释放锁
+
+        let mut count = self.completed_count.lock().unwrap();
+        *count += 1;
+    }
+
+    fn summary(&self) -> (usize, usize) {
+        let total = self.tasks.lock().unwrap().len();
+        let completed = *self.completed_count.lock().unwrap();
+        (total, completed)
+    }
+}
+
+fn main() {
+    let manager = Arc::new(TaskManager::new());
+
+    // 添加任务
+    for i in 0..6 {
+        manager.add_task(i, &format!("任务-{}", i));
+    }
+
+    let start = Instant::now();
+    let mut handles = vec![];
+
+    // 多线程并行完成任务
+    for task_id in 0..6 {
+        let manager = Arc::clone(&manager);
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            manager.complete_task(task_id);
+            println!("任务 {} 已完成", task_id);
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let (total, completed) = manager.summary();
+    println!(
+        "\n总计 {} 个任务，已完成 {} 个，耗时 {:.0}ms",
+        total,
+        completed,
+        start.elapsed().as_secs_f64() * 1000.0,
+    );
+}
+```
+
+## 🔗 相关概念
+
+- **[Mutex 共享状态](./08-mutex-shared-state)**：Mutex 的基础用法
+- **[RwLock 读写锁](./09-rwlock-shared-state)**：读多写少场景的 `Arc<RwLock<T>>` 替代
+- **[原子类型](./11-atomic-types)**：简单计数场景的无锁替代
 
 ## 📝 学习检查点
 
-- [ ] 理解Arc + Mutex 组合模式的核心概念
-- [ ] 能够在实际项目中应用Arc + Mutex 组合模式
+- [ ] 理解为什么需要同时使用 `Arc` 和 `Mutex`
+- [ ] 掌握最小化锁持有时间的技巧
+- [ ] 能够设计细粒度锁结构
+- [ ] 理解 `Arc<Mutex<T>>` 模式的性能权衡
+
+## 🚀 下一步
+
+→ [原子类型](./11-atomic-types)

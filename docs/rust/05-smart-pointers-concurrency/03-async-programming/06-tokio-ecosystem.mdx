@@ -5,13 +5,261 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「Tokio 生态」相关知识。
+[Tokio](https://tokio.rs/) 是 Rust 生态中最流行的异步运行时，提供了编写高性能异步应用所需的一切。它包含多线程任务调度器、异步 I/O、定时器、同步原语等核心组件，被广泛用于 Web 服务器、数据库客户端、微服务等场景。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+在 `Cargo.toml` 中添加依赖：
+
+```toml
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+```
+
+## 🎯 启动 Tokio 运行时
+
+### #[tokio::main] 宏
+
+```rust
+// #[tokio::main] 是最常用的方式
+// 它会创建一个多线程运行时并运行 async main
+#[tokio::main]
+async fn main() {
+    println!("在 Tokio 运行时中运行！");
+
+    // 可以使用 .await
+    let result = async { 42 }.await;
+    println!("结果: {}", result);
+}
+```
+
+### 手动创建运行时
+
+```rust
+fn main() {
+    // 多线程运行时
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    rt.block_on(async {
+        println!("在手动创建的运行时中运行");
+        let result = compute().await;
+        println!("计算结果: {}", result);
+    });
+}
+
+async fn compute() -> i32 {
+    42
+}
+```
+
+### 配置运行时
+
+```rust
+fn main() {
+    // 自定义运行时配置
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)           // 工作线程数
+        .thread_name("my-worker")    // 线程名称
+        .enable_all()                // 启用所有功能
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        println!("自定义运行时启动");
+    });
+
+    // 单线程运行时（适用于嵌入式或测试场景）
+    let rt_single = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt_single.block_on(async {
+        println!("单线程运行时");
+    });
+}
+```
+
+## 🎯 Tokio 核心组件
+
+### 异步定时器
+
+```rust
+use tokio::time::{sleep, timeout, interval, Duration, Instant};
+
+#[tokio::main]
+async fn main() {
+    // sleep：异步等待
+    println!("开始等待...");
+    sleep(Duration::from_millis(100)).await;
+    println!("等待结束");
+
+    // timeout：带超时的操作
+    let result = timeout(Duration::from_millis(50), async {
+        sleep(Duration::from_millis(200)).await;
+        "完成"
+    })
+    .await;
+
+    match result {
+        Ok(value) => println!("成功: {}", value),
+        Err(_) => println!("操作超时"),
+    }
+
+    // interval：周期性定时器
+    let mut ticker = interval(Duration::from_millis(100));
+    let start = Instant::now();
+
+    for i in 0..3 {
+        ticker.tick().await;
+        println!("tick {} at {:?}", i, start.elapsed());
+    }
+}
+```
+
+### 异步 I/O
+
+```rust
+use tokio::fs;
+use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    // 异步写文件
+    let content = "Hello, Tokio!\n这是异步写入的文件。";
+    fs::write("/tmp/tokio_test.txt", content).await?;
+    println!("文件写入完成");
+
+    // 异步读文件
+    let data = fs::read_to_string("/tmp/tokio_test.txt").await?;
+    println!("文件内容: {}", data);
+
+    // 异步读取目录
+    let mut entries = fs::read_dir("/tmp").await?;
+    let mut count = 0;
+    while let Some(entry) = entries.next_entry().await? {
+        if count < 5 {
+            println!("文件: {:?}", entry.file_name());
+        }
+        count += 1;
+    }
+    println!("共 {} 个条目", count);
+
+    // 清理
+    fs::remove_file("/tmp/tokio_test.txt").await?;
+
+    Ok(())
+}
+```
+
+### 异步通道
+
+```rust
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() {
+    // mpsc：多生产者单消费者通道
+    let (tx, mut rx) = mpsc::channel(32);
+
+    // 生产者任务
+    for i in 0..5 {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            tx.send(format!("消息 {}", i)).await.unwrap();
+        });
+    }
+
+    // 丢弃原始发送端
+    drop(tx);
+
+    // 消费者
+    while let Some(msg) = rx.recv().await {
+        println!("收到: {}", msg);
+    }
+
+    println!("所有消息已接收");
+}
+```
+
+## 🎯 Tokio 生态系统
+
+| 库 | 用途 | 依赖 |
+|---|------|------|
+| `tokio` | 异步运行时核心 | - |
+| `hyper` | HTTP 客户端/服务端 | tokio |
+| `axum` | Web 框架 | tokio, hyper |
+| `reqwest` | HTTP 客户端 | tokio |
+| `tonic` | gRPC 框架 | tokio |
+| `sqlx` | 异步数据库驱动 | tokio |
+| `tokio-tungstenite` | WebSocket | tokio |
+
+## 📝 实际应用示例
+
+### 简单的异步任务调度器
+
+```rust
+use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration};
+
+#[derive(Debug)]
+enum Command {
+    Print(String),
+    Wait(u64),
+    Compute(i64, i64),
+}
+
+async fn worker(mut rx: mpsc::Receiver<Command>) {
+    while let Some(cmd) = rx.recv().await {
+        match cmd {
+            Command::Print(msg) => {
+                println!("[worker] 打印: {}", msg);
+            }
+            Command::Wait(ms) => {
+                println!("[worker] 等待 {}ms...", ms);
+                sleep(Duration::from_millis(ms)).await;
+                println!("[worker] 等待完成");
+            }
+            Command::Compute(a, b) => {
+                println!("[worker] 计算 {} + {} = {}", a, b, a + b);
+            }
+        }
+    }
+    println!("[worker] 通道关闭，退出");
+}
+
+#[tokio::main]
+async fn main() {
+    let (tx, rx) = mpsc::channel(16);
+
+    // 启动工作协程
+    let worker_handle = tokio::spawn(worker(rx));
+
+    // 发送命令
+    tx.send(Command::Print(String::from("Hello Tokio"))).await.unwrap();
+    tx.send(Command::Wait(100)).await.unwrap();
+    tx.send(Command::Compute(42, 58)).await.unwrap();
+    tx.send(Command::Print(String::from("任务完成"))).await.unwrap();
+
+    // 关闭通道
+    drop(tx);
+
+    // 等待 worker 退出
+    worker_handle.await.unwrap();
+}
+```
+
+## 🔗 相关概念
+
+- **[Future trait](./02-future-trait)**：Tokio 驱动 Future 的 poll 执行
+- **[async-std 与 smol](./07-async-std-smol)**：Tokio 的替代运行时
+- **[运行时选择与对比](./08-runtime-comparison)**：如何选择合适的运行时
 
 ## 📝 学习检查点
 
-- [ ] 理解Tokio 生态的核心概念
-- [ ] 能够在实际项目中应用Tokio 生态
+- [ ] 掌握 `#[tokio::main]` 和手动创建运行时的方式
+- [ ] 能够使用 Tokio 的定时器、I/O、通道
+- [ ] 了解 Tokio 生态中的主要库
+- [ ] 理解多线程运行时与单线程运行时的区别
+
+## 🚀 下一步
+
+→ [async-std 与 smol](./07-async-std-smol)

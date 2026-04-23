@@ -5,13 +5,218 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「JoinHandle 与线程等待」相关知识。
+`JoinHandle<T>` 是 `thread::spawn` 返回的句柄类型，代表一个正在运行的线程。通过调用 `join()` 方法，当前线程会阻塞等待目标线程完成，并获取其返回值。如果不调用 `join`，当主线程退出时，子线程会被强制终止。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本用法
+
+### join 获取返回值
+
+```rust
+use std::thread;
+
+fn main() {
+    let handle = thread::spawn(|| {
+        let mut sum = 0u64;
+        for i in 1..=100 {
+            sum += i;
+        }
+        sum // 线程的返回值
+    });
+
+    // join() 阻塞当前线程，等待子线程完成
+    // 返回 Result<T, Box<dyn Any + Send>>
+    match handle.join() {
+        Ok(result) => println!("线程返回: {}", result),
+        Err(panic_info) => println!("线程 panic: {:?}", panic_info),
+    }
+}
+```
+
+### 不调用 join 的后果
+
+```rust
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    thread::spawn(|| {
+        for i in 1..=5 {
+            println!("子线程: {}", i);
+            thread::sleep(Duration::from_millis(100));
+        }
+        println!("子线程完成"); // 可能不会被打印
+    });
+
+    println!("主线程结束");
+    // 主线程结束后，子线程被强制终止
+    // 子线程可能只打印了部分内容
+}
+```
+
+## 🎯 处理线程 panic
+
+```rust
+use std::thread;
+
+fn main() {
+    let handle = thread::spawn(|| {
+        panic!("子线程发生了错误！");
+    });
+
+    // join 返回 Err，包含 panic 信息
+    match handle.join() {
+        Ok(_) => println!("线程正常完成"),
+        Err(panic_value) => {
+            // panic 值通常是 &str 或 String
+            if let Some(message) = panic_value.downcast_ref::<&str>() {
+                println!("线程 panic 消息: {}", message);
+            } else if let Some(message) = panic_value.downcast_ref::<String>() {
+                println!("线程 panic 消息: {}", message);
+            } else {
+                println!("线程发生了未知类型的 panic");
+            }
+        }
+    }
+
+    println!("主线程继续执行");
+}
+```
+
+## 🎯 收集多个线程结果
+
+```rust
+use std::thread;
+
+fn main() {
+    let mut handles: Vec<thread::JoinHandle<(usize, u64)>> = vec![];
+
+    for i in 0..5 {
+        let handle = thread::spawn(move || {
+            let result = (i + 1) as u64 * 100;
+            (i, result)
+        });
+        handles.push(handle);
+    }
+
+    // 按顺序收集结果
+    let mut results: Vec<(usize, u64)> = Vec::new();
+    for handle in handles {
+        match handle.join() {
+            Ok(result) => results.push(result),
+            Err(_) => println!("某个线程失败了"),
+        }
+    }
+
+    // 按 ID 排序后打印
+    results.sort_by_key(|&(id, _)| id);
+    for (id, value) in &results {
+        println!("线程 {}: 结果 = {}", id, value);
+    }
+
+    let total: u64 = results.iter().map(|(_, v)| v).sum();
+    println!("总计: {}", total);
+}
+```
+
+## 🎯 线程作用域（Scoped Threads）
+
+Rust 1.63 引入的 `thread::scope` 允许创建能借用局部变量的线程，无需 `move` 或 `Arc`。作用域结束时自动 join 所有线程。
+
+```rust
+use std::thread;
+
+fn main() {
+    let data = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    let mut results = vec![0u64; 2];
+
+    thread::scope(|scope| {
+        let (left, right) = data.split_at(data.len() / 2);
+        let results_ref = &mut results;
+
+        // 线程可以借用外部变量，无需 move 或 Arc
+        scope.spawn(|| {
+            let sum: u64 = left.iter().map(|&x| x as u64).sum();
+            println!("左半部分之和: {}", sum);
+        });
+
+        scope.spawn(|| {
+            let sum: u64 = right.iter().map(|&x| x as u64).sum();
+            println!("右半部分之和: {}", sum);
+        });
+
+        // scope 结束时自动 join 所有线程
+    });
+
+    println!("原始数据: {:?}", data); // data 仍然可用
+}
+```
+
+## 📝 实际应用示例
+
+### 带超时的任务执行
+
+```rust
+use std::thread;
+use std::time::{Duration, Instant};
+use std::sync::mpsc;
+
+fn run_with_timeout<F, T>(task: F, timeout: Duration) -> Option<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || {
+        let result = task();
+        let _ = sender.send(result);
+    });
+
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => Some(result),
+        Err(_) => None,
+    }
+}
+
+fn main() {
+    let start = Instant::now();
+
+    // 快速任务：在超时内完成
+    let result = run_with_timeout(
+        || {
+            thread::sleep(Duration::from_millis(50));
+            "快速任务完成"
+        },
+        Duration::from_millis(200),
+    );
+    println!("快速任务: {:?} ({:.0}ms)", result, start.elapsed().as_millis());
+
+    // 慢速任务：超时
+    let start = Instant::now();
+    let result = run_with_timeout(
+        || {
+            thread::sleep(Duration::from_millis(500));
+            "慢速任务完成"
+        },
+        Duration::from_millis(100),
+    );
+    println!("慢速任务: {:?} ({:.0}ms)", result, start.elapsed().as_millis());
+}
+```
+
+## 🔗 相关概念
+
+- **[线程创建与管理](./02-thread-creation-management)**：`thread::spawn` 返回 `JoinHandle`
+- **[move 闭包与线程所有权](./04-move-closures-thread-ownership)**：线程闭包中的所有权转移
+- **[Channel（mpsc）](./06-channel-mpsc)**：线程间通过消息传递通信
 
 ## 📝 学习检查点
 
-- [ ] 理解JoinHandle 与线程等待的核心概念
-- [ ] 能够在实际项目中应用JoinHandle 与线程等待
+- [ ] 理解 `JoinHandle::join()` 的阻塞行为
+- [ ] 能够处理线程 panic 的返回值
+- [ ] 掌握收集多个线程结果的模式
+- [ ] 了解 `thread::scope` 的使用场景
+
+## 🚀 下一步
+
+→ [move 闭包与线程所有权](./04-move-closures-thread-ownership)

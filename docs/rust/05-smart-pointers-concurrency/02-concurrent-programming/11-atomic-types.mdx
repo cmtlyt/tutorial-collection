@@ -5,13 +5,242 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「原子类型」相关知识。
+原子类型（`std::sync::atomic`）提供了**无锁**的线程安全原语。原子操作由 CPU 硬件直接支持，保证操作的原子性（要么完全执行，要么完全不执行），无需加锁。相比 `Mutex`，原子操作的性能开销更低，但只适用于简单的数值类型。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+常用原子类型：
+- **`AtomicBool`**：原子布尔值
+- **`AtomicI32` / `AtomicU32`**：原子 32 位整数
+- **`AtomicI64` / `AtomicU64`**：原子 64 位整数
+- **`AtomicUsize` / `AtomicIsize`**：原子平台相关大小整数
+
+## 🎯 基本用法
+
+### AtomicUsize 计数器
+
+```rust
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
+
+fn main() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut handles = vec![];
+
+    for _ in 0..10 {
+        let counter = Arc::clone(&counter);
+        let handle = thread::spawn(move || {
+            for _ in 0..1000 {
+                // fetch_add：原子地加 1 并返回旧值
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("计数器: {}", counter.load(Ordering::Relaxed));
+    // 输出: 计数器: 10000
+}
+```
+
+### AtomicBool 开关
+
+```rust
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let running = Arc::new(AtomicBool::new(true));
+
+    let running_clone = Arc::clone(&running);
+    let worker = thread::spawn(move || {
+        let mut count = 0;
+        while running_clone.load(Ordering::Relaxed) {
+            count += 1;
+            thread::sleep(Duration::from_millis(50));
+        }
+        println!("工作线程退出，循环了 {} 次", count);
+    });
+
+    // 运行 200ms 后停止工作线程
+    thread::sleep(Duration::from_millis(200));
+    running.store(false, Ordering::Relaxed);
+    println!("已发送停止信号");
+
+    worker.join().unwrap();
+}
+```
+
+## 🎯 内存排序（Ordering）
+
+原子操作需要指定内存排序，控制操作的可见性保证：
+
+```rust
+use std::sync::atomic::{AtomicU32, Ordering};
+
+fn main() {
+    let value = AtomicU32::new(0);
+
+    // Relaxed：最弱保证，仅保证操作本身的原子性
+    value.store(1, Ordering::Relaxed);
+    let v = value.load(Ordering::Relaxed);
+    println!("Relaxed: {}", v);
+
+    // Acquire / Release：建立 happens-before 关系
+    // Release 写入的数据对 Acquire 读取可见
+    value.store(42, Ordering::Release);
+    let v = value.load(Ordering::Acquire);
+    println!("Acquire/Release: {}", v);
+
+    // SeqCst：最强保证，所有线程看到相同的操作顺序
+    value.store(100, Ordering::SeqCst);
+    let v = value.load(Ordering::SeqCst);
+    println!("SeqCst: {}", v);
+}
+```
+
+### 排序选择指南
+
+| 排序 | 性能 | 适用场景 |
+|------|------|----------|
+| `Relaxed` | 最高 | 计数器、统计，不依赖顺序 |
+| `Acquire/Release` | 中等 | 生产者-消费者，锁实现 |
+| `SeqCst` | 最低 | 需要全局一致顺序，不确定时使用 |
+
+## 🎯 常用原子操作
+
+```rust
+use std::sync::atomic::{AtomicI64, Ordering};
+
+fn main() {
+    let value = AtomicI64::new(10);
+
+    // load：读取
+    println!("当前值: {}", value.load(Ordering::Relaxed));
+
+    // store：存储
+    value.store(20, Ordering::Relaxed);
+
+    // fetch_add：加法并返回旧值
+    let old = value.fetch_add(5, Ordering::Relaxed);
+    println!("fetch_add: 旧值={}, 新值={}", old, value.load(Ordering::Relaxed));
+
+    // fetch_sub：减法并返回旧值
+    let old = value.fetch_sub(3, Ordering::Relaxed);
+    println!("fetch_sub: 旧值={}, 新值={}", old, value.load(Ordering::Relaxed));
+
+    // swap：交换并返回旧值
+    let old = value.swap(100, Ordering::Relaxed);
+    println!("swap: 旧值={}, 新值={}", old, value.load(Ordering::Relaxed));
+
+    // compare_exchange（CAS）：比较并交换
+    // 如果当前值等于 expected，则设置为 new
+    match value.compare_exchange(100, 200, Ordering::Relaxed, Ordering::Relaxed) {
+        Ok(old) => println!("CAS 成功: 旧值={}", old),
+        Err(actual) => println!("CAS 失败: 实际值={}", actual),
+    }
+    println!("CAS 后: {}", value.load(Ordering::Relaxed));
+
+    // fetch_max / fetch_min
+    value.store(50, Ordering::Relaxed);
+    value.fetch_max(80, Ordering::Relaxed);
+    println!("fetch_max(80): {}", value.load(Ordering::Relaxed));
+    value.fetch_min(60, Ordering::Relaxed);
+    println!("fetch_min(60): {}", value.load(Ordering::Relaxed));
+}
+```
+
+## 📝 实际应用示例
+
+### 无锁统计收集器
+
+```rust
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread;
+
+struct AtomicStats {
+    requests: AtomicU64,
+    errors: AtomicU64,
+    bytes_processed: AtomicU64,
+}
+
+impl AtomicStats {
+    fn new() -> Self {
+        AtomicStats {
+            requests: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            bytes_processed: AtomicU64::new(0),
+        }
+    }
+
+    fn record_request(&self, bytes: u64) {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        self.bytes_processed.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn record_error(&self) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn report(&self) {
+        let requests = self.requests.load(Ordering::Relaxed);
+        let errors = self.errors.load(Ordering::Relaxed);
+        let bytes = self.bytes_processed.load(Ordering::Relaxed);
+
+        println!("=== 统计报告 ===");
+        println!("总请求数: {}", requests);
+        println!("错误数: {}", errors);
+        println!("处理字节数: {} KB", bytes / 1024);
+        if requests > 0 {
+            println!("错误率: {:.2}%", errors as f64 / requests as f64 * 100.0);
+        }
+    }
+}
+
+fn main() {
+    let stats = Arc::new(AtomicStats::new());
+    let mut handles = vec![];
+
+    for i in 0..4 {
+        let stats = Arc::clone(&stats);
+        let handle = thread::spawn(move || {
+            for j in 0..1000 {
+                stats.record_request(256);
+                if (i + j) % 100 == 0 {
+                    stats.record_error();
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    stats.report();
+}
+```
+
+## 🔗 相关概念
+
+- **[Mutex 共享状态](./08-mutex-shared-state)**：复杂数据结构的线程安全方案
+- **[Arc + Mutex 组合模式](./10-arc-mutex-pattern)**：原子类型无法满足时使用
+- **[Send 与 Sync trait](./12-send-sync-traits)**：原子类型自动实现 `Send` 和 `Sync`
 
 ## 📝 学习检查点
 
-- [ ] 理解原子类型的核心概念
-- [ ] 能够在实际项目中应用原子类型
+- [ ] 理解原子操作与 `Mutex` 的区别和适用场景
+- [ ] 掌握 `AtomicBool`、`AtomicUsize` 等常用类型
+- [ ] 了解 `Ordering` 的含义和选择策略
+- [ ] 能够使用原子类型实现无锁计数器和标志位
+
+## 🚀 下一步
+
+→ [Send 与 Sync trait](./12-send-sync-traits)

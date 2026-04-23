@@ -5,13 +5,312 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「Future trait」相关知识。
+`Future` 是 Rust 异步编程的核心 trait，表示一个**可能尚未完成的异步计算**。与 JavaScript 的 `Promise` 不同，Rust 的 `Future` 是**惰性的**——创建后不会自动执行，必须由异步运行时通过不断调用 `poll` 方法来驱动。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+`Future` trait 的定义：
+
+```rust
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+trait Future {
+    type Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output>;
+}
+```
+
+## 🎯 Poll 枚举
+
+```rust
+use std::task::Poll;
+
+fn main() {
+    // Poll 有两个变体
+    let ready: Poll<i32> = Poll::Ready(42);
+    let pending: Poll<i32> = Poll::Pending;
+
+    match ready {
+        Poll::Ready(value) => println!("计算完成: {}", value),
+        Poll::Pending => println!("计算尚未完成"),
+    }
+
+    match pending {
+        Poll::Ready(value) => println!("计算完成: {}", value),
+        Poll::Pending => println!("计算尚未完成，稍后重试"),
+    }
+}
+```
+
+## 🎯 手动实现 Future
+
+### 简单的立即就绪 Future
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+struct ReadyFuture {
+    value: i32,
+}
+
+impl Future for ReadyFuture {
+    type Output = i32;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // 立即返回结果
+        Poll::Ready(self.value)
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let future = ReadyFuture { value: 42 };
+    let result = future.await;
+    println!("Future 返回: {}", result);
+}
+```
+
+:::info 运行提示
+手动实现 Future 的示例需要 `tokio` 运行时。在 `Cargo.toml` 中添加：
+```toml
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+```
 :::
+
+### 延迟 Future
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
+
+struct Delay {
+    when: Instant,
+}
+
+impl Delay {
+    fn new(duration: Duration) -> Self {
+        Delay {
+            when: Instant::now() + duration,
+        }
+    }
+}
+
+impl Future for Delay {
+    type Output = String;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if Instant::now() >= self.when {
+            Poll::Ready(String::from("延迟完成！"))
+        } else {
+            // 通知运行时稍后再次轮询
+            let waker = cx.waker().clone();
+            let when = self.when;
+            std::thread::spawn(move || {
+                let now = Instant::now();
+                if now < when {
+                    std::thread::sleep(when - now);
+                }
+                waker.wake();
+            });
+            Poll::Pending
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    println!("开始等待...");
+    let result = Delay::new(Duration::from_millis(500)).await;
+    println!("{}", result);
+}
+```
+
+## 🎯 Future 的惰性特性
+
+```rust
+async fn compute() -> i32 {
+    println!("compute 被执行！");
+    42
+}
+
+#[tokio::main]
+async fn main() {
+    // 创建 Future 但不 await —— compute 函数体不会执行
+    let future = compute();
+    println!("Future 已创建，但 compute 还没执行");
+
+    // 只有 await 时才会开始执行
+    let result = future.await;
+    println!("结果: {}", result);
+
+    // 对比 JavaScript：Promise 创建后立即执行
+    // Rust Future：创建后是惰性的，必须被 poll/await
+}
+```
+
+## 🎯 Waker 机制
+
+`Waker` 是 Future 与运行时之间的通信桥梁。当 Future 返回 `Pending` 时，它应该注册一个 `Waker`，当数据就绪时通过 `waker.wake()` 通知运行时重新 poll 该 Future。
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+use std::thread;
+
+struct SharedState {
+    completed: bool,
+    waker: Option<Waker>,
+}
+
+struct AsyncCounter {
+    shared: Arc<Mutex<SharedState>>,
+}
+
+impl AsyncCounter {
+    fn new(target: u64) -> Self {
+        let shared = Arc::new(Mutex::new(SharedState {
+            completed: false,
+            waker: None,
+        }));
+
+        // 后台线程执行计算
+        let shared_clone = Arc::clone(&shared);
+        thread::spawn(move || {
+            let mut sum: u64 = 0;
+            for i in 0..target {
+                sum += i;
+            }
+            println!("后台计算完成: sum = {}", sum);
+
+            let mut state = shared_clone.lock().unwrap();
+            state.completed = true;
+            // 通知运行时：Future 已就绪
+            if let Some(waker) = state.waker.take() {
+                waker.wake();
+            }
+        });
+
+        AsyncCounter { shared }
+    }
+}
+
+impl Future for AsyncCounter {
+    type Output = String;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut state = self.shared.lock().unwrap();
+        if state.completed {
+            Poll::Ready(String::from("计算完成"))
+        } else {
+            // 保存 Waker，让后台线程能通知我们
+            state.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let counter = AsyncCounter::new(1_000_000);
+    let result = counter.await;
+    println!("结果: {}", result);
+}
+```
+
+## 📝 实际应用示例
+
+### 组合多个 Future
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+// 将两个 Future 的结果组合
+struct AndThen<F1, F2, FN>
+where
+    F1: Future,
+    FN: FnOnce(F1::Output) -> F2,
+    F2: Future,
+{
+    state: AndThenState<F1, F2, FN>,
+}
+
+enum AndThenState<F1, F2, FN>
+where
+    F1: Future,
+    FN: FnOnce(F1::Output) -> F2,
+    F2: Future,
+{
+    First(F1, Option<FN>),
+    Second(F2),
+}
+
+impl<F1, F2, FN> Future for AndThen<F1, F2, FN>
+where
+    F1: Future + Unpin,
+    F2: Future + Unpin,
+    FN: FnOnce(F1::Output) -> F2 + Unpin,
+{
+    type Output = F2::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        loop {
+            match &mut this.state {
+                AndThenState::First(f1, func) => {
+                    match Pin::new(f1).poll(cx) {
+                        Poll::Ready(result) => {
+                            let func = func.take().unwrap();
+                            let f2 = func(result);
+                            this.state = AndThenState::Second(f2);
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+                AndThenState::Second(f2) => {
+                    return Pin::new(f2).poll(cx);
+                }
+            }
+        }
+    }
+}
+
+// 在实际中，我们通常直接用 async/await 而非手动组合
+#[tokio::main]
+async fn main() {
+    // async/await 让 Future 组合变得简单
+    let result = async {
+        let step1 = async { 10 }.await;
+        let step2 = async move { step1 * 2 }.await;
+        step2 + 5
+    }
+    .await;
+
+    println!("组合结果: {}", result);
+}
+```
+
+## 🔗 相关概念
+
+- **[async fn 与 async 块](./03-async-fn-blocks)**：创建 Future 的语法糖
+- **[.await 机制](./04-await-mechanism)**：驱动 Future 执行的操作符
+- **[Pin 与 Unpin](./05-pin-unpin)**：Future 的 `poll` 方法为什么需要 `Pin`
 
 ## 📝 学习检查点
 
-- [ ] 理解Future trait的核心概念
-- [ ] 能够在实际项目中应用Future trait
+- [ ] 理解 `Future` trait 的 `poll` 方法和 `Poll` 枚举
+- [ ] 掌握 Future 惰性执行的特点
+- [ ] 理解 `Waker` 在 Future 中的作用
+- [ ] 能够手动实现简单的 `Future`
+
+## 🚀 下一步
+
+→ [async fn 与 async 块](./03-async-fn-blocks)

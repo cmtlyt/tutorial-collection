@@ -5,13 +5,218 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「运行时选择与对比」相关知识。
+Rust 的异步运行时不是语言内置的，而是由第三方库提供。这种设计让用户可以根据场景选择最合适的运行时。本节对比三大运行时——Tokio、async-std、smol——帮助你做出正确选择。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 三大运行时对比
+
+| 维度 | Tokio | async-std | smol |
+|------|-------|-----------|------|
+| **生态成熟度** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ |
+| **性能** | 极高 | 高 | 高 |
+| **代码体积** | 较大 | 中等 | 极小 |
+| **学习曲线** | 中等 | 低（类似 std） | 低 |
+| **多线程** | 内置工作窃取 | 内置 | 需要配置 |
+| **社区支持** | 最广泛 | 较好 | 较小 |
+| **生态依赖** | hyper, axum, tonic 等 | 较少 | 较少 |
+
+## 🎯 选择指南
+
+### 选择 Tokio 的场景
+
+- **Web 服务器**：axum、actix-web、warp 等框架依赖 Tokio
+- **gRPC 服务**：tonic 基于 Tokio
+- **数据库客户端**：sqlx、sea-orm 支持 Tokio
+- **生产环境**：需要成熟的生态系统和社区支持
+- **大型项目**：需要丰富的工具链（tracing、tower 等）
+
+```rust
+// 典型的 Tokio 项目配置
+// Cargo.toml:
+// [dependencies]
+// tokio = { version = "1", features = ["full"] }
+// axum = "0.7"
+// sqlx = { version = "0.8", features = ["runtime-tokio-rustls"] }
+
+#[tokio::main]
+async fn main() {
+    println!("Tokio 适合：Web 服务、微服务、高性能网络应用");
+}
+```
+
+### 选择 async-std 的场景
+
+- **学习异步编程**：API 与标准库一一对应
+- **迁移同步代码**：将同步代码改为异步最省力
+- **中小型项目**：不需要 Tokio 的完整生态
+
+```rust
+// 典型的 async-std 项目配置
+// Cargo.toml:
+// [dependencies]
+// async-std = { version = "1", features = ["attributes"] }
+
+#[async_std::main]
+async fn main() {
+    println!("async-std 适合：学习、中小型项目、快速原型");
+}
+```
+
+### 选择 smol 的场景
+
+- **嵌入式或资源受限环境**：极小的运行时体积
+- **库开发者**：不想绑定特定运行时
+- **定制需求**：需要完全控制运行时行为
+
+```rust
+// 典型的 smol 项目配置
+// Cargo.toml:
+// [dependencies]
+// smol = "2"
+
+fn main() {
+    smol::block_on(async {
+        println!("smol 适合：嵌入式、库开发、极简场景");
+    });
+}
+```
+
+## 🎯 运行时无关的代码
+
+编写不绑定特定运行时的代码可以提升库的可复用性：
+
+```rust
+use std::future::Future;
+
+// 运行时无关的异步函数
+async fn process_data(data: &[i32]) -> i64 {
+    // 纯计算逻辑，不依赖任何运行时
+    data.iter().map(|&x| x as i64 * x as i64).sum()
+}
+
+// 使用 trait 抽象运行时行为
+trait AsyncSleep {
+    fn sleep(duration: std::time::Duration) -> impl Future<Output = ()> + Send;
+}
+
+// Tokio 实现
+struct TokioSleeper;
+impl AsyncSleep for TokioSleeper {
+    async fn sleep(duration: std::time::Duration) {
+        tokio::time::sleep(duration).await;
+    }
+}
+
+async fn task_with_delay<S: AsyncSleep>(name: &str) {
+    println!("[{}] 开始", name);
+    S::sleep(std::time::Duration::from_millis(50)).await;
+    println!("[{}] 完成", name);
+}
+
+#[tokio::main]
+async fn main() {
+    let data = vec![1, 2, 3, 4, 5];
+    let result = process_data(&data).await;
+    println!("计算结果: {}", result);
+
+    task_with_delay::<TokioSleeper>("示例任务").await;
+}
+```
+
+## 🎯 决策流程图
+
+```
+需要选择异步运行时？
+├─ 使用 Web 框架（axum/actix/warp）？ → Tokio
+├─ 使用 gRPC（tonic）？ → Tokio
+├─ 需要丰富的生态支持？ → Tokio
+├─ 初学异步编程？ → async-std
+├─ 嵌入式 / 极小体积？ → smol
+├─ 开发运行时无关的库？ → 不依赖具体运行时
+└─ 不确定？ → Tokio（最安全的选择）
+```
+
+## 📝 实际应用示例
+
+### 对比相同功能的实现
+
+以下展示同一个"并发请求"逻辑在不同运行时下的写法：
+
+```rust
+// === Tokio 版本 ===
+// #[tokio::main]
+// async fn main() {
+//     let mut handles = vec![];
+//     for i in 0..3 {
+//         handles.push(tokio::spawn(async move {
+//             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+//             i * 10
+//         }));
+//     }
+//     for handle in handles {
+//         println!("结果: {}", handle.await.unwrap());
+//     }
+// }
+
+// === 可运行的 Tokio 版本 ===
+#[tokio::main]
+async fn main() {
+    let mut handles = vec![];
+    for i in 0..3 {
+        handles.push(tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            i * 10
+        }));
+    }
+    for handle in handles {
+        println!("Tokio 结果: {}", handle.await.unwrap());
+    }
+}
+
+// === async-std 版本（需切换依赖） ===
+// #[async_std::main]
+// async fn main() {
+//     let mut handles = vec![];
+//     for i in 0..3 {
+//         handles.push(async_std::task::spawn(async move {
+//             async_std::task::sleep(std::time::Duration::from_millis(50)).await;
+//             i * 10
+//         }));
+//     }
+//     for handle in handles {
+//         println!("结果: {}", handle.await);
+//     }
+// }
+
+// === smol 版本（需切换依赖） ===
+// fn main() {
+//     smol::block_on(async {
+//         let mut tasks = vec![];
+//         for i in 0..3 {
+//             tasks.push(smol::spawn(async move {
+//                 smol::Timer::after(std::time::Duration::from_millis(50)).await;
+//                 i * 10
+//             }));
+//         }
+//         for task in tasks {
+//             println!("结果: {}", task.await);
+//         }
+//     });
+// }
+```
+
+## 🔗 相关概念
+
+- **[Tokio 生态](./06-tokio-ecosystem)**：Tokio 的详细使用指南
+- **[async-std 与 smol](./07-async-std-smol)**：其他运行时的详细介绍
+- **[tokio::spawn](./09-tokio-spawn)**：Tokio 的任务创建机制
 
 ## 📝 学习检查点
 
-- [ ] 理解运行时选择与对比的核心概念
-- [ ] 能够在实际项目中应用运行时选择与对比
+- [ ] 了解三大运行时的优势和适用场景
+- [ ] 能够根据项目需求选择合适的运行时
+- [ ] 理解编写运行时无关代码的重要性
+- [ ] 知道大多数情况下 Tokio 是默认推荐选择
+
+## 🚀 下一步
+
+→ [并发任务（tokio::spawn）](./09-tokio-spawn)

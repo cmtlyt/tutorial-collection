@@ -5,13 +5,268 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「async fn 与 async 块」相关知识。
+`async fn` 和 `async {}` 块是 Rust 创建 `Future` 的语法糖。编译器会将 `async` 函数或块转换为一个实现了 `Future` trait 的状态机，开发者无需手动实现 `poll` 方法。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+- **`async fn`**：定义异步函数，返回值自动包装为 `Future`
+- **`async {}`**：异步块，创建匿名的 `Future`
+
+## 🎯 async fn 基本用法
+
+```rust
+// async fn 返回的是一个 Future，而不是直接的值
+async fn fetch_data() -> String {
+    // 函数体中可以使用 .await
+    String::from("从服务器获取的数据")
+}
+
+async fn compute(x: i32, y: i32) -> i32 {
+    // 模拟异步计算
+    x + y
+}
+
+#[tokio::main]
+async fn main() {
+    // 调用 async fn 返回一个 Future
+    let future = fetch_data();
+    // 此时 fetch_data 的函数体还没执行
+
+    // .await 驱动 Future 执行
+    let data = future.await;
+    println!("获取到: {}", data);
+
+    let result = compute(3, 4).await;
+    println!("计算结果: {}", result);
+}
+```
+
+### async fn 的返回类型
+
+```rust
+use std::future::Future;
+
+// 以下两种写法等价
+async fn version_a() -> i32 {
+    42
+}
+
+// 显式返回 impl Future（不常用，但有助于理解）
+fn version_b() -> impl Future<Output = i32> {
+    async { 42 }
+}
+
+#[tokio::main]
+async fn main() {
+    let a = version_a().await;
+    let b = version_b().await;
+    println!("a = {}, b = {}", a, b);
+}
+```
+
+## 🎯 async 块
+
+```rust
+#[tokio::main]
+async fn main() {
+    // async 块创建匿名的 Future
+    let greeting = async {
+        let name = "Rust";
+        format!("你好, {}!", name)
+    };
+
+    println!("{}", greeting.await);
+
+    // async 块可以捕获环境变量
+    let multiplier = 3;
+    let result = async {
+        let base = 10;
+        base * multiplier
+    }
+    .await;
+
+    println!("结果: {}", result);
+}
+```
+
+### async move 块
+
+```rust
+#[tokio::main]
+async fn main() {
+    let name = String::from("Alice");
+
+    // async move 将所有权移入块中
+    let future = async move {
+        println!("名字: {}", name);
+        name.len()
+    };
+
+    // name 已被移动，不能再使用
+    // println!("{}", name); // 编译错误
+
+    let length = future.await;
+    println!("名字长度: {}", length);
+}
+```
+
+## 🎯 异步函数中调用其他异步函数
+
+```rust
+async fn step_one() -> String {
+    println!("执行步骤 1");
+    String::from("步骤1结果")
+}
+
+async fn step_two(input: &str) -> String {
+    println!("执行步骤 2，输入: {}", input);
+    format!("{}+步骤2结果", input)
+}
+
+async fn step_three(input: &str) -> String {
+    println!("执行步骤 3，输入: {}", input);
+    format!("{}+步骤3结果", input)
+}
+
+async fn pipeline() -> String {
+    let r1 = step_one().await;
+    let r2 = step_two(&r1).await;
+    let r3 = step_three(&r2).await;
+    r3
+}
+
+#[tokio::main]
+async fn main() {
+    let result = pipeline().await;
+    println!("最终结果: {}", result);
+}
+```
+
+## 🎯 async 在 trait 中的使用
+
+从 Rust 1.75 开始，可以在 trait 中直接使用 `async fn`：
+
+```rust
+trait DataStore {
+    async fn get(&self, key: &str) -> Option<String>;
+    async fn set(&self, key: &str, value: &str);
+}
+
+struct MemoryStore {
+    data: std::collections::HashMap<String, String>,
+}
+
+impl MemoryStore {
+    fn new() -> Self {
+        MemoryStore {
+            data: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl DataStore for MemoryStore {
+    async fn get(&self, key: &str) -> Option<String> {
+        self.data.get(key).cloned()
+    }
+
+    async fn set(&self, key: &str, value: &str) {
+        // 注意：这里需要 &mut self 才能真正修改
+        // 这里只是演示 async trait fn 的语法
+        println!("设置 {} = {}", key, value);
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let store = MemoryStore::new();
+    let result = store.get("key1").await;
+    println!("查询结果: {:?}", result);
+
+    store.set("key1", "value1").await;
+}
+```
+
+## 🎯 async fn 的生命周期
+
+```rust
+// 返回的 Future 会捕获参数的引用
+// 因此 Future 的生命周期受参数生命周期约束
+async fn process(data: &str) -> usize {
+    data.len()
+}
+
+// 等价于（展开后的签名）：
+// fn process<'a>(data: &'a str) -> impl Future<Output = usize> + 'a
+
+#[tokio::main]
+async fn main() {
+    let text = String::from("hello async");
+    let length = process(&text).await;
+    println!("长度: {}", length);
+
+    // Future 必须在 text 有效期间完成
+    // 以下代码不会有问题，因为 await 在同一作用域内
+}
+```
+
+## 📝 实际应用示例
+
+### 异步管道处理
+
+```rust
+async fn validate_input(input: &str) -> Result<String, String> {
+    if input.is_empty() {
+        Err(String::from("输入不能为空"))
+    } else {
+        Ok(input.trim().to_lowercase())
+    }
+}
+
+async fn transform(data: &str) -> String {
+    // 模拟异步转换
+    data.chars()
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect()
+}
+
+async fn save(data: &str) -> Result<String, String> {
+    // 模拟异步保存
+    println!("保存数据: {}", data);
+    Ok(format!("已保存: {}", data))
+}
+
+async fn process_pipeline(input: &str) -> Result<String, String> {
+    let validated = validate_input(input).await?;
+    let transformed = transform(&validated).await;
+    let result = save(&transformed).await?;
+    Ok(result)
+}
+
+#[tokio::main]
+async fn main() {
+    match process_pipeline("  Hello World  ").await {
+        Ok(result) => println!("成功: {}", result),
+        Err(err) => println!("失败: {}", err),
+    }
+
+    match process_pipeline("").await {
+        Ok(result) => println!("成功: {}", result),
+        Err(err) => println!("失败: {}", err),
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[Future trait](./02-future-trait)**：`async fn` 和 `async` 块生成的底层类型
+- **[.await 机制](./04-await-mechanism)**：驱动 Future 执行的语法
+- **[Pin 与 Unpin](./05-pin-unpin)**：async 生成的 Future 可能包含自引用
 
 ## 📝 学习检查点
 
-- [ ] 理解async fn 与 async 块的核心概念
-- [ ] 能够在实际项目中应用async fn 与 async 块
+- [ ] 理解 `async fn` 返回的是 `impl Future` 而非直接值
+- [ ] 掌握 `async {}` 和 `async move {}` 块的区别
+- [ ] 能够在异步函数中链式调用其他异步函数
+- [ ] 了解 `async fn` 在 trait 中的使用方式
+
+## 🚀 下一步
+
+→ [.await 机制](./04-await-mechanism)

@@ -5,13 +5,220 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「.await 机制」相关知识。
+`.await` 是 Rust 中驱动 `Future` 执行的操作符。当你在一个 Future 上调用 `.await` 时，当前异步任务会暂停执行，让出控制权给运行时。运行时会在 Future 就绪时恢复执行。`.await` 只能在 `async` 上下文中使用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+关键特性：
+- **非阻塞**：`.await` 不会阻塞线程，而是让出 CPU 给其他任务
+- **暂停点**：每个 `.await` 都是一个潜在的暂停/恢复点
+- **后缀语法**：`future.await` 的后缀形式支持链式调用
+
+## 🎯 基本用法
+
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn fetch_user() -> String {
+    sleep(Duration::from_millis(100)).await;
+    String::from("Alice")
+}
+
+async fn fetch_email(user: &str) -> String {
+    sleep(Duration::from_millis(50)).await;
+    format!("{}@example.com", user.to_lowercase())
+}
+
+#[tokio::main]
+async fn main() {
+    // 每个 .await 是一个暂停点
+    let user = fetch_user().await;          // 暂停点 1
+    let email = fetch_email(&user).await;   // 暂停点 2
+
+    println!("用户: {}, 邮箱: {}", user, email);
+}
+```
+
+## 🎯 .await 的暂停与恢复
+
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn step(name: &str, delay_ms: u64) -> String {
+    println!("[{}] 开始执行", name);
+    sleep(Duration::from_millis(delay_ms)).await;
+    // 从这里恢复执行
+    println!("[{}] 执行完成", name);
+    format!("{} 的结果", name)
+}
+
+#[tokio::main]
+async fn main() {
+    // 顺序执行：总耗时 = 100 + 200 + 50 = 350ms
+    let r1 = step("步骤A", 100).await;
+    let r2 = step("步骤B", 200).await;
+    let r3 = step("步骤C", 50).await;
+
+    println!("结果: {}, {}, {}", r1, r2, r3);
+}
+```
+
+## 🎯 .await 与错误处理
+
+### 使用 ? 操作符
+
+```rust
+use std::num::ParseIntError;
+
+async fn parse_number(input: &str) -> Result<i32, ParseIntError> {
+    input.trim().parse::<i32>()
+}
+
+async fn double_number(input: &str) -> Result<i32, ParseIntError> {
+    let number = parse_number(input).await?; // .await 和 ? 组合
+    Ok(number * 2)
+}
+
+async fn process_numbers(inputs: Vec<&str>) -> Result<Vec<i32>, ParseIntError> {
+    let mut results = Vec::new();
+    for input in inputs {
+        let doubled = double_number(input).await?;
+        results.push(doubled);
+    }
+    Ok(results)
+}
+
+#[tokio::main]
+async fn main() {
+    // 成功的情况
+    match process_numbers(vec!["1", "2", "3"]).await {
+        Ok(results) => println!("成功: {:?}", results),
+        Err(e) => println!("错误: {}", e),
+    }
+
+    // 失败的情况
+    match process_numbers(vec!["1", "abc", "3"]).await {
+        Ok(results) => println!("成功: {:?}", results),
+        Err(e) => println!("错误: {}", e),
+    }
+}
+```
+
+### 链式 .await
+
+```rust
+async fn get_url() -> String {
+    String::from("https://api.example.com")
+}
+
+async fn fetch(url: &str) -> String {
+    format!("响应来自 {}", url)
+}
+
+async fn parse(response: &str) -> Vec<String> {
+    response.split_whitespace().map(String::from).collect()
+}
+
+#[tokio::main]
+async fn main() {
+    // 链式调用：每一步都可以 .await
+    let url = get_url().await;
+    let response = fetch(&url).await;
+    let data = parse(&response).await;
+    println!("解析结果: {:?}", data);
+}
+```
+
+## 🎯 .await 不能在同步代码中使用
+
+```rust
+// async 上下文中才能使用 .await
+async fn async_function() -> i32 {
+    42
+}
+
+// 同步函数中不能使用 .await
+fn sync_function() {
+    // let result = async_function().await; // 编译错误！
+    println!("同步函数不能使用 .await");
+}
+
+// 在同步函数中运行异步代码需要使用运行时
+fn sync_function_with_runtime() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(async_function());
+    println!("通过 block_on 获取结果: {}", result);
+}
+
+#[tokio::main]
+async fn main() {
+    // 这里是 async 上下文，可以使用 .await
+    let result = async_function().await;
+    println!("async 上下文: {}", result);
+
+    sync_function();
+    sync_function_with_runtime();
+}
+```
+
+## 📝 实际应用示例
+
+### 异步重试逻辑
+
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn unreliable_operation(attempt: u32) -> Result<String, String> {
+    // 模拟不稳定的操作：前两次失败，第三次成功
+    if attempt < 3 {
+        Err(format!("第 {} 次尝试失败", attempt))
+    } else {
+        Ok(format!("第 {} 次尝试成功！", attempt))
+    }
+}
+
+async fn retry_with_backoff(max_retries: u32) -> Result<String, String> {
+    let mut last_error = String::from("未执行");
+
+    for attempt in 1..=max_retries {
+        match unreliable_operation(attempt).await {
+            Ok(result) => return Ok(result),
+            Err(err) => {
+                println!("重试 {}/{}: {}", attempt, max_retries, err);
+                last_error = err;
+
+                if attempt < max_retries {
+                    let backoff = Duration::from_millis(100 * attempt as u64);
+                    println!("等待 {}ms 后重试...", backoff.as_millis());
+                    sleep(backoff).await;
+                }
+            }
+        }
+    }
+
+    Err(format!("所有 {} 次重试均失败: {}", max_retries, last_error))
+}
+
+#[tokio::main]
+async fn main() {
+    match retry_with_backoff(5).await {
+        Ok(result) => println!("最终结果: {}", result),
+        Err(err) => println!("最终失败: {}", err),
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[Future trait](./02-future-trait)**：`.await` 内部调用 Future 的 `poll` 方法
+- **[async fn 与 async 块](./03-async-fn-blocks)**：`.await` 只能在 `async` 上下文中使用
+- **[Tokio 生态](./06-tokio-ecosystem)**：提供异步运行时来驱动 `.await`
 
 ## 📝 学习检查点
 
-- [ ] 理解.await 机制的核心概念
-- [ ] 能够在实际项目中应用.await 机制
+- [ ] 理解 `.await` 的暂停和恢复机制
+- [ ] 掌握 `.await` 与 `?` 操作符的组合用法
+- [ ] 理解 `.await` 只能在 `async` 上下文中使用的限制
+- [ ] 能够区分顺序 `.await` 和并发执行的差异
+
+## 🚀 下一步
+
+→ [Pin 与 Unpin](./05-pin-unpin)

@@ -5,13 +5,213 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「线程局部存储」相关知识。
+线程局部存储（Thread-Local Storage，TLS）允许每个线程拥有变量的**独立副本**。不同线程访问同一个 TLS 变量时，实际上操作的是各自独立的数据，因此无需加锁，也不会产生数据竞争。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+Rust 通过 `thread_local!` 宏提供线程局部变量的声明，结合 `Cell` 或 `RefCell` 实现线程内的可变访问。
+
+## 🎯 基本用法
+
+### thread_local! 宏
+
+```rust
+use std::cell::RefCell;
+use std::thread;
+
+thread_local! {
+    static COUNTER: RefCell<u32> = RefCell::new(0);
+}
+
+fn increment() {
+    COUNTER.with(|counter| {
+        let mut value = counter.borrow_mut();
+        *value += 1;
+    });
+}
+
+fn get_count() -> u32 {
+    COUNTER.with(|counter| *counter.borrow())
+}
+
+fn main() {
+    // 主线程操作
+    increment();
+    increment();
+    increment();
+    println!("主线程计数: {}", get_count());
+
+    // 子线程有自己独立的副本
+    let handle = thread::spawn(|| {
+        println!("子线程初始计数: {}", get_count());
+        increment();
+        increment();
+        println!("子线程最终计数: {}", get_count());
+    });
+
+    handle.join().unwrap();
+
+    // 主线程的值不受影响
+    println!("主线程计数不变: {}", get_count());
+}
+```
+
+### 使用 Cell 存储 Copy 类型
+
+```rust
+use std::cell::Cell;
+use std::thread;
+
+thread_local! {
+    static REQUEST_ID: Cell<u64> = Cell::new(0);
+    static DEBUG_MODE: Cell<bool> = Cell::new(false);
+}
+
+fn set_request_context(id: u64, debug: bool) {
+    REQUEST_ID.with(|cell| cell.set(id));
+    DEBUG_MODE.with(|cell| cell.set(debug));
+}
+
+fn log_message(message: &str) {
+    let request_id = REQUEST_ID.with(|cell| cell.get());
+    let debug = DEBUG_MODE.with(|cell| cell.get());
+
+    if debug {
+        println!("[DEBUG][req:{}] {}", request_id, message);
+    } else {
+        println!("[INFO][req:{}] {}", request_id, message);
+    }
+}
+
+fn main() {
+    set_request_context(1001, true);
+    log_message("处理用户请求");
+
+    let handle = thread::spawn(|| {
+        set_request_context(2002, false);
+        log_message("子线程处理任务");
+    });
+
+    handle.join().unwrap();
+
+    // 主线程的上下文不受影响
+    log_message("主线程继续处理");
+}
+```
+
+## 🎯 存储复杂数据
+
+```rust
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::thread;
+
+thread_local! {
+    static CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+fn cache_set(key: &str, value: &str) {
+    CACHE.with(|cache| {
+        cache.borrow_mut().insert(key.to_string(), value.to_string());
+    });
+}
+
+fn cache_get(key: &str) -> Option<String> {
+    CACHE.with(|cache| cache.borrow().get(key).cloned())
+}
+
+fn cache_size() -> usize {
+    CACHE.with(|cache| cache.borrow().len())
+}
+
+fn main() {
+    cache_set("user", "Alice");
+    cache_set("role", "admin");
+
+    println!("主线程缓存大小: {}", cache_size());
+    println!("主线程 user: {:?}", cache_get("user"));
+
+    let handle = thread::spawn(|| {
+        // 子线程有独立的空缓存
+        println!("子线程缓存大小: {}", cache_size());
+        cache_set("user", "Bob");
+        println!("子线程 user: {:?}", cache_get("user"));
+    });
+
+    handle.join().unwrap();
+
+    // 主线程的缓存不受影响
+    println!("主线程 user 不变: {:?}", cache_get("user"));
+}
+```
+
+## 📝 实际应用示例
+
+### 线程局部的随机数生成器
+
+```rust
+use std::cell::Cell;
+use std::thread;
+
+thread_local! {
+    // 简单的线程局部伪随机数生成器
+    static RNG_STATE: Cell<u64> = Cell::new(0);
+}
+
+fn seed_rng(seed: u64) {
+    RNG_STATE.with(|state| state.set(seed));
+}
+
+fn next_random() -> u64 {
+    RNG_STATE.with(|state| {
+        // xorshift64 算法
+        let mut x = state.get();
+        if x == 0 {
+            x = 12345; // 默认种子
+        }
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        state.set(x);
+        x
+    })
+}
+
+fn random_range(min: u64, max: u64) -> u64 {
+    min + (next_random() % (max - min + 1))
+}
+
+fn main() {
+    let mut handles = vec![];
+
+    for i in 0..3 {
+        let handle = thread::spawn(move || {
+            // 每个线程用不同的种子
+            seed_rng((i + 1) as u64 * 1000);
+
+            let numbers: Vec<u64> = (0..5).map(|_| random_range(1, 100)).collect();
+            println!("线程 {} 随机数: {:?}", i, numbers);
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[线程创建与管理](./02-thread-creation-management)**：线程局部变量在线程创建时初始化
+- **[move 闭包与线程所有权](./04-move-closures-thread-ownership)**：TLS 是 move 之外的另一种线程数据管理方式
+- **[Mutex 共享状态](./08-mutex-shared-state)**：TLS 避免了共享状态的锁开销
 
 ## 📝 学习检查点
 
-- [ ] 理解线程局部存储的核心概念
-- [ ] 能够在实际项目中应用线程局部存储
+- [ ] 理解线程局部存储的概念和用途
+- [ ] 掌握 `thread_local!` 宏的声明和 `with` 方法的使用
+- [ ] 能够使用 `Cell` 和 `RefCell` 配合 TLS 存储数据
+- [ ] 理解 TLS 与全局共享状态的区别
+
+## 🚀 下一步
+
+→ [Channel（mpsc）](./06-channel-mpsc)

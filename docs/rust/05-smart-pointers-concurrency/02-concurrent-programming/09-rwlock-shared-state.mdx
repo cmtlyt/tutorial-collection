@@ -5,13 +5,273 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「RwLock 读写锁」相关知识。
+`RwLock<T>`（Read-Write Lock，读写锁）允许**多个线程同时读取数据**，但**写入时需要独占访问**。相比 `Mutex` 的完全互斥，`RwLock` 在读多写少的场景中能显著提升并发性能。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+核心规则：
+- **多个读者**可以同时持有读锁
+- **写者独占**：持有写锁时不允许任何其他读锁或写锁
+- **写者优先**：当有写者等待时，新的读请求会被阻塞（避免写者饥饿）
+
+## 🎯 基本用法
+
+```rust
+use std::sync::{Arc, RwLock};
+use std::thread;
+
+fn main() {
+    let config = Arc::new(RwLock::new(vec![
+        String::from("设置A"),
+        String::from("设置B"),
+    ]));
+
+    let mut handles = vec![];
+
+    // 多个读取线程并行执行
+    for i in 0..4 {
+        let config = Arc::clone(&config);
+        let handle = thread::spawn(move || {
+            let data = config.read().unwrap();
+            println!("读线程 {}: {:?}", i, *data);
+        });
+        handles.push(handle);
+    }
+
+    // 写入线程独占访问
+    {
+        let config = Arc::clone(&config);
+        let handle = thread::spawn(move || {
+            let mut data = config.write().unwrap();
+            data.push(String::from("设置C"));
+            println!("写线程: 添加了新设置");
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("最终配置: {:?}", config.read().unwrap());
+}
+```
+
+## 🎯 读写分离场景
+
+```rust
+use std::sync::{Arc, RwLock};
+use std::thread;
+use std::time::Duration;
+
+struct SharedRegistry {
+    entries: RwLock<Vec<(String, String)>>,
+}
+
+impl SharedRegistry {
+    fn new() -> Self {
+        SharedRegistry {
+            entries: RwLock::new(Vec::new()),
+        }
+    }
+
+    fn register(&self, key: &str, value: &str) {
+        let mut entries = self.entries.write().unwrap();
+        entries.push((key.to_string(), value.to_string()));
+    }
+
+    fn lookup(&self, key: &str) -> Option<String> {
+        let entries = self.entries.read().unwrap();
+        entries
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    fn count(&self) -> usize {
+        self.entries.read().unwrap().len()
+    }
+}
+
+fn main() {
+    let registry = Arc::new(SharedRegistry::new());
+
+    // 先注册一些数据
+    registry.register("db_host", "localhost");
+    registry.register("db_port", "5432");
+    registry.register("app_name", "my_app");
+
+    let mut handles = vec![];
+
+    // 多个读取线程
+    for i in 0..4 {
+        let reg = Arc::clone(&registry);
+        let handle = thread::spawn(move || {
+            for _ in 0..3 {
+                let host = reg.lookup("db_host").unwrap_or_default();
+                let count = reg.count();
+                println!("读线程 {}: host={}, 条目数={}", i, host, count);
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        handles.push(handle);
+    }
+
+    // 一个写入线程
+    {
+        let reg = Arc::clone(&registry);
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(15));
+            reg.register("cache_size", "1024");
+            println!("写线程: 添加了 cache_size");
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("最终条目数: {}", registry.count());
+}
+```
+
+## 🎯 try_read 和 try_write
+
+```rust
+use std::sync::{Arc, RwLock};
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let data = Arc::new(RwLock::new(42));
+
+    let data_clone = Arc::clone(&data);
+    let writer = thread::spawn(move || {
+        let mut value = data_clone.write().unwrap();
+        println!("写者获取锁，处理中...");
+        thread::sleep(Duration::from_millis(200));
+        *value = 100;
+        println!("写者完成");
+    });
+
+    thread::sleep(Duration::from_millis(50));
+
+    // 非阻塞尝试读取
+    match data.try_read() {
+        Ok(value) => println!("try_read 成功: {}", *value),
+        Err(_) => println!("try_read 失败: 写锁被持有"),
+    }
+
+    // 非阻塞尝试写入
+    match data.try_write() {
+        Ok(mut value) => {
+            *value = 200;
+            println!("try_write 成功");
+        }
+        Err(_) => println!("try_write 失败: 锁被持有"),
+    }
+
+    writer.join().unwrap();
+    println!("最终值: {}", *data.read().unwrap());
+}
+```
+
+## 📝 实际应用示例
+
+### 读多写少的配置中心
+
+```rust
+use std::sync::{Arc, RwLock};
+use std::thread;
+use std::collections::HashMap;
+use std::time::Duration;
+
+struct ConfigCenter {
+    data: RwLock<HashMap<String, String>>,
+}
+
+impl ConfigCenter {
+    fn new() -> Self {
+        ConfigCenter {
+            data: RwLock::new(HashMap::new()),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        self.data.read().unwrap().get(key).cloned()
+    }
+
+    fn set(&self, key: &str, value: &str) {
+        self.data
+            .write()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
+    }
+
+    fn get_all(&self) -> HashMap<String, String> {
+        self.data.read().unwrap().clone()
+    }
+}
+
+fn main() {
+    let config = Arc::new(ConfigCenter::new());
+
+    // 初始化配置
+    config.set("log_level", "info");
+    config.set("max_retries", "3");
+    config.set("timeout_ms", "5000");
+
+    let mut handles = vec![];
+
+    // 8 个读取线程模拟频繁读取
+    for i in 0..8 {
+        let config = Arc::clone(&config);
+        let handle = thread::spawn(move || {
+            for _ in 0..5 {
+                let level = config.get("log_level").unwrap_or_default();
+                let retries = config.get("max_retries").unwrap_or_default();
+                println!("读者 {}: log_level={}, max_retries={}", i, level, retries);
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        handles.push(handle);
+    }
+
+    // 1 个写入线程偶尔更新配置
+    {
+        let config = Arc::clone(&config);
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            config.set("log_level", "debug");
+            println!("[写者] 更新 log_level -> debug");
+
+            thread::sleep(Duration::from_millis(25));
+            config.set("max_retries", "5");
+            println!("[写者] 更新 max_retries -> 5");
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("\n最终配置: {:?}", config.get_all());
+}
+```
+
+## 🔗 相关概念
+
+- **[Mutex 共享状态](./08-mutex-shared-state)**：完全互斥锁，适用于读写频率相近的场景
+- **[Arc + Mutex 组合模式](./10-arc-mutex-pattern)**：深入理解 Arc 与锁的组合
+- **[原子类型](./11-atomic-types)**：无锁的轻量级共享状态
 
 ## 📝 学习检查点
 
-- [ ] 理解RwLock 读写锁的核心概念
-- [ ] 能够在实际项目中应用RwLock 读写锁
+- [ ] 理解 `RwLock` 的多读单写语义
+- [ ] 知道何时选择 `RwLock` 而非 `Mutex`
+- [ ] 掌握 `try_read` 和 `try_write` 的非阻塞用法
+- [ ] 理解写者饥饿问题
+
+## 🚀 下一步
+
+→ [Arc + Mutex 组合模式](./10-arc-mutex-pattern)

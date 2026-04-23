@@ -5,13 +5,229 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「async-std 与 smol」相关知识。
+除了 Tokio 之外，Rust 生态中还有其他异步运行时可供选择：
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+- **async-std**：提供与标准库 `std` 对称的异步 API，学习曲线平缓
+- **smol**：极简主义的异步运行时，核心代码仅约 1500 行，适合嵌入式或轻量级场景
+
+## 🎯 async-std
+
+### 依赖配置
+
+```toml
+[dependencies]
+async-std = { version = "1", features = ["attributes"] }
+```
+
+### 基本用法
+
+```rust
+use async_std::task;
+use std::time::Duration;
+
+#[async_std::main]
+async fn main() {
+    println!("async-std 运行时启动");
+
+    // 异步休眠
+    task::sleep(Duration::from_millis(100)).await;
+
+    // 创建并发任务
+    let handle = task::spawn(async {
+        task::sleep(Duration::from_millis(50)).await;
+        42
+    });
+
+    let result = handle.await;
+    println!("任务结果: {}", result);
+}
+```
+
+### async-std 文件 I/O
+
+```rust
+use async_std::fs;
+use async_std::prelude::*;
+
+#[async_std::main]
+async fn main() -> std::io::Result<()> {
+    // 写文件
+    fs::write("/tmp/async_std_test.txt", "Hello async-std").await?;
+
+    // 读文件
+    let content = fs::read_to_string("/tmp/async_std_test.txt").await?;
+    println!("内容: {}", content);
+
+    // 清理
+    fs::remove_file("/tmp/async_std_test.txt").await?;
+
+    Ok(())
+}
+```
+
+### async-std 通道
+
+```rust
+use async_std::channel;
+use async_std::task;
+
+#[async_std::main]
+async fn main() {
+    let (tx, rx) = channel::bounded(10);
+
+    // 生产者
+    let producer = task::spawn(async move {
+        for i in 0..5 {
+            tx.send(format!("消息 {}", i)).await.unwrap();
+        }
+    });
+
+    // 消费者
+    let consumer = task::spawn(async move {
+        while let Ok(msg) = rx.recv().await {
+            println!("收到: {}", msg);
+        }
+    });
+
+    producer.await;
+    consumer.await;
+}
+```
+
+## 🎯 smol
+
+### 依赖配置
+
+```toml
+[dependencies]
+smol = "2"
+```
+
+### 基本用法
+
+```rust
+use smol::Timer;
+use std::time::Duration;
+
+fn main() {
+    smol::block_on(async {
+        println!("smol 运行时启动");
+
+        // 定时器
+        Timer::after(Duration::from_millis(100)).await;
+        println!("100ms 后");
+
+        // 并发任务
+        let task1 = smol::spawn(async {
+            Timer::after(Duration::from_millis(50)).await;
+            "任务1完成"
+        });
+
+        let task2 = smol::spawn(async {
+            Timer::after(Duration::from_millis(30)).await;
+            "任务2完成"
+        });
+
+        println!("{}", task1.await);
+        println!("{}", task2.await);
+    });
+}
+```
+
+### smol 的模块化设计
+
+smol 由多个小型 crate 组成，可以按需使用：
+
+```toml
+[dependencies]
+# 核心运行时
+smol = "2"
+# 或者单独使用各个组件：
+# async-io = "2"      # 异步 I/O
+# async-executor = "1" # 任务执行器
+# async-channel = "2"  # 异步通道
+# blocking = "1"       # 阻塞任务桥接
+```
+
+```rust
+use smol::Timer;
+use std::time::Duration;
+
+fn main() {
+    smol::block_on(async {
+        // smol 的 unblock 可以将同步阻塞操作转为异步
+        let result = smol::unblock(|| {
+            // 这里可以运行阻塞操作
+            std::thread::sleep(Duration::from_millis(50));
+            "阻塞操作完成"
+        })
+        .await;
+
+        println!("{}", result);
+    });
+}
+```
+
+## 🎯 API 对比
+
+| 功能 | async-std | smol |
+|------|-----------|------|
+| **入口点** | `#[async_std::main]` | `smol::block_on` |
+| **任务创建** | `task::spawn` | `smol::spawn` |
+| **休眠** | `task::sleep` | `Timer::after` |
+| **通道** | `channel::bounded` | `async-channel` |
+| **文件 I/O** | `async_std::fs` | `smol::fs` / `async-fs` |
+| **设计理念** | 镜像 std API | 极简模块化 |
+| **代码量** | 中等 | 极小（~1500行） |
+
+## 📝 实际应用示例
+
+### async-std 并行任务收集
+
+```rust
+use async_std::task;
+use std::time::Duration;
+
+async fn process_item(id: usize) -> (usize, u64) {
+    task::sleep(Duration::from_millis(50)).await;
+    let result = (id as u64 + 1) * 100;
+    (id, result)
+}
+
+#[async_std::main]
+async fn main() {
+    let mut handles = vec![];
+
+    for i in 0..5 {
+        let handle = task::spawn(process_item(i));
+        handles.push(handle);
+    }
+
+    let mut results = vec![];
+    for handle in handles {
+        results.push(handle.await);
+    }
+
+    results.sort_by_key(|&(id, _)| id);
+    for (id, value) in &results {
+        println!("任务 {}: {}", id, value);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[Tokio 生态](./06-tokio-ecosystem)**：最流行的异步运行时
+- **[运行时选择与对比](./08-runtime-comparison)**：如何在不同运行时之间做选择
+- **[Future trait](./02-future-trait)**：所有运行时都基于 Future trait
 
 ## 📝 学习检查点
 
-- [ ] 理解async-std 与 smol的核心概念
-- [ ] 能够在实际项目中应用async-std 与 smol
+- [ ] 了解 async-std 的 API 设计理念（镜像 std）
+- [ ] 了解 smol 的极简设计和模块化架构
+- [ ] 能够使用 async-std 或 smol 编写简单的异步程序
+- [ ] 理解不同运行时之间的差异
+
+## 🚀 下一步
+
+→ [运行时选择与对比](./08-runtime-comparison)

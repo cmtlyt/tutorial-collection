@@ -5,13 +5,249 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「crossbeam-channel」相关知识。
+`crossbeam-channel` 是一个高性能的第三方通道库，弥补了标准库 `mpsc` 的不足。它支持**多生产者多消费者**（MPMC）模式，提供 `select!` 宏进行多通道复用，并在性能上显著优于标准库。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+使用前需要在 `Cargo.toml` 中添加依赖：
+
+```toml
+[dependencies]
+crossbeam-channel = "0.5"
+```
+
+## 🎯 基本用法
+
+### 有界与无界通道
+
+```rust
+use crossbeam_channel::{bounded, unbounded};
+use std::thread;
+
+fn main() {
+    // 无界通道（类似 mpsc::channel）
+    let (tx, rx) = unbounded();
+    tx.send("无界通道消息").unwrap();
+    println!("无界: {}", rx.recv().unwrap());
+
+    // 有界通道（类似 mpsc::sync_channel）
+    let (tx, rx) = bounded(3);
+    tx.send(1).unwrap();
+    tx.send(2).unwrap();
+    tx.send(3).unwrap();
+    // tx.send(4).unwrap(); // 会阻塞，因为缓冲区已满
+
+    // 零容量通道（交会通道/rendezvous channel）
+    let (tx, rx) = bounded(0);
+    thread::spawn(move || {
+        // send 会阻塞直到有接收者
+        tx.send("同步握手").unwrap();
+        println!("发送完成");
+    });
+
+    // 接收者就绪后，发送才会完成
+    let msg = rx.recv().unwrap();
+    println!("零容量通道: {}", msg);
+}
+```
+
+### 多生产者多消费者
+
+```rust
+use crossbeam_channel::bounded;
+use std::thread;
+
+fn main() {
+    let (tx, rx) = bounded(10);
+
+    // 3 个生产者
+    let mut producer_handles = vec![];
+    for i in 0..3 {
+        let tx = tx.clone();
+        let handle = thread::spawn(move || {
+            for j in 0..4 {
+                let msg = format!("P{}-{}", i, j);
+                tx.send(msg).unwrap();
+            }
+        });
+        producer_handles.push(handle);
+    }
+    drop(tx); // 丢弃原始发送端
+
+    // 2 个消费者
+    let mut consumer_handles = vec![];
+    for c in 0..2 {
+        let rx = rx.clone();
+        let handle = thread::spawn(move || {
+            let mut count = 0;
+            for msg in rx {
+                println!("消费者 {} 收到: {}", c, msg);
+                count += 1;
+            }
+            println!("消费者 {} 共处理 {} 条消息", c, count);
+        });
+        consumer_handles.push(handle);
+    }
+
+    for handle in producer_handles {
+        handle.join().unwrap();
+    }
+    for handle in consumer_handles {
+        handle.join().unwrap();
+    }
+}
+```
+
+## 🎯 select! 多通道复用
+
+`select!` 宏允许同时等待多个通道的操作，类似于 Go 的 `select` 语句。
+
+```rust
+use crossbeam_channel::{bounded, select, tick, after};
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let (tx1, rx1) = bounded(1);
+    let (tx2, rx2) = bounded(1);
+
+    // 两个生产者
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(100));
+        tx1.send("来自通道1").unwrap();
+    });
+
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        tx2.send("来自通道2").unwrap();
+    });
+
+    // select! 等待最先就绪的通道
+    for _ in 0..2 {
+        select! {
+            recv(rx1) -> msg => println!("通道1: {}", msg.unwrap()),
+            recv(rx2) -> msg => println!("通道2: {}", msg.unwrap()),
+        }
+    }
+}
+```
+
+### 定时器通道
+
+```rust
+use crossbeam_channel::{bounded, select, tick, after};
+use std::time::Duration;
+
+fn main() {
+    let (tx, rx) = bounded(0);
+
+    // tick：周期性产生信号
+    let ticker = tick(Duration::from_millis(200));
+
+    // after：延迟一次性信号（用作超时）
+    let timeout = after(Duration::from_secs(1));
+
+    let mut tick_count = 0;
+
+    loop {
+        select! {
+            recv(ticker) -> _ => {
+                tick_count += 1;
+                println!("tick #{}", tick_count);
+            }
+            recv(rx) -> msg => {
+                println!("收到消息: {:?}", msg);
+            }
+            recv(timeout) -> _ => {
+                println!("超时！共收到 {} 个 tick", tick_count);
+                break;
+            }
+        }
+    }
+
+    drop(tx);
+}
+```
+
+## 🎯 crossbeam-channel vs std::sync::mpsc
+
+| 特性 | `std::sync::mpsc` | `crossbeam-channel` |
+|------|-------------------|---------------------|
+| **消费者数量** | 单消费者 | 多消费者 |
+| **select 支持** | 无 | `select!` 宏 |
+| **性能** | 一般 | 更高 |
+| **Sender 是否 Sync** | 否 | 是 |
+| **定时器通道** | 无 | `tick` / `after` |
+| **零容量通道** | 无 | 支持 |
+
+## 📝 实际应用示例
+
+### 工作窃取模式
+
+```rust
+use crossbeam_channel::unbounded;
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let (task_tx, task_rx) = unbounded();
+    let (result_tx, result_rx) = unbounded();
+
+    let worker_count = 3;
+
+    // 启动工作线程
+    let mut handles = vec![];
+    for worker_id in 0..worker_count {
+        let task_rx = task_rx.clone();
+        let result_tx = result_tx.clone();
+        let handle = thread::spawn(move || {
+            for task in task_rx {
+                let task: (usize, u64) = task;
+                let (task_id, value) = task;
+                // 模拟处理
+                thread::sleep(Duration::from_millis(50));
+                let result = value * value;
+                result_tx
+                    .send((worker_id, task_id, result))
+                    .unwrap();
+            }
+        });
+        handles.push(handle);
+    }
+
+    // 分发任务
+    for i in 0..9 {
+        task_tx.send((i, (i + 1) as u64)).unwrap();
+    }
+    drop(task_tx); // 关闭任务通道
+
+    drop(result_tx); // 丢弃原始结果发送端
+
+    // 收集结果
+    let mut results: Vec<(usize, usize, u64)> = result_rx.iter().collect();
+    results.sort_by_key(|&(_, task_id, _)| task_id);
+
+    for (worker_id, task_id, result) in &results {
+        println!("任务 {} 由 worker-{} 完成, 结果: {}", task_id, worker_id, result);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[Channel（mpsc）](./06-channel-mpsc)**：标准库的单消费者通道
+- **[Arc + Mutex 组合模式](./10-arc-mutex-pattern)**：共享状态的替代方案
+- **[select! 多路复用](../../03-async-programming/10-select-multiplexing)**：异步版本的多路复用
 
 ## 📝 学习检查点
 
-- [ ] 理解crossbeam-channel的核心概念
-- [ ] 能够在实际项目中应用crossbeam-channel
+- [ ] 理解 `crossbeam-channel` 相比标准库 `mpsc` 的优势
+- [ ] 掌握有界、无界、零容量通道的区别
+- [ ] 能够使用 `select!` 宏进行多通道复用
+- [ ] 能够实现多生产者多消费者模式
+
+## 🚀 下一步
+
+→ [Mutex 共享状态](./08-mutex-shared-state)

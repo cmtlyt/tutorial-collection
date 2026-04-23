@@ -5,13 +5,254 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「select! 多路复用」相关知识。
+`tokio::select!` 宏允许同时等待多个异步操作，当**任意一个**操作完成时立即处理其结果，其他操作会被丢弃。这类似于 Go 的 `select` 语句或 Unix 的 `select`/`epoll` 系统调用，是实现超时、竞争、取消等模式的核心工具。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本用法
+
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn task_fast() -> &'static str {
+    sleep(Duration::from_millis(50)).await;
+    "快速任务"
+}
+
+async fn task_slow() -> &'static str {
+    sleep(Duration::from_millis(200)).await;
+    "慢速任务"
+}
+
+#[tokio::main]
+async fn main() {
+    // select! 等待最先完成的 Future
+    tokio::select! {
+        result = task_fast() => {
+            println!("先完成的是: {}", result);
+        }
+        result = task_slow() => {
+            println!("先完成的是: {}", result);
+        }
+    }
+    // 输出: 先完成的是: 快速任务
+    // task_slow 被自动取消
+}
+```
+
+## 🎯 实现超时
+
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn long_running_operation() -> String {
+    sleep(Duration::from_millis(500)).await;
+    String::from("操作完成")
+}
+
+#[tokio::main]
+async fn main() {
+    // 方式1：使用 select! 实现超时
+    tokio::select! {
+        result = long_running_operation() => {
+            println!("操作成功: {}", result);
+        }
+        _ = sleep(Duration::from_millis(100)) => {
+            println!("操作超时！");
+        }
+    }
+
+    // 方式2：使用 tokio::time::timeout（更简洁）
+    match tokio::time::timeout(
+        Duration::from_millis(100),
+        long_running_operation(),
+    )
+    .await
+    {
+        Ok(result) => println!("成功: {}", result),
+        Err(_) => println!("超时"),
+    }
+}
+```
+
+## 🎯 循环中的 select!
+
+```rust
+use tokio::sync::mpsc;
+use tokio::time::{sleep, interval, Duration};
+
+#[tokio::main]
+async fn main() {
+    let (tx, mut rx) = mpsc::channel::<String>(32);
+    let mut ticker = interval(Duration::from_millis(200));
+
+    // 模拟发送者
+    tokio::spawn(async move {
+        for i in 0..3 {
+            sleep(Duration::from_millis(150)).await;
+            tx.send(format!("消息 {}", i)).await.unwrap();
+        }
+        // tx 离开作用域，通道关闭
+    });
+
+    let timeout = sleep(Duration::from_secs(1));
+    tokio::pin!(timeout);
+
+    loop {
+        tokio::select! {
+            Some(msg) = rx.recv() => {
+                println!("收到: {}", msg);
+            }
+            _ = ticker.tick() => {
+                println!("心跳 tick");
+            }
+            _ = &mut timeout => {
+                println!("总超时，退出循环");
+                break;
+            }
+        }
+    }
+}
+```
+
+## 🎯 select! 与通道
+
+```rust
+use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration};
+
+async fn producer(tx: mpsc::Sender<String>, name: &str, delay_ms: u64) {
+    for i in 0..3 {
+        sleep(Duration::from_millis(delay_ms)).await;
+        let msg = format!("[{}] 消息 {}", name, i);
+        if tx.send(msg).await.is_err() {
+            break;
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let (tx1, mut rx1) = mpsc::channel(10);
+    let (tx2, mut rx2) = mpsc::channel(10);
+
+    tokio::spawn(producer(tx1, "生产者A", 100));
+    tokio::spawn(producer(tx2, "生产者B", 150));
+
+    let mut count = 0;
+
+    loop {
+        tokio::select! {
+            Some(msg) = rx1.recv() => {
+                println!("通道1: {}", msg);
+                count += 1;
+            }
+            Some(msg) = rx2.recv() => {
+                println!("通道2: {}", msg);
+                count += 1;
+            }
+            else => {
+                println!("所有通道已关闭");
+                break;
+            }
+        }
+    }
+
+    println!("共处理 {} 条消息", count);
+}
+```
+
+## 🎯 biased 模式
+
+默认情况下，当多个分支同时就绪时，`select!` 会随机选择一个。使用 `biased` 可以按声明顺序优先选择。
+
+```rust
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() {
+    let (tx1, mut rx1) = mpsc::channel(10);
+    let (tx2, mut rx2) = mpsc::channel(10);
+
+    // 同时发送消息到两个通道
+    tx1.send("高优先级").await.unwrap();
+    tx2.send("低优先级").await.unwrap();
+
+    // biased 模式：按声明顺序优先匹配
+    tokio::select! {
+        biased;
+
+        msg = rx1.recv() => {
+            println!("优先处理通道1: {:?}", msg);
+        }
+        msg = rx2.recv() => {
+            println!("处理通道2: {:?}", msg);
+        }
+    }
+
+    // 处理剩余消息
+    if let Some(msg) = rx2.recv().await {
+        println!("后续处理: {}", msg);
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 优雅关闭服务
+
+```rust
+use tokio::signal;
+use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration};
+
+async fn run_service(mut shutdown_rx: mpsc::Receiver<()>) {
+    let mut request_count = 0u64;
+
+    loop {
+        tokio::select! {
+            _ = sleep(Duration::from_millis(100)) => {
+                request_count += 1;
+                println!("处理请求 #{}", request_count);
+            }
+            _ = shutdown_rx.recv() => {
+                println!("收到关闭信号，开始优雅关闭...");
+                println!("共处理了 {} 个请求", request_count);
+                break;
+            }
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+
+    let service_handle = tokio::spawn(run_service(shutdown_rx));
+
+    // 模拟运行一段时间后关闭
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(550)).await;
+        println!("发送关闭信号...");
+        let _ = shutdown_tx.send(()).await;
+    });
+
+    service_handle.await.unwrap();
+    println!("服务已安全关闭");
+}
+```
+
+## 🔗 相关概念
+
+- **[tokio::spawn](./09-tokio-spawn)**：创建并发任务
+- **[join! 并行等待](./11-join-parallel-await)**：等待所有任务（对比 select! 等待任一）
+- **[异步锁与同步原语](./13-async-synchronization-primitives)**：通道与锁在 select! 中的使用
 
 ## 📝 学习检查点
 
-- [ ] 理解select! 多路复用的核心概念
-- [ ] 能够在实际项目中应用select! 多路复用
+- [ ] 理解 `select!` 等待最先完成的 Future 的行为
+- [ ] 能够使用 `select!` 实现超时和取消
+- [ ] 掌握在循环中使用 `select!` 处理多个事件源
+- [ ] 了解 `biased` 模式的作用
+
+## 🚀 下一步
+
+→ [join! 并行等待](./11-join-parallel-await)

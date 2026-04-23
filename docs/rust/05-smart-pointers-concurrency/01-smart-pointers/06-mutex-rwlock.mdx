@@ -5,13 +5,286 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解智能指针中的「Mutex 与 RwLock」相关知识。
+`Mutex<T>`（互斥锁）和 `RwLock<T>`（读写锁）是 Rust 标准库提供的线程安全的内部可变性工具。它们通过锁机制保证在同一时刻只有一个线程可以修改数据，从而在编译期和运行时共同确保线程安全。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+- **`Mutex<T>`**：互斥锁，同一时刻只有一个线程可以访问数据（不区分读写）
+- **`RwLock<T>`**：读写锁，允许多个线程同时读取，但写入时必须独占
+
+## 🎯 Mutex 基本用法
+
+```rust
+use std::sync::Mutex;
+
+fn main() {
+    let data = Mutex::new(vec![1, 2, 3]);
+
+    // 获取锁，返回 MutexGuard（RAII 守卫）
+    {
+        let mut guard = data.lock().unwrap();
+        guard.push(4);
+        guard.push(5);
+        println!("锁内数据: {:?}", *guard);
+        // guard 离开作用域时自动释放锁
+    }
+
+    // 锁已释放，可以再次获取
+    let guard = data.lock().unwrap();
+    println!("最终数据: {:?}", *guard);
+}
+```
+
+### lock 与 try_lock
+
+```rust
+use std::sync::Mutex;
+
+fn main() {
+    let data = Mutex::new(42);
+
+    // lock：阻塞等待直到获取锁
+    let guard = data.lock().unwrap();
+    println!("lock 获取的值: {}", *guard);
+
+    // try_lock：非阻塞尝试获取锁
+    match data.try_lock() {
+        Ok(value) => println!("try_lock 成功: {}", *value),
+        Err(_) => println!("try_lock 失败: 锁已被占用"),
+    }
+
+    // 释放第一个锁
+    drop(guard);
+
+    // 现在 try_lock 可以成功
+    match data.try_lock() {
+        Ok(value) => println!("try_lock 成功: {}", *value),
+        Err(_) => println!("try_lock 失败"),
+    }
+}
+```
+
+### 中毒的 Mutex
+
+当持有锁的线程 panic 时，`Mutex` 会进入"中毒"状态，后续的 `lock` 调用会返回 `Err`。
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn main() {
+    let data = Arc::new(Mutex::new(vec![1, 2, 3]));
+
+    let data_clone = Arc::clone(&data);
+    let handle = thread::spawn(move || {
+        let mut guard = data_clone.lock().unwrap();
+        guard.push(4);
+        panic!("线程 panic！");
+    });
+
+    // 等待线程结束（会 panic）
+    let _ = handle.join();
+
+    // Mutex 已中毒，但仍可恢复数据
+    match data.lock() {
+        Ok(guard) => println!("正常获取: {:?}", *guard),
+        Err(poisoned) => {
+            println!("Mutex 已中毒，恢复数据");
+            let guard = poisoned.into_inner();
+            println!("恢复的数据: {:?}", *guard);
+        }
+    }
+}
+```
+
+## 🎯 RwLock 基本用法
+
+```rust
+use std::sync::RwLock;
+
+fn main() {
+    let data = RwLock::new(vec![1, 2, 3]);
+
+    // 多个读者可以同时持有读锁
+    {
+        let reader1 = data.read().unwrap();
+        let reader2 = data.read().unwrap();
+        println!("reader1: {:?}", *reader1);
+        println!("reader2: {:?}", *reader2);
+        // 两个读锁同时存在，没问题
+    }
+
+    // 写锁是独占的
+    {
+        let mut writer = data.write().unwrap();
+        writer.push(4);
+        writer.push(5);
+        // 持有写锁期间，不能有其他读锁或写锁
+    }
+
+    let reader = data.read().unwrap();
+    println!("写入后: {:?}", *reader);
+}
+```
+
+## 🎯 Mutex vs RwLock 对比
+
+| 特性 | `Mutex<T>` | `RwLock<T>` |
+|------|-----------|-------------|
+| **读操作** | 独占（一次一个） | 共享（多个同时） |
+| **写操作** | 独占 | 独占 |
+| **适用场景** | 频繁写入 | 读多写少 |
+| **性能** | 较简单，开销小 | 更复杂，读多时优势大 |
+| **死锁风险** | 较低 | 写者饥饿风险 |
+
+```rust
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
+use std::time::Instant;
+
+fn benchmark_mutex(iterations: u32) {
+    let data = Arc::new(Mutex::new(0u64));
+    let start = Instant::now();
+    let mut handles = vec![];
+
+    for _ in 0..4 {
+        let data_clone = Arc::clone(&data);
+        let handle = thread::spawn(move || {
+            for _ in 0..iterations {
+                let guard = data_clone.lock().unwrap();
+                let _ = *guard; // 只读操作
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("Mutex 读取耗时: {:?}", start.elapsed());
+}
+
+fn benchmark_rwlock(iterations: u32) {
+    let data = Arc::new(RwLock::new(0u64));
+    let start = Instant::now();
+    let mut handles = vec![];
+
+    for _ in 0..4 {
+        let data_clone = Arc::clone(&data);
+        let handle = thread::spawn(move || {
+            for _ in 0..iterations {
+                let guard = data_clone.read().unwrap();
+                let _ = *guard; // 只读操作
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("RwLock 读取耗时: {:?}", start.elapsed());
+}
+
+fn main() {
+    let iterations = 100_000;
+    println!("每线程 {} 次读操作，4 个线程：", iterations);
+    benchmark_mutex(iterations);
+    benchmark_rwlock(iterations);
+}
+```
+
+## 📝 实际应用示例
+
+### 线程安全的缓存
+
+```rust
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use std::thread;
+
+struct Cache {
+    store: RwLock<HashMap<String, String>>,
+}
+
+impl Cache {
+    fn new() -> Self {
+        Cache {
+            store: RwLock::new(HashMap::new()),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        let store = self.store.read().unwrap();
+        store.get(key).cloned()
+    }
+
+    fn set(&self, key: String, value: String) {
+        let mut store = self.store.write().unwrap();
+        store.insert(key, value);
+    }
+
+    fn len(&self) -> usize {
+        let store = self.store.read().unwrap();
+        store.len()
+    }
+}
+
+fn main() {
+    let cache = Arc::new(Cache::new());
+    let mut handles = vec![];
+
+    // 写入线程
+    for i in 0..4 {
+        let cache_clone = Arc::clone(&cache);
+        let handle = thread::spawn(move || {
+            let key = format!("key_{}", i);
+            let value = format!("value_{}", i);
+            cache_clone.set(key.clone(), value);
+            println!("写入: {} -> {}", key, cache_clone.get(&key).unwrap());
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // 读取线程
+    let mut read_handles = vec![];
+    for i in 0..4 {
+        let cache_clone = Arc::clone(&cache);
+        let handle = thread::spawn(move || {
+            let key = format!("key_{}", i);
+            match cache_clone.get(&key) {
+                Some(value) => println!("读取 {}: {}", key, value),
+                None => println!("读取 {}: 不存在", key),
+            }
+        });
+        read_handles.push(handle);
+    }
+
+    for handle in read_handles {
+        handle.join().unwrap();
+    }
+
+    println!("缓存大小: {}", cache.len());
+}
+```
+
+## 🔗 相关概念
+
+- **[Arc（原子引用计数）](./04-arc-atomic-reference-counting)**：与 `Mutex`/`RwLock` 配合在线程间共享
+- **[Cell / RefCell](./05-cell-refcell-interior-mutability)**：单线程版本的内部可变性
+- **[Deref 与自动解引用](./07-deref-auto-dereferencing)**：`MutexGuard` 实现了 `Deref`
 
 ## 📝 学习检查点
 
-- [ ] 理解Mutex 与 RwLock的核心概念
-- [ ] 能够在实际项目中应用Mutex 与 RwLock
+- [ ] 理解 `Mutex<T>` 的锁机制和 RAII 守卫
+- [ ] 掌握 `RwLock<T>` 的读写分离特性
+- [ ] 知道何时选择 `Mutex` vs `RwLock`
+- [ ] 理解 Mutex 中毒和恢复机制
+
+## 🚀 下一步
+
+→ [Deref 与自动解引用](./07-deref-auto-dereferencing)

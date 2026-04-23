@@ -5,13 +5,349 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解智能指针中的「Box（堆分配）」相关知识。
+`Box<T>` 是 Rust 中最简单的智能指针，它将数据分配在堆上，并在栈上保留一个指向堆数据的指针。当 `Box` 离开作用域时，堆上的数据会自动被释放。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+`Box<T>` 常用于以下场景：
+- **编译期大小未知的类型**：如递归类型（链表、树）
+- **大量数据的所有权转移**：避免拷贝栈上的大数据
+- **trait 对象**：`Box<dyn Trait>` 实现动态分发
+
+## 🎯 基本用法
+
+### 在堆上存储数据
+
+```rust
+fn main() {
+    // 将 i32 值存储在堆上
+    let boxed_value = Box::new(42);
+    println!("堆上的值: {}", boxed_value);
+
+    // Box 实现了 Deref，可以像普通引用一样使用
+    let sum = *boxed_value + 8;
+    println!("计算结果: {}", sum);
+
+    // boxed_value 离开作用域时，堆内存自动释放
+}
+```
+
+### 所有权转移
+
+```rust
+fn main() {
+    let boxed = Box::new(String::from("hello"));
+    println!("原始值: {}", boxed);
+
+    // 所有权转移到新变量
+    let moved = boxed;
+    // println!("{}", boxed); // 编译错误：值已被移动
+    println!("移动后: {}", moved);
+
+    // 转移到函数中
+    take_ownership(moved);
+    // println!("{}", moved); // 编译错误：值已被移动
+}
+
+fn take_ownership(data: Box<String>) {
+    println!("函数内接收到: {}", data);
+    // data 在函数结束时被释放
+}
+```
+
+## 🎯 递归类型
+
+`Box` 最经典的用途是定义递归类型。Rust 需要在编译期知道每个类型的大小，但递归类型的大小在理论上是无限的。`Box` 提供了一个固定大小的指针来打破这个限制。
+
+### 链表
+
+```rust
+// 没有 Box 无法编译：编译器不知道 List 的大小
+// enum List {
+//     Cons(i32, List),  // 错误！无限递归的大小
+//     Nil,
+// }
+
+// 使用 Box 包装递归部分
+enum List {
+    Cons(i32, Box<List>),
+    Nil,
+}
+
+impl List {
+    fn new() -> Self {
+        List::Nil
+    }
+
+    fn push(self, value: i32) -> Self {
+        List::Cons(value, Box::new(self))
+    }
+
+    fn to_vec(&self) -> Vec<i32> {
+        let mut result = Vec::new();
+        let mut current = self;
+        while let List::Cons(value, next) = current {
+            result.push(*value);
+            current = next;
+        }
+        result
+    }
+}
+
+fn main() {
+    let list = List::new()
+        .push(1)
+        .push(2)
+        .push(3);
+
+    println!("链表内容: {:?}", list.to_vec());
+    // 输出: 链表内容: [3, 2, 1]
+}
+```
+
+### 二叉树
+
+```rust
+#[derive(Debug)]
+enum Tree<T: std::fmt::Debug> {
+    Leaf(T),
+    Node {
+        value: T,
+        left: Box<Tree<T>>,
+        right: Box<Tree<T>>,
+    },
+}
+
+impl<T: std::fmt::Debug + std::fmt::Display> Tree<T> {
+    fn leaf(value: T) -> Self {
+        Tree::Leaf(value)
+    }
+
+    fn node(value: T, left: Tree<T>, right: Tree<T>) -> Self {
+        Tree::Node {
+            value,
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+
+    fn depth(&self) -> usize {
+        match self {
+            Tree::Leaf(_) => 1,
+            Tree::Node { left, right, .. } => {
+                1 + left.depth().max(right.depth())
+            }
+        }
+    }
+
+    fn print_inorder(&self) {
+        match self {
+            Tree::Leaf(value) => print!("{} ", value),
+            Tree::Node { value, left, right } => {
+                left.print_inorder();
+                print!("{} ", value);
+                right.print_inorder();
+            }
+        }
+    }
+}
+
+fn main() {
+    let tree = Tree::node(
+        4,
+        Tree::node(2, Tree::leaf(1), Tree::leaf(3)),
+        Tree::node(6, Tree::leaf(5), Tree::leaf(7)),
+    );
+
+    println!("树的深度: {}", tree.depth());
+    print!("中序遍历: ");
+    tree.print_inorder();
+    println!();
+    // 输出:
+    // 树的深度: 3
+    // 中序遍历: 1 2 3 4 5 6 7
+}
+```
+
+## 🎯 trait 对象与动态分发
+
+`Box<dyn Trait>` 允许在运行时使用不同的具体类型，实现动态分发。
+
+```rust
+trait Shape {
+    fn area(&self) -> f64;
+    fn name(&self) -> &str;
+}
+
+struct Circle {
+    radius: f64,
+}
+
+impl Shape for Circle {
+    fn area(&self) -> f64 {
+        std::f64::consts::PI * self.radius * self.radius
+    }
+
+    fn name(&self) -> &str {
+        "圆形"
+    }
+}
+
+struct Rectangle {
+    width: f64,
+    height: f64,
+}
+
+impl Shape for Rectangle {
+    fn area(&self) -> f64 {
+        self.width * self.height
+    }
+
+    fn name(&self) -> &str {
+        "矩形"
+    }
+}
+
+fn print_shape_info(shape: &dyn Shape) {
+    println!("{} 的面积: {:.2}", shape.name(), shape.area());
+}
+
+fn main() {
+    // 使用 Box<dyn Shape> 存储不同类型的图形
+    let shapes: Vec<Box<dyn Shape>> = vec![
+        Box::new(Circle { radius: 5.0 }),
+        Box::new(Rectangle { width: 4.0, height: 6.0 }),
+        Box::new(Circle { radius: 3.0 }),
+    ];
+
+    for shape in &shapes {
+        print_shape_info(shape.as_ref());
+    }
+
+    // 计算总面积
+    let total_area: f64 = shapes.iter().map(|s| s.area()).sum();
+    println!("总面积: {:.2}", total_area);
+}
+```
+
+## 🎯 Box 与栈内存对比
+
+```rust
+use std::mem;
+
+struct LargeStruct {
+    data: [u8; 1024 * 1024], // 1MB 的数据
+}
+
+fn main() {
+    // Box<T> 在栈上只占一个指针的大小
+    println!("Box<i32> 大小: {} 字节", mem::size_of::<Box<i32>>());
+    println!("Box<[u8; 1000]> 大小: {} 字节", mem::size_of::<Box<[u8; 1000]>>());
+    println!("Box<LargeStruct> 大小: {} 字节", mem::size_of::<Box<LargeStruct>>());
+
+    // 对比：直接在栈上的大小
+    println!("i32 大小: {} 字节", mem::size_of::<i32>());
+    println!("[u8; 1000] 大小: {} 字节", mem::size_of::<[u8; 1000]>());
+
+    // 通过 Box 将大数据放到堆上，避免栈溢出
+    let large = Box::new(LargeStruct {
+        data: [0u8; 1024 * 1024],
+    });
+    println!("成功在堆上分配了 1MB 数据");
+    println!("数据首字节: {}", large.data[0]);
+}
+```
+
+## 📝 实际应用示例
+
+### 使用 Box 实现命令模式
+
+```rust
+trait Command {
+    fn execute(&self);
+    fn description(&self) -> &str;
+}
+
+struct PrintCommand {
+    message: String,
+}
+
+impl Command for PrintCommand {
+    fn execute(&self) {
+        println!("[打印] {}", self.message);
+    }
+
+    fn description(&self) -> &str {
+        "打印消息"
+    }
+}
+
+struct CalculateCommand {
+    a: f64,
+    b: f64,
+}
+
+impl Command for CalculateCommand {
+    fn execute(&self) {
+        println!("[计算] {} + {} = {}", self.a, self.b, self.a + self.b);
+    }
+
+    fn description(&self) -> &str {
+        "执行加法计算"
+    }
+}
+
+struct CommandQueue {
+    commands: Vec<Box<dyn Command>>,
+}
+
+impl CommandQueue {
+    fn new() -> Self {
+        CommandQueue {
+            commands: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, command: Box<dyn Command>) {
+        println!("添加命令: {}", command.description());
+        self.commands.push(command);
+    }
+
+    fn execute_all(&self) {
+        println!("--- 执行所有命令 ---");
+        for command in &self.commands {
+            command.execute();
+        }
+        println!("--- 执行完毕 ---");
+    }
+}
+
+fn main() {
+    let mut queue = CommandQueue::new();
+
+    queue.add(Box::new(PrintCommand {
+        message: String::from("Hello, Rust!"),
+    }));
+    queue.add(Box::new(CalculateCommand { a: 3.14, b: 2.72 }));
+    queue.add(Box::new(PrintCommand {
+        message: String::from("命令模式示例"),
+    }));
+
+    queue.execute_all();
+}
+```
+
+## 🔗 相关概念
+
+- **[Rc（引用计数）](./03-rc-reference-counting)**：需要多个所有者时使用 `Rc` 替代 `Box`
+- **[Deref 与自动解引用](./07-deref-auto-dereferencing)**：`Box` 实现了 `Deref` trait
+- **[Drop 与析构顺序](./08-drop-destruction-order)**：`Box` 离开作用域时自动释放堆内存
 
 ## 📝 学习检查点
 
-- [ ] 理解Box（堆分配）的核心概念
-- [ ] 能够在实际项目中应用Box（堆分配）
+- [ ] 理解 `Box<T>` 将数据存储在堆上的原理
+- [ ] 能够使用 `Box` 定义递归数据结构
+- [ ] 掌握 `Box<dyn Trait>` 实现动态分发
+- [ ] 理解 `Box` 与栈分配在性能上的权衡
+
+## 🚀 下一步
+
+→ [Rc（引用计数）](./03-rc-reference-counting)

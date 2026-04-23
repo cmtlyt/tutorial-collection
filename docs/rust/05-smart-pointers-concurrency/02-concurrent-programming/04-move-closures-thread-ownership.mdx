@@ -5,13 +5,248 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「move 闭包与线程所有权」相关知识。
+在 Rust 中，`thread::spawn` 接受的闭包必须满足 `'static` 生命周期，因为新线程可能比创建它的上下文活得更久。`move` 关键字会将闭包捕获的所有变量的所有权**转移**到闭包内部，确保线程拥有其使用的所有数据。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 为什么需要 move
+
+### 不使用 move 的问题
+
+```rust
+use std::thread;
+
+fn main() {
+    let message = String::from("hello");
+
+    // 编译错误：闭包可能比 message 活得更久
+    // let handle = thread::spawn(|| {
+    //     println!("{}", message);
+    // });
+
+    // 使用 move 转移所有权
+    let handle = thread::spawn(move || {
+        println!("线程中: {}", message);
+    });
+
+    // println!("{}", message); // 编译错误：message 已被移动
+    handle.join().unwrap();
+}
+```
+
+### Copy 类型的 move
+
+```rust
+use std::thread;
+
+fn main() {
+    let number = 42; // i32 实现了 Copy
+
+    let handle = thread::spawn(move || {
+        // number 被拷贝到闭包中
+        println!("线程中的数字: {}", number);
+    });
+
+    // 原始 number 仍然可用（因为是 Copy 的）
+    println!("主线程中的数字: {}", number);
+    handle.join().unwrap();
+}
+```
+
+## 🎯 move 与所有权转移
+
+### 非 Copy 类型的移动
+
+```rust
+use std::thread;
+
+fn main() {
+    let data = vec![1, 2, 3, 4, 5];
+
+    let handle = thread::spawn(move || {
+        // data 的所有权被转移到这个线程
+        let sum: i32 = data.iter().sum();
+        println!("数据: {:?}, 和: {}", data, sum);
+        sum
+    });
+
+    // data 不再可用
+    // println!("{:?}", data); // 编译错误
+
+    let result = handle.join().unwrap();
+    println!("结果: {}", result);
+}
+```
+
+### 多个变量的 move
+
+```rust
+use std::thread;
+
+fn main() {
+    let name = String::from("Rust");
+    let numbers = vec![10, 20, 30];
+    let flag = true;
+
+    // move 会将所有被引用的变量一起移动
+    let handle = thread::spawn(move || {
+        println!("名称: {}", name);
+        println!("数字: {:?}", numbers);
+        println!("标志: {}", flag);
+    });
+
+    // name 和 numbers 不再可用，flag 仍可用（Copy 类型）
+    println!("flag 仍可用: {}", flag);
+    handle.join().unwrap();
+}
+```
+
+## 🎯 共享数据的策略
+
+### 克隆后移动
+
+```rust
+use std::thread;
+
+fn main() {
+    let config = String::from("production");
+
+    let mut handles = vec![];
+
+    for i in 0..3 {
+        // 每个线程获得 config 的独立副本
+        let config_clone = config.clone();
+        let handle = thread::spawn(move || {
+            println!("线程 {} 使用配置: {}", i, config_clone);
+        });
+        handles.push(handle);
+    }
+
+    // 原始 config 仍然可用
+    println!("主线程配置: {}", config);
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+```
+
+### 使用 Arc 共享数据
+
+```rust
+use std::sync::Arc;
+use std::thread;
+
+fn main() {
+    let data = Arc::new(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+    let mut handles = vec![];
+
+    for i in 0..3 {
+        let data_clone = Arc::clone(&data);
+        let handle = thread::spawn(move || {
+            let sum: i32 = data_clone.iter().sum();
+            println!("线程 {}: 数据之和 = {}", i, sum);
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // 原始 Arc 仍然可用
+    println!("主线程中的数据: {:?}", data);
+}
+```
+
+## 🎯 部分移动与借用
+
+### 只移动需要的数据
+
+```rust
+use std::thread;
+
+fn main() {
+    let name = String::from("Alice");
+    let age = 30u32;
+    let scores = vec![90, 85, 92];
+
+    // 只移动 name 到线程中
+    let name_for_thread = name; // 显式移动
+    let handle = thread::spawn(move || {
+        println!("名字: {}", name_for_thread);
+        // 可以使用 move 捕获的 age（Copy）
+    });
+
+    // age 和 scores 仍然可用
+    println!("年龄: {}, 成绩: {:?}", age, scores);
+    handle.join().unwrap();
+}
+```
+
+## 📝 实际应用示例
+
+### 并行数据处理管道
+
+```rust
+use std::sync::Arc;
+use std::thread;
+
+struct DataProcessor {
+    multiplier: f64,
+    label: String,
+}
+
+impl DataProcessor {
+    fn process(&self, data: &[i32]) -> Vec<f64> {
+        data.iter()
+            .map(|&x| x as f64 * self.multiplier)
+            .collect()
+    }
+}
+
+fn main() {
+    let raw_data = Arc::new(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+
+    let processors = vec![
+        DataProcessor { multiplier: 1.5, label: String::from("处理器A") },
+        DataProcessor { multiplier: 2.0, label: String::from("处理器B") },
+        DataProcessor { multiplier: 0.5, label: String::from("处理器C") },
+    ];
+
+    let mut handles = vec![];
+
+    for processor in processors {
+        let data_clone = Arc::clone(&raw_data);
+        // processor 被 move 到线程中
+        let handle = thread::spawn(move || {
+            let result = processor.process(&data_clone);
+            println!("[{}] 处理结果: {:?}", processor.label, result);
+            result
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        let result = handle.join().unwrap();
+        let sum: f64 = result.iter().sum();
+        println!("结果之和: {:.1}", sum);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[线程创建与管理](./02-thread-creation-management)**：`thread::spawn` 与 `move` 配合使用
+- **[JoinHandle 与线程等待](./03-join-handle)**：获取移动到线程中的数据处理结果
+- **[Arc + Mutex 组合模式](./10-arc-mutex-pattern)**：在线程间安全地共享可变数据
 
 ## 📝 学习检查点
 
-- [ ] 理解move 闭包与线程所有权的核心概念
-- [ ] 能够在实际项目中应用move 闭包与线程所有权
+- [ ] 理解为什么 `thread::spawn` 通常需要 `move`
+- [ ] 区分 `Copy` 类型和非 `Copy` 类型在 `move` 中的行为
+- [ ] 掌握克隆 vs `Arc` 两种共享数据策略
+- [ ] 能够正确管理多线程中的所有权
+
+## 🚀 下一步
+
+→ [线程局部存储](./05-thread-local-storage)

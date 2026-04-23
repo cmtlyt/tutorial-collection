@@ -5,13 +5,246 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「并发任务（tokio::spawn）」相关知识。
+`tokio::spawn` 创建一个异步任务并提交给 Tokio 运行时调度执行。与顺序 `.await` 不同，`spawn` 创建的任务会立即开始**并发执行**，不需要等待上一个任务完成。它返回一个 `JoinHandle`，可用于获取任务结果。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+`tokio::spawn` 的约束：
+- Future 必须实现 `Send`（因为可能在不同线程上执行）
+- Future 必须满足 `'static` 生命周期（不能借用局部变量）
+
+## 🎯 基本用法
+
+```rust
+use tokio::time::{sleep, Duration};
+
+#[tokio::main]
+async fn main() {
+    // spawn 创建一个并发任务
+    let handle = tokio::spawn(async {
+        sleep(Duration::from_millis(100)).await;
+        "任务完成"
+    });
+
+    println!("任务已创建，继续执行其他工作...");
+
+    // 等待任务完成并获取结果
+    let result = handle.await.unwrap();
+    println!("结果: {}", result);
+}
+```
+
+### 顺序 vs 并发
+
+```rust
+use tokio::time::{sleep, Duration, Instant};
+
+async fn slow_operation(id: u32, delay_ms: u64) -> u32 {
+    sleep(Duration::from_millis(delay_ms)).await;
+    id
+}
+
+#[tokio::main]
+async fn main() {
+    // 顺序执行：总耗时 = 100 + 200 + 150 = 450ms
+    let start = Instant::now();
+    let r1 = slow_operation(1, 100).await;
+    let r2 = slow_operation(2, 200).await;
+    let r3 = slow_operation(3, 150).await;
+    println!(
+        "顺序执行: [{}, {}, {}] 耗时 {:?}",
+        r1, r2, r3,
+        start.elapsed()
+    );
+
+    // 并发执行：总耗时 ≈ max(100, 200, 150) = 200ms
+    let start = Instant::now();
+    let h1 = tokio::spawn(slow_operation(1, 100));
+    let h2 = tokio::spawn(slow_operation(2, 200));
+    let h3 = tokio::spawn(slow_operation(3, 150));
+
+    let r1 = h1.await.unwrap();
+    let r2 = h2.await.unwrap();
+    let r3 = h3.await.unwrap();
+    println!(
+        "并发执行: [{}, {}, {}] 耗时 {:?}",
+        r1, r2, r3,
+        start.elapsed()
+    );
+}
+```
+
+## 🎯 JoinHandle 与错误处理
+
+```rust
+use tokio::time::{sleep, Duration};
+
+#[tokio::main]
+async fn main() {
+    // 正常完成的任务
+    let handle = tokio::spawn(async { 42 });
+    match handle.await {
+        Ok(value) => println!("正常: {}", value),
+        Err(e) => println!("错误: {}", e),
+    }
+
+    // panic 的任务
+    let handle = tokio::spawn(async {
+        panic!("任务出错了！");
+    });
+    match handle.await {
+        Ok(_) => println!("不会到这里"),
+        Err(e) => {
+            if e.is_panic() {
+                println!("任务 panic 了: {}", e);
+            }
+        }
+    }
+
+    // 取消任务
+    let handle = tokio::spawn(async {
+        sleep(Duration::from_secs(10)).await;
+        "不会返回"
+    });
+
+    // abort 取消任务
+    handle.abort();
+
+    match handle.await {
+        Ok(_) => println!("不会到这里"),
+        Err(e) => {
+            if e.is_cancelled() {
+                println!("任务已取消");
+            }
+        }
+    }
+
+    println!("主任务继续执行");
+}
+```
+
+## 🎯 spawn 的 Send + 'static 约束
+
+```rust
+use std::sync::Arc;
+use tokio::time::{sleep, Duration};
+
+#[tokio::main]
+async fn main() {
+    let data = String::from("hello");
+
+    // 编译错误：不能借用局部变量
+    // tokio::spawn(async {
+    //     println!("{}", data); // data 不满足 'static
+    // });
+
+    // 方案1：move 所有权到任务中
+    let data_clone = data.clone();
+    tokio::spawn(async move {
+        println!("move: {}", data_clone);
+    })
+    .await
+    .unwrap();
+
+    // 方案2：使用 Arc 共享
+    let shared = Arc::new(data);
+    for i in 0..3 {
+        let shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            println!("Arc 线程 {}: {}", i, shared);
+        });
+    }
+
+    sleep(Duration::from_millis(50)).await;
+}
+```
+
+## 🎯 spawn_blocking：桥接阻塞操作
+
+```rust
+use tokio::time::Instant;
+
+#[tokio::main]
+async fn main() {
+    let start = Instant::now();
+
+    // spawn_blocking 在专门的线程池中运行阻塞操作
+    let handle = tokio::task::spawn_blocking(|| {
+        // CPU 密集型或阻塞 I/O 操作
+        let mut sum: u64 = 0;
+        for i in 0..10_000_000 {
+            sum += i;
+        }
+        sum
+    });
+
+    // 同时可以做其他异步工作
+    println!("阻塞任务运行中，异步工作继续...");
+
+    let result = handle.await.unwrap();
+    println!("计算结果: {} (耗时 {:?})", result, start.elapsed());
+}
+```
+
+## 📝 实际应用示例
+
+### 并发 API 请求模拟
+
+```rust
+use tokio::time::{sleep, Duration, Instant};
+use std::sync::Arc;
+
+async fn fetch_user(user_id: u32) -> String {
+    sleep(Duration::from_millis(100)).await;
+    format!("User-{}", user_id)
+}
+
+async fn fetch_orders(user_id: u32) -> Vec<String> {
+    sleep(Duration::from_millis(150)).await;
+    vec![
+        format!("Order-{}-001", user_id),
+        format!("Order-{}-002", user_id),
+    ]
+}
+
+async fn fetch_profile(user_id: u32) -> String {
+    sleep(Duration::from_millis(80)).await;
+    format!("Profile-{}", user_id)
+}
+
+#[tokio::main]
+async fn main() {
+    let user_id = 42;
+    let start = Instant::now();
+
+    // 并发发起三个请求
+    let user_handle = tokio::spawn(fetch_user(user_id));
+    let orders_handle = tokio::spawn(fetch_orders(user_id));
+    let profile_handle = tokio::spawn(fetch_profile(user_id));
+
+    // 等待所有结果
+    let user = user_handle.await.unwrap();
+    let orders = orders_handle.await.unwrap();
+    let profile = profile_handle.await.unwrap();
+
+    println!("用户: {}", user);
+    println!("订单: {:?}", orders);
+    println!("资料: {}", profile);
+    println!("并发耗时: {:?}", start.elapsed());
+}
+```
+
+## 🔗 相关概念
+
+- **[select! 多路复用](./10-select-multiplexing)**：等待最先完成的任务
+- **[join! 并行等待](./11-join-parallel-await)**：等待所有任务完成的便捷宏
+- **[异步锁与同步原语](./13-async-synchronization-primitives)**：spawn 任务间的数据共享
 
 ## 📝 学习检查点
 
-- [ ] 理解并发任务（tokio::spawn）的核心概念
-- [ ] 能够在实际项目中应用并发任务（tokio::spawn）
+- [ ] 理解 `tokio::spawn` 与顺序 `.await` 的区别
+- [ ] 掌握 `JoinHandle` 的使用和错误处理
+- [ ] 理解 `Send + 'static` 约束的原因
+- [ ] 能够使用 `spawn_blocking` 桥接阻塞操作
+
+## 🚀 下一步
+
+→ [select! 多路复用](./10-select-multiplexing)

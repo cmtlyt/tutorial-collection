@@ -5,13 +5,255 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「Channel（mpsc）」相关知识。
+`std::sync::mpsc`（Multiple Producer, Single Consumer）是 Rust 标准库提供的消息传递通道。它遵循"通过通信来共享内存"的理念，让线程间通过发送和接收消息来交换数据，而非直接共享状态。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+核心 API：
+- **`mpsc::channel()`**：创建无界异步通道
+- **`mpsc::sync_channel(n)`**：创建有界同步通道，缓冲区大小为 `n`
+- **`Sender::send()`**：发送消息
+- **`Receiver::recv()`**：阻塞接收消息
+
+## 🎯 基本用法
+
+### 简单的消息发送
+
+```rust
+use std::sync::mpsc;
+use std::thread;
+
+fn main() {
+    // 创建通道：tx 是发送端，rx 是接收端
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let message = String::from("来自子线程的问候");
+        tx.send(message).unwrap();
+        // message 的所有权已转移到通道中
+        // println!("{}", message); // 编译错误
+    });
+
+    // recv() 阻塞等待消息
+    let received = rx.recv().unwrap();
+    println!("收到: {}", received);
+}
+```
+
+### 发送多条消息
+
+```rust
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let messages = vec![
+            String::from("第一条消息"),
+            String::from("第二条消息"),
+            String::from("第三条消息"),
+        ];
+
+        for msg in messages {
+            tx.send(msg).unwrap();
+            thread::sleep(Duration::from_millis(100));
+        }
+        // tx 离开作用域后通道关闭
+    });
+
+    // 将 rx 作为迭代器使用，通道关闭后自动结束
+    for received in rx {
+        println!("收到: {}", received);
+    }
+
+    println!("通道已关闭，所有消息已接收");
+}
+```
+
+## 🎯 多生产者单消费者
+
+```rust
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let (tx, rx) = mpsc::channel();
+
+    // 创建多个发送端
+    for i in 0..3 {
+        let tx_clone = tx.clone();
+        thread::spawn(move || {
+            for j in 0..3 {
+                let msg = format!("生产者 {} 的消息 {}", i, j);
+                tx_clone.send(msg).unwrap();
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+    }
+
+    // 丢弃原始发送端，否则通道永远不会关闭
+    drop(tx);
+
+    // 接收所有消息
+    let mut count = 0;
+    for msg in rx {
+        println!("[{}] {}", count, msg);
+        count += 1;
+    }
+
+    println!("共收到 {} 条消息", count);
+}
+```
+
+## 🎯 同步通道
+
+```rust
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    // 有界同步通道，缓冲区大小为 2
+    let (tx, rx) = mpsc::sync_channel(2);
+
+    let producer = thread::spawn(move || {
+        for i in 0..5 {
+            println!("发送: {}", i);
+            tx.send(i).unwrap();
+            // 当缓冲区满时，send 会阻塞等待消费者取走消息
+            println!("发送 {} 完成", i);
+        }
+    });
+
+    let consumer = thread::spawn(move || {
+        for _ in 0..5 {
+            thread::sleep(Duration::from_millis(200));
+            let value = rx.recv().unwrap();
+            println!("接收: {}", value);
+        }
+    });
+
+    producer.join().unwrap();
+    consumer.join().unwrap();
+}
+```
+
+## 🎯 非阻塞操作
+
+```rust
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        tx.send("延迟消息").unwrap();
+    });
+
+    // try_recv：非阻塞接收
+    for i in 0..5 {
+        match rx.try_recv() {
+            Ok(msg) => {
+                println!("收到: {}", msg);
+                break;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                println!("第 {} 次尝试：通道为空", i + 1);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                println!("通道已断开");
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(60));
+    }
+
+    // recv_timeout：带超时的接收
+    let (tx2, rx2) = mpsc::channel();
+
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(100));
+        tx2.send("超时测试").unwrap();
+    });
+
+    match rx2.recv_timeout(Duration::from_millis(200)) {
+        Ok(msg) => println!("超时前收到: {}", msg),
+        Err(_) => println!("接收超时"),
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 任务队列
+
+```rust
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+enum Task {
+    Process(String),
+    Calculate(i64, i64),
+    Shutdown,
+}
+
+fn main() {
+    let (tx, rx) = mpsc::channel::<Task>();
+
+    // 消费者线程
+    let worker = thread::spawn(move || {
+        loop {
+            match rx.recv() {
+                Ok(Task::Process(data)) => {
+                    println!("处理数据: {}", data);
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Ok(Task::Calculate(a, b)) => {
+                    println!("计算 {} + {} = {}", a, b, a + b);
+                }
+                Ok(Task::Shutdown) => {
+                    println!("收到关闭指令，工作线程退出");
+                    break;
+                }
+                Err(_) => {
+                    println!("通道断开，工作线程退出");
+                    break;
+                }
+            }
+        }
+    });
+
+    // 发送任务
+    tx.send(Task::Process(String::from("用户数据A"))).unwrap();
+    tx.send(Task::Calculate(42, 58)).unwrap();
+    tx.send(Task::Process(String::from("用户数据B"))).unwrap();
+    tx.send(Task::Calculate(100, 200)).unwrap();
+    tx.send(Task::Shutdown).unwrap();
+
+    worker.join().unwrap();
+    println!("所有任务处理完毕");
+}
+```
+
+## 🔗 相关概念
+
+- **[crossbeam-channel](./07-crossbeam-channel)**：更强大的多生产者多消费者通道
+- **[Mutex 共享状态](./08-mutex-shared-state)**：通过锁共享状态的替代方案
+- **[线程创建与管理](./02-thread-creation-management)**：通道常与多线程配合使用
 
 ## 📝 学习检查点
 
-- [ ] 理解Channel（mpsc）的核心概念
-- [ ] 能够在实际项目中应用Channel（mpsc）
+- [ ] 理解 `mpsc::channel` 和 `mpsc::sync_channel` 的区别
+- [ ] 掌握多生产者模式（`tx.clone()`）
+- [ ] 能够使用 `try_recv` 和 `recv_timeout` 进行非阻塞操作
+- [ ] 理解通道关闭的时机和迭代器用法
+
+## 🚀 下一步
+
+→ [crossbeam-channel](./07-crossbeam-channel)

@@ -5,13 +5,351 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解智能指针中的「Cell / RefCell（内部可变性）」相关知识。
+Rust 的借用规则要求：要么有一个可变引用，要么有多个不可变引用，两者不能共存。但有时我们需要通过不可变引用来修改数据，这就是**内部可变性**（Interior Mutability）模式。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+`Cell<T>` 和 `RefCell<T>` 是 Rust 标准库提供的两种内部可变性工具：
+- **`Cell<T>`**：适用于 `Copy` 类型，通过整体替换值来实现可变性，零运行时开销
+- **`RefCell<T>`**：适用于任意类型，在运行时检查借用规则，违反规则会 panic
+
+:::warning 注意
+`Cell` 和 `RefCell` 都**不是线程安全**的，仅适用于单线程场景。跨线程需要使用 `Mutex` 或 `RwLock`。
 :::
+
+## 🎯 Cell 基本用法
+
+`Cell<T>` 通过 `get` 和 `set` 方法操作值，要求 `T` 实现 `Copy` trait。
+
+```rust
+use std::cell::Cell;
+
+fn main() {
+    let value = Cell::new(42);
+
+    // 读取值（返回拷贝）
+    println!("当前值: {}", value.get());
+
+    // 修改值（整体替换）
+    value.set(100);
+    println!("修改后: {}", value.get());
+
+    // 注意：value 本身不需要是 mut
+    // Cell 允许通过不可变引用修改内部值
+    let reference = &value;
+    reference.set(200);
+    println!("通过引用修改后: {}", value.get());
+}
+```
+
+### Cell 在结构体中的应用
+
+```rust
+use std::cell::Cell;
+
+struct CacheStats {
+    hits: Cell<u64>,
+    misses: Cell<u64>,
+}
+
+impl CacheStats {
+    fn new() -> Self {
+        CacheStats {
+            hits: Cell::new(0),
+            misses: Cell::new(0),
+        }
+    }
+
+    // &self 而非 &mut self，但可以修改统计数据
+    fn record_hit(&self) {
+        self.hits.set(self.hits.get() + 1);
+    }
+
+    fn record_miss(&self) {
+        self.misses.set(self.misses.get() + 1);
+    }
+
+    fn hit_rate(&self) -> f64 {
+        let total = self.hits.get() + self.misses.get();
+        if total == 0 {
+            0.0
+        } else {
+            self.hits.get() as f64 / total as f64
+        }
+    }
+}
+
+fn main() {
+    let stats = CacheStats::new();
+
+    // 模拟缓存操作
+    stats.record_hit();
+    stats.record_hit();
+    stats.record_miss();
+    stats.record_hit();
+    stats.record_miss();
+
+    println!("命中次数: {}", stats.hits.get());
+    println!("未命中次数: {}", stats.misses.get());
+    println!("命中率: {:.1}%", stats.hit_rate() * 100.0);
+}
+```
+
+## 🎯 RefCell 基本用法
+
+`RefCell<T>` 使用 `borrow` 和 `borrow_mut` 方法，在运行时检查借用规则。
+
+```rust
+use std::cell::RefCell;
+
+fn main() {
+    let data = RefCell::new(vec![1, 2, 3]);
+
+    // 不可变借用
+    {
+        let borrowed = data.borrow();
+        println!("数据: {:?}", *borrowed);
+        // borrowed 在这里离开作用域，归还借用
+    }
+
+    // 可变借用
+    {
+        let mut borrowed_mut = data.borrow_mut();
+        borrowed_mut.push(4);
+        borrowed_mut.push(5);
+        // borrowed_mut 在这里离开作用域，归还借用
+    }
+
+    println!("修改后: {:?}", data.borrow());
+}
+```
+
+### 运行时借用检查
+
+```rust
+use std::cell::RefCell;
+
+fn main() {
+    let data = RefCell::new(42);
+
+    // 多个不可变借用 —— 没问题
+    let borrow1 = data.borrow();
+    let borrow2 = data.borrow();
+    println!("borrow1: {}, borrow2: {}", *borrow1, *borrow2);
+    drop(borrow1);
+    drop(borrow2);
+
+    // 可变借用 —— 需要先归还所有不可变借用
+    let mut borrow_mut = data.borrow_mut();
+    *borrow_mut = 100;
+    drop(borrow_mut);
+
+    println!("修改后: {}", data.borrow());
+
+    // 同时存在不可变和可变借用会 panic
+    // let _b1 = data.borrow();
+    // let _b2 = data.borrow_mut(); // panic: already borrowed
+
+    // 使用 try_borrow 和 try_borrow_mut 避免 panic
+    let _b1 = data.borrow();
+    match data.try_borrow_mut() {
+        Ok(_) => println!("成功获取可变借用"),
+        Err(e) => println!("获取可变借用失败: {}", e),
+    }
+}
+```
+
+## 🎯 Rc + RefCell 组合
+
+`Rc<RefCell<T>>` 是 Rust 中实现**多所有者可变数据**的常见模式。
+
+```rust
+use std::cell::RefCell;
+use std::rc::Rc;
+
+#[derive(Debug)]
+struct SharedBuffer {
+    data: Vec<String>,
+}
+
+impl SharedBuffer {
+    fn new() -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(SharedBuffer { data: Vec::new() }))
+    }
+
+    fn append(buffer: &Rc<RefCell<Self>>, message: &str) {
+        buffer.borrow_mut().data.push(String::from(message));
+    }
+
+    fn print_all(buffer: &Rc<RefCell<Self>>) {
+        let borrowed = buffer.borrow();
+        println!("缓冲区内容 ({} 条):", borrowed.data.len());
+        for (i, msg) in borrowed.data.iter().enumerate() {
+            println!("  [{}] {}", i, msg);
+        }
+    }
+}
+
+struct Writer {
+    name: String,
+    buffer: Rc<RefCell<SharedBuffer>>,
+}
+
+impl Writer {
+    fn new(name: &str, buffer: Rc<RefCell<SharedBuffer>>) -> Self {
+        Writer {
+            name: String::from(name),
+            buffer,
+        }
+    }
+
+    fn write(&self, message: &str) {
+        let formatted = format!("[{}] {}", self.name, message);
+        SharedBuffer::append(&self.buffer, &formatted);
+    }
+}
+
+fn main() {
+    let buffer = SharedBuffer::new();
+
+    let writer1 = Writer::new("系统", Rc::clone(&buffer));
+    let writer2 = Writer::new("用户", Rc::clone(&buffer));
+
+    writer1.write("应用启动");
+    writer2.write("登录请求");
+    writer1.write("认证成功");
+    writer2.write("获取数据");
+
+    SharedBuffer::print_all(&buffer);
+}
+```
+
+## 🎯 Cell vs RefCell 对比
+
+| 特性 | `Cell<T>` | `RefCell<T>` |
+|------|-----------|--------------|
+| **类型要求** | `T: Copy` | 任意类型 |
+| **操作方式** | `get` / `set`（值拷贝） | `borrow` / `borrow_mut`（引用） |
+| **运行时开销** | 零开销 | 借用计数检查 |
+| **panic 风险** | 无 | 违反借用规则时 panic |
+| **适用场景** | 简单数值、标志位 | 复杂数据结构 |
+
+```rust
+use std::cell::{Cell, RefCell};
+
+fn main() {
+    // Cell：适合 Copy 类型
+    let flag = Cell::new(false);
+    let count = Cell::new(0u32);
+
+    flag.set(true);
+    count.set(count.get() + 1);
+
+    println!("flag: {}, count: {}", flag.get(), count.get());
+
+    // RefCell：适合非 Copy 类型
+    let names = RefCell::new(vec![String::from("Alice")]);
+    names.borrow_mut().push(String::from("Bob"));
+
+    println!("names: {:?}", names.borrow());
+}
+```
+
+## 📝 实际应用示例
+
+### 观察者模式中的内部可变性
+
+```rust
+use std::cell::RefCell;
+use std::rc::Rc;
+
+trait Observer {
+    fn on_event(&self, event: &str);
+    fn name(&self) -> &str;
+}
+
+struct EventBus {
+    observers: RefCell<Vec<Rc<dyn Observer>>>,
+}
+
+impl EventBus {
+    fn new() -> Self {
+        EventBus {
+            observers: RefCell::new(Vec::new()),
+        }
+    }
+
+    // &self 而不是 &mut self
+    fn subscribe(&self, observer: Rc<dyn Observer>) {
+        println!("订阅者 '{}' 已注册", observer.name());
+        self.observers.borrow_mut().push(observer);
+    }
+
+    fn emit(&self, event: &str) {
+        println!("\n发送事件: '{}'", event);
+        let observers = self.observers.borrow();
+        for observer in observers.iter() {
+            observer.on_event(event);
+        }
+    }
+}
+
+struct LogObserver {
+    label: String,
+    log_count: Cell<u32>,
+}
+
+impl LogObserver {
+    fn new(label: &str) -> Rc<Self> {
+        Rc::new(LogObserver {
+            label: String::from(label),
+            log_count: Cell::new(0),
+        })
+    }
+}
+
+impl Observer for LogObserver {
+    fn on_event(&self, event: &str) {
+        self.log_count.set(self.log_count.get() + 1);
+        println!(
+            "  [{}] 收到事件: '{}' (第 {} 次)",
+            self.label,
+            event,
+            self.log_count.get()
+        );
+    }
+
+    fn name(&self) -> &str {
+        &self.label
+    }
+}
+
+fn main() {
+    let bus = EventBus::new();
+
+    let logger1 = LogObserver::new("审计日志");
+    let logger2 = LogObserver::new("监控面板");
+
+    bus.subscribe(Rc::clone(&logger1) as Rc<dyn Observer>);
+    bus.subscribe(Rc::clone(&logger2) as Rc<dyn Observer>);
+
+    bus.emit("用户登录");
+    bus.emit("数据更新");
+    bus.emit("用户登出");
+}
+```
+
+## 🔗 相关概念
+
+- **[Box（堆分配）](./02-box-heap-allocation)**：单一所有者，无需内部可变性
+- **[Rc（引用计数）](./03-rc-reference-counting)**：与 `RefCell` 组合实现多所有者可变数据
+- **[Mutex 与 RwLock](./06-mutex-rwlock)**：线程安全版本的内部可变性
 
 ## 📝 学习检查点
 
-- [ ] 理解Cell / RefCell（内部可变性）的核心概念
-- [ ] 能够在实际项目中应用Cell / RefCell（内部可变性）
+- [ ] 理解内部可变性的概念和使用场景
+- [ ] 掌握 `Cell<T>` 和 `RefCell<T>` 的区别
+- [ ] 能够使用 `Rc<RefCell<T>>` 模式
+- [ ] 理解 `RefCell` 运行时借用检查的 panic 风险
+
+## 🚀 下一步
+
+→ [Mutex 与 RwLock](./06-mutex-rwlock)

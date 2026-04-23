@@ -5,13 +5,284 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解智能指针中的「Deref 与自动解引用」相关知识。
+`Deref` trait 允许智能指针像普通引用一样使用。当编译器遇到 `*` 解引用操作或方法调用时，会自动通过 `Deref` trait 进行**解引用强制转换**（Deref Coercion），使得代码更加简洁自然。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+`Deref` 和 `DerefMut` 是智能指针的核心 trait：
+- **`Deref`**：将 `&Self` 转换为 `&Target`，支持不可变解引用
+- **`DerefMut`**：将 `&mut Self` 转换为 `&mut Target`，支持可变解引用
+
+## 🎯 Deref trait 的工作原理
+
+### 解引用操作符 `*`
+
+```rust
+fn main() {
+    let x = 5;
+    let y = &x;
+
+    // 普通引用的解引用
+    assert_eq!(5, *y);
+
+    // Box 也支持解引用
+    let z = Box::new(x);
+    assert_eq!(5, *z);
+
+    println!("x = {}, *y = {}, *z = {}", x, *y, *z);
+}
+```
+
+### 自定义智能指针实现 Deref
+
+```rust
+use std::ops::Deref;
+
+struct MyBox<T> {
+    value: T,
+}
+
+impl<T> MyBox<T> {
+    fn new(value: T) -> Self {
+        MyBox { value }
+    }
+}
+
+impl<T> Deref for MyBox<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+fn main() {
+    let boxed = MyBox::new(String::from("hello"));
+
+    // *boxed 等价于 *(boxed.deref())
+    println!("解引用: {}", *boxed);
+
+    // 自动解引用也适用于方法调用
+    println!("长度: {}", boxed.len()); // MyBox -> String -> str -> len()
+}
+```
+
+## 🎯 解引用强制转换（Deref Coercion）
+
+编译器在函数参数传递和方法调用时，会自动应用 `Deref` 链来匹配目标类型。
+
+### 自动转换链
+
+```rust
+fn greet(name: &str) {
+    println!("你好, {}!", name);
+}
+
+fn main() {
+    let boxed_string = Box::new(String::from("Rust"));
+
+    // 手动解引用链：Box<String> -> String -> str
+    // greet(&(*boxed_string)[..]);
+
+    // 自动 Deref Coercion：编译器自动完成
+    // Box<String> -> &String -> &str
+    greet(&boxed_string);
+
+    // String -> &str 的自动转换
+    let name = String::from("World");
+    greet(&name);
+
+    // &&String -> &str 也能自动转换
+    let name_ref = &name;
+    greet(name_ref);
+}
+```
+
+### Deref 链的转换规则
+
+```rust
+use std::ops::Deref;
+
+struct Wrapper<T> {
+    inner: T,
+}
+
+impl<T> Deref for Wrapper<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.inner
+    }
+}
+
+fn print_length(s: &str) {
+    println!("字符串 '{}' 长度: {}", s, s.len());
+}
+
+fn main() {
+    // 转换链: Wrapper<String> -> String -> str
+    let wrapped = Wrapper {
+        inner: String::from("Deref Coercion"),
+    };
+
+    // 编译器自动沿着 Deref 链转换
+    print_length(&wrapped);
+
+    // 嵌套 Wrapper 也可以
+    let double_wrapped = Wrapper {
+        inner: Wrapper {
+            inner: String::from("深层嵌套"),
+        },
+    };
+
+    // Wrapper<Wrapper<String>> -> Wrapper<String> -> String -> str
+    print_length(&double_wrapped);
+}
+```
+
+## 🎯 DerefMut 可变解引用
+
+```rust
+use std::ops::{Deref, DerefMut};
+
+struct SmartVec<T> {
+    data: Vec<T>,
+    access_count: usize,
+}
+
+impl<T> SmartVec<T> {
+    fn new() -> Self {
+        SmartVec {
+            data: Vec::new(),
+            access_count: 0,
+        }
+    }
+
+    fn access_count(&self) -> usize {
+        self.access_count
+    }
+}
+
+impl<T> Deref for SmartVec<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Vec<T> {
+        &self.data
+    }
+}
+
+impl<T> DerefMut for SmartVec<T> {
+    fn deref_mut(&mut self) -> &mut Vec<T> {
+        self.access_count += 1;
+        &mut self.data
+    }
+}
+
+fn main() {
+    let mut smart_vec = SmartVec::new();
+
+    // 通过 DerefMut 自动调用 Vec 的方法
+    smart_vec.push(1);
+    smart_vec.push(2);
+    smart_vec.push(3);
+
+    // 通过 Deref 自动调用 Vec 的只读方法
+    println!("长度: {}", smart_vec.len());
+    println!("内容: {:?}", *smart_vec);
+    println!("可变访问次数: {}", smart_vec.access_count());
+}
+```
+
+## 🎯 标准库中的 Deref 实现
+
+```rust
+fn main() {
+    // String -> str
+    let s = String::from("hello");
+    let s_ref: &str = &s; // 自动 Deref
+    println!("String 解引用为 &str: {}", s_ref);
+
+    // Vec<T> -> [T]
+    let v = vec![1, 2, 3];
+    let slice: &[i32] = &v; // 自动 Deref
+    println!("Vec 解引用为切片: {:?}", slice);
+
+    // Box<T> -> T
+    let boxed = Box::new(42);
+    let value: &i32 = &boxed; // 自动 Deref
+    println!("Box 解引用: {}", value);
+
+    // 方法调用时的自动解引用
+    let boxed_vec = Box::new(vec![1, 2, 3]);
+    // Box<Vec<i32>> -> Vec<i32> -> len()
+    println!("Box<Vec> 长度: {}", boxed_vec.len());
+    // Box<Vec<i32>> -> Vec<i32> -> [i32] -> first()
+    println!("第一个元素: {:?}", boxed_vec.first());
+}
+```
+
+## 📝 实际应用示例
+
+### 新类型模式与 Deref
+
+```rust
+use std::ops::Deref;
+use std::fmt;
+
+struct Email(String);
+
+impl Email {
+    fn new(address: &str) -> Result<Self, String> {
+        if address.contains('@') && address.contains('.') {
+            Ok(Email(address.to_string()))
+        } else {
+            Err(format!("无效的邮箱地址: {}", address))
+        }
+    }
+}
+
+impl Deref for Email {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Email {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+fn send_notification(address: &str) {
+    println!("向 {} 发送通知", address);
+}
+
+fn main() {
+    let email = Email::new("user@example.com").unwrap();
+
+    // 通过 Deref，Email 可以像 &str 一样使用
+    println!("邮箱: {}", email);
+    println!("长度: {}", email.len());
+    println!("域名: {}", email.split('@').last().unwrap());
+
+    // 自动 Deref Coercion：Email -> str
+    send_notification(&email);
+}
+```
+
+## 🔗 相关概念
+
+- **[Box（堆分配）](./02-box-heap-allocation)**：`Box<T>` 实现了 `Deref<Target = T>`
+- **[Drop 与析构顺序](./08-drop-destruction-order)**：`Deref` 和 `Drop` 共同构成智能指针的核心行为
+- **[Rc（引用计数）](./03-rc-reference-counting)**：`Rc<T>` 也实现了 `Deref`
 
 ## 📝 学习检查点
 
-- [ ] 理解Deref 与自动解引用的核心概念
-- [ ] 能够在实际项目中应用Deref 与自动解引用
+- [ ] 理解 `Deref` trait 的作用和工作原理
+- [ ] 掌握解引用强制转换（Deref Coercion）的规则
+- [ ] 能够为自定义类型实现 `Deref` 和 `DerefMut`
+- [ ] 理解 Deref 链的自动转换过程
+
+## 🚀 下一步
+
+→ [Drop 与析构顺序](./08-drop-destruction-order)

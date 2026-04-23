@@ -5,13 +5,200 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「线程创建与管理」相关知识。
+Rust 通过 `std::thread` 模块提供操作系统原生线程的创建与管理功能。每个线程都有独立的栈空间，由操作系统调度执行。Rust 的所有权系统在编译期就保证了线程间数据访问的安全性，实现了"无畏并发"。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 创建线程
+
+### thread::spawn
+
+```rust
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    // spawn 创建一个新线程
+    let handle = thread::spawn(|| {
+        for i in 1..=5 {
+            println!("子线程: 计数 {}", i);
+            thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    // 主线程继续执行
+    for i in 1..=3 {
+        println!("主线程: 计数 {}", i);
+        thread::sleep(Duration::from_millis(150));
+    }
+
+    // 等待子线程完成
+    handle.join().unwrap();
+    println!("所有线程执行完毕");
+}
+```
+
+### Builder 模式自定义线程
+
+```rust
+use std::thread;
+
+fn main() {
+    let builder = thread::Builder::new()
+        .name("worker-thread".to_string())
+        .stack_size(4 * 1024 * 1024); // 4MB 栈空间
+
+    let handle = builder
+        .spawn(|| {
+            let current = thread::current();
+            println!("线程名称: {:?}", current.name());
+            println!("线程 ID: {:?}", current.id());
+            42
+        })
+        .expect("无法创建线程");
+
+    let result = handle.join().unwrap();
+    println!("线程返回值: {}", result);
+}
+```
+
+## 🎯 线程信息与控制
+
+```rust
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    // 获取当前线程信息
+    let main_thread = thread::current();
+    println!("主线程名称: {:?}", main_thread.name());
+    println!("主线程 ID: {:?}", main_thread.id());
+
+    // 获取可用的并行度（逻辑 CPU 数量）
+    let parallelism = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    println!("可用并行度: {}", parallelism);
+
+    // yield_now：提示调度器让出 CPU
+    thread::spawn(|| {
+        println!("子线程开始");
+        thread::yield_now(); // 让出执行权
+        println!("子线程继续");
+    })
+    .join()
+    .unwrap();
+
+    // sleep：使当前线程休眠
+    println!("休眠 100ms...");
+    thread::sleep(Duration::from_millis(100));
+    println!("休眠结束");
+}
+```
+
+## 🎯 多线程并行执行
+
+```rust
+use std::thread;
+
+fn main() {
+    let mut handles = vec![];
+
+    for i in 0..5 {
+        let handle = thread::spawn(move || {
+            let result = fibonacci(30 + i);
+            println!("fibonacci({}) = {}", 30 + i, result);
+            result
+        });
+        handles.push(handle);
+    }
+
+    let mut total = 0u64;
+    for handle in handles {
+        total += handle.join().unwrap();
+    }
+
+    println!("所有结果之和: {}", total);
+}
+
+fn fibonacci(n: u32) -> u64 {
+    if n <= 1 {
+        return n as u64;
+    }
+    let mut prev = 0u64;
+    let mut curr = 1u64;
+    for _ in 2..=n {
+        let next = prev + curr;
+        prev = curr;
+        curr = next;
+    }
+    curr
+}
+```
+
+## 📝 实际应用示例
+
+### 并行文件处理器
+
+```rust
+use std::thread;
+
+fn process_chunk(chunk_id: usize, data: Vec<i32>) -> (usize, i64, i32, i32) {
+    let sum: i64 = data.iter().map(|&x| x as i64).sum();
+    let min = *data.iter().min().unwrap();
+    let max = *data.iter().max().unwrap();
+    println!("块 {} 处理完成: {} 个元素", chunk_id, data.len());
+    (chunk_id, sum, min, max)
+}
+
+fn main() {
+    // 模拟大量数据
+    let data: Vec<i32> = (0..1_000_000).collect();
+    let num_threads = 4;
+    let chunk_size = data.len() / num_threads;
+
+    let mut handles = vec![];
+
+    for i in 0..num_threads {
+        let start = i * chunk_size;
+        let end = if i == num_threads - 1 {
+            data.len()
+        } else {
+            (i + 1) * chunk_size
+        };
+        let chunk = data[start..end].to_vec();
+
+        let handle = thread::spawn(move || process_chunk(i, chunk));
+        handles.push(handle);
+    }
+
+    let mut total_sum: i64 = 0;
+    let mut global_min = i32::MAX;
+    let mut global_max = i32::MIN;
+
+    for handle in handles {
+        let (id, sum, min, max) = handle.join().unwrap();
+        println!("块 {} 结果: sum={}, min={}, max={}", id, sum, min, max);
+        total_sum += sum;
+        global_min = global_min.min(min);
+        global_max = global_max.max(max);
+    }
+
+    println!("\n汇总: 总和={}, 最小值={}, 最大值={}", total_sum, global_min, global_max);
+}
+```
+
+## 🔗 相关概念
+
+- **[JoinHandle 与线程等待](./03-join-handle)**：深入了解 JoinHandle 的使用
+- **[move 闭包与线程所有权](./04-move-closures-thread-ownership)**：线程中的数据所有权管理
+- **[Send 与 Sync trait](./12-send-sync-traits)**：编译期线程安全保证
 
 ## 📝 学习检查点
 
-- [ ] 理解线程创建与管理的核心概念
-- [ ] 能够在实际项目中应用线程创建与管理
+- [ ] 掌握 `thread::spawn` 创建线程的方法
+- [ ] 能够使用 Builder 自定义线程属性
+- [ ] 理解主线程与子线程的并行执行关系
+- [ ] 能够实现多线程并行计算
+
+## 🚀 下一步
+
+→ [JoinHandle 与线程等待](./03-join-handle)

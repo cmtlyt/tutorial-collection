@@ -5,13 +5,282 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解异步编程中的「Stream 异步迭代器」相关知识。
+`Stream` 是 `Iterator` 的异步版本。`Iterator` 通过 `next()` 同步地产生一系列值，而 `Stream` 通过异步的 `next()` 在值就绪时逐个产生。Stream 非常适合处理异步数据流，如网络数据、事件流、定时器序列等。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+`Stream` trait 定义在 `futures` crate 中：
+
+```rust
+trait Stream {
+    type Item;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>>;
+}
+```
+
+使用前需要添加依赖：
+
+```toml
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+```
+
+## 🎯 基本用法
+
+### 从集合创建 Stream
+
+```rust
+use tokio_stream::{self as stream, StreamExt};
+
+#[tokio::main]
+async fn main() {
+    // 从迭代器创建 Stream
+    let mut numbers = stream::iter(vec![1, 2, 3, 4, 5]);
+
+    // 使用 while let 消费 Stream
+    while let Some(number) = numbers.next().await {
+        println!("数字: {}", number);
+    }
+}
+```
+
+### 使用 StreamExt 适配器
+
+```rust
+use tokio_stream::{self as stream, StreamExt};
+
+#[tokio::main]
+async fn main() {
+    let numbers = stream::iter(1..=10);
+
+    // map：转换每个元素
+    let doubled = numbers.map(|n| n * 2);
+
+    // filter：过滤元素
+    let even = doubled.filter(|n| n % 4 == 0);
+
+    // collect：收集到集合
+    let result: Vec<i32> = even.collect().await;
+    println!("结果: {:?}", result);
+
+    // take：只取前 N 个
+    let first_three: Vec<i32> = stream::iter(1..=100)
+        .take(3)
+        .collect()
+        .await;
+    println!("前三个: {:?}", first_three);
+
+    // fold：归约
+    let sum = stream::iter(1..=10)
+        .fold(0i32, |acc, x| async move { acc + x })
+        .await;
+    println!("总和: {}", sum);
+}
+```
+
+## 🎯 异步 Stream
+
+### 定时器 Stream
+
+```rust
+use tokio::time::{interval, Duration, Instant};
+use tokio_stream::wrappers::IntervalStream;
+use tokio_stream::StreamExt;
+
+#[tokio::main]
+async fn main() {
+    let start = Instant::now();
+
+    // 将 tokio interval 包装为 Stream
+    let mut ticker = IntervalStream::new(interval(Duration::from_millis(100)))
+        .take(5);
+
+    while let Some(_) = ticker.next().await {
+        println!("tick at {:?}", start.elapsed());
+    }
+
+    println!("完成");
+}
+```
+
+### 通道作为 Stream
+
+```rust
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
+use tokio::time::{sleep, Duration};
+
+#[tokio::main]
+async fn main() {
+    let (tx, rx) = mpsc::channel(32);
+
+    // 生产者
+    tokio::spawn(async move {
+        for i in 0..5 {
+            sleep(Duration::from_millis(50)).await;
+            tx.send(format!("事件 {}", i)).await.unwrap();
+        }
+    });
+
+    // 将 Receiver 转为 Stream
+    let mut stream = ReceiverStream::new(rx);
+
+    // 使用 Stream 适配器处理
+    while let Some(event) = stream.next().await {
+        println!("处理: {}", event);
+    }
+
+    println!("所有事件已处理");
+}
+```
+
+## 🎯 自定义 Stream
+
+```rust
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use futures::Stream;
+
+struct CountdownStream {
+    remaining: u32,
+}
+
+impl CountdownStream {
+    fn new(start: u32) -> Self {
+        CountdownStream { remaining: start }
+    }
+}
+
+impl Stream for CountdownStream {
+    type Item = u32;
+
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.remaining == 0 {
+            Poll::Ready(None) // Stream 结束
+        } else {
+            let value = self.remaining;
+            self.remaining -= 1;
+            Poll::Ready(Some(value))
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    use tokio_stream::StreamExt;
+
+    let mut countdown = CountdownStream::new(5);
+
+    while let Some(n) = countdown.next().await {
+        println!("倒计时: {}", n);
+    }
+
+    println!("发射！");
+}
+```
+
+### 使用 async_stream 宏简化创建
+
+```rust
+// 需要添加依赖：async-stream = "0.3"
+use async_stream::stream;
+use tokio::time::{sleep, Duration};
+use tokio_stream::StreamExt;
+
+fn fibonacci_stream() -> impl futures::Stream<Item = u64> {
+    stream! {
+        let mut a: u64 = 0;
+        let mut b: u64 = 1;
+        loop {
+            yield a;
+            let next = a + b;
+            a = b;
+            b = next;
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    // 取前 10 个斐波那契数
+    let fibs: Vec<u64> = fibonacci_stream()
+        .take(10)
+        .collect()
+        .await;
+    println!("斐波那契: {:?}", fibs);
+}
+```
+
+:::info 依赖说明
+`async-stream` 示例需要在 `Cargo.toml` 中添加：
+```toml
+[dependencies]
+async-stream = "0.3"
+```
 :::
+
+## 📝 实际应用示例
+
+### 事件处理管道
+
+```rust
+use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
+
+#[derive(Debug, Clone)]
+struct Event {
+    kind: String,
+    value: i64,
+}
+
+#[tokio::main]
+async fn main() {
+    let (tx, rx) = mpsc::channel(32);
+
+    // 模拟事件源
+    tokio::spawn(async move {
+        let events = vec![
+            Event { kind: "click".into(), value: 1 },
+            Event { kind: "scroll".into(), value: 50 },
+            Event { kind: "click".into(), value: 1 },
+            Event { kind: "input".into(), value: 0 },
+            Event { kind: "click".into(), value: 1 },
+            Event { kind: "scroll".into(), value: 100 },
+        ];
+
+        for event in events {
+            sleep(Duration::from_millis(30)).await;
+            tx.send(event).await.unwrap();
+        }
+    });
+
+    // 使用 Stream 适配器构建处理管道
+    let click_count = ReceiverStream::new(rx)
+        .filter(|e| e.kind == "click")       // 只保留点击事件
+        .map(|e| e.value)                     // 提取值
+        .fold(0i64, |acc, v| async move { acc + v }) // 求和
+        .await;
+
+    println!("点击总数: {}", click_count);
+}
+```
+
+## 🔗 相关概念
+
+- **[join! 并行等待](./11-join-parallel-await)**：等待有限个 Future
+- **[select! 多路复用](./10-select-multiplexing)**：从多个 Stream 中选择
+- **[异步锁与同步原语](./13-async-synchronization-primitives)**：Stream 数据的并发访问
 
 ## 📝 学习检查点
 
-- [ ] 理解Stream 异步迭代器的核心概念
-- [ ] 能够在实际项目中应用Stream 异步迭代器
+- [ ] 理解 `Stream` trait 与 `Iterator` 的关系
+- [ ] 掌握 `StreamExt` 提供的常用适配器
+- [ ] 能够将 Tokio 通道和定时器转换为 Stream
+- [ ] 了解自定义 Stream 的实现方式
+
+## 🚀 下一步
+
+→ [异步锁与同步原语](./13-async-synchronization-primitives)

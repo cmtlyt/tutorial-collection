@@ -5,13 +5,265 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解并发编程中的「Send 与 Sync trait」相关知识。
+`Send` 和 `Sync` 是 Rust 实现编译期线程安全保证的两个核心标记 trait（marker trait）。它们没有方法需要实现，只是向编译器表明类型的线程安全属性。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+- **`Send`**：类型的值可以安全地**转移所有权**到另一个线程
+- **`Sync`**：类型的**不可变引用**（`&T`）可以安全地在多个线程间共享
+
+关键推导规则：`T` 是 `Sync` 当且仅当 `&T` 是 `Send`。
+
+## 🎯 Send trait
+
+### 哪些类型是 Send 的
+
+```rust
+use std::thread;
+
+fn main() {
+    // 大多数类型都是 Send 的
+    let number: i32 = 42;
+    let text = String::from("hello");
+    let data = vec![1, 2, 3];
+    let boxed = Box::new(100);
+
+    // 它们都可以安全地移动到另一个线程
+    thread::spawn(move || {
+        println!("{}, {}, {:?}, {}", number, text, data, boxed);
+    })
+    .join()
+    .unwrap();
+}
+```
+
+### 非 Send 类型
+
+```rust
+use std::rc::Rc;
+
+fn main() {
+    let rc_value = Rc::new(42);
+
+    // Rc 不是 Send 的 —— 以下代码无法编译
+    // thread::spawn(move || {
+    //     println!("{}", rc_value);
+    // });
+    // 编译错误：`Rc<i32>` cannot be sent between threads safely
+
+    // 原因：Rc 使用非原子引用计数，多线程操作会导致数据竞争
+    // 解决：使用 Arc（原子引用计数）替代
+    println!("Rc 只能在单线程中使用: {}", rc_value);
+}
+```
+
+## 🎯 Sync trait
+
+### Sync 的含义
+
+```rust
+use std::sync::Arc;
+use std::thread;
+
+fn main() {
+    // i32 是 Sync 的：&i32 可以安全地跨线程共享
+    let value = 42;
+
+    thread::scope(|scope| {
+        for i in 0..3 {
+            scope.spawn(|| {
+                // 多个线程共享 &value，安全因为 i32 是 Sync 的
+                println!("线程 {}: value = {}", i, value);
+            });
+        }
+    });
+
+    // Arc<T> 当 T: Sync 时，可以安全地共享 T 的引用
+    let shared = Arc::new(vec![1, 2, 3]);
+    let mut handles = vec![];
+
+    for i in 0..3 {
+        let shared = Arc::clone(&shared);
+        let handle = thread::spawn(move || {
+            // Vec<i32> 是 Sync 的，多线程读取安全
+            println!("线程 {}: {:?}", i, *shared);
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+```
+
+### 非 Sync 类型
+
+```rust
+use std::cell::RefCell;
+
+fn main() {
+    let cell = RefCell::new(42);
+
+    // RefCell 不是 Sync 的 —— 以下代码无法编译
+    // thread::scope(|scope| {
+    //     scope.spawn(|| {
+    //         let borrowed = cell.borrow();
+    //         println!("{}", *borrowed);
+    //     });
+    // });
+    // 编译错误：`RefCell<i32>` cannot be shared between threads safely
+
+    // 原因：RefCell 的运行时借用检查不是线程安全的
+    // 解决：使用 Mutex 或 RwLock 替代
+    println!("RefCell 只能在单线程中使用: {}", cell.borrow());
+}
+```
+
+## 🎯 Send 与 Sync 的关系
+
+| 类型 | Send | Sync | 说明 |
+|------|------|------|------|
+| `i32`, `f64`, `bool` | ✅ | ✅ | 基础类型 |
+| `String`, `Vec<T>` | ✅ | ✅ | 拥有所有权的集合 |
+| `Arc<T>` (T: Send + Sync) | ✅ | ✅ | 线程安全的共享指针 |
+| `Mutex<T>` (T: Send) | ✅ | ✅ | 互斥锁提供 Sync |
+| `Rc<T>` | ❌ | ❌ | 非原子引用计数 |
+| `RefCell<T>` | ✅ | ❌ | 运行时借用检查非线程安全 |
+| `Cell<T>` | ✅ | ❌ | 内部可变性非线程安全 |
+| `*mut T` (裸指针) | ❌ | ❌ | 编译器无法验证安全性 |
+
+```rust
+use std::sync::{Arc, Mutex};
+
+// 编译器自动推导 Send 和 Sync
+struct SafeStruct {
+    data: Vec<i32>,     // Send + Sync
+    name: String,        // Send + Sync
+}
+// SafeStruct 自动实现 Send + Sync
+
+// 包含非 Sync 字段的结构体不会自动实现 Sync
+struct UnsyncStruct {
+    data: std::cell::RefCell<i32>, // 非 Sync
+}
+// UnsyncStruct 是 Send 但不是 Sync
+
+fn assert_send<T: Send>() {}
+fn assert_sync<T: Sync>() {}
+
+fn main() {
+    assert_send::<SafeStruct>();
+    assert_sync::<SafeStruct>();
+    assert_send::<UnsyncStruct>();
+    // assert_sync::<UnsyncStruct>(); // 编译错误
+
+    // Mutex<T> 使得 T 从非 Sync 变为 Sync
+    assert_sync::<Mutex<UnsyncStruct>>();
+
+    println!("所有类型检查通过！");
+}
+```
+
+## 🎯 自动实现与手动实现
+
+```rust
+use std::thread;
+
+// 编译器自动为复合类型推导 Send/Sync
+// 只要所有字段都是 Send/Sync，结构体就自动是 Send/Sync
+
+// 如果需要手动为裸指针包装器实现 Send/Sync
+struct Wrapper {
+    ptr: *mut i32,
+}
+
+// 手动声明线程安全性（需要确保安全，否则会导致 UB）
+// 在实际中应该非常谨慎
+unsafe impl Send for Wrapper {}
+unsafe impl Sync for Wrapper {}
+
+fn main() {
+    let mut value = 42;
+    let wrapper = Wrapper {
+        ptr: &mut value as *mut i32,
+    };
+
+    // 因为手动实现了 Send，现在可以移动到线程
+    // 但需要开发者自行保证安全！
+    println!("Wrapper 可以被发送到线程（但需谨慎）");
+    println!("值: {}", unsafe { *wrapper.ptr });
+}
+```
+
+## 📝 实际应用示例
+
+### 利用编译器检查设计线程安全 API
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+// 通过 trait bound 要求泛型类型满足线程安全约束
+fn spawn_task<F, T>(task: F) -> thread::JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    thread::spawn(task)
+}
+
+// 共享数据要求 Sync
+fn share_across_threads<T: Sync + Send + 'static>(data: T, thread_count: usize) {
+    let shared = Arc::new(data);
+    let mut handles = vec![];
+
+    for i in 0..thread_count {
+        let shared = Arc::clone(&shared);
+        let handle = thread::spawn(move || {
+            println!("线程 {} 访问共享数据", i);
+            let _ = &*shared; // 使用共享引用
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+fn main() {
+    // 编译器确保只有 Send 类型才能传递
+    let handle = spawn_task(|| {
+        let result = 42 * 2;
+        println!("任务结果: {}", result);
+        result
+    });
+    let result = handle.join().unwrap();
+    println!("获取结果: {}", result);
+
+    // 编译器确保只有 Sync 类型才能共享
+    share_across_threads(vec![1, 2, 3], 3);
+
+    // 以下代码无法编译：Rc 不是 Send
+    // spawn_task(|| {
+    //     let rc = std::rc::Rc::new(42);
+    //     println!("{}", rc);
+    // });
+}
+```
+
+## 🔗 相关概念
+
+- **[Arc（原子引用计数）](../01-smart-pointers/04-arc-atomic-reference-counting)**：`Rc` 的 Send + Sync 版本
+- **[Mutex 共享状态](./08-mutex-shared-state)**：`Mutex<T>` 为非 Sync 类型提供 Sync
+- **[原子类型](./11-atomic-types)**：天生 Send + Sync 的无锁原语
 
 ## 📝 学习检查点
 
-- [ ] 理解Send 与 Sync trait的核心概念
-- [ ] 能够在实际项目中应用Send 与 Sync trait
+- [ ] 理解 `Send` 和 `Sync` 的语义区别
+- [ ] 知道常见类型的 Send/Sync 属性
+- [ ] 理解编译器如何自动推导 Send 和 Sync
+- [ ] 了解 `unsafe impl Send/Sync` 的使用场景和风险
+
+## 🚀 下一步
+
+→ [异步编程 - 总览](../03-async-programming/01-async-programming-overview)
