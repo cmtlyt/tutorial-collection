@@ -5,13 +5,400 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解代码质量中的「策略模式（Trait 对象）」相关知识。
+策略模式（Strategy Pattern）允许在运行时选择不同的算法或行为。在 Rust 中，策略模式通过 **Trait 对象**（`dyn Trait`）或 **泛型**（`impl Trait`）来实现。Trait 对象提供运行时多态（动态分发），泛型提供编译时多态（静态分发）。两种方式各有优劣，选择取决于具体场景。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 使用 Trait 对象的策略模式
+
+### 基本实现
+
+```rust
+/// 排序策略 Trait
+trait SortStrategy {
+    fn sort(&self, data: &mut Vec<i32>);
+    fn name(&self) -> &str;
+}
+
+/// 冒泡排序策略
+struct BubbleSort;
+
+impl SortStrategy for BubbleSort {
+    fn sort(&self, data: &mut Vec<i32>) {
+        let length = data.len();
+        for i in 0..length {
+            for j in 0..length - 1 - i {
+                if data[j] > data[j + 1] {
+                    data.swap(j, j + 1);
+                }
+            }
+        }
+    }
+
+    fn name(&self) -> &str {
+        "冒泡排序"
+    }
+}
+
+/// 插入排序策略
+struct InsertionSort;
+
+impl SortStrategy for InsertionSort {
+    fn sort(&self, data: &mut Vec<i32>) {
+        for i in 1..data.len() {
+            let key = data[i];
+            let mut j = i;
+            while j > 0 && data[j - 1] > key {
+                data[j] = data[j - 1];
+                j -= 1;
+            }
+            data[j] = key;
+        }
+    }
+
+    fn name(&self) -> &str {
+        "插入排序"
+    }
+}
+
+/// 选择排序策略
+struct SelectionSort;
+
+impl SortStrategy for SelectionSort {
+    fn sort(&self, data: &mut Vec<i32>) {
+        let length = data.len();
+        for i in 0..length {
+            let mut min_index = i;
+            for j in (i + 1)..length {
+                if data[j] < data[min_index] {
+                    min_index = j;
+                }
+            }
+            data.swap(i, min_index);
+        }
+    }
+
+    fn name(&self) -> &str {
+        "选择排序"
+    }
+}
+
+/// 排序器：持有一个策略对象
+struct Sorter {
+    strategy: Box<dyn SortStrategy>,
+}
+
+impl Sorter {
+    fn new(strategy: Box<dyn SortStrategy>) -> Self {
+        Sorter { strategy }
+    }
+
+    fn set_strategy(&mut self, strategy: Box<dyn SortStrategy>) {
+        self.strategy = strategy;
+    }
+
+    fn sort(&self, data: &mut Vec<i32>) {
+        println!("使用 {} 进行排序", self.strategy.name());
+        self.strategy.sort(data);
+    }
+}
+
+fn main() {
+    let mut data = vec![64, 34, 25, 12, 22, 11, 90];
+
+    // 使用冒泡排序
+    let mut sorter = Sorter::new(Box::new(BubbleSort));
+    let mut data_copy = data.clone();
+    sorter.sort(&mut data_copy);
+    println!("结果：{data_copy:?}");
+
+    // 运行时切换为插入排序
+    sorter.set_strategy(Box::new(InsertionSort));
+    let mut data_copy = data.clone();
+    sorter.sort(&mut data_copy);
+    println!("结果：{data_copy:?}");
+
+    // 根据数据大小自动选择策略
+    let strategy: Box<dyn SortStrategy> = if data.len() < 20 {
+        Box::new(InsertionSort)
+    } else {
+        Box::new(SelectionSort)
+    };
+    let sorter = Sorter::new(strategy);
+    sorter.sort(&mut data);
+    println!("结果：{data:?}");
+}
+```
+
+## 🔄 使用泛型的策略模式
+
+### 静态分发（编译期确定）
+
+```rust
+/// 文本格式化策略 Trait
+trait TextFormatter {
+    fn format(&self, text: &str) -> String;
+}
+
+/// 大写格式化
+struct UpperCaseFormatter;
+
+impl TextFormatter for UpperCaseFormatter {
+    fn format(&self, text: &str) -> String {
+        text.to_uppercase()
+    }
+}
+
+/// 标题格式化（首字母大写）
+struct TitleCaseFormatter;
+
+impl TextFormatter for TitleCaseFormatter {
+    fn format(&self, text: &str) -> String {
+        text.split_whitespace()
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => {
+                        first.to_uppercase().to_string() + &chars.as_str().to_lowercase()
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// Slug 格式化（URL 友好）
+struct SlugFormatter;
+
+impl TextFormatter for SlugFormatter {
+    fn format(&self, text: &str) -> String {
+        text.to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("-")
+    }
+}
+
+/// 使用泛型的文档处理器（静态分发）
+struct DocumentProcessor<F: TextFormatter> {
+    formatter: F,
+}
+
+impl<F: TextFormatter> DocumentProcessor<F> {
+    fn new(formatter: F) -> Self {
+        DocumentProcessor { formatter }
+    }
+
+    fn process(&self, text: &str) -> String {
+        self.formatter.format(text)
+    }
+
+    fn process_lines(&self, lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| self.formatter.format(line)).collect()
+    }
+}
+
+fn main() {
+    let text = "hello world from rust";
+
+    let upper_processor = DocumentProcessor::new(UpperCaseFormatter);
+    println!("大写：{}", upper_processor.process(text));
+
+    let title_processor = DocumentProcessor::new(TitleCaseFormatter);
+    println!("标题：{}", title_processor.process(text));
+
+    let slug_processor = DocumentProcessor::new(SlugFormatter);
+    println!("Slug：{}", slug_processor.process(text));
+
+    let lines = vec!["first line", "second line", "third line"];
+    let results = title_processor.process_lines(&lines);
+    for line in &results {
+        println!("  {line}");
+    }
+}
+```
+
+## 🎯 使用闭包作为策略
+
+对于简单的策略，闭包比创建独立的结构体更简洁：
+
+```rust
+/// 数据过滤器：使用闭包作为策略
+struct DataFilter<F>
+where
+    F: Fn(&i32) -> bool,
+{
+    predicate: F,
+    label: String,
+}
+
+impl<F> DataFilter<F>
+where
+    F: Fn(&i32) -> bool,
+{
+    fn new(label: &str, predicate: F) -> Self {
+        DataFilter {
+            predicate,
+            label: label.to_string(),
+        }
+    }
+
+    fn apply(&self, data: &[i32]) -> Vec<i32> {
+        data.iter()
+            .copied()
+            .filter(|item| (self.predicate)(item))
+            .collect()
+    }
+}
+
+fn main() {
+    let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+    let even_filter = DataFilter::new("偶数", |number| number % 2 == 0);
+    println!("{}：{:?}", even_filter.label, even_filter.apply(&data));
+
+    let greater_than_five = DataFilter::new("大于5", |number| *number > 5);
+    println!(
+        "{}：{:?}",
+        greater_than_five.label,
+        greater_than_five.apply(&data)
+    );
+
+    let divisible_by_three = DataFilter::new("能被3整除", |number| number % 3 == 0);
+    println!(
+        "{}：{:?}",
+        divisible_by_three.label,
+        divisible_by_three.apply(&data)
+    );
+}
+```
+
+## 📊 静态分发 vs 动态分发
+
+| 特性 | 泛型（静态分发） | Trait 对象（动态分发） |
+|------|------------------|------------------------|
+| 分发时机 | 编译期 | 运行时 |
+| 性能 | 零成本（内联优化） | 虚表查找开销（通常可忽略） |
+| 运行时切换 | ❌ 不支持 | ✅ 支持 |
+| 二进制大小 | 可能更大（单态化） | 更小（共享代码） |
+| 集合存储 | ❌ 不同类型不能放同一集合 | ✅ `Vec<Box<dyn Trait>>` |
+| 适用场景 | 策略在编译期确定 | 策略需要运行时选择 |
+
+### 运行时集合示例
+
+```rust
+trait Validator {
+    fn validate(&self, input: &str) -> Result<(), String>;
+    fn name(&self) -> &str;
+}
+
+struct MinLengthValidator {
+    min_length: usize,
+}
+
+impl Validator for MinLengthValidator {
+    fn validate(&self, input: &str) -> Result<(), String> {
+        if input.len() >= self.min_length {
+            Ok(())
+        } else {
+            Err(format!("长度至少 {} 个字符", self.min_length))
+        }
+    }
+
+    fn name(&self) -> &str {
+        "最小长度"
+    }
+}
+
+struct NoWhitespaceValidator;
+
+impl Validator for NoWhitespaceValidator {
+    fn validate(&self, input: &str) -> Result<(), String> {
+        if input.contains(' ') {
+            Err("不能包含空格".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn name(&self) -> &str {
+        "无空格"
+    }
+}
+
+struct AlphanumericValidator;
+
+impl Validator for AlphanumericValidator {
+    fn validate(&self, input: &str) -> Result<(), String> {
+        if input.chars().all(|c| c.is_alphanumeric()) {
+            Ok(())
+        } else {
+            Err("只能包含字母和数字".to_string())
+        }
+    }
+
+    fn name(&self) -> &str {
+        "仅字母数字"
+    }
+}
+
+/// 组合验证器：将多个验证器存储在 Vec 中
+struct CompositeValidator {
+    validators: Vec<Box<dyn Validator>>,
+}
+
+impl CompositeValidator {
+    fn new() -> Self {
+        CompositeValidator {
+            validators: Vec::new(),
+        }
+    }
+
+    fn add(mut self, validator: Box<dyn Validator>) -> Self {
+        self.validators.push(validator);
+        self
+    }
+
+    fn validate(&self, input: &str) -> Vec<String> {
+        self.validators
+            .iter()
+            .filter_map(|validator| validator.validate(input).err())
+            .collect()
+    }
+}
+
+fn main() {
+    let validator = CompositeValidator::new()
+        .add(Box::new(MinLengthValidator { min_length: 4 }))
+        .add(Box::new(NoWhitespaceValidator))
+        .add(Box::new(AlphanumericValidator));
+
+    let test_inputs = ["ab", "hello world", "user@name", "validUser123"];
+    for input in &test_inputs {
+        let errors = validator.validate(input);
+        if errors.is_empty() {
+            println!("✅ \"{input}\" 验证通过");
+        } else {
+            println!("❌ \"{input}\" 验证失败：{}", errors.join("；"));
+        }
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[Builder 模式](./09-builder-pattern)**：构建复杂配置对象
+- **[Newtype 模式](./10-newtype-pattern)**：增强类型安全性
+- **[访问者模式](./12-visitor-pattern)**：对数据结构添加新操作
 
 ## 📝 学习检查点
 
-- [ ] 理解策略模式（Trait 对象）的核心概念
-- [ ] 能够在实际项目中应用策略模式（Trait 对象）
+- [ ] 理解策略模式解决的问题
+- [ ] 掌握 Trait 对象和泛型两种实现方式
+- [ ] 能够使用闭包作为轻量级策略
+- [ ] 理解静态分发和动态分发的权衡
+
+## 🚀 下一步
+
+恭喜完成第九阶段的学习！接下来进入：
+→ [语言新特性](../../10-frontiers-ecosystem/01-language-features/01-language-features-overview)

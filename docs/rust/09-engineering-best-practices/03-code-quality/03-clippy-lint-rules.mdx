@@ -5,13 +5,195 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解代码质量中的「clippy lint 规则」相关知识。
+Clippy 是 Rust 的官方 lint 工具，提供超过 700 条规则，覆盖正确性、性能、风格、复杂度等维度。它不仅能发现潜在的 bug，还能建议更加惯用（idiomatic）的 Rust 写法。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本使用
+
+### 安装与运行
+
+```bash
+# clippy 随 rustup 安装
+rustup component add clippy
+
+# 运行 clippy
+cargo clippy
+
+# 对所有目标运行（包括测试、示例等）
+cargo clippy --all-targets --all-features
+
+# 将警告视为错误（CI 中常用）
+cargo clippy -- -D warnings
+
+# 自动修复 clippy 建议
+cargo clippy --fix
+```
+
+## 🔄 Lint 分类
+
+Clippy 将 lint 规则分为以下几个类别：
+
+| 类别 | 默认级别 | 说明 |
+|------|----------|------|
+| `clippy::correctness` | deny | 几乎必然是 bug |
+| `clippy::suspicious` | warn | 可疑但不一定错误的代码 |
+| `clippy::style` | warn | 不符合 Rust 惯用写法 |
+| `clippy::complexity` | warn | 可以简化的代码 |
+| `clippy::perf` | warn | 可能影响性能的写法 |
+| `clippy::pedantic` | allow | 更严格的风格检查 |
+| `clippy::nursery` | allow | 实验性规则 |
+| `clippy::restriction` | allow | 严格限制性规则 |
+
+## 🎯 常见 lint 规则示例
+
+### 正确性（correctness）
+
+```rust
+// ❌ clippy::eq_op — 自身与自身比较
+fn check(x: i32) -> bool {
+    x == x  // 警告：与自身比较永远为 true
+}
+
+// ✅ 修复
+fn check_fixed(x: i32) -> bool {
+    x == 0
+}
+
+// ❌ clippy::nonsensical_open_options — 矛盾的文件选项
+use std::fs::OpenOptions;
+fn open_file() {
+    // 同时 append 和 truncate 是矛盾的
+    OpenOptions::new()
+        .append(true)
+        .truncate(true)  // 警告
+        .open("file.txt")
+        .ok();
+}
+```
+
+### 风格（style）
+
+```rust
+// ❌ clippy::needless_return — 不必要的 return
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;  // 警告：Rust 中最后一个表达式自动作为返回值
+}
+
+// ✅ 修复
+fn add_fixed(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+// ❌ clippy::match_bool — 不要 match 布尔值
+fn describe(active: bool) -> &'static str {
+    match active {
+        true => "活跃",
+        false => "不活跃",
+    }
+}
+
+// ✅ 修复：使用 if/else
+fn describe_fixed(active: bool) -> &'static str {
+    if active { "活跃" } else { "不活跃" }
+}
+```
+
+### 性能（perf）
+
+```rust
+// ❌ clippy::manual_memcpy — 手动逐元素复制
+fn copy_elements(source: &[i32], dest: &mut [i32]) {
+    for i in 0..source.len() {
+        dest[i] = source[i];  // 警告：使用 copy_from_slice 更高效
+    }
+}
+
+// ✅ 修复
+fn copy_elements_fixed(source: &[i32], dest: &mut [i32]) {
+    dest[..source.len()].copy_from_slice(source);
+}
+
+// ❌ clippy::inefficient_to_string — 对 &str 使用 to_string()
+fn process_name(name: &str) -> String {
+    let owned = name.to_string();  // 提示：对 &str 可以使用 .to_owned()
+    owned
+}
+```
+
+### 复杂度（complexity）
+
+```rust
+// ❌ clippy::unnecessary_unwrap — 不必要的 unwrap
+fn process(value: Option<i32>) -> i32 {
+    if value.is_some() {
+        value.unwrap() * 2  // 警告：既然已检查，应使用 if let
+    } else {
+        0
+    }
+}
+
+// ✅ 修复
+fn process_fixed(value: Option<i32>) -> i32 {
+    if let Some(inner) = value {
+        inner * 2
+    } else {
+        0
+    }
+}
+
+// 或者更简洁
+fn process_concise(value: Option<i32>) -> i32 {
+    value.map_or(0, |inner| inner * 2)
+}
+```
+
+## 📊 控制 lint 级别
+
+### 属性方式
+
+```rust
+// 在整个 crate 级别（lib.rs / main.rs 顶部）
+#![warn(clippy::pedantic)]
+#![allow(clippy::module_name_repetitions)]
+
+// 在特定项上
+#[allow(clippy::too_many_arguments)]
+fn complex_function(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32) -> i32 {
+    a + b + c + d + e + f + g
+}
+
+// 在特定代码块上
+#[allow(clippy::cast_possible_truncation)]
+fn to_u8(value: u32) -> u8 {
+    value as u8
+}
+```
+
+### 命令行方式
+
+```bash
+# 启用 pedantic 类别
+cargo clippy -- -W clippy::pedantic
+
+# 禁止特定 lint
+cargo clippy -- -A clippy::needless_return
+
+# 将特定 lint 设为错误
+cargo clippy -- -D clippy::unwrap_used
+```
+
+## 🔗 相关概念
+
+- **[rustfmt 格式化配置](./02-rustfmt-configuration)**：代码格式化
+- **[自定义 lint 配置](./04-custom-lint-configuration)**：项目级别的 lint 配置管理
+- **[CI/CD 集成](../02-documentation-publishing/09-ci-cd-github-actions)**：在 CI 中自动运行 clippy
 
 ## 📝 学习检查点
 
-- [ ] 理解clippy lint 规则的核心概念
-- [ ] 能够在实际项目中应用clippy lint 规则
+- [ ] 理解 clippy 的 lint 分类体系
+- [ ] 掌握常见的 lint 规则及其修复方式
+- [ ] 能够使用属性和命令行控制 lint 级别
+- [ ] 了解 `cargo clippy --fix` 自动修复功能
+
+## 🚀 下一步
+
+→ [自定义 lint 配置](./04-custom-lint-configuration)

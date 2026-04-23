@@ -5,13 +5,316 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「集成测试」相关知识。
+集成测试在 Rust 中被视为外部代码，只能访问库的公共 API。它们位于项目根目录的 `tests/` 目录中，每个文件都是一个独立的 crate。集成测试用于验证多个模块协同工作时的行为是否正确。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+:::warning
+集成测试仅适用于库 crate（`lib.rs`）。二进制 crate（`main.rs`）不能被直接集成测试，通常的做法是将逻辑放在 `lib.rs` 中，`main.rs` 只做调用。
 :::
+
+## 🎯 基本集成测试
+
+### 目录结构
+
+```
+my_project/
+├── src/
+│   └── lib.rs
+├── tests/
+│   ├── basic_test.rs
+│   ├── advanced_test.rs
+│   └── common/        # 共享辅助模块
+│       └── mod.rs
+└── Cargo.toml
+```
+
+### 示例库代码
+
+`src/lib.rs`：
+
+```rust
+/// 将字符串转为蛇形命名
+pub fn to_snake_case(input: &str) -> String {
+    let mut result = String::new();
+    for (index, character) in input.chars().enumerate() {
+        if character.is_uppercase() {
+            if index > 0 {
+                result.push('_');
+            }
+            result.extend(character.to_lowercase());
+        } else {
+            result.push(character);
+        }
+    }
+    result
+}
+
+/// 将字符串转为驼峰命名
+pub fn to_camel_case(input: &str) -> String {
+    input
+        .split('_')
+        .enumerate()
+        .map(|(index, word)| {
+            if index == 0 {
+                word.to_lowercase()
+            } else {
+                let mut chars = word.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => {
+                        first.to_uppercase().to_string() + &chars.as_str().to_lowercase()
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+/// 检查字符串是否为有效的标识符
+pub fn is_valid_identifier(input: &str) -> bool {
+    if input.is_empty() {
+        return false;
+    }
+    let mut chars = input.chars();
+    let first = chars.next().unwrap();
+    if !first.is_alphabetic() && first != '_' {
+        return false;
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+```
+
+### 编写集成测试
+
+`tests/basic_test.rs`：
+
+```rust
+// 集成测试通过 crate 名称引入库
+use my_project::{to_snake_case, to_camel_case, is_valid_identifier};
+
+#[test]
+fn test_snake_case_from_camel() {
+    assert_eq!(to_snake_case("helloWorld"), "hello_world");
+    assert_eq!(to_snake_case("MyStructName"), "my_struct_name");
+}
+
+#[test]
+fn test_camel_case_from_snake() {
+    assert_eq!(to_camel_case("hello_world"), "helloWorld");
+    assert_eq!(to_camel_case("my_struct_name"), "myStructName");
+}
+
+#[test]
+fn test_roundtrip_conversion() {
+    let original = "hello_world";
+    let camel = to_camel_case(original);
+    let back_to_snake = to_snake_case(&camel);
+    assert_eq!(back_to_snake, original);
+}
+
+#[test]
+fn test_valid_identifiers() {
+    assert!(is_valid_identifier("hello"));
+    assert!(is_valid_identifier("_private"));
+    assert!(is_valid_identifier("count_123"));
+}
+
+#[test]
+fn test_invalid_identifiers() {
+    assert!(!is_valid_identifier(""));
+    assert!(!is_valid_identifier("123abc"));
+    assert!(!is_valid_identifier("hello world"));
+}
+```
+
+### 运行集成测试
+
+```bash
+# 运行所有测试（单元测试 + 集成测试）
+cargo test
+
+# 只运行集成测试
+cargo test --test basic_test
+
+# 运行集成测试中的特定测试
+cargo test --test basic_test test_roundtrip_conversion
+```
+
+## 🔄 共享辅助模块
+
+### `tests/common/mod.rs` 模式
+
+当多个集成测试文件需要共享辅助代码时，使用 `common/mod.rs`：
+
+`tests/common/mod.rs`：
+
+```rust
+/// 创建一对测试用例：蛇形和驼峰的对应关系
+pub struct ConversionPair {
+    pub snake: String,
+    pub camel: String,
+}
+
+impl ConversionPair {
+    pub fn new(snake: &str, camel: &str) -> Self {
+        ConversionPair {
+            snake: snake.to_string(),
+            camel: camel.to_string(),
+        }
+    }
+}
+
+/// 提供一批标准测试用例
+pub fn standard_test_pairs() -> Vec<ConversionPair> {
+    vec![
+        ConversionPair::new("hello_world", "helloWorld"),
+        ConversionPair::new("my_struct_name", "myStructName"),
+        ConversionPair::new("get_user_by_id", "getUserById"),
+    ]
+}
+```
+
+`tests/advanced_test.rs`：
+
+```rust
+mod common;
+
+use my_project::{to_snake_case, to_camel_case};
+
+#[test]
+fn test_batch_snake_to_camel() {
+    for pair in common::standard_test_pairs() {
+        let result = to_camel_case(&pair.snake);
+        assert_eq!(
+            result, pair.camel,
+            "to_camel_case({}) 应为 {}，实际为 {}",
+            pair.snake, pair.camel, result
+        );
+    }
+}
+
+#[test]
+fn test_batch_camel_to_snake() {
+    for pair in common::standard_test_pairs() {
+        let result = to_snake_case(&pair.camel);
+        assert_eq!(
+            result, pair.snake,
+            "to_snake_case({}) 应为 {}，实际为 {}",
+            pair.camel, pair.snake, result
+        );
+    }
+}
+```
+
+:::tip
+将共享代码放在 `tests/common/mod.rs`（而不是 `tests/common.rs`）是一种约定。放在子目录中的文件不会被 Cargo 当作独立的集成测试文件。
+:::
+
+## 🏗️ 二进制 crate 的集成测试策略
+
+对于纯二进制项目，推荐将逻辑拆分到 `lib.rs`：
+
+```
+my_cli/
+├── src/
+│   ├── lib.rs      # 核心逻辑在这里
+│   └── main.rs     # 仅做入口调用
+└── tests/
+    └── cli_test.rs  # 集成测试引用 lib
+```
+
+`src/lib.rs`：
+
+```rust
+pub fn parse_args(args: &[String]) -> Result<Config, String> {
+    if args.len() < 2 {
+        return Err("用法：my_cli <命令>".to_string());
+    }
+    Ok(Config {
+        command: args[1].clone(),
+    })
+}
+
+pub struct Config {
+    pub command: String,
+}
+
+pub fn run(config: &Config) -> Result<String, String> {
+    match config.command.as_str() {
+        "greet" => Ok("Hello, world!".to_string()),
+        "version" => Ok("1.0.0".to_string()),
+        other => Err(format!("未知命令：{other}")),
+    }
+}
+```
+
+`src/main.rs`：
+
+```rust
+use my_cli::{parse_args, run};
+use std::env;
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    match parse_args(&args) {
+        Ok(config) => match run(&config) {
+            Ok(output) => println!("{output}"),
+            Err(error) => eprintln!("错误：{error}"),
+        },
+        Err(error) => eprintln!("{error}"),
+    }
+}
+```
+
+`tests/cli_test.rs`：
+
+```rust
+use my_cli::{parse_args, run};
+
+#[test]
+fn test_greet_command() {
+    let args = vec!["my_cli".to_string(), "greet".to_string()];
+    let config = parse_args(&args).unwrap();
+    let output = run(&config).unwrap();
+    assert_eq!(output, "Hello, world!");
+}
+
+#[test]
+fn test_version_command() {
+    let args = vec!["my_cli".to_string(), "version".to_string()];
+    let config = parse_args(&args).unwrap();
+    let output = run(&config).unwrap();
+    assert_eq!(output, "1.0.0");
+}
+
+#[test]
+fn test_unknown_command() {
+    let args = vec!["my_cli".to_string(), "unknown".to_string()];
+    let config = parse_args(&args).unwrap();
+    let result = run(&config);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_no_args() {
+    let args = vec!["my_cli".to_string()];
+    let result = parse_args(&args);
+    assert!(result.is_err());
+}
+```
+
+## 🔗 相关概念
+
+- **[测试组织](./04-test-organization)**：单元测试模块的组织
+- **[测试 fixtures](./07-test-fixtures)**：管理测试数据和环境
+- **[测试覆盖率](./08-test-coverage)**：衡量测试的完整性
 
 ## 📝 学习检查点
 
-- [ ] 理解集成测试的核心概念
-- [ ] 能够在实际项目中应用集成测试
+- [ ] 理解集成测试与单元测试的区别
+- [ ] 掌握 `tests/` 目录结构
+- [ ] 能够使用 `common/mod.rs` 共享辅助代码
+- [ ] 了解二进制 crate 的集成测试策略
+
+## 🚀 下一步
+
+→ [测试 fixtures](./07-test-fixtures)

@@ -5,13 +5,247 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「测试 fixtures」相关知识。
+测试 fixture 是指在测试运行前后进行的设置（setup）和清理（teardown）操作。Rust 没有内置的 fixture 框架（不像 JUnit 的 `@Before`/`@After`），但可以通过 RAII（资源获取即初始化）模式、`Drop` trait 和辅助函数来实现等价的功能。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 使用 RAII 实现 Setup/Teardown
+
+### `Drop` trait 自动清理
+
+Rust 的 `Drop` trait 是实现 teardown 的天然方式——当 fixture 对象离开作用域时自动执行清理逻辑：
+
+```rust
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// 临时目录 fixture：创建时建立目录，Drop 时自动删除
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("rust_test_{name}"));
+        fs::create_dir_all(&path).expect("创建临时目录失败");
+        TempDir { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn create_file(&self, name: &str, content: &str) -> PathBuf {
+        let file_path = self.path.join(name);
+        fs::write(&file_path, content).expect("写入文件失败");
+        file_path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        if self.path.exists() {
+            fs::remove_dir_all(&self.path).ok();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_write_and_read_file() {
+        let temp = TempDir::new("write_read");
+        let file_path = temp.create_file("hello.txt", "Hello, Rust!");
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "Hello, Rust!");
+        // TempDir 离开作用域时自动清理
+    }
+
+    #[test]
+    fn test_multiple_files() {
+        let temp = TempDir::new("multi_files");
+
+        temp.create_file("a.txt", "文件A");
+        temp.create_file("b.txt", "文件B");
+
+        let entries: Vec<_> = fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .collect();
+        assert_eq!(entries.len(), 2);
+    }
+}
+```
+
+## 🔄 数据库测试 fixture
+
+### 内存数据库 fixture 示例
+
+使用一个简单的内存存储来演示 fixture 模式：
+
+```rust
+use std::collections::HashMap;
+
+/// 简单的内存键值存储
+struct KeyValueStore {
+    data: HashMap<String, String>,
+}
+
+impl KeyValueStore {
+    fn new() -> Self {
+        KeyValueStore {
+            data: HashMap::new(),
+        }
+    }
+
+    fn set(&mut self, key: &str, value: &str) {
+        self.data.insert(key.to_string(), value.to_string());
+    }
+
+    fn get(&self, key: &str) -> Option<&str> {
+        self.data.get(key).map(|value| value.as_str())
+    }
+
+    fn delete(&mut self, key: &str) -> bool {
+        self.data.remove(key).is_some()
+    }
+
+    fn count(&self) -> usize {
+        self.data.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 测试 fixture：预填充数据的存储
+    struct StoreFixture {
+        store: KeyValueStore,
+    }
+
+    impl StoreFixture {
+        fn new() -> Self {
+            let mut store = KeyValueStore::new();
+            // Setup：填充初始测试数据
+            store.set("name", "张三");
+            store.set("email", "zhangsan@example.com");
+            store.set("role", "admin");
+            StoreFixture { store }
+        }
+
+        fn empty() -> Self {
+            StoreFixture {
+                store: KeyValueStore::new(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_existing_key() {
+        let fixture = StoreFixture::new();
+        assert_eq!(fixture.store.get("name"), Some("张三"));
+    }
+
+    #[test]
+    fn test_get_nonexistent_key() {
+        let fixture = StoreFixture::new();
+        assert_eq!(fixture.store.get("phone"), None);
+    }
+
+    #[test]
+    fn test_set_new_key() {
+        let mut fixture = StoreFixture::new();
+        fixture.store.set("phone", "13800138000");
+        assert_eq!(fixture.store.get("phone"), Some("13800138000"));
+        assert_eq!(fixture.store.count(), 4);
+    }
+
+    #[test]
+    fn test_delete_key() {
+        let mut fixture = StoreFixture::new();
+        assert!(fixture.store.delete("name"));
+        assert_eq!(fixture.store.get("name"), None);
+        assert_eq!(fixture.store.count(), 2);
+    }
+
+    #[test]
+    fn test_empty_store() {
+        let fixture = StoreFixture::empty();
+        assert_eq!(fixture.store.count(), 0);
+        assert_eq!(fixture.store.get("anything"), None);
+    }
+
+    #[test]
+    fn test_overwrite_value() {
+        let mut fixture = StoreFixture::new();
+        fixture.store.set("name", "李四");
+        assert_eq!(fixture.store.get("name"), Some("李四"));
+        assert_eq!(fixture.store.count(), 3); // 总数不变
+    }
+}
+```
+
+## 🏗️ 使用闭包封装 setup/teardown
+
+另一种常见模式是将 setup/teardown 封装在一个接受闭包的函数中：
+
+```rust
+use std::fs;
+use std::path::PathBuf;
+
+fn with_temp_file<F>(filename: &str, content: &str, test_body: F)
+where
+    F: FnOnce(&PathBuf),
+{
+    let path = std::env::temp_dir().join(format!("rust_fixture_{filename}"));
+
+    // Setup
+    fs::write(&path, content).expect("写入临时文件失败");
+
+    // 运行测试逻辑
+    test_body(&path);
+
+    // Teardown
+    fs::remove_file(&path).ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_file_size() {
+        with_temp_file("size_test.txt", "Hello, World!", |path| {
+            let metadata = fs::metadata(path).unwrap();
+            assert_eq!(metadata.len(), 13);
+        });
+    }
+
+    #[test]
+    fn test_file_content() {
+        with_temp_file("content_test.txt", "Rust is awesome", |path| {
+            let content = fs::read_to_string(path).unwrap();
+            assert!(content.contains("Rust"));
+        });
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[测试辅助函数](./05-test-helpers)**：提取通用的测试逻辑
+- **[集成测试](./06-integration-tests)**：跨模块的 fixture 共享
+- **[测试覆盖率](./08-test-coverage)**：衡量 fixture 覆盖的场景
 
 ## 📝 学习检查点
 
-- [ ] 理解测试 fixtures的核心概念
-- [ ] 能够在实际项目中应用测试 fixtures
+- [ ] 理解 RAII 模式在测试中的应用
+- [ ] 能够使用 `Drop` trait 实现自动清理
+- [ ] 掌握闭包封装 setup/teardown 的模式
+- [ ] 能够为不同测试场景创建合适的 fixture
+
+## 🚀 下一步
+
+→ [测试覆盖率](./08-test-coverage)

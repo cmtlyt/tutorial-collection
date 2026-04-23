@@ -5,13 +5,154 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解代码质量中的「cargo-audit 安全审计」相关知识。
+[cargo-audit](https://github.com/rustsec/rustsec/tree/main/cargo-audit) 是一个安全审计工具，用于检查项目依赖中是否存在已知的安全漏洞。它基于 [RustSec Advisory Database](https://rustsec.org) 数据库，该数据库由 Rust 安全工作组维护。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 安装与使用
+
+### 基本用法
+
+```bash
+# 安装 cargo-audit
+cargo install cargo-audit
+
+# 运行安全审计
+cargo audit
+
+# 生成 JSON 格式报告
+cargo audit --json
+
+# 忽略特定漏洞（需提供 Advisory ID）
+cargo audit --ignore RUSTSEC-2024-0001
+
+# 审计指定的 Cargo.lock 文件
+cargo audit --file path/to/Cargo.lock
+```
+
+### 输出示例
+
+当发现漏洞时，输出类似：
+
+```
+Crate:     chrono
+Version:   0.4.19
+Title:     Potential segfault in localtime_r invocations
+Date:      2020-11-10
+ID:        RUSTSEC-2020-0159
+URL:       https://rustsec.org/advisories/RUSTSEC-2020-0159
+Solution:  Upgrade to >=0.4.20
+```
+
+当没有漏洞时：
+
+```
+Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+Loaded 650 security advisories (from /home/user/.cargo/advisory-db)
+Scanning Cargo.lock for vulnerabilities (120 crate dependencies)
+
+No vulnerable packages found.
+```
+
+## 🔄 配置文件
+
+### `audit.toml`
+
+在项目根目录创建 `audit.toml` 进行持久化配置：
+
+```toml
+# 允许某些已知的、暂时无法修复的漏洞
+[advisories]
+ignore = [
+    # 已评估，对本项目无影响
+    # "RUSTSEC-2024-0001",
+]
+
+# 检测已弃用（yanked）的 crate
+[yanked]
+enabled = true
+update-index = true
+
+# 数据库来源
+[database]
+path = "~/.cargo/advisory-db"
+url = "https://github.com/RustSec/advisory-db.git"
+```
+
+## 🎯 处理漏洞的工作流
+
+### 1. 发现漏洞
+
+```bash
+cargo audit
+```
+
+### 2. 评估影响
+
+- 阅读漏洞详情（URL 链接）
+- 判断是否影响你的使用场景
+- 检查是否有可用的修复版本
+
+### 3. 修复漏洞
+
+```bash
+# 查看哪些依赖可以更新
+cargo update --dry-run
+
+# 更新特定依赖
+cargo update -p chrono
+
+# 更新所有依赖
+cargo update
+
+# 重新审计确认修复
+cargo audit
+```
+
+### 4. 无法立即修复时
+
+如果上游尚未发布修复版本，可以在 `audit.toml` 中暂时忽略，并添加注释说明原因：
+
+```toml
+[advisories]
+ignore = [
+    # 此漏洞仅在特定平台触发，我们的部署环境不受影响
+    # 跟踪 issue: https://github.com/upstream/repo/issues/123
+    "RUSTSEC-2024-0001",
+]
+```
+
+## 📊 CI 集成
+
+### GitHub Actions
+
+```yaml
+- name: Security audit
+  uses: rustsec/audit-check@v2
+  with:
+    token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+或者使用命令行方式：
+
+```yaml
+- name: Install cargo-audit
+  run: cargo install cargo-audit
+- name: Run audit
+  run: cargo audit
+```
+
+## 🔗 相关概念
+
+- **[cargo-outdated 依赖更新](./06-cargo-outdated)**：检查依赖是否有新版本
+- **[cargo-deny 依赖策略](./07-cargo-deny)**：更全面的依赖策略管理
+- **[CI/CD 集成](../02-documentation-publishing/09-ci-cd-github-actions)**：自动化安全审计
 
 ## 📝 学习检查点
 
-- [ ] 理解cargo-audit 安全审计的核心概念
-- [ ] 能够在实际项目中应用cargo-audit 安全审计
+- [ ] 能够安装和运行 cargo-audit
+- [ ] 理解漏洞报告的内容和处理流程
+- [ ] 掌握 `audit.toml` 的配置方式
+- [ ] 能够在 CI 中集成安全审计
+
+## 🚀 下一步
+
+→ [cargo-outdated 依赖更新](./06-cargo-outdated)

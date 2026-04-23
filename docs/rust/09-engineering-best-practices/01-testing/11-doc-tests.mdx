@@ -5,13 +5,278 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「文档测试」相关知识。
+文档测试（doc tests）是 Rust 独有的特性之一：写在文档注释中的代码示例会被 `cargo test` 自动编译和执行。这确保了文档中的示例代码始终与实际 API 保持同步，不会出现"文档骗人"的问题。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本文档测试
+
+### 在文档注释中写代码
+
+使用 `///` 编写的文档注释中，Markdown 代码块里的 Rust 代码会被自动测试：
+
+```rust
+/// 计算两个数的最大公约数。
+///
+/// 使用欧几里得算法实现。
+///
+/// # 示例
+///
+/// ```
+/// use my_lib::gcd;
+///
+/// assert_eq!(gcd(12, 8), 4);
+/// assert_eq!(gcd(15, 25), 5);
+/// assert_eq!(gcd(7, 0), 7);
+/// ```
+pub fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let temp = b;
+        b = a % b;
+        a = temp;
+    }
+    a
+}
+
+/// 将摄氏度转换为华氏度。
+///
+/// # 公式
+///
+/// °F = °C × 9/5 + 32
+///
+/// # 示例
+///
+/// ```
+/// use my_lib::celsius_to_fahrenheit;
+///
+/// let boiling = celsius_to_fahrenheit(100.0);
+/// assert!((boiling - 212.0).abs() < f64::EPSILON);
+///
+/// let freezing = celsius_to_fahrenheit(0.0);
+/// assert!((freezing - 32.0).abs() < f64::EPSILON);
+/// ```
+pub fn celsius_to_fahrenheit(celsius: f64) -> f64 {
+    celsius * 9.0 / 5.0 + 32.0
+}
+```
+
+运行文档测试：
+
+```bash
+# 运行所有测试（包括文档测试）
+cargo test
+
+# 仅运行文档测试
+cargo test --doc
+```
+
+## 🔄 文档测试的特殊标记
+
+### 隐藏行：`#`
+
+用 `# ` 开头的行在文档渲染时会被隐藏，但仍然参与编译和运行。适合隐藏 setup 代码：
+
+```rust
+/// 从切片中查找最大值。
+///
+/// # 示例
+///
+/// ```
+/// # // 这些行在文档中不显示，但会被编译
+/// # fn main() {
+/// use my_lib::find_max;
+///
+/// let numbers = vec![3, 1, 4, 1, 5, 9, 2, 6];
+/// assert_eq!(find_max(&numbers), Some(&9));
+///
+/// let empty: Vec<i32> = vec![];
+/// assert_eq!(find_max(&empty), None);
+/// # }
+/// ```
+pub fn find_max<T: Ord>(items: &[T]) -> Option<&T> {
+    items.iter().max()
+}
+```
+
+### 标记为不运行：`no_run`
+
+代码会被编译但不执行，适用于涉及网络、文件系统等副作用的示例：
+
+```rust
+/// 从指定 URL 下载文件内容。
+///
+/// # 示例
+///
+/// ```no_run
+/// use my_lib::download;
+///
+/// let content = download("https://example.com/data.txt").unwrap();
+/// println!("下载了 {} 字节", content.len());
+/// ```
+pub fn download(url: &str) -> Result<Vec<u8>, String> {
+    // 实际实现会使用 HTTP 客户端
+    Err(format!("暂未实现：{url}"))
+}
+```
+
+### 标记为仅编译检查：`compile_fail`
+
+验证某些代码**应该**编译失败：
+
+```rust
+/// 不可变引用不能用于修改值。
+///
+/// ```compile_fail
+/// let x = 5;
+/// let r = &x;
+/// *r = 10; // 编译错误：不能通过不可变引用修改值
+/// ```
+pub struct Immutable;
+```
+
+### 标记为忽略：`ignore`
+
+代码不会被编译也不会被运行：
+
+```rust
+/// 这个示例需要特定的环境配置才能运行。
+///
+/// ```ignore
+/// let db = connect_to_production_database();
+/// db.run_migration();
+/// ```
+pub struct Migration;
+```
+
+## 🎯 文档测试中的错误处理
+
+### 使用 `?` 操作符
+
+文档测试默认包裹在 `fn main()` 中，要使用 `?` 需要声明返回类型：
+
+```rust
+/// 解析配置字符串为键值对。
+///
+/// # 示例
+///
+/// ```
+/// use my_lib::parse_config_line;
+///
+/// # fn main() -> Result<(), String> {
+/// let (key, value) = parse_config_line("host=localhost")?;
+/// assert_eq!(key, "host");
+/// assert_eq!(value, "localhost");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # 错误
+///
+/// 当输入不包含 `=` 时返回错误：
+///
+/// ```
+/// use my_lib::parse_config_line;
+///
+/// let result = parse_config_line("invalid");
+/// assert!(result.is_err());
+/// ```
+pub fn parse_config_line(line: &str) -> Result<(String, String), String> {
+    let parts: Vec<&str> = line.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        return Err(format!("无效的配置行：{line}"));
+    }
+    Ok((parts[0].to_string(), parts[1].to_string()))
+}
+```
+
+## 📝 模块级文档测试
+
+使用 `//!` 编写的模块级文档也支持文档测试：
+
+```rust
+//! # 字符串工具库
+//!
+//! 提供常用的字符串处理功能。
+//!
+//! ## 快速开始
+//!
+//! ```
+//! use my_lib::string_utils::capitalize;
+//!
+//! let result = capitalize("hello");
+//! assert_eq!(result, "Hello");
+//! ```
+
+/// 将字符串首字母大写。
+///
+/// ```
+/// use my_lib::string_utils::capitalize;
+///
+/// assert_eq!(capitalize("rust"), "Rust");
+/// assert_eq!(capitalize(""), "");
+/// assert_eq!(capitalize("A"), "A");
+/// ```
+pub fn capitalize(input: &str) -> String {
+    let mut chars = input.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().to_string() + chars.as_str(),
+    }
+}
+```
+
+## 🏗️ 文档测试最佳实践
+
+### 展示正常用法和边界情况
+
+```rust
+/// 安全地获取切片中指定索引的元素。
+///
+/// # 示例
+///
+/// 正常使用：
+///
+/// ```
+/// use my_lib::safe_get;
+///
+/// let data = vec![10, 20, 30];
+/// assert_eq!(safe_get(&data, 0), Some(&10));
+/// assert_eq!(safe_get(&data, 2), Some(&30));
+/// ```
+///
+/// 越界返回 `None`：
+///
+/// ```
+/// use my_lib::safe_get;
+///
+/// let data = vec![10, 20, 30];
+/// assert_eq!(safe_get(&data, 5), None);
+/// ```
+///
+/// 空切片：
+///
+/// ```
+/// use my_lib::safe_get;
+///
+/// let empty: Vec<i32> = vec![];
+/// assert_eq!(safe_get(&empty, 0), None);
+/// ```
+pub fn safe_get<T>(items: &[T], index: usize) -> Option<&T> {
+    items.get(index)
+}
+```
+
+## 🔗 相关概念
+
+- **[rustdoc 文档注释](../../02-documentation-publishing/02-rustdoc-comments)**：文档注释的完整语法
+- **[单元测试](./02-unit-tests)**：与文档测试互补的测试方式
+- **[assert 宏家族](./03-assert-macros)**：文档测试中常用的断言
 
 ## 📝 学习检查点
 
-- [ ] 理解文档测试的核心概念
-- [ ] 能够在实际项目中应用文档测试
+- [ ] 理解文档测试的工作原理
+- [ ] 掌握 `#`、`no_run`、`compile_fail`、`ignore` 标记的用法
+- [ ] 能够在文档测试中使用 `?` 操作符
+- [ ] 养成为公共 API 编写文档测试的习惯
+
+## 🚀 下一步
+
+→ [Mock 与 Test Double](./12-mock-test-doubles)

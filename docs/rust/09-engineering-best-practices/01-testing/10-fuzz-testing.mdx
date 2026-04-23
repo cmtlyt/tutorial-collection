@@ -5,13 +5,230 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「模糊测试（cargo-fuzz）」相关知识。
+模糊测试（Fuzz Testing）是一种自动化测试技术，通过向程序输入大量随机或半随机数据来发现崩溃、panic 和安全漏洞。Rust 生态中使用 **cargo-fuzz**（基于 libFuzzer）进行模糊测试，它会持续运行直到发现崩溃或被手动停止。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+:::warning
+cargo-fuzz 需要使用 nightly 工具链，因为它依赖 `-Z sanitizer` 编译器标志。
 :::
+
+## 🎯 快速上手
+
+### 安装与初始化
+
+```bash
+# 安装 cargo-fuzz
+cargo install cargo-fuzz
+
+# 在项目中初始化 fuzz 目录
+cargo fuzz init
+
+# 添加一个 fuzz target
+cargo fuzz add my_parser_fuzz
+```
+
+初始化后的目录结构：
+
+```
+my_project/
+├── fuzz/
+│   ├── Cargo.toml
+│   └── fuzz_targets/
+│       └── my_parser_fuzz.rs
+├── src/
+│   └── lib.rs
+└── Cargo.toml
+```
+
+### 编写第一个 fuzz target
+
+假设我们有一个简单的解析器：
+
+`src/lib.rs`：
+
+```rust
+#[derive(Debug, PartialEq)]
+pub struct KeyValue {
+    pub key: String,
+    pub value: String,
+}
+
+/// 解析 "key=value" 格式的字符串
+pub fn parse_key_value(input: &str) -> Result<KeyValue, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("输入不能为空".to_string());
+    }
+
+    let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        return Err(format!("无效格式，缺少 '='：{trimmed}"));
+    }
+
+    let key = parts[0].trim();
+    let value = parts[1].trim();
+
+    if key.is_empty() {
+        return Err("键不能为空".to_string());
+    }
+
+    Ok(KeyValue {
+        key: key.to_string(),
+        value: value.to_string(),
+    })
+}
+```
+
+`fuzz/fuzz_targets/my_parser_fuzz.rs`：
+
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use my_project::parse_key_value;
+
+fuzz_target!(|data: &[u8]| {
+    // 将随机字节转为字符串
+    if let Ok(input) = std::str::from_utf8(data) {
+        // 调用被测函数——无论返回 Ok 还是 Err 都可以，关键是不能 panic
+        let _ = parse_key_value(input);
+    }
+});
+```
+
+### 运行模糊测试
+
+```bash
+# 使用 nightly 运行 fuzz target
+cargo +nightly fuzz run my_parser_fuzz
+
+# 限制运行时间（秒）
+cargo +nightly fuzz run my_parser_fuzz -- -max_total_time=60
+
+# 限制最大输入长度
+cargo +nightly fuzz run my_parser_fuzz -- -max_len=256
+```
+
+## 🔄 使用结构化输入
+
+### Arbitrary trait
+
+通过 `arbitrary` crate 可以让 fuzzer 直接生成结构化数据，而不是原始字节：
+
+在 `fuzz/Cargo.toml` 中添加：
+
+```toml
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+```
+
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use arbitrary::Arbitrary;
+
+#[derive(Debug, Arbitrary)]
+struct FuzzInput {
+    numerator: i64,
+    denominator: i64,
+}
+
+fn safe_divide(a: i64, b: i64) -> Option<i64> {
+    if b == 0 {
+        return None;
+    }
+    // 处理溢出：i64::MIN / -1 会溢出
+    a.checked_div(b)
+}
+
+fuzz_target!(|input: FuzzInput| {
+    let result = safe_divide(input.numerator, input.denominator);
+
+    if input.denominator == 0 {
+        assert!(result.is_none(), "除以零应返回 None");
+    }
+
+    if let Some(quotient) = result {
+        // 验证基本数学属性
+        if input.denominator != 0 && input.numerator != i64::MIN {
+            assert!(quotient.abs() <= input.numerator.abs());
+        }
+    }
+});
+```
+
+## 📊 处理崩溃
+
+当 fuzzer 发现崩溃时，会将触发崩溃的输入保存到 `fuzz/artifacts/` 目录：
+
+```bash
+# 查看崩溃产物
+ls fuzz/artifacts/my_parser_fuzz/
+
+# 重新运行单个崩溃输入以复现
+cargo +nightly fuzz run my_parser_fuzz fuzz/artifacts/my_parser_fuzz/crash-xxxxx
+
+# 最小化崩溃输入（找到触发崩溃的最小输入）
+cargo +nightly fuzz tmin my_parser_fuzz fuzz/artifacts/my_parser_fuzz/crash-xxxxx
+```
+
+### 从崩溃到修复的工作流
+
+1. **发现崩溃**：fuzzer 报告 panic
+2. **最小化输入**：使用 `cargo fuzz tmin` 简化输入
+3. **编写回归测试**：将最小化的输入作为测试用例
+4. **修复代码**：修复导致崩溃的根因
+5. **验证修复**：重新运行 fuzzer 确认不再崩溃
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 从 fuzz 崩溃中提取的回归测试
+    #[test]
+    fn test_regression_empty_key() {
+        // 这个输入曾经导致 panic
+        let result = parse_key_value("=value");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_regression_only_equals() {
+        let result = parse_key_value("=");
+        assert!(result.is_err());
+    }
+}
+```
+
+## 🏗️ 语料库管理
+
+fuzzer 会在 `fuzz/corpus/` 目录中积累有效的输入语料，可以提供初始种子来加速发现：
+
+```bash
+# 创建种子语料目录
+mkdir -p fuzz/corpus/my_parser_fuzz
+
+# 添加种子输入
+echo -n "key=value" > fuzz/corpus/my_parser_fuzz/seed1
+echo -n "name=rust" > fuzz/corpus/my_parser_fuzz/seed2
+echo -n "a=b=c" > fuzz/corpus/my_parser_fuzz/seed3
+
+# 带语料库运行
+cargo +nightly fuzz run my_parser_fuzz fuzz/corpus/my_parser_fuzz
+```
+
+## 🔗 相关概念
+
+- **[属性测试](./09-property-testing)**：另一种自动化测试方式，更侧重属性验证
+- **[单元测试](./02-unit-tests)**：将 fuzz 发现的崩溃转化为回归测试
 
 ## 📝 学习检查点
 
-- [ ] 理解模糊测试（cargo-fuzz）的核心概念
-- [ ] 能够在实际项目中应用模糊测试（cargo-fuzz）
+- [ ] 理解模糊测试与属性测试的区别
+- [ ] 能够初始化并运行 cargo-fuzz
+- [ ] 掌握结构化输入（Arbitrary）的用法
+- [ ] 了解崩溃分析和回归测试的工作流
+
+## 🚀 下一步
+
+→ [文档测试](./11-doc-tests)

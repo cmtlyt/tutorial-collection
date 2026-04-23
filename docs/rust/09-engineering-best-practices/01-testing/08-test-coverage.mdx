@@ -5,13 +5,214 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「测试覆盖率」相关知识。
+测试覆盖率用于衡量测试用例执行了多少源代码。Rust 生态中有两个主流的覆盖率工具：**cargo-tarpaulin** 和 **cargo-llvm-cov**。前者更易上手，后者基于 LLVM 的 Source-based Code Coverage，精度更高。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 cargo-tarpaulin
+
+### 安装与使用
+
+```bash
+# 安装 tarpaulin
+cargo install cargo-tarpaulin
+
+# 运行覆盖率分析
+cargo tarpaulin
+
+# 生成 HTML 报告
+cargo tarpaulin --out html
+
+# 排除测试代码本身
+cargo tarpaulin --ignore-tests
+
+# 设置最低覆盖率阈值（低于则失败，适合 CI）
+cargo tarpaulin --fail-under 80
+```
+
+### 输出示例
+
+```
+|| Uncovered Lines:
+|| src/lib.rs: 42, 43, 57
+||
+|| Tested/Total Lines:
+|| src/lib.rs: 45/48
+||
+|| 93.75% coverage, 45/48 lines covered
+```
+
+### 配置文件
+
+在项目根目录创建 `tarpaulin.toml`：
+
+```toml
+[report]
+out = ["html", "lcov"]
+
+[run]
+ignore-tests = true
+fail-under = 80
+```
+
+:::tip
+tarpaulin 目前仅支持 Linux 平台。如果你使用 macOS 或 Windows，推荐使用 cargo-llvm-cov。
 :::
+
+## 🔄 cargo-llvm-cov
+
+### 安装与使用
+
+```bash
+# 安装 llvm-cov
+cargo install cargo-llvm-cov
+
+# 运行覆盖率分析
+cargo llvm-cov
+
+# 生成 HTML 报告
+cargo llvm-cov --html
+# 报告生成在 target/llvm-cov/html/index.html
+
+# 生成 lcov 格式（可集成到 CI 工具）
+cargo llvm-cov --lcov --output-path lcov.info
+
+# 仅显示未覆盖的区域
+cargo llvm-cov --show-missing-lines
+```
+
+### 结合工作空间
+
+```bash
+# 在 workspace 中运行所有 crate 的覆盖率
+cargo llvm-cov --workspace
+
+# 排除特定 crate
+cargo llvm-cov --workspace --exclude my-benchmark-crate
+```
+
+## 📊 覆盖率驱动的测试编写
+
+### 示例：提高覆盖率
+
+先编写一段业务代码，然后通过覆盖率报告驱动我们补充缺失的测试：
+
+```rust
+#[derive(Debug, PartialEq)]
+enum PasswordStrength {
+    Weak,
+    Medium,
+    Strong,
+}
+
+fn check_password_strength(password: &str) -> PasswordStrength {
+    let length = password.len();
+    let has_uppercase = password.chars().any(|c| c.is_uppercase());
+    let has_lowercase = password.chars().any(|c| c.is_lowercase());
+    let has_digit = password.chars().any(|c| c.is_ascii_digit());
+    let has_special = password.chars().any(|c| !c.is_alphanumeric());
+
+    let score = [has_uppercase, has_lowercase, has_digit, has_special]
+        .iter()
+        .filter(|&&condition| condition)
+        .count();
+
+    if length < 8 || score < 2 {
+        PasswordStrength::Weak
+    } else if length < 12 || score < 3 {
+        PasswordStrength::Medium
+    } else {
+        PasswordStrength::Strong
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 覆盖 Weak 分支：长度不足
+    #[test]
+    fn test_short_password_is_weak() {
+        assert_eq!(check_password_strength("Ab1"), PasswordStrength::Weak);
+    }
+
+    // 覆盖 Weak 分支：单一字符类型
+    #[test]
+    fn test_only_lowercase_is_weak() {
+        assert_eq!(check_password_strength("abcdefghij"), PasswordStrength::Weak);
+    }
+
+    // 覆盖 Medium 分支
+    #[test]
+    fn test_medium_password() {
+        assert_eq!(check_password_strength("Hello123"), PasswordStrength::Medium);
+    }
+
+    // 覆盖 Strong 分支
+    #[test]
+    fn test_strong_password() {
+        assert_eq!(
+            check_password_strength("MyP@ssw0rd!!xz"),
+            PasswordStrength::Strong
+        );
+    }
+
+    // 覆盖边界条件：恰好 8 个字符
+    #[test]
+    fn test_boundary_length_eight() {
+        assert_eq!(check_password_strength("Abcdefg1"), PasswordStrength::Medium);
+    }
+
+    // 覆盖边界条件：恰好 12 个字符
+    #[test]
+    fn test_boundary_length_twelve() {
+        assert_eq!(
+            check_password_strength("Abcdefg1!xyz"),
+            PasswordStrength::Strong
+        );
+    }
+}
+```
+
+## 🏗️ CI 集成
+
+### GitHub Actions 配置
+
+```yaml
+name: Coverage
+
+on: [push, pull_request]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage
+        run: cargo llvm-cov --lcov --output-path lcov.info
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
+```
+
+## 🔗 相关概念
+
+- **[单元测试](./02-unit-tests)**：编写被覆盖率衡量的测试
+- **[集成测试](./06-integration-tests)**：集成测试也计入覆盖率
+- **[CI/CD 集成](../../02-documentation-publishing/09-ci-cd-github-actions)**：在 CI 中自动化覆盖率检查
 
 ## 📝 学习检查点
 
-- [ ] 理解测试覆盖率的核心概念
-- [ ] 能够在实际项目中应用测试覆盖率
+- [ ] 能够安装和使用 cargo-tarpaulin 或 cargo-llvm-cov
+- [ ] 掌握生成 HTML 覆盖率报告的方法
+- [ ] 理解覆盖率驱动的测试编写策略
+- [ ] 能够在 CI 中集成覆盖率检查
+
+## 🚀 下一步
+
+→ [属性测试](./09-property-testing)

@@ -5,13 +5,316 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「assert 宏家族」相关知识。
+Rust 提供了一组强大的断言宏，用于在测试中验证代码行为是否符合预期。这些宏在断言失败时会产生 panic，从而标记测试为失败，并输出有用的错误信息帮助定位问题。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 基本断言宏
+
+### `assert!`
+
+检查一个布尔表达式是否为 `true`：
+
+```rust
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_assert_basic() {
+        let value = 42;
+        assert!(value > 0);
+        assert!(value < 100);
+        assert!(!false);
+    }
+
+    #[test]
+    fn test_assert_with_message() {
+        let age = 25;
+        assert!(
+            age >= 18,
+            "用户年龄 {} 不满足成年要求（至少 18 岁）",
+            age
+        );
+    }
+}
+```
+
+### `assert_eq!` 和 `assert_ne!`
+
+比较两个值是否相等或不等。要求类型实现 `PartialEq` 和 `Debug` trait：
+
+```rust
+#[derive(Debug, PartialEq)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+impl Point {
+    fn distance_to_origin(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+
+    fn translate(&self, dx: f64, dy: f64) -> Point {
+        Point {
+            x: self.x + dx,
+            y: self.y + dy,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_assert_eq() {
+        let point = Point { x: 3.0, y: 4.0 };
+        assert_eq!(point.distance_to_origin(), 5.0);
+    }
+
+    #[test]
+    fn test_assert_ne() {
+        let point_a = Point { x: 1.0, y: 2.0 };
+        let point_b = Point { x: 3.0, y: 4.0 };
+        assert_ne!(point_a, point_b);
+    }
+
+    #[test]
+    fn test_assert_eq_with_message() {
+        let point = Point { x: 0.0, y: 0.0 };
+        let translated = point.translate(5.0, 3.0);
+        assert_eq!(
+            translated,
+            Point { x: 5.0, y: 3.0 },
+            "平移后坐标应为 (5.0, 3.0)，实际为 ({}, {})",
+            translated.x,
+            translated.y
+        );
+    }
+}
+```
+
+:::tip
+`assert_eq!` 在失败时会同时打印 `left` 和 `right` 的值（通过 `Debug` trait），这比 `assert!(a == b)` 提供更多调试信息。优先使用 `assert_eq!` 而非 `assert!(a == b)`。
 :::
+
+## 🔄 浮点数断言
+
+### 浮点数精度问题
+
+浮点数因精度限制不能直接用 `assert_eq!` 比较：
+
+```rust
+#[cfg(test)]
+mod tests {
+    const EPSILON: f64 = 1e-10;
+
+    fn approx_equal(a: f64, b: f64, epsilon: f64) -> bool {
+        (a - b).abs() < epsilon
+    }
+
+    #[test]
+    fn test_float_comparison() {
+        let result = 0.1 + 0.2;
+        // assert_eq!(result, 0.3); // 这会失败！
+
+        assert!(
+            approx_equal(result, 0.3, EPSILON),
+            "期望 0.3，实际为 {result}"
+        );
+    }
+
+    #[test]
+    fn test_float_with_abs_diff() {
+        let computed = 2.0_f64.sqrt();
+        let expected = 1.4142135623730951;
+
+        assert!(
+            (computed - expected).abs() < f64::EPSILON * 10.0,
+            "平方根计算误差超出容许范围"
+        );
+    }
+}
+```
+
+## 🎯 `debug_assert!` 系列
+
+`debug_assert!`、`debug_assert_eq!`、`debug_assert_ne!` 只在 debug 模式（不带 `--release`）下编译和执行，适合用于性能敏感路径中的开发期检查：
+
+```rust
+fn binary_search(sorted_data: &[i32], target: i32) -> Option<usize> {
+    // 仅在 debug 模式下检查输入是否已排序
+    debug_assert!(
+        sorted_data.windows(2).all(|window| window[0] <= window[1]),
+        "输入数据必须已排序"
+    );
+
+    let mut low = 0;
+    let mut high = sorted_data.len();
+
+    while low < high {
+        let mid = low + (high - low) / 2;
+        match sorted_data[mid].cmp(&target) {
+            std::cmp::Ordering::Equal => return Some(mid),
+            std::cmp::Ordering::Less => low = mid + 1,
+            std::cmp::Ordering::Greater => high = mid,
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_binary_search_found() {
+        let data = vec![1, 3, 5, 7, 9, 11];
+        assert_eq!(binary_search(&data, 7), Some(3));
+    }
+
+    #[test]
+    fn test_binary_search_not_found() {
+        let data = vec![1, 3, 5, 7, 9, 11];
+        assert_eq!(binary_search(&data, 4), None);
+    }
+
+    #[test]
+    fn test_binary_search_empty() {
+        let data: Vec<i32> = vec![];
+        assert_eq!(binary_search(&data, 1), None);
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 综合示例：字符串工具库的断言测试
+
+```rust
+/// 将字符串转为标题大小写（每个单词首字母大写）
+fn to_title_case(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => {
+                    let upper = first.to_uppercase().to_string();
+                    upper + &chars.as_str().to_lowercase()
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 截断字符串到指定长度，超出部分用省略号替代
+fn truncate(input: &str, max_length: usize) -> String {
+    if input.chars().count() <= max_length {
+        input.to_string()
+    } else if max_length <= 3 {
+        input.chars().take(max_length).collect()
+    } else {
+        let truncated: String = input.chars().take(max_length - 3).collect();
+        format!("{truncated}...")
+    }
+}
+
+/// 检查字符串是否为回文（忽略大小写和空格）
+fn is_palindrome(input: &str) -> bool {
+    let cleaned: String = input
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| c.to_lowercase().next().unwrap())
+        .collect();
+    let reversed: String = cleaned.chars().rev().collect();
+    cleaned == reversed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- to_title_case 测试 ---
+    #[test]
+    fn test_title_case_basic() {
+        assert_eq!(to_title_case("hello world"), "Hello World");
+    }
+
+    #[test]
+    fn test_title_case_already_titled() {
+        assert_eq!(to_title_case("Hello World"), "Hello World");
+    }
+
+    #[test]
+    fn test_title_case_all_caps() {
+        assert_eq!(to_title_case("HELLO WORLD"), "Hello World");
+    }
+
+    #[test]
+    fn test_title_case_empty() {
+        assert_eq!(to_title_case(""), "");
+    }
+
+    // --- truncate 测试 ---
+    #[test]
+    fn test_truncate_short_string() {
+        assert_eq!(truncate("hi", 10), "hi");
+    }
+
+    #[test]
+    fn test_truncate_exact_length() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis() {
+        let result = truncate("hello world", 8);
+        assert_eq!(result, "hello...");
+        assert!(result.len() <= 8, "截断结果不应超过最大长度");
+    }
+
+    // --- is_palindrome 测试 ---
+    #[test]
+    fn test_palindrome_simple() {
+        assert!(is_palindrome("racecar"));
+    }
+
+    #[test]
+    fn test_palindrome_with_spaces() {
+        assert!(is_palindrome("A man a plan a canal Panama"));
+    }
+
+    #[test]
+    fn test_not_palindrome() {
+        assert!(!is_palindrome("hello"));
+    }
+
+    #[test]
+    fn test_palindrome_empty() {
+        assert!(is_palindrome(""));
+    }
+
+    #[test]
+    fn test_palindrome_single_char() {
+        assert!(is_palindrome("a"));
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[单元测试](./02-unit-tests)**：测试的基础写法
+- **[测试辅助函数](./05-test-helpers)**：提取通用测试逻辑
 
 ## 📝 学习检查点
 
-- [ ] 理解assert 宏家族的核心概念
-- [ ] 能够在实际项目中应用assert 宏家族
+- [ ] 掌握 `assert!`、`assert_eq!`、`assert_ne!` 的区别
+- [ ] 理解自定义错误消息的写法
+- [ ] 了解浮点数断言的正确方式
+- [ ] 理解 `debug_assert!` 系列的适用场景
+- [ ] 能够为自定义类型编写断言测试
+
+## 🚀 下一步
+
+→ [测试组织](./04-test-organization)

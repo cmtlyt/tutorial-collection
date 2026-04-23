@@ -5,13 +5,227 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解文档与发布中的「CI/CD 集成（GitHub Actions）」相关知识。
+GitHub Actions 是 Rust 社区中最常用的 CI/CD 平台。通过配置 workflow 文件，可以在每次推送或 PR 时自动运行测试、检查代码质量，以及在打 tag 时自动发布到 crates.io。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础 CI 配置
+
+### 测试和检查 workflow
+
+`.github/workflows/ci.yml`：
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all-features
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --all-features
+```
+
+### 关键组件说明
+
+| 组件 | 作用 |
+|------|------|
+| `dtolnay/rust-toolchain` | 安装指定版本的 Rust 工具链 |
+| `Swatinem/rust-cache` | 缓存 Cargo 构建产物，加速后续构建 |
+| `actions/checkout` | 检出代码仓库 |
+
+## 🔄 多版本和多平台测试
+
+### 测试矩阵
+
+```yaml
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, beta, "1.70"]  # MSRV
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all-features
+```
+
+## 🎯 自动发布 workflow
+
+### 基于 Git Tag 触发发布
+
+`.github/workflows/release.yml`：
+
+```yaml
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify version matches tag
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: cargo test --all-features
+
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+```
+
+### 配置 Secrets
+
+在 GitHub 仓库中添加 `CARGO_REGISTRY_TOKEN`：
+
+1. 进入仓库 **Settings** → **Secrets and variables** → **Actions**
+2. 点击 **New repository secret**
+3. 名称填 `CARGO_REGISTRY_TOKEN`，值填 crates.io 的 API Token
+
+## 📊 覆盖率报告集成
+
+```yaml
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Generate coverage
+        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+```
+
+## 🏗️ 安全审计
+
+### 定时运行安全审计
+
+```yaml
+name: Security Audit
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"  # 每周一 00:00 UTC
+  push:
+    paths:
+      - "Cargo.lock"
+
+jobs:
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+## 🔗 相关概念
+
+- **[测试覆盖率](../01-testing/08-test-coverage)**：覆盖率工具的详细用法
+- **[cargo publish](./08-cargo-publish)**：发布命令的参数
+- **[cargo-audit](../03-code-quality/05-cargo-audit)**：安全审计工具
 
 ## 📝 学习检查点
 
-- [ ] 理解CI/CD 集成（GitHub Actions）的核心概念
-- [ ] 能够在实际项目中应用CI/CD 集成（GitHub Actions）
+- [ ] 能够配置基础的 CI workflow（测试、格式化、clippy）
+- [ ] 掌握多版本多平台的测试矩阵
+- [ ] 能够配置基于 Git Tag 的自动发布
+- [ ] 了解覆盖率和安全审计的 CI 集成
+
+## 🚀 下一步
+
+→ [代码质量 - 总览](../../03-code-quality/01-code-quality-overview)

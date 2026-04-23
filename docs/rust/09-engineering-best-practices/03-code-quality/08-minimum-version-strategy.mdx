@@ -5,13 +5,157 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解代码质量中的「最小版本策略」相关知识。
+最小版本策略（Minimum Version Strategy）是一种依赖管理理念：在 `Cargo.toml` 中声明的版本要求应该是你**实际需要的最低版本**，而不是开发时碰巧安装的版本。这确保了当其他用户使用你的 crate 时，即使他们使用较旧的依赖版本也能正常工作。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 问题场景
+
+### 版本要求过于宽松的风险
+
+假设你的 crate 实际使用了 serde 1.0.180 引入的新 API，但 `Cargo.toml` 中写的是：
+
+```toml
+[dependencies]
+serde = "1.0"  # 允许 >=1.0.0, <2.0.0
+```
+
+此时如果另一个项目的 `Cargo.lock` 中锁定了 serde 1.0.100，你的 crate 就会编译失败，因为那个 API 在 1.0.100 中还不存在。
+
+### 正确的做法
+
+```toml
+[dependencies]
+serde = "1.0.180"  # 明确声明需要的最低版本
+```
+
+## 🔄 使用 `-Z minimal-versions` 验证
+
+### Cargo 的最小版本解析
+
+Cargo 提供了一个 nightly 特性 `-Z minimal-versions`，它会解析依赖时选择**满足版本要求的最低版本**而非最高版本：
+
+```bash
+# 使用最小版本解析依赖
+cargo +nightly update -Z minimal-versions
+
+# 然后运行测试
+cargo test
+
+# 一步完成
+cargo +nightly test -Z minimal-versions
+```
+
+如果测试在最小版本下通过，说明你的版本要求是准确的。
+
+### 使用 cargo-minimal-versions
+
+[cargo-minimal-versions](https://github.com/taiki-e/cargo-minimal-versions) 提供了更方便的封装：
+
+```bash
+# 安装
+cargo install cargo-minimal-versions
+
+# 检查直接依赖的最小版本是否能编译
+cargo minimal-versions check
+
+# 检查所有依赖（包括传递依赖）
+cargo minimal-versions check --direct
+
+# 运行测试
+cargo minimal-versions test
+```
+
+## 🎯 MSRV（最低支持 Rust 版本）
+
+### 什么是 MSRV
+
+MSRV（Minimum Supported Rust Version）是你的 crate 承诺支持的最低 Rust 编译器版本。它与依赖版本策略密切相关。
+
+### 在 Cargo.toml 中声明
+
+```toml
+[package]
+name = "my-crate"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"  # MSRV
+```
+
+### 验证 MSRV
+
+```bash
+# 安装指定版本的工具链
+rustup install 1.70
+
+# 使用 MSRV 版本编译
+cargo +1.70 check
+
+# 使用 MSRV 版本运行测试
+cargo +1.70 test
+```
+
+### CI 中验证 MSRV
+
+```yaml
+jobs:
+  msrv:
+    name: Check MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.70"  # 与 Cargo.toml 中的 rust-version 一致
+      - uses: Swatinem/rust-cache@v2
+      - name: Check with MSRV
+        run: cargo check --all-features
+```
+
+## 📊 确定最小版本的方法
+
+### 手动方法
+
+1. 查看你使用的每个依赖的 API，确定该 API 在哪个版本引入
+2. 在 docs.rs 上查看依赖的版本历史
+3. 将 `Cargo.toml` 中的版本设为该 API 的引入版本
+
+### 使用 cargo-msrv
+
+[cargo-msrv](https://github.com/foresterre/cargo-msrv) 可以自动检测你的 crate 需要的最低 Rust 版本：
+
+```bash
+# 安装
+cargo install cargo-msrv
+
+# 检测最低支持的 Rust 版本
+cargo msrv find
+
+# 验证声明的 MSRV 是否正确
+cargo msrv verify
+```
+
+## 🏗️ 最佳实践总结
+
+| 实践 | 说明 |
+|------|------|
+| 精确声明依赖版本 | 写 `serde = "1.0.180"` 而非 `serde = "1"` |
+| 声明 `rust-version` | 在 Cargo.toml 中明确 MSRV |
+| CI 验证最小版本 | 使用 `-Z minimal-versions` 验证 |
+| CI 验证 MSRV | 用 MSRV 工具链运行测试 |
+| 配置 clippy MSRV | 在 clippy.toml 中设置 `msrv` |
+
+## 🔗 相关概念
+
+- **[语义化版本](../02-documentation-publishing/07-semantic-versioning)**：版本号的含义
+- **[cargo-outdated 依赖更新](./06-cargo-outdated)**：检查依赖新版本
+- **[CI/CD 集成](../02-documentation-publishing/09-ci-cd-github-actions)**：自动化验证
 
 ## 📝 学习检查点
 
-- [ ] 理解最小版本策略的核心概念
-- [ ] 能够在实际项目中应用最小版本策略
+- [ ] 理解最小版本策略的意义
+- [ ] 能够使用 `-Z minimal-versions` 验证版本要求
+- [ ] 掌握 MSRV 的声明和验证方法
+- [ ] 在 CI 中配置最小版本和 MSRV 检查
+
+## 🚀 下一步
+
+→ [Builder 模式](./09-builder-pattern)

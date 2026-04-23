@@ -5,13 +5,282 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解代码质量中的「类型状态模式」相关知识。
+类型状态模式（Typestate Pattern）利用 Rust 的类型系统在**编译期**强制执行状态转换规则。通过将对象的状态编码到类型参数中，不合法的状态转换会导致编译错误，从根本上消除了一整类运行时 bug。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 问题场景
+
+### 运行时状态检查的缺陷
+
+```rust
+// ❌ 运行时检查：错误只在运行时才被发现
+struct Connection {
+    state: ConnectionState,
+    address: String,
+}
+
+enum ConnectionState {
+    Disconnected,
+    Connected,
+    Authenticated,
+}
+
+impl Connection {
+    fn send(&self, data: &str) -> Result<(), String> {
+        match self.state {
+            ConnectionState::Authenticated => {
+                println!("发送数据：{data}");
+                Ok(())
+            }
+            _ => Err("必须先认证才能发送数据".to_string()),
+        }
+    }
+}
+```
+
+上面的代码问题在于：**忘记认证就调用 `send` 只会在运行时报错**。
+
+## 🔄 使用 Typestate 编译期保证
+
+### 基本 Typestate 实现
+
+```rust
+use std::marker::PhantomData;
+
+// 状态标记类型（零大小，不占内存）
+struct Disconnected;
+struct Connected;
+struct Authenticated;
+
+// 连接结构体，状态编码在泛型参数中
+struct TcpConnection<State> {
+    address: String,
+    _state: PhantomData<State>,
+}
+
+// 只有 Disconnected 状态才能 connect
+impl TcpConnection<Disconnected> {
+    fn new(address: &str) -> Self {
+        TcpConnection {
+            address: address.to_string(),
+            _state: PhantomData,
+        }
+    }
+
+    fn connect(self) -> TcpConnection<Connected> {
+        println!("连接到 {}", self.address);
+        TcpConnection {
+            address: self.address,
+            _state: PhantomData,
+        }
+    }
+}
+
+// 只有 Connected 状态才能 authenticate
+impl TcpConnection<Connected> {
+    fn authenticate(self, username: &str, password: &str) -> TcpConnection<Authenticated> {
+        println!("认证用户 {username}");
+        let _ = password; // 实际场景中用于验证
+        TcpConnection {
+            address: self.address,
+            _state: PhantomData,
+        }
+    }
+
+    fn disconnect(self) -> TcpConnection<Disconnected> {
+        println!("断开连接");
+        TcpConnection {
+            address: self.address,
+            _state: PhantomData,
+        }
+    }
+}
+
+// 只有 Authenticated 状态才能 send
+impl TcpConnection<Authenticated> {
+    fn send(&self, data: &str) {
+        println!("发送到 {}：{data}", self.address);
+    }
+
+    fn disconnect(self) -> TcpConnection<Disconnected> {
+        println!("断开连接");
+        TcpConnection {
+            address: self.address,
+            _state: PhantomData,
+        }
+    }
+}
+
+fn main() {
+    // ✅ 正确的调用顺序：编译通过
+    let connection = TcpConnection::new("192.168.1.1:8080");
+    let connection = connection.connect();
+    let connection = connection.authenticate("admin", "secret");
+    connection.send("Hello, Server!");
+    let _disconnected = connection.disconnect();
+
+    // ❌ 编译错误：Disconnected 状态没有 send 方法
+    // let conn = TcpConnection::new("localhost");
+    // conn.send("data");
+
+    // ❌ 编译错误：Connected 状态没有 send 方法
+    // let conn = TcpConnection::new("localhost").connect();
+    // conn.send("data");
+}
+```
+
+## 🎯 Typestate Builder
+
+### 编译期保证必填字段
+
+将 Builder 模式与 Typestate 结合，确保所有必填字段在编译期被设置：
+
+```rust
+use std::marker::PhantomData;
+
+// 字段是否已设置的标记
+struct Missing;
+struct Provided;
+
+#[derive(Debug)]
+struct Email {
+    from: String,
+    to: String,
+    subject: String,
+    body: String,
+}
+
+struct EmailBuilder<FromState, ToState, SubjectState> {
+    from: Option<String>,
+    to: Option<String>,
+    subject: Option<String>,
+    body: String,
+    _from: PhantomData<FromState>,
+    _to: PhantomData<ToState>,
+    _subject: PhantomData<SubjectState>,
+}
+
+// 初始状态：所有必填字段都是 Missing
+impl EmailBuilder<Missing, Missing, Missing> {
+    fn new() -> Self {
+        EmailBuilder {
+            from: None,
+            to: None,
+            subject: None,
+            body: String::new(),
+            _from: PhantomData,
+            _to: PhantomData,
+            _subject: PhantomData,
+        }
+    }
+}
+
+// from 方法：将 FromState 从 Missing 转为 Provided
+impl<ToState, SubjectState> EmailBuilder<Missing, ToState, SubjectState> {
+    fn from(self, address: &str) -> EmailBuilder<Provided, ToState, SubjectState> {
+        EmailBuilder {
+            from: Some(address.to_string()),
+            to: self.to,
+            subject: self.subject,
+            body: self.body,
+            _from: PhantomData,
+            _to: PhantomData,
+            _subject: PhantomData,
+        }
+    }
+}
+
+// to 方法：将 ToState 从 Missing 转为 Provided
+impl<FromState, SubjectState> EmailBuilder<FromState, Missing, SubjectState> {
+    fn to(self, address: &str) -> EmailBuilder<FromState, Provided, SubjectState> {
+        EmailBuilder {
+            from: self.from,
+            to: Some(address.to_string()),
+            subject: self.subject,
+            body: self.body,
+            _from: PhantomData,
+            _to: PhantomData,
+            _subject: PhantomData,
+        }
+    }
+}
+
+// subject 方法
+impl<FromState, ToState> EmailBuilder<FromState, ToState, Missing> {
+    fn subject(self, subject: &str) -> EmailBuilder<FromState, ToState, Provided> {
+        EmailBuilder {
+            from: self.from,
+            to: self.to,
+            subject: Some(subject.to_string()),
+            body: self.body,
+            _from: PhantomData,
+            _to: PhantomData,
+            _subject: PhantomData,
+        }
+    }
+}
+
+// body 是可选的，任何状态都能调用
+impl<FromState, ToState, SubjectState> EmailBuilder<FromState, ToState, SubjectState> {
+    fn body(mut self, body: &str) -> Self {
+        self.body = body.to_string();
+        self
+    }
+}
+
+// build 只有在所有必填字段都是 Provided 时才可用
+impl EmailBuilder<Provided, Provided, Provided> {
+    fn build(self) -> Email {
+        Email {
+            from: self.from.unwrap(),
+            to: self.to.unwrap(),
+            subject: self.subject.unwrap(),
+            body: self.body,
+        }
+    }
+}
+
+fn main() {
+    // ✅ 所有必填字段都已设置，编译通过
+    let email = EmailBuilder::new()
+        .from("sender@example.com")
+        .to("receiver@example.com")
+        .subject("你好")
+        .body("这是邮件正文")
+        .build();
+
+    println!("{email:#?}");
+
+    // ❌ 编译错误：缺少 subject，build 方法不可用
+    // let email = EmailBuilder::new()
+    //     .from("sender@example.com")
+    //     .to("receiver@example.com")
+    //     .build();
+}
+```
+
+## 📊 与枚举状态机的对比
+
+| 特性 | Typestate | 枚举状态机 |
+|------|-----------|------------|
+| 非法状态 | **编译期**阻止 | 运行时检查 |
+| 性能 | 零成本（编译期消除） | 需要 match 分支 |
+| 灵活性 | 状态在编译期固定 | 状态可以动态变化 |
+| 代码量 | 较多（每个状态一个 impl） | 较少 |
+| 适用场景 | 协议、Builder、工作流 | 状态不确定或需要运行时切换 |
+
+## 🔗 相关概念
+
+- **[Builder 模式](./09-builder-pattern)**：基础 Builder 模式
+- **[Newtype 模式](./10-newtype-pattern)**：类型安全的另一种方式
+- **[策略模式](./13-strategy-pattern)**：运行时的行为切换
 
 ## 📝 学习检查点
 
-- [ ] 理解类型状态模式的核心概念
-- [ ] 能够在实际项目中应用类型状态模式
+- [ ] 理解 Typestate 模式将运行时错误转为编译期错误的原理
+- [ ] 掌握 `PhantomData` 在 Typestate 中的作用
+- [ ] 能够实现基本的 Typestate 状态机
+- [ ] 理解 Typestate 与枚举状态机的适用场景区别
+
+## 🚀 下一步
+
+→ [访问者模式](./12-visitor-pattern)

@@ -5,13 +5,397 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「Mock 与 Test Double」相关知识。
+在测试中，我们常需要替换真实的外部依赖（数据库、HTTP 客户端、文件系统等）为可控的替身（Test Double）。Rust 中实现 Mock 的核心方式是利用 **Trait** 进行依赖注入，无需依赖反射机制。此外，社区提供了 **mockall** 等自动化 Mock 生成库。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 手动实现 Test Double
+
+### 基于 Trait 的依赖注入
+
+将外部依赖抽象为 Trait，然后在测试中提供 Mock 实现：
+
+```rust
+/// 通知服务 Trait
+trait NotificationSender {
+    fn send(&self, recipient: &str, message: &str) -> Result<(), String>;
+}
+
+/// 用户服务，依赖 NotificationSender
+struct UserService<N: NotificationSender> {
+    notifier: N,
+}
+
+impl<N: NotificationSender> UserService<N> {
+    fn new(notifier: N) -> Self {
+        UserService { notifier }
+    }
+
+    fn register_user(&self, username: &str, email: &str) -> Result<String, String> {
+        if username.is_empty() {
+            return Err("用户名不能为空".to_string());
+        }
+        if !email.contains('@') {
+            return Err("邮箱格式无效".to_string());
+        }
+
+        self.notifier
+            .send(email, &format!("欢迎注册，{username}！"))?;
+
+        Ok(format!("用户 {username} 注册成功"))
+    }
+}
+
+// --- 生产环境的真实实现 ---
+
+struct EmailSender;
+
+impl NotificationSender for EmailSender {
+    fn send(&self, recipient: &str, message: &str) -> Result<(), String> {
+        // 真实的邮件发送逻辑
+        println!("发送邮件到 {recipient}：{message}");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    // --- Mock 实现：记录调用 ---
+    struct MockNotifier {
+        calls: RefCell<Vec<(String, String)>>,
+        should_fail: bool,
+    }
+
+    impl MockNotifier {
+        fn new() -> Self {
+            MockNotifier {
+                calls: RefCell::new(Vec::new()),
+                should_fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            MockNotifier {
+                calls: RefCell::new(Vec::new()),
+                should_fail: true,
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.borrow().len()
+        }
+
+        fn last_call(&self) -> Option<(String, String)> {
+            self.calls.borrow().last().cloned()
+        }
+    }
+
+    impl NotificationSender for MockNotifier {
+        fn send(&self, recipient: &str, message: &str) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push((recipient.to_string(), message.to_string()));
+            if self.should_fail {
+                Err("发送失败".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn test_register_sends_notification() {
+        let notifier = MockNotifier::new();
+        let service = UserService::new(&notifier);
+
+        let result = service.register_user("张三", "zhangsan@example.com");
+        assert!(result.is_ok());
+
+        // 验证通知被发送了一次
+        assert_eq!(notifier.call_count(), 1);
+
+        // 验证通知的内容
+        let (recipient, message) = notifier.last_call().unwrap();
+        assert_eq!(recipient, "zhangsan@example.com");
+        assert!(message.contains("张三"));
+    }
+
+    #[test]
+    fn test_register_with_invalid_email() {
+        let notifier = MockNotifier::new();
+        let service = UserService::new(&notifier);
+
+        let result = service.register_user("张三", "invalid-email");
+        assert!(result.is_err());
+
+        // 验证没有发送通知
+        assert_eq!(notifier.call_count(), 0);
+    }
+
+    #[test]
+    fn test_register_when_notification_fails() {
+        let notifier = MockNotifier::failing();
+        let service = UserService::new(&notifier);
+
+        let result = service.register_user("张三", "zhangsan@example.com");
+        assert!(result.is_err());
+    }
+}
+
+// 为引用类型也实现 Trait，方便测试中验证
+impl<N: NotificationSender> NotificationSender for &N {
+    fn send(&self, recipient: &str, message: &str) -> Result<(), String> {
+        (*self).send(recipient, message)
+    }
+}
+```
+
+## 🔄 使用 mockall 库
+
+### 自动生成 Mock
+
+[mockall](https://docs.rs/mockall) 可以从 Trait 自动生成 Mock 类型：
+
+```toml
+[dev-dependencies]
+mockall = "0.13"
+```
+
+```rust
+use mockall::automock;
+
+#[automock]
+trait WeatherService {
+    fn get_temperature(&self, city: &str) -> Result<f64, String>;
+    fn get_humidity(&self, city: &str) -> Result<f64, String>;
+}
+
+struct WeatherReport<W: WeatherService> {
+    service: W,
+}
+
+impl<W: WeatherService> WeatherReport<W> {
+    fn new(service: W) -> Self {
+        WeatherReport { service }
+    }
+
+    fn generate(&self, city: &str) -> Result<String, String> {
+        let temperature = self.service.get_temperature(city)?;
+        let humidity = self.service.get_humidity(city)?;
+
+        let comfort = if temperature > 20.0 && temperature < 28.0 && humidity < 70.0 {
+            "舒适"
+        } else {
+            "一般"
+        };
+
+        Ok(format!(
+            "{city}：温度 {temperature:.1}°C，湿度 {humidity:.1}%，体感{comfort}"
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_comfortable_weather() {
+        let mut mock_service = MockWeatherService::new();
+
+        mock_service
+            .expect_get_temperature()
+            .with(mockall::predicate::eq("杭州"))
+            .times(1)
+            .returning(|_| Ok(25.0));
+
+        mock_service
+            .expect_get_humidity()
+            .with(mockall::predicate::eq("杭州"))
+            .times(1)
+            .returning(|_| Ok(55.0));
+
+        let report = WeatherReport::new(mock_service);
+        let result = report.generate("杭州").unwrap();
+
+        assert!(result.contains("25.0°C"));
+        assert!(result.contains("55.0%"));
+        assert!(result.contains("舒适"));
+    }
+
+    #[test]
+    fn test_uncomfortable_weather() {
+        let mut mock_service = MockWeatherService::new();
+
+        mock_service
+            .expect_get_temperature()
+            .returning(|_| Ok(35.0));
+
+        mock_service
+            .expect_get_humidity()
+            .returning(|_| Ok(85.0));
+
+        let report = WeatherReport::new(mock_service);
+        let result = report.generate("重庆").unwrap();
+
+        assert!(result.contains("一般"));
+    }
+
+    #[test]
+    fn test_service_error_propagation() {
+        let mut mock_service = MockWeatherService::new();
+
+        mock_service
+            .expect_get_temperature()
+            .returning(|_| Err("网络超时".to_string()));
+
+        // get_humidity 不应被调用，因为 get_temperature 已经失败
+        mock_service.expect_get_humidity().times(0);
+
+        let report = WeatherReport::new(mock_service);
+        let result = report.generate("北京");
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("网络超时"));
+    }
+}
+```
+
+## 🏗️ Test Double 的类型
+
+不同的 Test Double 适用于不同的测试场景：
+
+### Stub：固定返回值
+
+```rust
+trait Clock {
+    fn now(&self) -> u64;
+}
+
+struct FixedClock {
+    timestamp: u64,
+}
+
+impl Clock for FixedClock {
+    fn now(&self) -> u64 {
+        self.timestamp
+    }
+}
+
+fn is_expired<C: Clock>(clock: &C, expiry: u64) -> bool {
+    clock.now() > expiry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_not_expired() {
+        let clock = FixedClock { timestamp: 1000 };
+        assert!(!is_expired(&clock, 2000));
+    }
+
+    #[test]
+    fn test_expired() {
+        let clock = FixedClock { timestamp: 3000 };
+        assert!(is_expired(&clock, 2000));
+    }
+}
+```
+
+### Spy：记录调用历史
+
+```rust
+use std::cell::RefCell;
+
+trait Logger {
+    fn log(&self, level: &str, message: &str);
+}
+
+struct SpyLogger {
+    logs: RefCell<Vec<(String, String)>>,
+}
+
+impl SpyLogger {
+    fn new() -> Self {
+        SpyLogger {
+            logs: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn log_count(&self) -> usize {
+        self.logs.borrow().len()
+    }
+
+    fn has_log_containing(&self, text: &str) -> bool {
+        self.logs
+            .borrow()
+            .iter()
+            .any(|(_, message)| message.contains(text))
+    }
+}
+
+impl Logger for SpyLogger {
+    fn log(&self, level: &str, message: &str) {
+        self.logs
+            .borrow_mut()
+            .push((level.to_string(), message.to_string()));
+    }
+}
+
+fn process_order<L: Logger>(logger: &L, order_id: u64) -> Result<(), String> {
+    logger.log("INFO", &format!("开始处理订单 {order_id}"));
+
+    if order_id == 0 {
+        logger.log("ERROR", "无效的订单 ID");
+        return Err("无效的订单 ID".to_string());
+    }
+
+    logger.log("INFO", &format!("订单 {order_id} 处理完成"));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_successful_order_logs() {
+        let logger = SpyLogger::new();
+        let result = process_order(&logger, 42);
+
+        assert!(result.is_ok());
+        assert_eq!(logger.log_count(), 2);
+        assert!(logger.has_log_containing("开始处理"));
+        assert!(logger.has_log_containing("处理完成"));
+    }
+
+    #[test]
+    fn test_failed_order_logs_error() {
+        let logger = SpyLogger::new();
+        let result = process_order(&logger, 0);
+
+        assert!(result.is_err());
+        assert!(logger.has_log_containing("无效的订单 ID"));
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[单元测试](./02-unit-tests)**：Mock 在单元测试中的应用
+- **[测试辅助函数](./05-test-helpers)**：将 Mock 创建逻辑提取为辅助函数
+- **[集成测试](./06-integration-tests)**：集成测试通常使用真实实现而非 Mock
 
 ## 📝 学习检查点
 
-- [ ] 理解Mock 与 Test Double的核心概念
-- [ ] 能够在实际项目中应用Mock 与 Test Double
+- [ ] 理解 Test Double 的不同类型（Stub、Spy、Mock）
+- [ ] 掌握基于 Trait 的手动 Mock 实现
+- [ ] 能够使用 mockall 库自动生成 Mock
+- [ ] 理解何时使用 Mock，何时使用真实实现
+
+## 🚀 下一步
+
+→ [文档与发布 - 总览](../../02-documentation-publishing/01-documentation-publishing-overview)

@@ -5,13 +5,164 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解文档与发布中的「docs.rs 发布」相关知识。
+[docs.rs](https://docs.rs) 是 Rust 社区的官方文档托管服务。当你将 crate 发布到 crates.io 后，docs.rs 会自动构建并托管你的 API 文档。你可以通过 `Cargo.toml` 中的元数据来配置 docs.rs 的构建行为。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 自动构建流程
+
+### docs.rs 如何工作
+
+1. 你执行 `cargo publish` 将 crate 发布到 crates.io
+2. docs.rs 自动检测到新版本
+3. docs.rs 在沙箱环境中执行 `cargo doc` 构建文档
+4. 文档发布到 `https://docs.rs/<crate-name>/<version>`
+
+访问方式：
+
+```
+# 最新版本
+https://docs.rs/serde
+
+# 特定版本
+https://docs.rs/serde/1.0.200
+
+# 特定模块
+https://docs.rs/serde/latest/serde/de/trait.Deserialize.html
+```
+
+## 🔄 配置 docs.rs 构建
+
+### `[package.metadata.docs.rs]`
+
+在 `Cargo.toml` 中配置 docs.rs 的构建行为：
+
+```toml
+[package]
+name = "my-awesome-crate"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.docs.rs]
+# 启用所有 feature 构建文档
+all-features = true
+
+# 或者指定特定 feature
+# features = ["serde", "async"]
+
+# 传递给 rustdoc 的额外参数
+rustdoc-args = ["--cfg", "docsrs"]
+
+# 构建目标（对于跨平台库）
+targets = ["x86_64-unknown-linux-gnu"]
+
+# 默认目标
+default-target = "x86_64-unknown-linux-gnu"
+```
+
+### 条件编译文档
+
+使用 `#[cfg(docsrs)]` 标注仅在文档构建时启用的内容：
+
+```rust
+// 在 lib.rs 顶部启用 docsrs 配置
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
+/// 基础功能，始终可用。
+pub fn basic_function() -> &'static str {
+    "hello"
+}
+
+/// 需要 `serde` feature 的序列化支持。
+///
+/// 启用方式：
+/// ```toml
+/// [dependencies]
+/// my-crate = { version = "0.1", features = ["serde"] }
+/// ```
+#[cfg(feature = "serde")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+pub fn serialize_data() -> String {
+    "serialized".to_string()
+}
+
+/// 需要 `async` feature 的异步支持。
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub async fn async_operation() -> Result<(), String> {
+    Ok(())
+}
+```
+
+在 docs.rs 上，使用 `doc(cfg(...))` 标注的项会显示一个标签，告诉用户需要启用哪个 feature。
+
+## 📊 文档质量检查
+
+### 发布前检查文档
+
+```bash
+# 本地构建文档（模拟 docs.rs 环境）
+RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc --all-features --no-deps
+
+# 检查文档中的死链接
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+
+# 检查所有公共项是否有文档
+# 在 lib.rs 中添加：
+# #![warn(missing_docs)]
+```
+
+### `#![warn(missing_docs)]`
+
+在 `lib.rs` 顶部添加此属性，编译器会对缺少文档的公共项发出警告：
+
+```rust
+//! # My Crate
+//!
+//! 这是 crate 级别的文档。
+
+#![warn(missing_docs)]
+
+/// 这个函数有文档，不会产生警告。
+pub fn documented_function() -> i32 {
+    42
+}
+
+// 如果下面这个函数没有文档注释，编译器会发出警告：
+// pub fn undocumented_function() {}  // warning: missing documentation
+```
+
+## 🏗️ 文档中的图片和资源
+
+### 在文档中引用图片
+
+```rust
+//! # 我的图形库
+//!
+//! ## 架构概览
+//!
+//! ![架构图](https://raw.githubusercontent.com/user/repo/main/docs/architecture.png)
+//!
+//! ## 示例输出
+//!
+//! <img src="https://raw.githubusercontent.com/user/repo/main/docs/example.png" width="400">
+```
+
+:::tip
+docs.rs 不允许上传本地资源文件。图片需要托管在外部服务（如 GitHub raw 文件链接）。
 :::
+
+## 🔗 相关概念
+
+- **[rustdoc 文档注释](./02-rustdoc-comments)**：编写文档的基础
+- **[crates.io 发布流程](./06-crates-io-publishing)**：docs.rs 与 crates.io 的关联
+- **[cargo publish](./08-cargo-publish)**：发布触发文档构建
 
 ## 📝 学习检查点
 
-- [ ] 理解docs.rs 发布的核心概念
-- [ ] 能够在实际项目中应用docs.rs 发布
+- [ ] 理解 docs.rs 的自动构建流程
+- [ ] 能够配置 `[package.metadata.docs.rs]`
+- [ ] 掌握 `#[cfg_attr(docsrs, doc(cfg(...)))]` 的使用
+- [ ] 能够在发布前检查文档质量
+
+## 🚀 下一步
+
+→ [README 与 CHANGELOG](./05-readme-changelog)

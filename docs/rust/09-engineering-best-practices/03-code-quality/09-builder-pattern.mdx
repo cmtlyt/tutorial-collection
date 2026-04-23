@@ -5,13 +5,364 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解代码质量中的「Builder 模式」相关知识。
+Builder 模式是 Rust 中最常用的设计模式之一，用于分步构建复杂对象。当一个结构体有很多字段（尤其是大量可选字段）时，Builder 模式通过链式调用提供清晰、灵活的构建方式。Rust 标准库和生态中大量使用了这种模式，如 `std::process::Command`、`reqwest::Client` 等。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本 Builder 模式
+
+### 标准实现
+
+```rust
+/// HTTP 请求配置
+#[derive(Debug)]
+struct HttpRequest {
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+    timeout_ms: u64,
+    follow_redirects: bool,
+}
+
+/// HTTP 请求的 Builder
+struct HttpRequestBuilder {
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+    timeout_ms: u64,
+    follow_redirects: bool,
+}
+
+impl HttpRequestBuilder {
+    fn new(url: &str) -> Self {
+        HttpRequestBuilder {
+            url: url.to_string(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
+            timeout_ms: 30_000,
+            follow_redirects: true,
+        }
+    }
+
+    fn method(mut self, method: &str) -> Self {
+        self.method = method.to_string();
+        self
+    }
+
+    fn header(mut self, key: &str, value: &str) -> Self {
+        self.headers.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    fn body(mut self, body: &str) -> Self {
+        self.body = Some(body.to_string());
+        self
+    }
+
+    fn timeout(mut self, milliseconds: u64) -> Self {
+        self.timeout_ms = milliseconds;
+        self
+    }
+
+    fn no_redirects(mut self) -> Self {
+        self.follow_redirects = false;
+        self
+    }
+
+    fn build(self) -> HttpRequest {
+        HttpRequest {
+            url: self.url,
+            method: self.method,
+            headers: self.headers,
+            body: self.body,
+            timeout_ms: self.timeout_ms,
+            follow_redirects: self.follow_redirects,
+        }
+    }
+}
+
+fn main() {
+    let request = HttpRequestBuilder::new("https://api.example.com/users")
+        .method("POST")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "Bearer token123")
+        .body(r#"{"name": "张三"}"#)
+        .timeout(5000)
+        .build();
+
+    println!("{request:#?}");
+}
+```
+
+## 🔄 带验证的 Builder
+
+### `build()` 返回 `Result`
+
+当某些字段是必需的或有验证条件时，`build()` 应返回 `Result`：
+
+```rust
+#[derive(Debug)]
+struct DatabaseConfig {
+    host: String,
+    port: u16,
+    database: String,
+    username: String,
+    password: String,
+    max_connections: u32,
+    connection_timeout_seconds: u64,
+}
+
+#[derive(Default)]
+struct DatabaseConfigBuilder {
+    host: Option<String>,
+    port: Option<u16>,
+    database: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+    max_connections: u32,
+    connection_timeout_seconds: u64,
+}
+
+impl DatabaseConfigBuilder {
+    fn new() -> Self {
+        DatabaseConfigBuilder {
+            max_connections: 10,
+            connection_timeout_seconds: 30,
+            ..Default::default()
+        }
+    }
+
+    fn host(mut self, host: &str) -> Self {
+        self.host = Some(host.to_string());
+        self
+    }
+
+    fn port(mut self, port: u16) -> Self {
+        self.port = Some(port);
+        self
+    }
+
+    fn database(mut self, database: &str) -> Self {
+        self.database = Some(database.to_string());
+        self
+    }
+
+    fn credentials(mut self, username: &str, password: &str) -> Self {
+        self.username = Some(username.to_string());
+        self.password = Some(password.to_string());
+        self
+    }
+
+    fn max_connections(mut self, count: u32) -> Self {
+        self.max_connections = count;
+        self
+    }
+
+    fn timeout(mut self, seconds: u64) -> Self {
+        self.connection_timeout_seconds = seconds;
+        self
+    }
+
+    fn build(self) -> Result<DatabaseConfig, String> {
+        let host = self.host.ok_or("host 是必需的")?;
+        let port = self.port.ok_or("port 是必需的")?;
+        let database = self.database.ok_or("database 是必需的")?;
+        let username = self.username.ok_or("username 是必需的")?;
+        let password = self.password.ok_or("password 是必需的")?;
+
+        if self.max_connections == 0 {
+            return Err("max_connections 必须大于 0".to_string());
+        }
+
+        Ok(DatabaseConfig {
+            host,
+            port,
+            database,
+            username,
+            password,
+            max_connections: self.max_connections,
+            connection_timeout_seconds: self.connection_timeout_seconds,
+        })
+    }
+}
+
+fn main() {
+    // 正常构建
+    let config = DatabaseConfigBuilder::new()
+        .host("localhost")
+        .port(5432)
+        .database("myapp")
+        .credentials("admin", "secret")
+        .max_connections(20)
+        .build()
+        .expect("配置应该有效");
+
+    println!("{config:#?}");
+
+    // 缺少必需字段
+    let result = DatabaseConfigBuilder::new()
+        .host("localhost")
+        .build();
+
+    assert!(result.is_err());
+    println!("错误：{}", result.unwrap_err());
+}
+```
+
+## 🎯 消费型 vs 借用型 Builder
+
+### 消费型（Consuming Builder）
+
+上面的例子使用 `self`（消费所有权），适合一次性构建：
+
+```rust
+// 消费型：每次调用转移所有权
+let request = HttpRequestBuilder::new("https://example.com")
+    .method("GET")   // self 被消费
+    .timeout(5000)   // 新的 self 被消费
+    .build();        // 最终消费
+```
+
+### 借用型（Borrowing Builder）
+
+使用 `&mut self` 并返回 `&mut Self`，适合需要条件构建的场景：
+
+```rust
+#[derive(Debug, Clone)]
+struct QueryBuilder {
+    table: String,
+    conditions: Vec<String>,
+    order_by: Option<String>,
+    limit: Option<u32>,
+}
+
+impl QueryBuilder {
+    fn new(table: &str) -> Self {
+        QueryBuilder {
+            table: table.to_string(),
+            conditions: Vec::new(),
+            order_by: None,
+            limit: None,
+        }
+    }
+
+    fn where_clause(&mut self, condition: &str) -> &mut Self {
+        self.conditions.push(condition.to_string());
+        self
+    }
+
+    fn order_by(&mut self, column: &str) -> &mut Self {
+        self.order_by = Some(column.to_string());
+        self
+    }
+
+    fn limit(&mut self, count: u32) -> &mut Self {
+        self.limit = Some(count);
+        self
+    }
+
+    fn build(&self) -> String {
+        let mut query = format!("SELECT * FROM {}", self.table);
+
+        if !self.conditions.is_empty() {
+            query.push_str(" WHERE ");
+            query.push_str(&self.conditions.join(" AND "));
+        }
+
+        if let Some(ref order) = self.order_by {
+            query.push_str(&format!(" ORDER BY {order}"));
+        }
+
+        if let Some(limit) = self.limit {
+            query.push_str(&format!(" LIMIT {limit}"));
+        }
+
+        query
+    }
+}
+
+fn main() {
+    let mut builder = QueryBuilder::new("users");
+    builder.where_clause("age > 18");
+
+    // 借用型可以条件性地添加
+    let show_active_only = true;
+    if show_active_only {
+        builder.where_clause("active = true");
+    }
+
+    builder.order_by("name").limit(10);
+
+    let query = builder.build();
+    println!("{query}");
+    // 输出：SELECT * FROM users WHERE age > 18 AND active = true ORDER BY name LIMIT 10
+}
+```
+
+## 📊 使用 derive 宏简化
+
+### `derive_builder` crate
+
+[derive_builder](https://docs.rs/derive_builder) 可以自动为结构体生成 Builder：
+
+```toml
+[dependencies]
+derive_builder = "0.20"
+```
+
+```rust
+use derive_builder::Builder;
+
+#[derive(Debug, Builder)]
+#[builder(setter(into))]
+struct ServerConfig {
+    host: String,
+    port: u16,
+    #[builder(default = "4")]
+    workers: u32,
+    #[builder(default)]
+    tls_enabled: bool,
+    #[builder(setter(strip_option), default)]
+    certificate_path: Option<String>,
+}
+
+fn main() {
+    let config = ServerConfigBuilder::default()
+        .host("0.0.0.0")
+        .port(8080)
+        .workers(8)
+        .tls_enabled(true)
+        .certificate_path("/etc/ssl/cert.pem")
+        .build()
+        .expect("配置应该有效");
+
+    println!("{config:#?}");
+
+    // 使用默认值
+    let minimal = ServerConfigBuilder::default()
+        .host("localhost")
+        .port(3000)
+        .build()
+        .expect("最小配置应该有效");
+
+    println!("{minimal:#?}");
+}
+```
+
+## 🔗 相关概念
+
+- **[Newtype 模式](./10-newtype-pattern)**：另一种增强类型安全性的模式
+- **[类型状态模式](./11-typestate-pattern)**：使用类型系统保证 Builder 的构建顺序
+- **[测试辅助函数](../01-testing/05-test-helpers)**：Builder 模式在测试中的应用
 
 ## 📝 学习检查点
 
-- [ ] 理解Builder 模式的核心概念
-- [ ] 能够在实际项目中应用Builder 模式
+- [ ] 理解 Builder 模式解决的问题
+- [ ] 掌握消费型和借用型 Builder 的区别
+- [ ] 能够实现带验证的 Builder
+- [ ] 了解 derive_builder 的使用方法
+
+## 🚀 下一步
+
+→ [Newtype 模式](./10-newtype-pattern)

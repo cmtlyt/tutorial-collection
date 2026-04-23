@@ -5,13 +5,210 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解文档与发布中的「语义化版本」相关知识。
+语义化版本（Semantic Versioning，SemVer）是 Rust 生态中版本号管理的核心规范。Cargo 的依赖解析完全基于 SemVer 规则，正确使用版本号对于维护 crate 的兼容性和生态健康至关重要。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 版本号结构
+
+### MAJOR.MINOR.PATCH
+
+```
+1.4.2
+│ │ └── PATCH：向后兼容的 bug 修复
+│ └──── MINOR：向后兼容的新功能
+└────── MAJOR：不兼容的 API 变更
+```
+
+| 版本变更 | 何时递增 | 示例 |
+|----------|----------|------|
+| **MAJOR** | 引入破坏性变更（Breaking Change） | 1.0.0 → 2.0.0 |
+| **MINOR** | 新增功能，不影响现有 API | 1.0.0 → 1.1.0 |
+| **PATCH** | 修复 bug，不改变 API | 1.0.0 → 1.0.1 |
+
+### 0.x.y 的特殊规则
+
+当主版本号为 0 时（即 `0.x.y`），表示项目处于**初始开发阶段**，API 随时可能变化：
+
+| 版本号 | 含义 |
+|--------|------|
+| `0.0.x` | 完全不稳定，任何变更都允许 |
+| `0.x.y` | MINOR 版本的变更可以包含破坏性变更 |
+| `1.0.0` | 首个稳定版本，承诺 API 兼容性 |
+
+## 🔄 Cargo 的版本要求语法
+
+### 常见的版本要求
+
+在 `Cargo.toml` 中指定依赖版本时，Cargo 使用以下语法：
+
+```toml
+[dependencies]
+# 默认（caret 要求）：兼容更新
+serde = "1.0.200"       # 等价于 >=1.0.200, <2.0.0
+tokio = "1"             # 等价于 >=1.0.0, <2.0.0
+rand = "0.8"            # 等价于 >=0.8.0, <0.9.0
+
+# 波浪号要求：限制更严格
+log = "~1.0.4"          # 等价于 >=1.0.4, <1.1.0
+
+# 通配符要求
+uuid = "1.0.*"          # 等价于 >=1.0.0, <1.1.0
+
+# 精确版本
+regex = "=1.10.2"       # 只允许 1.10.2
+
+# 范围要求
+hyper = ">=0.14, <1.0"  # 指定范围
+```
+
+### Caret 要求详解
+
+Cargo 的默认行为（caret 要求）基于 SemVer 的兼容性原则：
+
+| 依赖声明 | 允许范围 | 说明 |
+|----------|----------|------|
+| `"1.2.3"` | `>=1.2.3, <2.0.0` | 允许 MINOR 和 PATCH 更新 |
+| `"1.2"` | `>=1.2.0, <2.0.0` | 同上 |
+| `"1"` | `>=1.0.0, <2.0.0` | 同上 |
+| `"0.2.3"` | `>=0.2.3, <0.3.0` | 0.x 下 MINOR 视为 MAJOR |
+| `"0.0.3"` | `>=0.0.3, <0.0.4` | 0.0.x 下精确匹配 PATCH |
+
+## 🎯 什么是破坏性变更
+
+### Rust 中常见的破坏性变更
+
+以下变更会导致下游代码编译失败，需要递增 MAJOR 版本：
+
+```rust
+// ❌ 破坏性变更示例
+
+// 1. 移除公共 API
+// 之前：pub fn process(data: &str) -> String
+// 之后：（删除了这个函数）
+
+// 2. 修改函数签名
+// 之前：pub fn connect(host: &str) -> Connection
+// 之后：pub fn connect(host: &str, port: u16) -> Connection
+
+// 3. 修改返回类型
+// 之前：pub fn parse(input: &str) -> Result<Data, Error>
+// 之后：pub fn parse(input: &str) -> Option<Data>
+
+// 4. 添加非 #[non_exhaustive] 枚举的变体（下游有穷举匹配时）
+// 之前：
+pub enum Color { Red, Green, Blue }
+// 之后（如果下游 match 了所有变体，会编译失败）：
+// pub enum Color { Red, Green, Blue, Yellow }
+
+// 5. 收紧泛型约束
+// 之前：pub fn sort<T: PartialOrd>(data: &mut [T])
+// 之后：pub fn sort<T: Ord>(data: &mut [T])
+```
+
+### 非破坏性变更
+
+以下变更可以安全地放在 MINOR 版本中：
+
+```rust
+// ✅ 非破坏性变更示例
+
+// 1. 新增公共函数
+pub fn new_feature() -> String {
+    "新功能".to_string()
+}
+
+// 2. 为已有类型新增方法
+impl MyStruct {
+    pub fn new_method(&self) -> bool {
+        true
+    }
+}
+
+// 3. 放宽泛型约束
+// 之前：pub fn process<T: Clone + Debug>(item: T)
+// 之后：pub fn process<T: Clone>(item: T)
+
+// 4. 新增带默认值的 trait 方法
+trait MyTrait {
+    fn existing_method(&self);
+
+    // 新增的方法有默认实现，不影响已有实现者
+    fn new_method(&self) -> bool {
+        false
+    }
+}
+
+// 5. 对 #[non_exhaustive] 枚举添加变体
+#[non_exhaustive]
+pub enum Event {
+    Click,
+    Hover,
+    // 新增变体不会破坏下游（因为 #[non_exhaustive] 要求 _ 分支）
+}
+```
+
+## 📊 `#[non_exhaustive]` 的作用
+
+`#[non_exhaustive]` 标注的枚举和结构体在**外部 crate** 中不能被穷举，这为未来新增变体/字段提供了灵活性：
+
+```rust
+/// 事件类型。
+///
+/// 使用 `#[non_exhaustive]` 确保未来新增事件类型不会破坏下游代码。
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum AppEvent {
+    Started,
+    Stopped,
+    Error(String),
+}
+
+/// 配置选项。
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct Config {
+    pub host: String,
+    pub port: u16,
+    // 未来可以安全地新增字段
+}
+
+impl Config {
+    pub fn new(host: &str, port: u16) -> Self {
+        Config {
+            host: host.to_string(),
+            port,
+        }
+    }
+}
+```
+
+外部 crate 使用时必须包含通配符分支：
+
+```rust
+use my_lib::AppEvent;
+
+fn handle_event(event: &AppEvent) {
+    match event {
+        AppEvent::Started => println!("启动"),
+        AppEvent::Stopped => println!("停止"),
+        AppEvent::Error(msg) => println!("错误：{msg}"),
+        _ => println!("未知事件"), // 必须有此分支
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[crates.io 发布流程](./06-crates-io-publishing)**：版本号与发布的关系
+- **[cargo publish](./08-cargo-publish)**：发布时的版本检查
+- **[README 与 CHANGELOG](./05-readme-changelog)**：记录版本间的变更
 
 ## 📝 学习检查点
 
-- [ ] 理解语义化版本的核心概念
-- [ ] 能够在实际项目中应用语义化版本
+- [ ] 理解 MAJOR.MINOR.PATCH 的含义
+- [ ] 掌握 Cargo 的版本要求语法
+- [ ] 能够判断一个变更是否属于破坏性变更
+- [ ] 了解 `#[non_exhaustive]` 对版本管理的帮助
+
+## 🚀 下一步
+
+→ [cargo publish](./08-cargo-publish)

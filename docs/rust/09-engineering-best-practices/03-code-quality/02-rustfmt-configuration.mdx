@@ -5,13 +5,220 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解代码质量中的「rustfmt 格式化配置」相关知识。
+rustfmt 是 Rust 的官方代码格式化工具，确保整个项目（乃至整个团队）使用一致的代码风格。通过配置文件 `rustfmt.toml`（或 `.rustfmt.toml`），可以自定义格式化规则以适应不同的团队偏好。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本使用
+
+### 安装与运行
+
+```bash
+# rustfmt 随 rustup 安装，通常已包含在工具链中
+rustup component add rustfmt
+
+# 格式化当前项目
+cargo fmt
+
+# 检查格式（不修改文件，CI 中常用）
+cargo fmt -- --check
+
+# 格式化单个文件
+rustfmt src/main.rs
+
+# 显示差异但不修改
+cargo fmt -- --check --verbose
+```
+
+### 格式化前后对比
+
+格式化前：
+
+```rust
+fn   process_data(  input:&str,   count:usize)->Result<Vec<String>,
+String>{
+let mut results=Vec::new();
+    for i in 0..count{
+        let processed=format!("{}-{}",input,i);
+results.push(processed);
+    }
+Ok(results)
+}
+```
+
+格式化后：
+
+```rust
+fn process_data(input: &str, count: usize) -> Result<Vec<String>, String> {
+    let mut results = Vec::new();
+    for i in 0..count {
+        let processed = format!("{}-{}", input, i);
+        results.push(processed);
+    }
+    Ok(results)
+}
+```
+
+## 🔄 配置文件
+
+### 创建 rustfmt.toml
+
+在项目根目录创建 `rustfmt.toml`：
+
+```toml
+# 使用 2021 edition 的样式
+edition = "2021"
+
+# 最大行宽（默认 100）
+max_width = 100
+
+# 缩进使用空格（默认 4）
+tab_spaces = 4
+
+# 使用空格而非 Tab
+hard_tabs = false
+
+# 函数参数换行策略
+fn_params_layout = "Tall"
+
+# use 语句分组
+imports_granularity = "Crate"
+
+# use 语句排序
+reorder_imports = true
+
+# 模块声明排序
+reorder_modules = true
+```
+
+### 常用配置项
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `max_width` | 100 | 最大行宽 |
+| `tab_spaces` | 4 | 缩进空格数 |
+| `hard_tabs` | false | 是否使用 Tab |
+| `edition` | "2015" | Rust edition |
+| `imports_granularity` | "Preserve" | use 语句合并策略 |
+| `reorder_imports` | true | 是否自动排序 use |
+| `reorder_modules` | true | 是否排序 mod 声明 |
+| `fn_params_layout` | "Tall" | 函数参数布局 |
+| `use_small_heuristics` | "Default" | 小型结构的启发式格式化 |
+
+## 🎯 imports_granularity 详解
+
+### 不同策略的效果
+
+```rust
+// --- Preserve（保持原样）---
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::io;
+use std::io::Read;
+
+// --- Crate（按 crate 合并）---
+use std::{
+    collections::{HashMap, HashSet},
+    io::{self, Read},
+};
+
+// --- Module（按模块合并）---
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Read};
+
+// --- Item（完全展开）---
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::io;
+use std::io::Read;
+```
+
+## 📊 跳过格式化
+
+### `#[rustfmt::skip]`
+
+对特定代码块跳过格式化，适用于手动对齐的表格式代码：
+
+```rust
+// 对齐的矩阵定义，不希望 rustfmt 改变
+#[rustfmt::skip]
+const TRANSFORM_MATRIX: [[f64; 3]; 3] = [
+    [1.0,  0.0,  0.0],
+    [0.0,  1.0,  0.0],
+    [0.0,  0.0,  1.0],
+];
+
+// 对齐的常量定义
+#[rustfmt::skip]
+mod status_codes {
+    pub const OK:            u16 = 200;
+    pub const NOT_FOUND:     u16 = 404;
+    pub const SERVER_ERROR:  u16 = 500;
+}
+
+// 正常代码继续使用 rustfmt
+fn process(code: u16) -> &'static str {
+    match code {
+        200 => "OK",
+        404 => "Not Found",
+        500 => "Server Error",
+        _ => "Unknown",
+    }
+}
+```
+
+### 跳过整个模块
+
+在模块顶部使用 `#![rustfmt::skip]`（内部属性）：
+
+```rust
+#[rustfmt::skip]
+mod generated_code {
+    // 自动生成的代码，不需要格式化
+    pub fn lookup(key: u32) -> &'static str {
+        match key {
+            0   => "zero",
+            1   => "one",
+            2   => "two",
+            _   => "unknown",
+        }
+    }
+}
+```
+
+## 🏗️ 推荐的团队配置
+
+```toml
+# rustfmt.toml - 团队推荐配置
+edition = "2021"
+max_width = 100
+tab_spaces = 4
+hard_tabs = false
+
+# use 语句管理
+imports_granularity = "Module"
+reorder_imports = true
+group_imports = "StdExternalCrate"
+
+# 模块排序
+reorder_modules = true
+
+# 注释格式化
+wrap_comments = false
+normalize_comments = false
+```
+
+## 🔗 相关概念
+
+- **[clippy lint 规则](./03-clippy-lint-rules)**：代码风格之外的静态分析
+- **[自定义 lint 配置](./04-custom-lint-configuration)**：项目级别的 lint 规则
+- **[CI/CD 集成](../02-documentation-publishing/09-ci-cd-github-actions)**：在 CI 中强制格式化检查
 
 ## 📝 学习检查点
 
-- [ ] 理解rustfmt 格式化配置的核心概念
-- [ ] 能够在实际项目中应用rustfmt 格式化配置
+- [ ] 能够使用 `cargo fmt` 格式化项目
+- [ ] 掌握 `rustfmt.toml` 的常用配置项
+- [ ] 理解 `imports_granularity` 的不同策略
+- [ ] 知道如何使用 `#[rustfmt::skip]` 跳过特定代码
+
+## 🚀 下一步
+
+→ [clippy lint 规则](./03-clippy-lint-rules)

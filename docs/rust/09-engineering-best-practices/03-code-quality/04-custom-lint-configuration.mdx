@@ -5,13 +5,198 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解代码质量中的「自定义 lint 配置」相关知识。
+在实际项目中，通常需要根据团队规范定制 lint 策略。Rust 提供了多种方式来配置 lint：crate 级别的属性、`Cargo.toml` 中的 `[lints]` 表、以及 Clippy 的配置文件 `clippy.toml`。本节讲解如何将这些方式结合起来，建立项目级别的统一 lint 标准。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 Cargo.toml 的 `[lints]` 配置
+
+### 基本用法
+
+从 Rust 1.74 开始，可以在 `Cargo.toml` 中直接配置 lint 级别，避免在代码中散落大量 `#![allow(...)]` 和 `#![warn(...)]`：
+
+```toml
+[lints.rust]
+# 编译器 lint
+unsafe_code = "forbid"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[lints.clippy]
+# Clippy lint
+enum_glob_use = "deny"
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+```
+
+:::tip
+`priority` 字段用于控制规则的应用顺序。值越小优先级越低，先应用。通常将大范围的组（如 `pedantic`）设为低优先级，再用高优先级的个别规则覆盖。
 :::
+
+### Workspace 级别共享
+
+在 Workspace 根 `Cargo.toml` 中定义统一的 lint 配置：
+
+```toml
+# workspace 根 Cargo.toml
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+unwrap_used = "warn"
+```
+
+各子 crate 继承 workspace 的 lint 配置：
+
+```toml
+# 子 crate 的 Cargo.toml
+[package]
+name = "my-sub-crate"
+version = "0.1.0"
+
+[lints]
+workspace = true
+```
+
+## 🔄 clippy.toml 配置
+
+### Clippy 特有的配置
+
+在项目根目录创建 `clippy.toml`（或 `.clippy.toml`）来配置 clippy 特有的参数：
+
+```toml
+# 认为函数参数过多的阈值（默认 7）
+too-many-arguments-threshold = 5
+
+# 认为函数行数过多的阈值（默认 100）
+too-many-lines-threshold = 50
+
+# 认为类型复杂度过高的阈值（默认 250）
+type-complexity-threshold = 200
+
+# 认为认知复杂度过高的阈值（默认 25）
+cognitive-complexity-threshold = 15
+
+# 允许的通配符导入路径
+allowed-wildcard-imports = ["utils::prelude"]
+
+# MSRV（影响 clippy 建议的语法特性）
+msrv = "1.70"
+
+# 不应出现在文档中的词汇
+doc-valid-idents = ["TypeScript", "JavaScript", "GitHub", "PostgreSQL"]
+```
+
+## 🎯 crate 级别属性
+
+### 在代码中配置
+
+适用于需要针对特定 crate 设置的 lint：
+
+```rust
+// lib.rs 或 main.rs 顶部
+
+// 禁止使用 unsafe 代码
+#![forbid(unsafe_code)]
+
+// 要求所有公共项都有文档
+#![warn(missing_docs)]
+
+// 启用 clippy 的 pedantic 类别
+#![warn(clippy::pedantic)]
+
+// 但允许 pedantic 中某些过于严格的规则
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::must_use_candidate)]
+
+// 禁止使用 .unwrap()
+#![deny(clippy::unwrap_used)]
+
+//! # My Crate
+//!
+//! 这是 crate 级别的文档。
+
+/// 一个公共函数（因为 missing_docs，必须有文档注释）。
+pub fn hello() -> String {
+    "Hello".to_string()
+}
+```
+
+### lint 级别的优先级
+
+从低到高：
+
+| 级别 | 说明 |
+|------|------|
+| `allow` | 完全忽略该 lint |
+| `warn` | 发出警告但不阻止编译 |
+| `deny` | 视为编译错误 |
+| `forbid` | 视为编译错误且不能在子项中被 `allow` 覆盖 |
+
+```rust
+#![forbid(unsafe_code)]
+
+// ❌ 下面这行不起作用，因为 forbid 不能被覆盖
+// #[allow(unsafe_code)]
+// unsafe fn dangerous() {}
+```
+
+## 📊 推荐的项目配置
+
+### 库项目
+
+```toml
+# Cargo.toml
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# 从 pedantic 中放宽的规则
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# 严格要求
+unwrap_used = "warn"
+expect_used = "warn"
+```
+
+### 应用项目
+
+```toml
+# Cargo.toml
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+# 应用项目可以适当放宽 pedantic
+style = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+# 允许在应用代码中使用 unwrap（但库代码中不允许）
+unwrap_used = "allow"
+```
+
+## 🔗 相关概念
+
+- **[clippy lint 规则](./03-clippy-lint-rules)**：常见 lint 规则详解
+- **[rustfmt 格式化配置](./02-rustfmt-configuration)**：代码格式化配置
+- **[CI/CD 集成](../02-documentation-publishing/09-ci-cd-github-actions)**：在 CI 中执行 lint 检查
 
 ## 📝 学习检查点
 
-- [ ] 理解自定义 lint 配置的核心概念
-- [ ] 能够在实际项目中应用自定义 lint 配置
+- [ ] 掌握 `Cargo.toml` 的 `[lints]` 配置方式
+- [ ] 理解 Workspace 级别的 lint 共享
+- [ ] 能够配置 `clippy.toml` 调整阈值参数
+- [ ] 理解 `allow`、`warn`、`deny`、`forbid` 的区别
+
+## 🚀 下一步
+
+→ [cargo-audit 安全审计](./05-cargo-audit)

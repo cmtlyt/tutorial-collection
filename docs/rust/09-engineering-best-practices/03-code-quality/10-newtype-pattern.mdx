@@ -5,13 +5,286 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解代码质量中的「Newtype 模式」相关知识。
+Newtype 模式是通过创建一个单字段的元组结构体来包装已有类型，从而赋予其新的语义和类型安全性。它是 Rust 中零成本抽象（Zero-Cost Abstraction）的典型应用——编译器会将 Newtype 优化为与内部类型完全相同的表示。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 防止参数混淆
+
+### 问题场景
+
+```rust
+// ❌ 参数类型都是 f64，容易传错顺序
+fn create_order(price: f64, weight: f64, quantity: f64) -> String {
+    format!("价格: {price}, 重量: {weight}kg, 数量: {quantity}")
+}
+
+fn main() {
+    // 编译器不会报错，但参数顺序搞反了
+    let order = create_order(2.5, 99.9, 3.0);
+    println!("{order}");
+}
+```
+
+### 使用 Newtype 解决
+
+```rust
+#[derive(Debug, Clone, Copy)]
+struct Price(f64);
+
+#[derive(Debug, Clone, Copy)]
+struct Weight(f64);
+
+#[derive(Debug, Clone, Copy)]
+struct Quantity(u32);
+
+impl Price {
+    fn new(value: f64) -> Self {
+        assert!(value >= 0.0, "价格不能为负数");
+        Price(value)
+    }
+
+    fn value(&self) -> f64 {
+        self.0
+    }
+}
+
+impl Weight {
+    fn new(kilograms: f64) -> Self {
+        assert!(kilograms >= 0.0, "重量不能为负数");
+        Weight(kilograms)
+    }
+
+    fn value(&self) -> f64 {
+        self.0
+    }
+}
+
+impl Quantity {
+    fn new(count: u32) -> Self {
+        assert!(count > 0, "数量必须大于零");
+        Quantity(count)
+    }
+
+    fn value(&self) -> u32 {
+        self.0
+    }
+}
+
+fn create_order(price: Price, weight: Weight, quantity: Quantity) -> String {
+    let total = price.value() * quantity.value() as f64;
+    format!(
+        "单价: {:.2}, 重量: {:.1}kg, 数量: {}, 总价: {:.2}",
+        price.value(),
+        weight.value(),
+        quantity.value(),
+        total
+    )
+}
+
+fn main() {
+    let order = create_order(
+        Price::new(99.9),
+        Weight::new(2.5),
+        Quantity::new(3),
+    );
+    println!("{order}");
+
+    // ❌ 编译错误：类型不匹配
+    // create_order(Weight::new(2.5), Price::new(99.9), Quantity::new(3));
+}
+```
+
+## 🔄 为外部类型实现 Trait
+
+### 孤儿规则（Orphan Rule）
+
+Rust 的孤儿规则禁止为外部类型实现外部 Trait。Newtype 可以绕过这个限制：
+
+```rust
+use std::fmt;
+
+/// 用逗号分隔的列表显示
+struct CommaSeparated(Vec<String>);
+
+impl CommaSeparated {
+    fn new(items: Vec<String>) -> Self {
+        CommaSeparated(items)
+    }
+}
+
+impl fmt::Display for CommaSeparated {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0.join(", "))
+    }
+}
+
+/// 用换行符分隔的列表显示
+struct LineSeparated(Vec<String>);
+
+impl LineSeparated {
+    fn new(items: Vec<String>) -> Self {
+        LineSeparated(items)
+    }
+}
+
+impl fmt::Display for LineSeparated {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0.join("\n"))
+    }
+}
+
+fn main() {
+    let items = vec!["苹果".to_string(), "香蕉".to_string(), "橙子".to_string()];
+
+    let comma_list = CommaSeparated::new(items.clone());
+    println!("逗号分隔：{comma_list}");
+
+    let line_list = LineSeparated::new(items);
+    println!("换行分隔：\n{line_list}");
+}
+```
+
+## 🎯 业务域建模
+
+### 使用 Newtype 建模业务概念
+
+```rust
+use std::fmt;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct UserId(u64);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OrderId(u64);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Email(String);
+
+impl Email {
+    fn new(value: &str) -> Result<Self, String> {
+        if value.contains('@') && value.contains('.') {
+            Ok(Email(value.to_string()))
+        } else {
+            Err(format!("无效的邮箱地址：{value}"))
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Email {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
+struct UserRepository;
+
+impl UserRepository {
+    fn find_by_id(user_id: &UserId) -> Option<String> {
+        // 模拟数据库查询
+        if user_id.0 == 1 {
+            Some("张三".to_string())
+        } else {
+            None
+        }
+    }
+
+    fn find_orders(user_id: &UserId) -> Vec<OrderId> {
+        // 模拟查询用户的订单
+        if user_id.0 == 1 {
+            vec![OrderId(101), OrderId(102)]
+        } else {
+            vec![]
+        }
+    }
+}
+
+fn main() {
+    let user_id = UserId(1);
+    let order_id = OrderId(101);
+
+    // ✅ 类型安全：不能把 OrderId 传给期望 UserId 的函数
+    if let Some(name) = UserRepository::find_by_id(&user_id) {
+        println!("用户：{name}");
+    }
+
+    // ❌ 编译错误：
+    // UserRepository::find_by_id(&order_id);
+
+    let orders = UserRepository::find_orders(&user_id);
+    println!("订单数量：{}", orders.len());
+
+    let email = Email::new("zhangsan@example.com").unwrap();
+    println!("邮箱：{email}");
+}
+```
+
+## 📊 实现 Deref 的权衡
+
+### 何时实现 `Deref`
+
+```rust
+use std::ops::Deref;
+
+/// 非空字符串类型
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NonEmptyString(String);
+
+impl NonEmptyString {
+    fn new(value: &str) -> Result<Self, String> {
+        if value.trim().is_empty() {
+            Err("字符串不能为空".to_string())
+        } else {
+            Ok(NonEmptyString(value.to_string()))
+        }
+    }
+}
+
+// 实现 Deref 可以方便地使用 &str 的方法
+impl Deref for NonEmptyString {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+fn main() {
+    let name = NonEmptyString::new("Hello, Rust!").unwrap();
+
+    // 通过 Deref 可以直接使用 str 的方法
+    println!("长度：{}", name.len());
+    println!("大写：{}", name.to_uppercase());
+    println!("包含 Rust：{}", name.contains("Rust"));
+
+    // 可以传给接受 &str 的函数
+    print_greeting(&name);
+}
+
+fn print_greeting(message: &str) {
+    println!("问候：{message}");
+}
+```
+
+:::warning
+为 Newtype 实现 `Deref` 会削弱类型安全性，因为 Newtype 可以被隐式当作内部类型使用。只有当 Newtype 确实是内部类型的"智能指针"语义时才应实现 `Deref`。对于 `UserId`、`OrderId` 等需要强类型区分的场景，不应实现 `Deref`。
 :::
+
+## 🔗 相关概念
+
+- **[Builder 模式](./09-builder-pattern)**：另一种提升 API 质量的模式
+- **[类型状态模式](./11-typestate-pattern)**：使用类型系统表达状态
+- **[策略模式](./13-strategy-pattern)**：使用 Trait 对象实现多态
 
 ## 📝 学习检查点
 
-- [ ] 理解Newtype 模式的核心概念
-- [ ] 能够在实际项目中应用Newtype 模式
+- [ ] 理解 Newtype 模式解决的问题
+- [ ] 能够使用 Newtype 防止参数混淆
+- [ ] 掌握 Newtype 绕过孤儿规则的技巧
+- [ ] 理解实现 `Deref` 的权衡
+
+## 🚀 下一步
+
+→ [类型状态模式](./11-typestate-pattern)

@@ -5,13 +5,262 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「属性测试（proptest）」相关知识。
+属性测试（Property-based Testing）是一种自动化测试方法：不是手动编写具体的测试用例，而是描述代码应满足的**属性**（通用规则），由测试框架自动生成大量随机输入来验证这些属性。Rust 生态中最流行的属性测试库是 **proptest**。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 快速上手 proptest
+
+### 添加依赖
+
+```toml
+[dev-dependencies]
+proptest = "1"
+```
+
+### 基本用法
+
+```rust
+fn reverse<T: Clone>(input: &[T]) -> Vec<T> {
+    input.iter().rev().cloned().collect()
+}
+
+fn sort(input: &mut [i32]) {
+    input.sort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // 属性：反转两次等于原始序列
+        #[test]
+        fn test_double_reverse_is_identity(ref input in any::<Vec<i32>>()) {
+            let reversed_twice = reverse(&reverse(input));
+            prop_assert_eq!(&reversed_twice, input);
+        }
+
+        // 属性：反转后长度不变
+        #[test]
+        fn test_reverse_preserves_length(ref input in any::<Vec<i32>>()) {
+            let reversed = reverse(input);
+            prop_assert_eq!(reversed.len(), input.len());
+        }
+
+        // 属性：排序后数组有序
+        #[test]
+        fn test_sort_produces_ordered_output(mut input in any::<Vec<i32>>()) {
+            sort(&mut input);
+            for window in input.windows(2) {
+                prop_assert!(window[0] <= window[1]);
+            }
+        }
+
+        // 属性：排序不改变元素集合（长度相同 + 元素不丢失）
+        #[test]
+        fn test_sort_preserves_elements(mut input in any::<Vec<i32>>()) {
+            let mut expected = input.clone();
+            sort(&mut input);
+            expected.sort();
+            prop_assert_eq!(input, expected);
+        }
+    }
+}
+```
+
+## 🔄 自定义策略（Strategy）
+
+### 限制输入范围
+
+```rust
+fn divide(a: i32, b: i32) -> i32 {
+    a / b
+}
+
+fn clamp(value: i32, min: i32, max: i32) -> i32 {
+    if value < min {
+        min
+    } else if value > max {
+        max
+    } else {
+        value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // 限制 b 不为零
+        #[test]
+        fn test_divide_nonzero(
+            a in any::<i32>(),
+            b in any::<i32>().prop_filter("非零", |b| *b != 0)
+        ) {
+            let result = divide(a, b);
+            // 整数除法的基本属性：|result| <= |a|（当 |b| >= 1 时）
+            if b.abs() >= 1 {
+                prop_assert!(result.abs() <= a.abs());
+            }
+        }
+
+        // 自定义范围
+        #[test]
+        fn test_clamp_within_bounds(
+            value in -1000..1000i32,
+            min in -100..0i32,
+            max in 0..100i32,
+        ) {
+            let result = clamp(value, min, max);
+            prop_assert!(result >= min);
+            prop_assert!(result <= max);
+        }
+    }
+}
+```
+
+### 生成自定义类型
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+struct Email {
+    local: String,
+    domain: String,
+}
+
+impl Email {
+    fn new(local: &str, domain: &str) -> Result<Self, String> {
+        if local.is_empty() {
+            return Err("本地部分不能为空".to_string());
+        }
+        if !domain.contains('.') {
+            return Err("域名必须包含点号".to_string());
+        }
+        Ok(Email {
+            local: local.to_string(),
+            domain: domain.to_string(),
+        })
+    }
+
+    fn full_address(&self) -> String {
+        format!("{}@{}", self.local, self.domain)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// 生成有效邮箱的策略
+    fn valid_email_strategy() -> impl Strategy<Value = Email> {
+        (
+            "[a-z][a-z0-9]{1,10}",     // local 部分
+            "[a-z]{2,6}\\.[a-z]{2,3}", // domain 部分
+        )
+            .prop_map(|(local, domain)| Email::new(&local, &domain).unwrap())
+    }
+
+    proptest! {
+        #[test]
+        fn test_email_full_address_contains_at(email in valid_email_strategy()) {
+            let address = email.full_address();
+            prop_assert!(address.contains('@'));
+        }
+
+        #[test]
+        fn test_email_full_address_format(email in valid_email_strategy()) {
+            let address = email.full_address();
+            let parts: Vec<&str> = address.split('@').collect();
+            prop_assert_eq!(parts.len(), 2);
+            prop_assert_eq!(parts[0], email.local.as_str());
+            prop_assert_eq!(parts[1], email.domain.as_str());
+        }
+
+        // 测试空本地部分应失败
+        #[test]
+        fn test_empty_local_fails(domain in "[a-z]{2,6}\\.[a-z]{2,3}") {
+            let result = Email::new("", &domain);
+            prop_assert!(result.is_err());
+        }
+
+        // 测试无点号域名应失败
+        #[test]
+        fn test_no_dot_domain_fails(
+            local in "[a-z]{1,10}",
+            domain in "[a-z]{2,10}"  // 无点号
+        ) {
+            let result = Email::new(&local, &domain);
+            prop_assert!(result.is_err());
+        }
+    }
+}
+```
+
+## 📊 收缩（Shrinking）
+
+proptest 的一大优势是当发现失败用例后，会自动尝试**收缩**（shrink）输入，找到最小的失败用例：
+
+```rust
+fn first_duplicate(items: &[i32]) -> Option<i32> {
+    let mut seen = std::collections::HashSet::new();
+    for &item in items {
+        if !seen.insert(item) {
+            return Some(item);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // 属性：如果返回 Some(x)，那么 x 在数组中至少出现两次
+        #[test]
+        fn test_duplicate_appears_at_least_twice(input in prop::collection::vec(0..100i32, 0..50)) {
+            if let Some(duplicate) = first_duplicate(&input) {
+                let count = input.iter().filter(|&&x| x == duplicate).count();
+                prop_assert!(
+                    count >= 2,
+                    "声称 {} 是重复项，但只出现了 {} 次",
+                    duplicate,
+                    count
+                );
+            }
+        }
+
+        // 属性：如果返回 None，那么所有元素都不同
+        #[test]
+        fn test_no_duplicate_means_all_unique(input in prop::collection::vec(0..1000i32, 0..50)) {
+            if first_duplicate(&input).is_none() {
+                let mut sorted = input.clone();
+                sorted.sort();
+                sorted.dedup();
+                prop_assert_eq!(sorted.len(), input.len());
+            }
+        }
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[单元测试](./02-unit-tests)**：属性测试补充手工测试
+- **[模糊测试](./10-fuzz-testing)**：另一种自动化测试方式
+- **[测试覆盖率](./08-test-coverage)**：属性测试通常能覆盖更多代码路径
 
 ## 📝 学习检查点
 
-- [ ] 理解属性测试（proptest）的核心概念
-- [ ] 能够在实际项目中应用属性测试（proptest）
+- [ ] 理解属性测试与手工测试的区别
+- [ ] 掌握 `proptest!` 宏的基本用法
+- [ ] 能够编写自定义策略生成测试数据
+- [ ] 理解收缩（shrinking）机制的作用
+
+## 🚀 下一步
+
+→ [模糊测试](./10-fuzz-testing)

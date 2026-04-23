@@ -5,13 +5,375 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「测试组织（tests 模块）」相关知识。
+Rust 的测试组织分为两个层面：**单元测试模块**（与源代码同文件）和**集成测试**（独立的 `tests/` 目录）。本节聚焦于单元测试模块的组织方式，即如何在源文件中使用 `#[cfg(test)] mod tests` 结构来组织测试代码。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 `#[cfg(test)]` 条件编译
+
+### 基本结构
+
+`#[cfg(test)]` 属性确保测试模块只在运行 `cargo test` 时编译，不会出现在生产二进制中：
+
+```rust
+pub fn is_even(number: i32) -> bool {
+    number % 2 == 0
+}
+
+// 私有函数也可以被测试
+fn internal_helper(value: i32) -> i32 {
+    value * 2 + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*; // 导入父模块的所有项，包括私有函数
+
+    #[test]
+    fn test_is_even() {
+        assert!(is_even(4));
+        assert!(!is_even(3));
+    }
+
+    #[test]
+    fn test_internal_helper() {
+        // 单元测试可以访问私有函数
+        assert_eq!(internal_helper(5), 11);
+    }
+}
+```
+
+:::tip
+这是 Rust 测试的一个独特优势：**单元测试可以直接测试私有函数**，因为测试模块是源文件的子模块，对父模块的私有项有访问权限。
 :::
+
+### `cfg(test)` 的编译行为
+
+```rust
+// 仅在测试时编译的常量
+#[cfg(test)]
+const TEST_DATABASE_URL: &str = "sqlite::memory:";
+
+// 仅在测试时编译的辅助函数
+#[cfg(test)]
+fn create_test_data() -> Vec<i32> {
+    vec![1, 2, 3, 4, 5]
+}
+
+pub fn sum(numbers: &[i32]) -> i32 {
+    numbers.iter().sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sum_with_test_data() {
+        let data = create_test_data();
+        assert_eq!(sum(&data), 15);
+    }
+}
+```
+
+## 🔄 多文件项目的测试组织
+
+### 按模块组织测试
+
+在大型项目中，每个模块文件都应包含自己的测试模块：
+
+```
+src/
+├── lib.rs
+├── math/
+│   ├── mod.rs
+│   ├── arithmetic.rs
+│   └── geometry.rs
+└── utils/
+    ├── mod.rs
+    └── string_helpers.rs
+```
+
+`src/math/arithmetic.rs`：
+
+```rust
+pub fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let temp = b;
+        b = a % b;
+        a = temp;
+    }
+    a
+}
+
+pub fn lcm(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    a / gcd(a, b) * b
+}
+
+pub fn factorial(n: u64) -> u64 {
+    (1..=n).product()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gcd_basic() {
+        assert_eq!(gcd(12, 8), 4);
+        assert_eq!(gcd(15, 25), 5);
+    }
+
+    #[test]
+    fn test_gcd_one_is_zero() {
+        assert_eq!(gcd(0, 5), 5);
+        assert_eq!(gcd(7, 0), 7);
+    }
+
+    #[test]
+    fn test_gcd_coprime() {
+        assert_eq!(gcd(13, 17), 1);
+    }
+
+    #[test]
+    fn test_lcm_basic() {
+        assert_eq!(lcm(4, 6), 12);
+        assert_eq!(lcm(3, 7), 21);
+    }
+
+    #[test]
+    fn test_lcm_with_zero() {
+        assert_eq!(lcm(0, 5), 0);
+    }
+
+    #[test]
+    fn test_factorial() {
+        assert_eq!(factorial(0), 1);
+        assert_eq!(factorial(1), 1);
+        assert_eq!(factorial(5), 120);
+        assert_eq!(factorial(10), 3628800);
+    }
+}
+```
+
+`src/math/geometry.rs`：
+
+```rust
+use std::f64::consts::PI;
+
+pub struct Circle {
+    pub radius: f64,
+}
+
+impl Circle {
+    pub fn new(radius: f64) -> Self {
+        assert!(radius >= 0.0, "半径不能为负数");
+        Circle { radius }
+    }
+
+    pub fn area(&self) -> f64 {
+        PI * self.radius * self.radius
+    }
+
+    pub fn circumference(&self) -> f64 {
+        2.0 * PI * self.radius
+    }
+}
+
+pub struct Rectangle {
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Rectangle {
+    pub fn new(width: f64, height: f64) -> Self {
+        assert!(width >= 0.0 && height >= 0.0, "宽和高不能为负数");
+        Rectangle { width, height }
+    }
+
+    pub fn area(&self) -> f64 {
+        self.width * self.height
+    }
+
+    pub fn is_square(&self) -> bool {
+        (self.width - self.height).abs() < f64::EPSILON
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOLERANCE: f64 = 1e-10;
+
+    // Circle 测试
+    #[test]
+    fn test_circle_area() {
+        let circle = Circle::new(1.0);
+        assert!((circle.area() - PI).abs() < TOLERANCE);
+    }
+
+    #[test]
+    fn test_circle_circumference() {
+        let circle = Circle::new(1.0);
+        assert!((circle.circumference() - 2.0 * PI).abs() < TOLERANCE);
+    }
+
+    #[test]
+    fn test_zero_radius_circle() {
+        let circle = Circle::new(0.0);
+        assert!((circle.area() - 0.0).abs() < TOLERANCE);
+    }
+
+    #[test]
+    #[should_panic(expected = "半径不能为负数")]
+    fn test_negative_radius_panics() {
+        Circle::new(-1.0);
+    }
+
+    // Rectangle 测试
+    #[test]
+    fn test_rectangle_area() {
+        let rect = Rectangle::new(3.0, 4.0);
+        assert!((rect.area() - 12.0).abs() < TOLERANCE);
+    }
+
+    #[test]
+    fn test_rectangle_is_square() {
+        let square = Rectangle::new(5.0, 5.0);
+        assert!(square.is_square());
+
+        let rect = Rectangle::new(3.0, 4.0);
+        assert!(!rect.is_square());
+    }
+}
+```
+
+## 🏗️ 嵌套测试模块
+
+对于复杂的测试，可以使用嵌套模块来分组：
+
+```rust
+pub struct Calculator {
+    history: Vec<f64>,
+}
+
+impl Calculator {
+    pub fn new() -> Self {
+        Calculator {
+            history: Vec::new(),
+        }
+    }
+
+    pub fn add(&mut self, a: f64, b: f64) -> f64 {
+        let result = a + b;
+        self.history.push(result);
+        result
+    }
+
+    pub fn multiply(&mut self, a: f64, b: f64) -> f64 {
+        let result = a * b;
+        self.history.push(result);
+        result
+    }
+
+    pub fn last_result(&self) -> Option<f64> {
+        self.history.last().copied()
+    }
+
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod addition {
+        use super::*;
+
+        #[test]
+        fn test_positive_numbers() {
+            let mut calc = Calculator::new();
+            assert_eq!(calc.add(2.0, 3.0), 5.0);
+        }
+
+        #[test]
+        fn test_negative_numbers() {
+            let mut calc = Calculator::new();
+            assert_eq!(calc.add(-2.0, -3.0), -5.0);
+        }
+    }
+
+    mod multiplication {
+        use super::*;
+
+        #[test]
+        fn test_positive_numbers() {
+            let mut calc = Calculator::new();
+            assert_eq!(calc.multiply(2.0, 3.0), 6.0);
+        }
+
+        #[test]
+        fn test_by_zero() {
+            let mut calc = Calculator::new();
+            assert_eq!(calc.multiply(5.0, 0.0), 0.0);
+        }
+    }
+
+    mod history {
+        use super::*;
+
+        #[test]
+        fn test_last_result_after_operations() {
+            let mut calc = Calculator::new();
+            calc.add(1.0, 2.0);
+            calc.multiply(3.0, 4.0);
+            assert_eq!(calc.last_result(), Some(12.0));
+        }
+
+        #[test]
+        fn test_last_result_empty() {
+            let calc = Calculator::new();
+            assert_eq!(calc.last_result(), None);
+        }
+
+        #[test]
+        fn test_clear_history() {
+            let mut calc = Calculator::new();
+            calc.add(1.0, 2.0);
+            calc.clear_history();
+            assert_eq!(calc.last_result(), None);
+        }
+    }
+}
+```
+
+运行特定嵌套模块的测试：
+
+```bash
+# 运行 addition 子模块的所有测试
+cargo test tests::addition
+
+# 运行 history 子模块中的特定测试
+cargo test tests::history::test_clear_history
+```
+
+## 🔗 相关概念
+
+- **[单元测试](./02-unit-tests)**：测试基础
+- **[测试辅助函数](./05-test-helpers)**：提取共用的测试逻辑
+- **[集成测试](./06-integration-tests)**：`tests/` 目录的组织方式
 
 ## 📝 学习检查点
 
-- [ ] 理解测试组织（tests 模块）的核心概念
-- [ ] 能够在实际项目中应用测试组织（tests 模块）
+- [ ] 理解 `#[cfg(test)]` 的编译行为
+- [ ] 掌握 `use super::*` 导入父模块私有项的技巧
+- [ ] 能够按功能分组使用嵌套测试模块
+- [ ] 了解多文件项目中测试的组织方式
+
+## 🚀 下一步
+
+→ [测试辅助函数](./05-test-helpers)

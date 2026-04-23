@@ -5,13 +5,293 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解文档与发布中的「rustdoc 文档注释」相关知识。
+Rust 的文档注释使用 Markdown 语法，通过 `rustdoc` 工具自动生成美观的 HTML 文档。文档注释分为两种：`///`（外部文档注释，描述紧随其后的项）和 `//!`（内部文档注释，描述包含它的项）。良好的文档注释是 Rust 生态中高质量库的标志。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 外部文档注释 `///`
+
+### 基本语法
+
+`///` 用于为函数、结构体、枚举、trait 等项编写文档：
+
+```rust
+/// 计算斐波那契数列的第 n 项。
+///
+/// 使用迭代法实现，时间复杂度 O(n)，空间复杂度 O(1)。
+///
+/// # 参数
+///
+/// * `n` - 要计算的项数（从 0 开始）
+///
+/// # 返回值
+///
+/// 返回斐波那契数列的第 n 项。
+///
+/// # 示例
+///
+/// ```
+/// use my_lib::fibonacci;
+///
+/// assert_eq!(fibonacci(0), 0);
+/// assert_eq!(fibonacci(1), 1);
+/// assert_eq!(fibonacci(10), 55);
+/// ```
+pub fn fibonacci(n: u64) -> u64 {
+    if n <= 1 {
+        return n;
+    }
+    let mut previous = 0u64;
+    let mut current = 1u64;
+    for _ in 2..=n {
+        let next = previous + current;
+        previous = current;
+        current = next;
+    }
+    current
+}
+```
+
+### 标准章节约定
+
+rustdoc 会对以下标题进行特殊处理，建议按照社区约定使用：
+
+```rust
+/// 一个线程安全的计数器。
+///
+/// # 示例（Examples）
+///
+/// ```
+/// use my_lib::Counter;
+///
+/// let counter = Counter::new(0);
+/// assert_eq!(counter.value(), 0);
+/// ```
+///
+/// # 恐慌（Panics）
+///
+/// 当计数器溢出 `u64::MAX` 时会 panic。
+///
+/// # 错误（Errors）
+///
+/// 如果使用 `try_increment` 方法，溢出时返回 `Err` 而非 panic。
+///
+/// # 安全性（Safety）
+///
+/// 该类型内部使用 `AtomicU64`，在多线程环境下是安全的。
+pub struct Counter {
+    value: std::sync::atomic::AtomicU64,
+}
+
+impl Counter {
+    /// 创建一个新的计数器，初始值为 `initial`。
+    ///
+    /// # 示例
+    ///
+    /// ```
+    /// use my_lib::Counter;
+    ///
+    /// let counter = Counter::new(42);
+    /// assert_eq!(counter.value(), 42);
+    /// ```
+    pub fn new(initial: u64) -> Self {
+        Counter {
+            value: std::sync::atomic::AtomicU64::new(initial),
+        }
+    }
+
+    /// 获取当前计数值。
+    pub fn value(&self) -> u64 {
+        self.value.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 将计数器加一。
+    ///
+    /// # Panics
+    ///
+    /// 当计数值达到 `u64::MAX` 时 panic。
+    pub fn increment(&self) {
+        let current = self.value.load(std::sync::atomic::Ordering::SeqCst);
+        if current == u64::MAX {
+            panic!("计数器溢出");
+        }
+        self.value
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 尝试将计数器加一，溢出时返回错误。
+    ///
+    /// # Errors
+    ///
+    /// 当计数值达到 `u64::MAX` 时返回 `Err`。
+    ///
+    /// # 示例
+    ///
+    /// ```
+    /// use my_lib::Counter;
+    ///
+    /// let counter = Counter::new(0);
+    /// assert!(counter.try_increment().is_ok());
+    /// assert_eq!(counter.value(), 1);
+    /// ```
+    pub fn try_increment(&self) -> Result<u64, String> {
+        let current = self.value.load(std::sync::atomic::Ordering::SeqCst);
+        if current == u64::MAX {
+            return Err("计数器已达到最大值".to_string());
+        }
+        let new_value = self
+            .value
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        Ok(new_value)
+    }
+}
+```
+
+## 🔄 内部文档注释 `//!`
+
+### 模块和 crate 级别文档
+
+`//!` 用于描述当前模块或 crate 本身，通常放在 `lib.rs` 或模块文件的顶部：
+
+```rust
+//! # 字符串工具库
+//!
+//! `string_utils` 提供了一组常用的字符串处理工具函数，
+//! 包括大小写转换、截断、填充等操作。
+//!
+//! ## 快速开始
+//!
+//! ```
+//! use string_utils::to_title_case;
+//!
+//! let result = to_title_case("hello world");
+//! assert_eq!(result, "Hello World");
+//! ```
+//!
+//! ## 功能特性
+//!
+//! - **大小写转换**：`to_title_case`、`to_snake_case`、`to_camel_case`
+//! - **字符串截断**：`truncate`、`truncate_words`
+//! - **字符串填充**：`pad_left`、`pad_right`
+
+/// 将字符串转为标题大小写。
+///
+/// # 示例
+///
+/// ```
+/// use string_utils::to_title_case;
+///
+/// assert_eq!(to_title_case("hello world"), "Hello World");
+/// assert_eq!(to_title_case("rust programming"), "Rust Programming");
+/// ```
+pub fn to_title_case(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => {
+                    first.to_uppercase().to_string() + &chars.as_str().to_lowercase()
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+```
+
+## 🎯 Markdown 特性
+
+### 文档中的链接
+
+rustdoc 支持用方括号语法链接到其他类型和函数：
+
+```rust
+/// 一个简单的栈结构。
+///
+/// 使用 [`Vec`] 作为底层存储。
+/// 可与 [`Queue`] 搭配使用实现更复杂的数据结构。
+///
+/// 参见 [`Stack::push`] 和 [`Stack::pop`] 方法。
+pub struct Stack<T> {
+    elements: Vec<T>,
+}
+
+/// 一个简单的队列结构。
+///
+/// 参见 [`Stack`] 了解栈的实现。
+pub struct Queue<T> {
+    elements: Vec<T>,
+}
+
+impl<T> Stack<T> {
+    /// 创建一个空栈。
+    pub fn new() -> Self {
+        Stack {
+            elements: Vec::new(),
+        }
+    }
+
+    /// 将元素压入栈顶。
+    ///
+    /// 使用 [`Stack::pop`] 弹出栈顶元素。
+    pub fn push(&mut self, item: T) {
+        self.elements.push(item);
+    }
+
+    /// 弹出栈顶元素。
+    ///
+    /// 如果栈为空，返回 [`None`]。
+    pub fn pop(&mut self) -> Option<T> {
+        self.elements.pop()
+    }
+
+    /// 查看栈顶元素但不弹出。
+    pub fn peek(&self) -> Option<&T> {
+        self.elements.last()
+    }
+
+    /// 返回栈中元素的数量。
+    pub fn len(&self) -> usize {
+        self.elements.len()
+    }
+
+    /// 判断栈是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.elements.is_empty()
+    }
+}
+```
+
+### 生成和查看文档
+
+```bash
+# 生成文档
+cargo doc
+
+# 生成并自动打开浏览器
+cargo doc --open
+
+# 包含私有项的文档（开发时有用）
+cargo doc --document-private-items
+
+# 不构建依赖的文档（加速）
+cargo doc --no-deps
+```
+
+## 🔗 相关概念
+
+- **[文档测试](./03-doc-tests)**：文档中的代码示例会被自动测试
+- **[docs.rs 发布](./04-docs-rs-publishing)**：在 docs.rs 上发布文档
+- **[README 与 CHANGELOG](./05-readme-changelog)**：项目级别的文档
 
 ## 📝 学习检查点
 
-- [ ] 理解rustdoc 文档注释的核心概念
-- [ ] 能够在实际项目中应用rustdoc 文档注释
+- [ ] 掌握 `///` 和 `//!` 的区别和用法
+- [ ] 了解标准章节约定（Examples、Panics、Errors、Safety）
+- [ ] 能够使用文档链接引用其他类型和方法
+- [ ] 能够使用 `cargo doc` 生成和查看文档
+
+## 🚀 下一步
+
+→ [文档测试](./03-doc-tests)

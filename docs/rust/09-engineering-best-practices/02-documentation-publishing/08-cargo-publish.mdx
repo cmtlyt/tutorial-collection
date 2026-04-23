@@ -5,13 +5,219 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解文档与发布中的「cargo publish」相关知识。
+`cargo publish` 是将 crate 发布到 crates.io 的命令。本节详细讲解该命令的参数、打包机制、Workspace 发布策略以及常见问题的排查方法。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 命令参数详解
+
+### 基本用法
+
+```bash
+# 标准发布
+cargo publish
+
+# 模拟发布（不实际上传，用于验证）
+cargo publish --dry-run
+
+# 跳过确认提示
+cargo publish --allow-dirty
+
+# 指定注册中心（私有仓库）
+cargo publish --registry my-private-registry
+
+# 指定 token（适用于 CI 环境）
+cargo publish --token <API_TOKEN>
+```
+
+### 常用参数
+
+| 参数 | 说明 |
+|------|------|
+| `--dry-run` | 模拟发布，仅验证不上传 |
+| `--allow-dirty` | 允许工作目录有未提交的变更 |
+| `--no-verify` | 跳过构建验证（不推荐） |
+| `--token <TOKEN>` | 指定 API Token |
+| `--registry <NAME>` | 发布到指定的注册中心 |
+| `-p <PACKAGE>` | 在 Workspace 中指定要发布的包 |
+
+## 🔄 打包机制
+
+### `cargo package`
+
+`cargo publish` 内部会先执行 `cargo package` 打包，然后上传：
+
+```bash
+# 查看打包的内容
+cargo package --list
+
+# 生成 .crate 文件但不发布
+cargo package
+
+# .crate 文件位于 target/package/ 目录
+ls target/package/*.crate
+```
+
+### 控制打包内容
+
+在 `Cargo.toml` 中使用 `include` 或 `exclude`：
+
+```toml
+[package]
+name = "my-crate"
+version = "0.1.0"
+
+# 方式一：排除不需要的文件
+exclude = [
+    ".github/",
+    "tests/fixtures/large-data/",
+    "benches/",
+    "*.bak",
+]
+
+# 方式二：只包含指定文件（与 exclude 二选一）
+# include = [
+#     "src/**/*",
+#     "Cargo.toml",
+#     "README.md",
+#     "LICENSE-MIT",
+#     "LICENSE-APACHE",
+# ]
+```
+
+:::tip
+crates.io 对单个 crate 的压缩包大小限制为 **10 MB**。如果包含大文件，使用 `exclude` 排除或使用 `include` 精确控制。
 :::
+
+## 🎯 Workspace 发布
+
+### 多 crate 项目的发布顺序
+
+在 Workspace 中，crate 之间可能有依赖关系，需要按正确顺序发布：
+
+```
+my-workspace/
+├── Cargo.toml          # workspace 根
+├── core/               # 基础库
+│   └── Cargo.toml
+├── utils/              # 依赖 core
+│   └── Cargo.toml
+└── cli/                # 依赖 core 和 utils
+    └── Cargo.toml
+```
+
+```bash
+# 必须按依赖顺序发布
+cargo publish -p my-core
+cargo publish -p my-utils     # 等 my-core 在 crates.io 可用后
+cargo publish -p my-cli       # 等 my-utils 在 crates.io 可用后
+```
+
+### Workspace 依赖的版本引用
+
+发布时，Workspace 内部的 `path` 依赖会被替换为 `version` 依赖：
+
+```toml
+# 开发时使用 path 引用
+[dependencies]
+my-core = { path = "../core", version = "0.1.0" }
+
+# 发布时 Cargo 会自动去掉 path，只保留 version
+# my-core = "0.1.0"
+```
+
+:::warning
+如果 `path` 依赖没有同时指定 `version`，`cargo publish` 会报错。在 Workspace 中，务必同时指定 `path` 和 `version`。
+:::
+
+### 使用 cargo-workspaces 简化
+
+[cargo-workspaces](https://github.com/pksunkara/cargo-workspaces) 可以自动化 Workspace 的版本管理和发布：
+
+```bash
+# 安装
+cargo install cargo-workspaces
+
+# 统一递增所有 crate 的版本号
+cargo workspaces version patch
+
+# 按依赖顺序发布所有 crate
+cargo workspaces publish
+```
+
+## 📊 发布前检查清单
+
+```bash
+# 1. 确保在正确的分支上
+git branch
+
+# 2. 确保没有未提交的变更
+git status
+
+# 3. 运行所有测试
+cargo test --all
+
+# 4. 检查文档
+cargo doc --no-deps
+
+# 5. 验证打包内容
+cargo package --list
+
+# 6. 模拟发布
+cargo publish --dry-run
+
+# 7. 确认版本号已更新
+grep '^version' Cargo.toml
+
+# 8. 确认 CHANGELOG 已更新
+head -20 CHANGELOG.md
+```
+
+## 🏗️ 常见错误排查
+
+### 错误：crate 名称已被占用
+
+```
+error: crate `my-crate` already exists on crates.io
+```
+
+crate 名称在 crates.io 上是全局唯一的，需要选择其他名称。
+
+### 错误：版本已存在
+
+```
+error: crate version `0.1.0` is already uploaded
+```
+
+已发布的版本不能覆盖，需要递增版本号后重新发布。
+
+### 错误：缺少必要字段
+
+```
+error: missing required field `description` in Cargo.toml
+```
+
+补充 Cargo.toml 中的 `description` 和 `license`（或 `license-file`）。
+
+### 错误：path 依赖无 version
+
+```
+error: all dependencies must have a version specified when publishing
+```
+
+为所有 `path` 依赖添加 `version` 字段。
+
+## 🔗 相关概念
+
+- **[crates.io 发布流程](./06-crates-io-publishing)**：完整的发布准备流程
+- **[语义化版本](./07-semantic-versioning)**：版本号的正确管理
+- **[CI/CD 集成](./09-ci-cd-github-actions)**：自动化发布
 
 ## 📝 学习检查点
 
-- [ ] 理解cargo publish的核心概念
-- [ ] 能够在实际项目中应用cargo publish
+- [ ] 掌握 `cargo publish` 的常用参数
+- [ ] 理解打包机制和内容控制
+- [ ] 能够处理 Workspace 的发布顺序
+- [ ] 能够排查常见的发布错误
+
+## 🚀 下一步
+
+→ [CI/CD 集成](./09-ci-cd-github-actions)

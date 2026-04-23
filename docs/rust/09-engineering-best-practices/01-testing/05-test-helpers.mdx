@@ -5,13 +5,367 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解测试中的「测试辅助函数」相关知识。
+当多个测试需要相同的设置逻辑或共享验证逻辑时，将这些代码提取为辅助函数可以显著减少重复、提升可读性。Rust 中的测试辅助函数通常定义在 `#[cfg(test)] mod tests` 内部，不需要 `#[test]` 属性标记。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本辅助函数
+
+### 构建测试数据
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+struct User {
+    name: String,
+    email: String,
+    age: u32,
+    active: bool,
+}
+
+impl User {
+    fn new(name: &str, email: &str, age: u32) -> Self {
+        User {
+            name: name.to_string(),
+            email: email.to_string(),
+            age,
+            active: true,
+        }
+    }
+
+    fn is_adult(&self) -> bool {
+        self.age >= 18
+    }
+
+    fn deactivate(&mut self) {
+        self.active = false;
+    }
+
+    fn display_name(&self) -> String {
+        format!("{} <{}>", self.name, self.email)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 辅助函数：创建一个标准的测试用户
+    fn create_test_user() -> User {
+        User::new("张三", "zhangsan@example.com", 25)
+    }
+
+    // 辅助函数：创建一个未成年用户
+    fn create_minor_user() -> User {
+        User::new("小明", "xiaoming@example.com", 15)
+    }
+
+    // 辅助函数：创建一批测试用户
+    fn create_user_list() -> Vec<User> {
+        vec![
+            User::new("张三", "zhangsan@example.com", 25),
+            User::new("李四", "lisi@example.com", 30),
+            User::new("小明", "xiaoming@example.com", 15),
+        ]
+    }
+
+    #[test]
+    fn test_is_adult() {
+        let adult = create_test_user();
+        assert!(adult.is_adult());
+
+        let minor = create_minor_user();
+        assert!(!minor.is_adult());
+    }
+
+    #[test]
+    fn test_deactivate() {
+        let mut user = create_test_user();
+        assert!(user.active);
+        user.deactivate();
+        assert!(!user.active);
+    }
+
+    #[test]
+    fn test_display_name() {
+        let user = create_test_user();
+        assert_eq!(user.display_name(), "张三 <zhangsan@example.com>");
+    }
+
+    #[test]
+    fn test_filter_adults() {
+        let users = create_user_list();
+        let adults: Vec<_> = users.iter().filter(|u| u.is_adult()).collect();
+        assert_eq!(adults.len(), 2);
+    }
+}
+```
+
+## 🔄 自定义断言辅助函数
+
+### 封装复杂的验证逻辑
+
+当多个测试需要验证同一组条件时，将验证逻辑提取为辅助函数：
+
+```rust
+#[derive(Debug)]
+struct HttpResponse {
+    status_code: u16,
+    body: String,
+    headers: Vec<(String, String)>,
+}
+
+impl HttpResponse {
+    fn new(status_code: u16, body: &str) -> Self {
+        HttpResponse {
+            status_code,
+            body: body.to_string(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn with_header(mut self, key: &str, value: &str) -> Self {
+        self.headers.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    fn is_success(&self) -> bool {
+        (200..300).contains(&self.status_code)
+    }
+
+    fn get_header(&self, key: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 验证响应是否为成功的 JSON 响应
+    fn assert_json_success(response: &HttpResponse) {
+        assert!(
+            response.is_success(),
+            "期望成功响应，实际状态码为 {}",
+            response.status_code
+        );
+        assert_eq!(
+            response.get_header("Content-Type"),
+            Some("application/json"),
+            "期望 Content-Type 为 application/json"
+        );
+        assert!(
+            !response.body.is_empty(),
+            "响应体不应为空"
+        );
+    }
+
+    /// 验证响应是否为错误响应
+    fn assert_error_response(response: &HttpResponse, expected_status: u16) {
+        assert_eq!(
+            response.status_code, expected_status,
+            "期望状态码 {}，实际为 {}",
+            expected_status, response.status_code
+        );
+        assert!(
+            !response.is_success(),
+            "错误响应不应被判定为成功"
+        );
+    }
+
+    #[test]
+    fn test_successful_api_response() {
+        let response = HttpResponse::new(200, r#"{"id": 1, "name": "test"}"#)
+            .with_header("Content-Type", "application/json");
+        assert_json_success(&response);
+    }
+
+    #[test]
+    fn test_created_response() {
+        let response = HttpResponse::new(201, r#"{"id": 2}"#)
+            .with_header("Content-Type", "application/json");
+        assert_json_success(&response);
+    }
+
+    #[test]
+    fn test_not_found_response() {
+        let response = HttpResponse::new(404, "Not Found");
+        assert_error_response(&response, 404);
+    }
+
+    #[test]
+    fn test_server_error_response() {
+        let response = HttpResponse::new(500, "Internal Server Error");
+        assert_error_response(&response, 500);
+    }
+}
+```
+
+## 🏗️ 使用 Builder 模式构建测试数据
+
+对于字段较多的结构体，Builder 模式让测试数据构建更灵活：
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+struct Order {
+    id: u64,
+    customer_name: String,
+    items: Vec<OrderItem>,
+    discount_percent: f64,
+    shipping_fee: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct OrderItem {
+    name: String,
+    price: f64,
+    quantity: u32,
+}
+
+impl Order {
+    fn subtotal(&self) -> f64 {
+        self.items
+            .iter()
+            .map(|item| item.price * item.quantity as f64)
+            .sum()
+    }
+
+    fn total(&self) -> f64 {
+        let subtotal = self.subtotal();
+        let discount = subtotal * self.discount_percent / 100.0;
+        subtotal - discount + self.shipping_fee
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 测试专用的 Builder
+    struct OrderBuilder {
+        id: u64,
+        customer_name: String,
+        items: Vec<OrderItem>,
+        discount_percent: f64,
+        shipping_fee: f64,
+    }
+
+    impl OrderBuilder {
+        fn new() -> Self {
+            OrderBuilder {
+                id: 1,
+                customer_name: "测试客户".to_string(),
+                items: Vec::new(),
+                discount_percent: 0.0,
+                shipping_fee: 0.0,
+            }
+        }
+
+        fn with_id(mut self, id: u64) -> Self {
+            self.id = id;
+            self
+        }
+
+        fn with_customer(mut self, name: &str) -> Self {
+            self.customer_name = name.to_string();
+            self
+        }
+
+        fn with_item(mut self, name: &str, price: f64, quantity: u32) -> Self {
+            self.items.push(OrderItem {
+                name: name.to_string(),
+                price,
+                quantity,
+            });
+            self
+        }
+
+        fn with_discount(mut self, percent: f64) -> Self {
+            self.discount_percent = percent;
+            self
+        }
+
+        fn with_shipping(mut self, fee: f64) -> Self {
+            self.shipping_fee = fee;
+            self
+        }
+
+        fn build(self) -> Order {
+            Order {
+                id: self.id,
+                customer_name: self.customer_name,
+                items: self.items,
+                discount_percent: self.discount_percent,
+                shipping_fee: self.shipping_fee,
+            }
+        }
+    }
+
+    #[test]
+    fn test_order_with_no_items() {
+        let order = OrderBuilder::new().build();
+        assert_eq!(order.total(), 0.0);
+    }
+
+    #[test]
+    fn test_order_subtotal() {
+        let order = OrderBuilder::new()
+            .with_item("苹果", 5.0, 3)
+            .with_item("香蕉", 3.0, 2)
+            .build();
+        assert_eq!(order.subtotal(), 21.0);
+    }
+
+    #[test]
+    fn test_order_with_discount() {
+        let order = OrderBuilder::new()
+            .with_item("苹果", 10.0, 1)
+            .with_discount(20.0)
+            .build();
+        assert_eq!(order.total(), 8.0);
+    }
+
+    #[test]
+    fn test_order_with_shipping() {
+        let order = OrderBuilder::new()
+            .with_item("苹果", 10.0, 1)
+            .with_shipping(5.0)
+            .build();
+        assert_eq!(order.total(), 15.0);
+    }
+
+    #[test]
+    fn test_full_order() {
+        let order = OrderBuilder::new()
+            .with_id(42)
+            .with_customer("张三")
+            .with_item("笔记本", 5000.0, 1)
+            .with_item("鼠标", 200.0, 2)
+            .with_discount(10.0)
+            .with_shipping(15.0)
+            .build();
+
+        assert_eq!(order.id, 42);
+        assert_eq!(order.subtotal(), 5400.0);
+        // 5400 - 10% + 15 = 4875
+        assert_eq!(order.total(), 4875.0);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[测试组织](./04-test-organization)**：如何组织测试模块
+- **[测试 fixtures](./07-test-fixtures)**：更高级的测试数据管理
+- **[集成测试](./06-integration-tests)**：跨模块共享辅助函数
 
 ## 📝 学习检查点
 
-- [ ] 理解测试辅助函数的核心概念
-- [ ] 能够在实际项目中应用测试辅助函数
+- [ ] 能够提取通用的测试数据构建函数
+- [ ] 掌握自定义断言辅助函数的写法
+- [ ] 理解 Builder 模式在测试中的应用
+- [ ] 能够识别并消除测试代码中的重复逻辑
+
+## 🚀 下一步
+
+→ [集成测试](./06-integration-tests)
