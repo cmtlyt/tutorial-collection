@@ -5,13 +5,472 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解高级类型系统中的「Typestate 设计」相关知识。
+**Typestate 设计** 是一种系统化的设计方法论，将对象的**行为约束**编码到类型系统中，使得违反约束的操作在编译期就被拒绝。它是编译期状态机和 Builder 模式背后的理论基础，在协议实现、资源管理、API 设计等领域有广泛应用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+Typestate 的核心原则：
+- **状态即类型**：每个合法状态对应一个独立的类型
+- **转换即消耗**：状态转换通过消耗旧值、返回新值实现
+- **能力即方法**：只有特定状态才拥有特定的方法
+- **不变量即编译器**：类型系统自动强制所有不变量
+
+## 🎯 Typestate 设计方法论
+
+### 第一步：识别状态和转换
+
+设计 Typestate 的第一步是画出状态转换图：
+
+```rs
+use std::marker::PhantomData;
+
+// 文件处理管道的状态图：
+// Unopened → Opened → Reading → Closed
+//                   → Writing → Closed
+
+// 第一步：定义状态类型
+struct Unopened;
+struct Opened;
+struct Reading;
+struct Writing;
+struct FileClosed;
+
+// 第二步：定义核心结构体
+struct FileHandle<State> {
+    path: String,
+    content: Vec<u8>,
+    _state: PhantomData<State>,
+}
+
+// 第三步：为每个状态实现对应的能力
+
+// Unopened 状态：只能打开
+impl FileHandle<Unopened> {
+    fn create(path: &str) -> Self {
+        println!("📄 创建文件句柄: {}", path);
+        FileHandle {
+            path: path.to_string(),
+            content: Vec::new(),
+            _state: PhantomData,
+        }
+    }
+
+    fn open(self) -> FileHandle<Opened> {
+        println!("📂 打开文件: {}", self.path);
+        FileHandle {
+            path: self.path,
+            content: b"existing file content".to_vec(),
+            _state: PhantomData,
+        }
+    }
+}
+
+// Opened 状态：可以选择读模式或写模式
+impl FileHandle<Opened> {
+    fn start_reading(self) -> FileHandle<Reading> {
+        println!("👁️ 进入读取模式");
+        FileHandle {
+            path: self.path,
+            content: self.content,
+            _state: PhantomData,
+        }
+    }
+
+    fn start_writing(self) -> FileHandle<Writing> {
+        println!("✏️ 进入写入模式");
+        FileHandle {
+            path: self.path,
+            content: Vec::new(),
+            _state: PhantomData,
+        }
+    }
+}
+
+// Reading 状态：只能读取和关闭
+impl FileHandle<Reading> {
+    fn read(&self) -> &[u8] {
+        println!("📖 读取内容: {} 字节", self.content.len());
+        &self.content
+    }
+
+    fn read_as_string(&self) -> String {
+        String::from_utf8_lossy(&self.content).to_string()
+    }
+
+    fn close(self) -> FileHandle<FileClosed> {
+        println!("🔒 关闭文件（读取模式）");
+        FileHandle {
+            path: self.path,
+            content: self.content,
+            _state: PhantomData,
+        }
+    }
+}
+
+// Writing 状态：只能写入和关闭
+impl FileHandle<Writing> {
+    fn write(mut self, data: &[u8]) -> Self {
+        println!("📝 写入 {} 字节", data.len());
+        self.content.extend_from_slice(data);
+        self
+    }
+
+    fn write_str(self, text: &str) -> Self {
+        self.write(text.as_bytes())
+    }
+
+    fn close(self) -> FileHandle<FileClosed> {
+        println!("🔒 关闭文件（写入模式，共 {} 字节）", self.content.len());
+        FileHandle {
+            path: self.path,
+            content: self.content,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl FileHandle<FileClosed> {
+    fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+fn main() {
+    println!("=== 读取流程 ===");
+    let file = FileHandle::create("/tmp/data.txt");
+    let opened = file.open();
+    let reading = opened.start_reading();
+    let content = reading.read_as_string();
+    println!("内容: {}", content);
+    let closed = reading.close();
+    println!("已关闭: {}\n", closed.path());
+
+    println!("=== 写入流程 ===");
+    let file = FileHandle::create("/tmp/output.txt");
+    let opened = file.open();
+    let writing = opened.start_writing();
+    let writing = writing.write_str("Hello, ");
+    let writing = writing.write_str("Typestate!");
+    let closed = writing.close();
+    println!("已关闭: {}", closed.path());
+
+    // 以下代码无法编译：
+    // file.read();           // Unopened 没有 read()
+    // opened.read();         // Opened 没有 read()
+    // reading.write(b"x");   // Reading 没有 write()
+    // writing.read();        // Writing 没有 read()
+}
+```
+
+## 🔧 使用 Sealed Trait 限制状态
+
+### 防止外部代码创建非法状态
+
+```rs
+use std::marker::PhantomData;
+
+// 使用 sealed trait 模式限制哪些类型可以作为状态
+mod state {
+    // 密封 trait：外部无法实现
+    pub trait Sealed {}
+
+    pub struct Idle;
+    pub struct Processing;
+    pub struct Complete;
+    pub struct Failed;
+
+    impl Sealed for Idle {}
+    impl Sealed for Processing {}
+    impl Sealed for Complete {}
+    impl Sealed for Failed {}
+
+    // 公开的 trait，但无法被外部实现（因为依赖 Sealed）
+    pub trait TaskState: Sealed {}
+    impl TaskState for Idle {}
+    impl TaskState for Processing {}
+    impl TaskState for Complete {}
+    impl TaskState for Failed {}
+}
+
+use state::*;
+
+struct Task<S: TaskState> {
+    name: String,
+    progress: f32,
+    result: Option<String>,
+    error: Option<String>,
+    _state: PhantomData<S>,
+}
+
+impl Task<Idle> {
+    fn new(name: &str) -> Self {
+        Task {
+            name: name.to_string(),
+            progress: 0.0,
+            result: None,
+            error: None,
+            _state: PhantomData,
+        }
+    }
+
+    fn start(self) -> Task<Processing> {
+        println!("▶️ 启动任务: {}", self.name);
+        Task {
+            name: self.name,
+            progress: 0.0,
+            result: None,
+            error: None,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl Task<Processing> {
+    fn update_progress(&mut self, progress: f32) {
+        self.progress = progress.clamp(0.0, 1.0);
+        println!("📊 进度: {:.0}%", self.progress * 100.0);
+    }
+
+    fn complete(self, result: String) -> Task<Complete> {
+        println!("✅ 任务完成: {}", self.name);
+        Task {
+            name: self.name,
+            progress: 1.0,
+            result: Some(result),
+            error: None,
+            _state: PhantomData,
+        }
+    }
+
+    fn fail(self, error: String) -> Task<Failed> {
+        println!("❌ 任务失败: {} - {}", self.name, error);
+        Task {
+            name: self.name,
+            progress: self.progress,
+            result: None,
+            error: Some(error),
+            _state: PhantomData,
+        }
+    }
+}
+
+impl Task<Complete> {
+    fn result(&self) -> &str {
+        self.result.as_deref().unwrap()
+    }
+}
+
+impl Task<Failed> {
+    fn error(&self) -> &str {
+        self.error.as_deref().unwrap()
+    }
+
+    fn retry(self) -> Task<Processing> {
+        println!("🔄 重试任务: {}", self.name);
+        Task {
+            name: self.name,
+            progress: 0.0,
+            result: None,
+            error: None,
+            _state: PhantomData,
+        }
+    }
+}
+
+fn main() {
+    // 成功路径
+    println!("=== 成功路径 ===");
+    let task = Task::new("数据处理");
+    let mut processing = task.start();
+    processing.update_progress(0.5);
+    processing.update_progress(0.9);
+    let completed = processing.complete("处理了 1000 条记录".to_string());
+    println!("结果: {}\n", completed.result());
+
+    // 失败 → 重试 → 成功路径
+    println!("=== 失败重试路径 ===");
+    let task = Task::new("网络请求");
+    let processing = task.start();
+    let failed = processing.fail("连接超时".to_string());
+    println!("错误: {}", failed.error());
+
+    let mut retry = failed.retry();
+    retry.update_progress(1.0);
+    let completed = retry.complete("请求成功".to_string());
+    println!("结果: {}", completed.result());
+}
+```
+
+## 📝 实际应用示例
+
+### HTTP 请求/响应管道
+
+```rs
+use std::marker::PhantomData;
+use std::collections::HashMap;
+
+// 状态定义
+struct BuildingRequest;
+struct AwaitingResponse;
+struct ResponseReceived;
+
+struct HttpPipeline<State> {
+    method: String,
+    url: String,
+    headers: HashMap<String, String>,
+    request_body: Option<String>,
+    response_status: Option<u16>,
+    response_body: Option<String>,
+    _state: PhantomData<State>,
+}
+
+impl HttpPipeline<BuildingRequest> {
+    fn get(url: &str) -> Self {
+        HttpPipeline {
+            method: "GET".to_string(),
+            url: url.to_string(),
+            headers: HashMap::new(),
+            request_body: None,
+            response_status: None,
+            response_body: None,
+            _state: PhantomData,
+        }
+    }
+
+    fn post(url: &str) -> Self {
+        HttpPipeline {
+            method: "POST".to_string(),
+            url: url.to_string(),
+            headers: HashMap::new(),
+            request_body: None,
+            response_status: None,
+            response_body: None,
+            _state: PhantomData,
+        }
+    }
+
+    fn header(mut self, key: &str, value: &str) -> Self {
+        self.headers.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    fn body(mut self, body: &str) -> Self {
+        self.request_body = Some(body.to_string());
+        self
+    }
+
+    fn send(self) -> HttpPipeline<AwaitingResponse> {
+        println!("🌐 发送 {} {}", self.method, self.url);
+        if !self.headers.is_empty() {
+            for (key, value) in &self.headers {
+                println!("  📋 {}: {}", key, value);
+            }
+        }
+        if let Some(ref body) = self.request_body {
+            println!("  📦 Body: {}", body);
+        }
+
+        HttpPipeline {
+            method: self.method,
+            url: self.url,
+            headers: self.headers,
+            request_body: self.request_body,
+            response_status: None,
+            response_body: None,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl HttpPipeline<AwaitingResponse> {
+    fn receive(self, status: u16, body: &str) -> HttpPipeline<ResponseReceived> {
+        println!("📥 收到响应: {} {}", status, if status < 400 { "OK" } else { "Error" });
+        HttpPipeline {
+            method: self.method,
+            url: self.url,
+            headers: self.headers,
+            request_body: self.request_body,
+            response_status: Some(status),
+            response_body: Some(body.to_string()),
+            _state: PhantomData,
+        }
+    }
+}
+
+impl HttpPipeline<ResponseReceived> {
+    fn status(&self) -> u16 {
+        self.response_status.unwrap()
+    }
+
+    fn body(&self) -> &str {
+        self.response_body.as_deref().unwrap()
+    }
+
+    fn is_success(&self) -> bool {
+        self.status() < 400
+    }
+
+    fn json<F, T>(&self, parser: F) -> Result<T, String>
+    where
+        F: FnOnce(&str) -> Result<T, String>,
+    {
+        if self.is_success() {
+            parser(self.body())
+        } else {
+            Err(format!("HTTP 错误: {}", self.status()))
+        }
+    }
+}
+
+fn main() {
+    // GET 请求流程
+    println!("=== GET 请求 ===");
+    let response = HttpPipeline::get("https://api.example.com/users")
+        .header("Accept", "application/json")
+        .header("Authorization", "Bearer token")
+        .send()
+        .receive(200, r#"[{"name": "Alice"}, {"name": "Bob"}]"#);
+
+    println!("状态: {}", response.status());
+    println!("成功: {}", response.is_success());
+    println!("响应: {}\n", response.body());
+
+    // POST 请求流程
+    println!("=== POST 请求 ===");
+    let response = HttpPipeline::post("https://api.example.com/users")
+        .header("Content-Type", "application/json")
+        .body(r#"{"name": "Charlie", "email": "charlie@example.com"}"#)
+        .send()
+        .receive(201, r#"{"id": 3, "name": "Charlie"}"#);
+
+    let parsed = response.json(|body| {
+        if body.contains("Charlie") {
+            Ok("用户 Charlie 创建成功".to_string())
+        } else {
+            Err("解析失败".to_string())
+        }
+    });
+    println!("解析结果: {:?}", parsed);
+
+    // 以下代码编译失败：
+    // HttpPipeline::get("/api").send().status();  // AwaitingResponse 没有 status()
+    // HttpPipeline::get("/api").body();            // BuildingRequest 没有 body() 来读取响应
+}
+```
+
+## 🔗 相关概念
+
+- **编译期状态机**：Typestate 的具体实现技术
+- **Builder 模式**：Typestate 的一种特殊应用
+- **Sealed Trait**：限制状态类型的扩展
+- **PhantomData**：在结构体中携带类型状态信息
+- **所有权与移动语义**：状态转换依赖于 Rust 的所有权系统
 
 ## 📝 学习检查点
 
-- [ ] 理解Typestate 设计的核心概念
-- [ ] 能够在实际项目中应用Typestate 设计
+- [ ] 理解 Typestate 设计的核心原则
+- [ ] 掌握使用 sealed trait 限制状态扩展
+- [ ] 能够识别适合使用 Typestate 的场景
+- [ ] 能够设计和实现完整的 Typestate API
+
+## 🚀 下一步
+
+→ [Unsafe Rust](../02-unsafe-rust/01-unsafe-rust-overview)

@@ -5,13 +5,281 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「cargo bench 基准测试」相关知识。
+**`cargo bench`** 是 Rust 内置的基准测试工具。它使用 nightly Rust 提供的 `test::Bencher` API 来测量代码的执行时间。虽然在稳定版 Rust 中 `cargo bench` 的内置 bencher 不可用（需要 nightly），但它是理解 Rust 基准测试体系的起点。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+在实际项目中，大多数开发者会选择 `criterion` 作为基准测试框架（稳定版可用，功能更强），但了解内置的 `cargo bench` 仍然很有价值。
+
+## 🎯 内置基准测试（Nightly）
+
+### 基本结构
+
+```rs
+// 需要 nightly Rust
+// 在 lib.rs 或 main.rs 顶部添加
+#![feature(test)]
+
+extern crate test;
+
+fn fibonacci(n: u64) -> u64 {
+    match n {
+        0 => 0,
+        1 => 1,
+        _ => fibonacci(n - 1) + fibonacci(n - 2),
+    }
+}
+
+fn fibonacci_iterative(n: u64) -> u64 {
+    if n <= 1 {
+        return n;
+    }
+    let mut prev = 0u64;
+    let mut curr = 1u64;
+    for _ in 2..=n {
+        let next = prev + curr;
+        prev = curr;
+        curr = next;
+    }
+    curr
+}
+
+#[cfg(test)]
+mod benchmarks {
+    use super::*;
+    use test::Bencher;
+
+    #[bench]
+    fn bench_fibonacci_recursive_10(b: &mut Bencher) {
+        b.iter(|| fibonacci(test::black_box(10)));
+    }
+
+    #[bench]
+    fn bench_fibonacci_recursive_20(b: &mut Bencher) {
+        b.iter(|| fibonacci(test::black_box(20)));
+    }
+
+    #[bench]
+    fn bench_fibonacci_iterative_10(b: &mut Bencher) {
+        b.iter(|| fibonacci_iterative(test::black_box(10)));
+    }
+
+    #[bench]
+    fn bench_fibonacci_iterative_20(b: &mut Bencher) {
+        b.iter(|| fibonacci_iterative(test::black_box(20)));
+    }
+}
+
+fn main() {
+    println!("fibonacci(10) = {}", fibonacci(10));
+    println!("fibonacci(20) = {}", fibonacci(20));
+    println!("fibonacci_iterative(10) = {}", fibonacci_iterative(10));
+    println!("fibonacci_iterative(20) = {}", fibonacci_iterative(20));
+    println!("\n运行 `cargo +nightly bench` 执行基准测试");
+}
+```
+
+### black_box 的作用
+
+`test::black_box` 防止编译器优化掉基准测试中的计算：
+
+```rs
+#![feature(test)]
+extern crate test;
+
+fn compute_sum(data: &[i32]) -> i64 {
+    data.iter().map(|&x| x as i64).sum()
+}
+
+fn compute_sum_manual(data: &[i32]) -> i64 {
+    let mut total: i64 = 0;
+    for &item in data {
+        total += item as i64;
+    }
+    total
+}
+
+#[cfg(test)]
+mod benchmarks {
+    use super::*;
+    use test::Bencher;
+
+    fn create_test_data(size: usize) -> Vec<i32> {
+        (0..size as i32).collect()
+    }
+
+    #[bench]
+    fn bench_sum_iterator_1000(b: &mut Bencher) {
+        let data = create_test_data(1000);
+        b.iter(|| {
+            // black_box 防止编译器：
+            // 1. 预计算常量结果
+            // 2. 消除"无副作用"的计算
+            let result = compute_sum(test::black_box(&data));
+            test::black_box(result);
+        });
+    }
+
+    #[bench]
+    fn bench_sum_manual_1000(b: &mut Bencher) {
+        let data = create_test_data(1000);
+        b.iter(|| {
+            let result = compute_sum_manual(test::black_box(&data));
+            test::black_box(result);
+        });
+    }
+}
+
+fn main() {
+    let data: Vec<i32> = (0..1000).collect();
+    println!("iterator sum: {}", compute_sum(&data));
+    println!("manual sum: {}", compute_sum_manual(&data));
+}
+```
+
+## 🔧 在稳定版 Rust 中使用基准测试
+
+### 使用 bencher crate（稳定版替代）
+
+在 `Cargo.toml` 中配置：
+
+```toml
+[dev-dependencies]
+bencher = "0.1"
+
+[[bench]]
+name = "my_benchmarks"
+harness = false
+```
+
+创建 `benches/my_benchmarks.rs`：
+
+```rs
+use bencher::{benchmark_group, benchmark_main, Bencher};
+
+fn sort_vec_std(b: &mut Bencher) {
+    b.iter(|| {
+        let mut data: Vec<i32> = (0..1000).rev().collect();
+        data.sort();
+        data
+    });
+}
+
+fn sort_vec_unstable(b: &mut Bencher) {
+    b.iter(|| {
+        let mut data: Vec<i32> = (0..1000).rev().collect();
+        data.sort_unstable();
+        data
+    });
+}
+
+fn search_linear(b: &mut Bencher) {
+    let data: Vec<i32> = (0..10000).collect();
+    b.iter(|| {
+        data.iter().find(|&&x| x == 9999)
+    });
+}
+
+fn search_binary(b: &mut Bencher) {
+    let data: Vec<i32> = (0..10000).collect();
+    b.iter(|| {
+        data.binary_search(&9999)
+    });
+}
+
+benchmark_group!(sorting, sort_vec_std, sort_vec_unstable);
+benchmark_group!(searching, search_linear, search_binary);
+benchmark_main!(sorting, searching);
+```
+
+运行：
+
+```bash
+cargo bench
+```
+
+## 📝 实际应用示例
+
+### 比较不同数据结构的性能
+
+```rs
+use std::collections::{HashMap, BTreeMap};
+
+fn hashmap_insert(count: usize) -> HashMap<String, i32> {
+    let mut map = HashMap::new();
+    for i in 0..count {
+        map.insert(format!("key_{}", i), i as i32);
+    }
+    map
+}
+
+fn btreemap_insert(count: usize) -> BTreeMap<String, i32> {
+    let mut map = BTreeMap::new();
+    for i in 0..count {
+        map.insert(format!("key_{}", i), i as i32);
+    }
+    map
+}
+
+fn vec_search(data: &[(String, i32)], key: &str) -> Option<i32> {
+    data.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+}
+
+fn main() {
+    let count = 1000;
+
+    // HashMap
+    let start = std::time::Instant::now();
+    let hmap = hashmap_insert(count);
+    let hmap_insert_time = start.elapsed();
+
+    let start = std::time::Instant::now();
+    for i in 0..count {
+        let _ = hmap.get(&format!("key_{}", i));
+    }
+    let hmap_lookup_time = start.elapsed();
+
+    // BTreeMap
+    let start = std::time::Instant::now();
+    let bmap = btreemap_insert(count);
+    let bmap_insert_time = start.elapsed();
+
+    let start = std::time::Instant::now();
+    for i in 0..count {
+        let _ = bmap.get(&format!("key_{}", i));
+    }
+    let bmap_lookup_time = start.elapsed();
+
+    // Vec 线性搜索
+    let vec_data: Vec<(String, i32)> = (0..count)
+        .map(|i| (format!("key_{}", i), i as i32))
+        .collect();
+
+    let start = std::time::Instant::now();
+    for i in 0..count {
+        let _ = vec_search(&vec_data, &format!("key_{}", i));
+    }
+    let vec_lookup_time = start.elapsed();
+
+    println!("=== {} 个元素的性能对比 ===", count);
+    println!("HashMap  插入: {:?}, 查找: {:?}", hmap_insert_time, hmap_lookup_time);
+    println!("BTreeMap 插入: {:?}, 查找: {:?}", bmap_insert_time, bmap_lookup_time);
+    println!("Vec      查找: {:?}", vec_lookup_time);
+    println!("\n注意: 更精确的基准测试请使用 criterion（下一节）");
+}
+```
+
+## 🔗 相关概念
+
+- **criterion 统计基准测试**：更强大的基准测试框架，推荐在稳定版中使用
+- **flamegraph 火焰图**：可视化性能瓶颈
+- **编译器优化级别**：基准测试通常在 release 模式下运行
 
 ## 📝 学习检查点
 
-- [ ] 理解cargo bench 基准测试的核心概念
-- [ ] 能够在实际项目中应用cargo bench 基准测试
+- [ ] 理解 `cargo bench` 的基本工作原理
+- [ ] 知道 `black_box` 的作用及为什么需要它
+- [ ] 能够使用 `bencher` crate 在稳定版 Rust 中编写基准测试
+- [ ] 理解基准测试的注意事项（预热、统计意义等）
+
+## 🚀 下一步
+
+→ [criterion 统计基准测试](./03-criterion-benchmarking)

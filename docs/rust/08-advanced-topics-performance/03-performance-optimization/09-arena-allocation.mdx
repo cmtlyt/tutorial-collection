@@ -5,13 +5,331 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「竞技场分配」相关知识。
+**竞技场分配（Arena Allocation）** 是一种内存管理策略：从一大块预分配的内存中快速分配小对象，所有对象在竞技场销毁时一起释放。这种方式避免了逐个对象的 `malloc/free` 开销，特别适合生命周期相同的大量小对象。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+竞技场分配的优势：
+- **分配极快**：只需移动指针，O(1) 时间复杂度
+- **无碎片化**：连续分配，内存布局紧凑
+- **批量释放**：整个竞技场一次性释放
+- **缓存友好**：对象在内存中紧密排列
+
+常见应用场景：
+- 编译器的 AST 节点分配
+- 游戏引擎的帧级临时数据
+- 解析器的中间数据结构
+
+## 🎯 简单的竞技场实现
+
+### 基于 Vec 的类型化竞技场
+
+```rs
+struct TypedArena<T> {
+    chunks: Vec<Vec<T>>,
+    chunk_size: usize,
+}
+
+impl<T> TypedArena<T> {
+    fn new(chunk_size: usize) -> Self {
+        TypedArena {
+            chunks: vec![Vec::with_capacity(chunk_size)],
+            chunk_size,
+        }
+    }
+
+    fn alloc(&mut self, value: T) -> &mut T {
+        // 检查当前 chunk 是否有空间
+        let needs_new_chunk = {
+            let current = self.chunks.last().unwrap();
+            current.len() >= current.capacity()
+        };
+
+        if needs_new_chunk {
+            self.chunks.push(Vec::with_capacity(self.chunk_size));
+        }
+
+        let current = self.chunks.last_mut().unwrap();
+        current.push(value);
+        current.last_mut().unwrap()
+    }
+
+    fn allocated_count(&self) -> usize {
+        self.chunks.iter().map(|c| c.len()).sum()
+    }
+
+    fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+}
+
+// 使用示例：AST 节点
+#[derive(Debug)]
+enum Expr {
+    Number(f64),
+    Add(usize, usize),      // 索引到 arena
+    Multiply(usize, usize),  // 索引到 arena
+    Negate(usize),
+}
+
+struct ExprArena {
+    nodes: Vec<Expr>,
+}
+
+impl ExprArena {
+    fn new() -> Self {
+        ExprArena { nodes: Vec::with_capacity(64) }
+    }
+
+    fn alloc(&mut self, expr: Expr) -> usize {
+        let index = self.nodes.len();
+        self.nodes.push(expr);
+        index
+    }
+
+    fn get(&self, index: usize) -> &Expr {
+        &self.nodes[index]
+    }
+
+    fn evaluate(&self, index: usize) -> f64 {
+        match self.get(index) {
+            Expr::Number(n) => *n,
+            Expr::Add(left, right) => self.evaluate(*left) + self.evaluate(*right),
+            Expr::Multiply(left, right) => self.evaluate(*left) * self.evaluate(*right),
+            Expr::Negate(inner) => -self.evaluate(*inner),
+        }
+    }
+
+    fn to_string(&self, index: usize) -> String {
+        match self.get(index) {
+            Expr::Number(n) => format!("{}", n),
+            Expr::Add(left, right) => {
+                format!("({} + {})", self.to_string(*left), self.to_string(*right))
+            }
+            Expr::Multiply(left, right) => {
+                format!("({} * {})", self.to_string(*left), self.to_string(*right))
+            }
+            Expr::Negate(inner) => {
+                format!("(-{})", self.to_string(*inner))
+            }
+        }
+    }
+}
+
+fn main() {
+    let mut arena = ExprArena::new();
+
+    // 构建表达式: (3 + 4) * (-(2 + 5))
+    let three = arena.alloc(Expr::Number(3.0));
+    let four = arena.alloc(Expr::Number(4.0));
+    let sum1 = arena.alloc(Expr::Add(three, four));
+
+    let two = arena.alloc(Expr::Number(2.0));
+    let five = arena.alloc(Expr::Number(5.0));
+    let sum2 = arena.alloc(Expr::Add(two, five));
+    let neg = arena.alloc(Expr::Negate(sum2));
+
+    let result = arena.alloc(Expr::Multiply(sum1, neg));
+
+    println!("表达式: {}", arena.to_string(result));
+    println!("结果:   {}", arena.evaluate(result));
+    println!("节点数: {}", arena.nodes.len());
+}
+```
+
+## 🔧 Bump 分配器
+
+### 基于字节的通用竞技场
+
+```rs
+use std::cell::Cell;
+
+struct BumpArena {
+    storage: Vec<u8>,
+    offset: Cell<usize>,
+}
+
+impl BumpArena {
+    fn new(capacity: usize) -> Self {
+        BumpArena {
+            storage: vec![0u8; capacity],
+            offset: Cell::new(0),
+        }
+    }
+
+    fn alloc<T: Copy>(&self, value: T) -> Option<&mut T> {
+        let align = std::mem::align_of::<T>();
+        let size = std::mem::size_of::<T>();
+
+        let current = self.offset.get();
+        // 对齐
+        let aligned = (current + align - 1) & !(align - 1);
+        let new_offset = aligned + size;
+
+        if new_offset > self.storage.len() {
+            return None; // 空间不足
+        }
+
+        self.offset.set(new_offset);
+
+        unsafe {
+            let ptr = self.storage.as_ptr().add(aligned) as *mut T;
+            ptr.write(value);
+            Some(&mut *ptr)
+        }
+    }
+
+    fn used(&self) -> usize {
+        self.offset.get()
+    }
+
+    fn remaining(&self) -> usize {
+        self.storage.len() - self.offset.get()
+    }
+
+    fn reset(&self) {
+        self.offset.set(0);
+    }
+}
+
+fn main() {
+    let arena = BumpArena::new(1024);
+
+    // 分配不同类型的数据
+    let x = arena.alloc(42i32).unwrap();
+    let y = arena.alloc(3.14f64).unwrap();
+    let z = arena.alloc(true).unwrap();
+
+    println!("x = {}, y = {}, z = {}", x, y, z);
+    println!("已用: {} 字节, 剩余: {} 字节", arena.used(), arena.remaining());
+
+    // 修改值
+    *x = 100;
+    println!("修改后 x = {}", x);
+
+    // 分配数组（Copy 类型的连续分配）
+    let point = arena.alloc([1.0f64, 2.0, 3.0]).unwrap();
+    println!("point = {:?}", point);
+    println!("已用: {} 字节", arena.used());
+
+    // 重置竞技场（所有分配一次性失效）
+    arena.reset();
+    println!("重置后已用: {} 字节", arena.used());
+}
+```
+
+## 📝 实际应用示例
+
+### 使用 bumpalo crate
+
+在实际项目中，推荐使用成熟的 `bumpalo` crate：
+
+```toml
+[dependencies]
+bumpalo = "3"
+```
+
+```rs
+use bumpalo::Bump;
+
+fn parse_csv_line<'a>(bump: &'a Bump, line: &str) -> Vec<&'a str> {
+    let mut fields = Vec::new();
+    for field in line.split(',') {
+        // 在竞技场中分配字符串
+        let trimmed = field.trim();
+        let allocated = bump.alloc_str(trimmed);
+        fields.push(&*allocated);
+    }
+    fields
+}
+
+fn main() {
+    let bump = Bump::new();
+
+    // 在竞技场中分配各种数据
+    let x = bump.alloc(42);
+    let name = bump.alloc_str("Alice");
+    let numbers = bump.alloc_slice_copy(&[1, 2, 3, 4, 5]);
+
+    println!("x = {}", x);
+    println!("name = {}", name);
+    println!("numbers = {:?}", numbers);
+
+    // CSV 解析示例
+    let csv_data = vec![
+        "Alice, 30, engineer",
+        "Bob, 25, designer",
+        "Charlie, 35, manager",
+    ];
+
+    println!("\nCSV 解析:");
+    for line in &csv_data {
+        let fields = parse_csv_line(&bump, line);
+        println!("  {:?}", fields);
+    }
+
+    println!("\n竞技场已分配: {} 字节", bump.allocated_bytes());
+    // bump 在此处 drop，所有分配的内存一次性释放
+}
+```
+
+### 性能对比
+
+```rs
+use std::time::Instant;
+
+fn allocate_with_vec(count: usize) -> Vec<Box<[f64; 4]>> {
+    let mut items = Vec::with_capacity(count);
+    for i in 0..count {
+        let value = [i as f64, (i * 2) as f64, (i * 3) as f64, (i * 4) as f64];
+        items.push(Box::new(value));
+    }
+    items
+}
+
+fn allocate_with_arena(count: usize) -> Vec<[f64; 4]> {
+    let mut items = Vec::with_capacity(count);
+    for i in 0..count {
+        items.push([i as f64, (i * 2) as f64, (i * 3) as f64, (i * 4) as f64]);
+    }
+    items
+}
+
+fn main() {
+    let count = 100_000;
+
+    // Box 分配（每个元素单独堆分配）
+    let start = Instant::now();
+    let result1 = allocate_with_vec(count);
+    let t1 = start.elapsed();
+
+    // Vec 连续分配（类似竞技场效果）
+    let start = Instant::now();
+    let result2 = allocate_with_arena(count);
+    let t2 = start.elapsed();
+
+    println!("Box 分配:  {:?} ({}个元素)", t1, result1.len());
+    println!("连续分配:  {:?} ({}个元素)", t2, result2.len());
+    println!("加速比:    {:.2}x", t1.as_nanos() as f64 / t2.as_nanos() as f64);
+    println!("\n竞技场模式的核心优势:");
+    println!("  1. 分配速度快（只移动指针）");
+    println!("  2. 内存连续（缓存友好）");
+    println!("  3. 批量释放（无逐个 free 开销）");
+}
+```
+
+## 🔗 相关概念
+
+- **减少堆分配**：竞技场是减少堆分配的高级策略
+- **对象池**：复用特定对象，竞技场则是通用内存区域
+- **Bump 分配器**：最简单的竞技场实现方式
+- **编译器设计**：竞技场分配在编译器中广泛使用
 
 ## 📝 学习检查点
 
-- [ ] 理解竞技场分配的核心概念
-- [ ] 能够在实际项目中应用竞技场分配
+- [ ] 理解竞技场分配的核心思想和优势
+- [ ] 掌握基于索引的类型化竞技场实现
+- [ ] 了解 Bump 分配器的工作原理
+- [ ] 知道何时选择竞技场分配 vs 对象池 vs 普通分配
+
+## 🚀 下一步
+
+→ [编译器优化级别](./10-compiler-optimization-levels)

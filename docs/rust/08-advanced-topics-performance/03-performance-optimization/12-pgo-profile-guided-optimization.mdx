@@ -5,13 +5,228 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「PGO（配置文件引导优化）」相关知识。
+**PGO（Profile-Guided Optimization，配置文件引导优化）** 是一种利用程序运行时的性能数据来指导编译器优化决策的技术。传统编译器只能基于静态代码分析做出优化选择，而 PGO 让编译器知道哪些代码路径是热点、哪些分支更常被执行，从而做出更精准的优化。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+PGO 的工作流程分三步：
+1. **Instrumentation（插桩编译）**：编译一个带有性能采集探针的版本
+2. **Profiling（运行采集）**：运行插桩版本，收集运行时性能数据
+3. **Optimization（优化编译）**：使用采集的数据重新编译，指导优化
+
+## 🎯 PGO 的工作原理
+
+### 三步流程
+
+```bash
+# 第一步：插桩编译
+# 生成带有性能采集探针的二进制
+RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" \
+    cargo build --release --target=x86_64-unknown-linux-gnu
+
+# 第二步：运行采集
+# 使用真实或代表性的工作负载运行程序
+./target/x86_64-unknown-linux-gnu/release/my_app --typical-workload
+# 可以多次运行不同的工作负载场景
+./target/x86_64-unknown-linux-gnu/release/my_app --another-workload
+
+# 合并性能数据
+llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data/
+
+# 第三步：使用性能数据重新编译
+RUSTFLAGS="-Cprofile-use=/tmp/pgo-data/merged.profdata -Cllvm-args=-pgo-warn-missing-function" \
+    cargo build --release --target=x86_64-unknown-linux-gnu
+```
+
+### PGO 优化了什么
+
+```rs
+fn main() {
+    println!("PGO 能优化的关键领域:");
+    println!();
+    println!("1. 分支预测:");
+    println!("   编译器知道 if/else 哪个分支更常执行，");
+    println!("   将热路径放在更有利于 CPU 分支预测的位置");
+    println!();
+    println!("2. 函数内联:");
+    println!("   知道哪些函数被频繁调用，优先内联热函数");
+    println!();
+    println!("3. 代码布局:");
+    println!("   将热代码放在一起，提高指令缓存命中率");
+    println!();
+    println!("4. 循环优化:");
+    println!("   知道循环的实际迭代次数，决定是否展开");
+    println!();
+    println!("5. 虚函数/间接调用:");
+    println!("   知道间接调用最常跳转到哪个目标，可以特化");
+    println!();
+    println!("典型提升: 10%-30% 的运行时性能提升");
+}
+```
+
+## 🔧 完整的 PGO 脚本
+
+### 自动化脚本
+
+```bash
+#!/bin/bash
+# pgo-build.sh — 自动化 PGO 构建脚本
+
+set -euo pipefail
+
+PROJECT_NAME="my_app"
+TARGET="x86_64-unknown-linux-gnu"
+PGO_DATA_DIR="/tmp/pgo-data-${PROJECT_NAME}"
+
+echo "=== PGO 构建流程 ==="
+
+# 清理旧数据
+rm -rf "${PGO_DATA_DIR}"
+mkdir -p "${PGO_DATA_DIR}"
+
+# 第一步：插桩编译
+echo "[1/3] 插桩编译..."
+RUSTFLAGS="-Cprofile-generate=${PGO_DATA_DIR}" \
+    cargo build --release --target="${TARGET}"
+
+# 第二步：运行采集
+echo "[2/3] 运行性能采集..."
+# 替换为你的实际工作负载
+"./target/${TARGET}/release/${PROJECT_NAME}" --benchmark-mode || true
+
+# 合并数据
+echo "合并性能数据..."
+llvm-profdata merge -o "${PGO_DATA_DIR}/merged.profdata" "${PGO_DATA_DIR}/"
+
+# 第三步：优化编译
+echo "[3/3] PGO 优化编译..."
+RUSTFLAGS="-Cprofile-use=${PGO_DATA_DIR}/merged.profdata" \
+    cargo build --release --target="${TARGET}"
+
+echo "=== PGO 构建完成 ==="
+echo "输出: ./target/${TARGET}/release/${PROJECT_NAME}"
+```
+
+### 可以被 PGO 优化的示例程序
+
+```rs
+use std::collections::HashMap;
+use std::time::Instant;
+
+// 模拟一个有多种代码路径的程序
+fn process_request(request_type: &str, data: &[u8]) -> String {
+    match request_type {
+        // 假设 80% 的请求是 "query" 类型
+        // PGO 会让编译器优先处理这个分支
+        "query" => {
+            let sum: u64 = data.iter().map(|&b| b as u64).sum();
+            format!("查询结果: {}", sum)
+        }
+        // 15% 是 "update" 类型
+        "update" => {
+            let max = data.iter().max().copied().unwrap_or(0);
+            format!("更新完成: max={}", max)
+        }
+        // 5% 是其他类型
+        _ => {
+            format!("未知请求: {}", request_type)
+        }
+    }
+}
+
+fn parse_and_lookup(input: &str, table: &HashMap<String, i32>) -> i32 {
+    // PGO 会知道大多数查找都是命中的
+    match table.get(input) {
+        Some(&value) => value * 2,
+        None => -1,
+    }
+}
+
+fn main() {
+    // 构建查找表
+    let mut table = HashMap::new();
+    for i in 0..1000 {
+        table.insert(format!("key_{}", i), i);
+    }
+
+    let iterations = 1_000_000;
+    let data: Vec<u8> = (0..100).collect();
+
+    let start = Instant::now();
+
+    let mut total = 0i64;
+    for i in 0..iterations {
+        // 模拟真实的请求分布
+        let request_type = if i % 100 < 80 {
+            "query"
+        } else if i % 100 < 95 {
+            "update"
+        } else {
+            "other"
+        };
+
+        let result = process_request(request_type, &data);
+        total += result.len() as i64;
+
+        // 查找操作
+        let key = format!("key_{}", i % 1000);
+        total += parse_and_lookup(&key, &table) as i64;
+    }
+
+    let elapsed = start.elapsed();
+    println!("{}次迭代: {:?}", iterations, elapsed);
+    println!("total = {}", total);
+    println!("\nPGO 能让编译器知道:");
+    println!("  - 80% 的请求走 'query' 分支");
+    println!("  - HashMap::get 大部分时候返回 Some");
+    println!("  - 热循环中的函数应该被内联");
+}
+```
+
+## 📝 实际应用示例
+
+### 在 CI/CD 中使用 PGO
+
+```rs
+fn main() {
+    println!("CI/CD 中的 PGO 最佳实践:");
+    println!();
+    println!("1. 准备代表性工作负载:");
+    println!("   - 使用真实的生产数据（脱敏后）");
+    println!("   - 覆盖所有主要代码路径");
+    println!("   - 运行足够长的时间以收集稳定数据");
+    println!();
+    println!("2. CI 流水线配置:");
+    println!("   - 定期（如每周）执行 PGO 构建");
+    println!("   - 保存 profdata 供后续构建复用");
+    println!("   - 对比 PGO 前后的性能数据");
+    println!();
+    println!("3. 注意事项:");
+    println!("   - 工作负载必须有代表性");
+    println!("   - 不代表性的工作负载可能导致性能更差");
+    println!("   - PGO + LTO + codegen-units=1 效果最佳");
+    println!("   - 插桩版本比正常版本慢 2-3 倍");
+    println!();
+    println!("4. 谁在用 PGO:");
+    println!("   - Rust 编译器自身（rustc）使用 PGO 构建");
+    println!("   - Firefox 浏览器");
+    println!("   - LLVM/Clang");
+    println!("   - 许多数据库和游戏引擎");
+}
+```
+
+## 🔗 相关概念
+
+- **编译器优化级别**：PGO 在 opt-level 2 或 3 之上提供额外优化
+- **LTO**：PGO + LTO 可以叠加使用，效果更佳
+- **flamegraph**：火焰图可以验证 PGO 的优化效果
+- **criterion**：基准测试可以量化 PGO 的性能提升
 
 ## 📝 学习检查点
 
-- [ ] 理解PGO（配置文件引导优化）的核心概念
-- [ ] 能够在实际项目中应用PGO（配置文件引导优化）
+- [ ] 理解 PGO 的三步流程（插桩 → 采集 → 优化）
+- [ ] 知道 PGO 能优化哪些方面（分支、内联、代码布局）
+- [ ] 能够编写 PGO 构建脚本
+- [ ] 了解 PGO 的适用场景和注意事项
+
+## 🚀 下一步
+
+→ [编译时间优化策略](./13-compile-time-optimization)

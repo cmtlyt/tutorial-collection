@@ -5,13 +5,293 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Unsafe Rust中的「unsafe 块与 unsafe fn」相关知识。
+`unsafe` 是 Rust 安全体系中的"逃生舱"。Rust 编译器通过所有权、借用检查器等机制保证内存安全，但有些操作编译器无法静态验证其安全性。`unsafe` 关键字告诉编译器："这段代码的安全性由开发者负责保证"。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+`unsafe` 有两种主要用法：
+- **`unsafe` 块**：在安全函数内部执行 unsafe 操作
+- **`unsafe fn`**：声明整个函数需要调用者保证前置条件
+
+重要原则：`unsafe` **不意味着代码不安全**，而是意味着编译器无法自动验证安全性，需要开发者承担验证责任。
+
+## 🎯 unsafe 块
+
+### 基本语法
+
+`unsafe` 块允许在安全代码中执行特定的 unsafe 操作：
+
+```rs
+fn main() {
+    let mut number = 42i32;
+
+    // 安全代码
+    let safe_ref = &number;
+    println!("安全引用: {}", safe_ref);
+
+    // unsafe 块：执行编译器无法验证安全性的操作
+    unsafe {
+        // 创建裸指针并解引用
+        let raw_ptr = &mut number as *mut i32;
+        *raw_ptr = 100;
+    }
+
+    println!("修改后: {}", number); // 100
+}
+```
+
+### unsafe 块中可以做什么
+
+unsafe 块解锁了五种"超能力"：
+
+```rs
+extern "C" {
+    fn abs(input: i32) -> i32;
+}
+
+static mut COUNTER: u32 = 0;
+
+unsafe trait UnsafeMarker {}
+unsafe impl UnsafeMarker for i32 {}
+
+fn main() {
+    // 超能力 1：解引用裸指针
+    let value = 42;
+    let raw_ptr = &value as *const i32;
+    unsafe {
+        println!("1. 解引用裸指针: {}", *raw_ptr);
+    }
+
+    // 超能力 2：调用 unsafe 函数
+    unsafe {
+        let result = abs(-5);
+        println!("2. 调用 C 函数 abs(-5): {}", result);
+    }
+
+    // 超能力 3：访问可变静态变量
+    unsafe {
+        COUNTER += 1;
+        println!("3. 可变静态变量: {}", COUNTER);
+    }
+
+    // 超能力 4 和 5 在上方：实现 unsafe trait、访问 union 字段
+    println!("4. unsafe trait 已实现");
+    println!("5. union 字段访问（见后续章节）");
+}
+```
+
+### 最小化 unsafe 范围
+
+应将 unsafe 块限制在**最小必要范围**内：
+
+```rs
+fn safe_abs(value: i32) -> i32 {
+    // 不好：整个函数体都在 unsafe 块中
+    // unsafe {
+    //     let ptr = &value as *const i32;
+    //     let raw_value = *ptr;
+    //     if raw_value < 0 { -raw_value } else { raw_value }
+    // }
+
+    // 好：只在必要的地方使用 unsafe
+    let ptr = &value as *const i32;
+    let raw_value = unsafe { *ptr };  // 只有解引用需要 unsafe
+    if raw_value < 0 { -raw_value } else { raw_value }
+}
+
+fn main() {
+    println!("safe_abs(-42) = {}", safe_abs(-42));
+    println!("safe_abs(10) = {}", safe_abs(10));
+}
+```
+
+## 🔧 unsafe fn
+
+### 声明 unsafe 函数
+
+`unsafe fn` 表示调用此函数时，**调用者**必须保证某些前置条件成立：
+
+```rs
+/// 从切片的指定位置读取值，不进行边界检查。
+///
+/// # Safety
+///
+/// 调用者必须保证 `index` 小于 `slice.len()`。
+unsafe fn get_unchecked(slice: &[i32], index: usize) -> i32 {
+    // 在 unsafe fn 内部，整个函数体都是 unsafe 上下文
+    *slice.get_unchecked(index)
+}
+
+/// 交换两个裸指针指向的值。
+///
+/// # Safety
+///
+/// - `a` 和 `b` 必须是有效的、已对齐的、可写的指针。
+/// - `a` 和 `b` 不能指向同一个内存位置。
+unsafe fn swap_raw<T>(a: *mut T, b: *mut T) {
+    std::ptr::swap(a, b);
+}
+
+fn main() {
+    let data = vec![10, 20, 30, 40, 50];
+
+    // 调用 unsafe fn 必须在 unsafe 块中
+    let value = unsafe { get_unchecked(&data, 2) };
+    println!("索引 2 的值: {}", value); // 30
+
+    // 安全的替代方案
+    let safe_value = data.get(2).copied();
+    println!("安全获取: {:?}", safe_value);
+
+    // swap_raw 示例
+    let mut x = 1;
+    let mut y = 2;
+    unsafe {
+        swap_raw(&mut x as *mut i32, &mut y as *mut i32);
+    }
+    println!("交换后: x={}, y={}", x, y); // x=2, y=1
+}
+```
+
+### unsafe fn vs unsafe 块的选择
+
+```rs
+// 方案 A：使用 unsafe fn（调用者需要保证安全条件）
+// 适用于：函数的安全性取决于调用者提供的参数
+unsafe fn split_at_unchecked(slice: &[u8], mid: usize) -> (&[u8], &[u8]) {
+    let ptr = slice.as_ptr();
+    let len = slice.len();
+    (
+        std::slice::from_raw_parts(ptr, mid),
+        std::slice::from_raw_parts(ptr.add(mid), len - mid),
+    )
+}
+
+// 方案 B：安全函数 + 内部 unsafe 块（函数自己验证安全条件）
+// 适用于：函数可以自行验证所有安全条件
+fn split_at_checked(slice: &[u8], mid: usize) -> Option<(&[u8], &[u8])> {
+    if mid > slice.len() {
+        return None;
+    }
+    // 安全性已由上面的检查保证
+    unsafe {
+        let ptr = slice.as_ptr();
+        let len = slice.len();
+        Some((
+            std::slice::from_raw_parts(ptr, mid),
+            std::slice::from_raw_parts(ptr.add(mid), len - mid),
+        ))
+    }
+}
+
+fn main() {
+    let data = b"Hello, World!";
+
+    // unsafe fn：调用者必须保证 mid <= len
+    let (left, right) = unsafe { split_at_unchecked(data, 5) };
+    println!("unsafe: {:?} | {:?}",
+        std::str::from_utf8(left).unwrap(),
+        std::str::from_utf8(right).unwrap());
+
+    // 安全版本：函数自己检查
+    if let Some((left, right)) = split_at_checked(data, 5) {
+        println!("safe:   {:?} | {:?}",
+            std::str::from_utf8(left).unwrap(),
+            std::str::from_utf8(right).unwrap());
+    }
+
+    // 安全版本处理无效输入
+    let result = split_at_checked(data, 100);
+    println!("越界:   {:?}", result); // None
+}
+```
+
+## 📝 实际应用示例
+
+### 封装 unsafe 为安全 API
+
+```rs
+struct AlignedBuffer {
+    ptr: *mut u8,
+    len: usize,
+    capacity: usize,
+}
+
+impl AlignedBuffer {
+    fn new(capacity: usize) -> Self {
+        let layout = std::alloc::Layout::from_size_align(capacity, 16)
+            .expect("无效的布局");
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        AlignedBuffer { ptr, len: 0, capacity }
+    }
+
+    fn push(&mut self, byte: u8) -> bool {
+        if self.len >= self.capacity {
+            return false;
+        }
+        unsafe {
+            self.ptr.add(self.len).write(byte);
+        }
+        self.len += 1;
+        true
+    }
+
+    fn get(&self, index: usize) -> Option<u8> {
+        if index >= self.len {
+            return None;
+        }
+        unsafe { Some(self.ptr.add(index).read()) }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl Drop for AlignedBuffer {
+    fn drop(&mut self) {
+        let layout = std::alloc::Layout::from_size_align(self.capacity, 16)
+            .expect("无效的布局");
+        unsafe {
+            std::alloc::dealloc(self.ptr, layout);
+        }
+    }
+}
+
+fn main() {
+    let mut buffer = AlignedBuffer::new(64);
+
+    // 完全安全的 API
+    for byte in b"Hello, unsafe world!" {
+        buffer.push(*byte);
+    }
+
+    println!("长度: {}", buffer.len());
+    println!("内容: {:?}", std::str::from_utf8(buffer.as_slice()).unwrap());
+    println!("索引 0: {:?}", buffer.get(0).map(|b| b as char));
+    println!("越界访问: {:?}", buffer.get(100)); // None
+}
+```
+
+## 🔗 相关概念
+
+- **解引用裸指针**：unsafe 块中最常见的操作
+- **调用 unsafe 函数**：FFI 调用等场景
+- **安全抽象**：在 unsafe 代码上构建安全 API 的方法论
+- **安全契约文档化**：`# Safety` 文档注释的最佳实践
 
 ## 📝 学习检查点
 
-- [ ] 理解unsafe 块与 unsafe fn的核心概念
-- [ ] 能够在实际项目中应用unsafe 块与 unsafe fn
+- [ ] 理解 unsafe 块和 unsafe fn 的区别
+- [ ] 掌握最小化 unsafe 范围的原则
+- [ ] 知道 unsafe 解锁的五种超能力
+- [ ] 能够判断何时使用 unsafe fn vs 安全函数 + unsafe 块
+
+## 🚀 下一步
+
+→ [解引用裸指针](./03-dereferencing-raw-pointers)

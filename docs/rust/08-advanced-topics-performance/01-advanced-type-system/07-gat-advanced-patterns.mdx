@@ -5,13 +5,449 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解高级类型系统中的「GAT 高阶抽象模式」相关知识。
+掌握了 GAT 的基础语法后，本节将深入探讨 GAT 在实际开发中的**高阶抽象模式**。GAT 使得 Rust 可以表达许多函数式编程中的经典抽象，如 Monad、HKT（Higher-Kinded Types）模拟等。同时，GAT 也为构建零成本抽象的中间件、管道等架构模式提供了强大的类型系统支持。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 模拟高阶类型（HKT）
+
+### 类型构造器模式
+
+Rust 没有原生的高阶类型（Higher-Kinded Types），但通过 GAT 可以模拟类似的效果：
+
+```rs
+// 使用 GAT 模拟类型构造器
+trait TypeConstructor {
+    type Constructed<T>;
+}
+
+// Option 作为类型构造器
+struct OptionType;
+impl TypeConstructor for OptionType {
+    type Constructed<T> = Option<T>;
+}
+
+// Vec 作为类型构造器
+struct VecType;
+impl TypeConstructor for VecType {
+    type Constructed<T> = Vec<T>;
+}
+
+// 使用类型构造器的泛型函数
+trait Mappable: TypeConstructor {
+    fn pure<T>(value: T) -> Self::Constructed<T>;
+    fn map<T, U, F>(container: Self::Constructed<T>, f: F) -> Self::Constructed<U>
+    where
+        F: FnMut(T) -> U;
+}
+
+impl Mappable for OptionType {
+    fn pure<T>(value: T) -> Option<T> {
+        Some(value)
+    }
+
+    fn map<T, U, F>(container: Option<T>, f: F) -> Option<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        container.map(f)
+    }
+}
+
+impl Mappable for VecType {
+    fn pure<T>(value: T) -> Vec<T> {
+        vec![value]
+    }
+
+    fn map<T, U, F>(container: Vec<T>, f: F) -> Vec<U>
+    where
+        F: FnMut(T) -> U,
+    {
+        container.into_iter().map(f).collect()
+    }
+}
+
+// 泛型地操作任何 Mappable 类型
+fn double_contents<M: Mappable>(container: M::Constructed<i32>) -> M::Constructed<i32> {
+    M::map(container, |x| x * 2)
+}
+
+fn main() {
+    let option_result = double_contents::<OptionType>(Some(21));
+    println!("Option: {:?}", option_result); // Some(42)
+
+    let vec_result = double_contents::<VecType>(vec![1, 2, 3]);
+    println!("Vec: {:?}", vec_result); // [2, 4, 6]
+
+    let wrapped = OptionType::pure(42);
+    println!("Pure: {:?}", wrapped); // Some(42)
+}
+```
+
+## 🔧 借用迭代器模式
+
+### LendingIterator 的完整实现
+
+标准库的 `Iterator` trait 无法返回借用自身的元素，GAT 使这成为可能：
+
+```rs
+trait LendingIterator {
+    type Item<'a> where Self: 'a;
+
+    fn next(&mut self) -> Option<Self::Item<'_>>;
+
+    // 使用 GAT 定义的高阶方法
+    fn filter_lending<P>(self, predicate: P) -> FilterLending<Self, P>
+    where
+        Self: Sized,
+        P: for<'a> FnMut(&Self::Item<'a>) -> bool,
+    {
+        FilterLending { iter: self, predicate }
+    }
+
+    fn take_lending(self, count: usize) -> TakeLending<Self>
+    where
+        Self: Sized,
+    {
+        TakeLending { iter: self, remaining: count }
+    }
+}
+
+// Filter 适配器
+struct FilterLending<I, P> {
+    iter: I,
+    predicate: P,
+}
+
+impl<I, P> LendingIterator for FilterLending<I, P>
+where
+    I: LendingIterator,
+    P: for<'a> FnMut(&I::Item<'a>) -> bool,
+{
+    type Item<'a> = I::Item<'a> where Self: 'a;
+
+    fn next(&mut self) -> Option<Self::Item<'_>> {
+        loop {
+            let item = self.iter.next()?;
+            if (self.predicate)(&item) {
+                return Some(item);
+            }
+        }
+    }
+}
+
+// Take 适配器
+struct TakeLending<I> {
+    iter: I,
+    remaining: usize,
+}
+
+impl<I: LendingIterator> LendingIterator for TakeLending<I> {
+    type Item<'a> = I::Item<'a> where Self: 'a;
+
+    fn next(&mut self) -> Option<Self::Item<'_>> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        self.iter.next()
+    }
+}
+
+// 实际使用：逐行读取的迭代器
+struct LineReader {
+    lines: Vec<String>,
+    position: usize,
+}
+
+impl LineReader {
+    fn new(text: &str) -> Self {
+        LineReader {
+            lines: text.lines().map(String::from).collect(),
+            position: 0,
+        }
+    }
+}
+
+impl LendingIterator for LineReader {
+    type Item<'a> = &'a str where Self: 'a;
+
+    fn next(&mut self) -> Option<&str> {
+        if self.position < self.lines.len() {
+            let line = &self.lines[self.position];
+            self.position += 1;
+            Some(line)
+        } else {
+            None
+        }
+    }
+}
+
+fn main() {
+    let text = "hello world\nfoo\nrust programming\nbar\ngat patterns";
+    let reader = LineReader::new(text);
+
+    // 使用组合器：过滤长度大于 4 的行，只取前 2 行
+    let mut filtered = reader
+        .filter_lending(|line| line.len() > 4)
+        .take_lending(2);
+
+    println!("过滤后的前 2 行（长度 > 4）:");
+    while let Some(line) = filtered.next() {
+        println!("  > {}", line);
+    }
+}
+```
+
+## 🎯 管道与中间件模式
+
+### 类型安全的处理管道
+
+```rs
+use std::fmt;
+
+// 使用 GAT 构建类型安全的转换管道
+trait Transform {
+    type Input;
+    type Output;
+
+    fn apply(&self, input: Self::Input) -> Self::Output;
+}
+
+// 管道组合器
+struct Pipeline<A, B> {
+    first: A,
+    second: B,
+}
+
+impl<A, B> Transform for Pipeline<A, B>
+where
+    A: Transform,
+    B: Transform<Input = A::Output>,
+{
+    type Input = A::Input;
+    type Output = B::Output;
+
+    fn apply(&self, input: Self::Input) -> Self::Output {
+        let intermediate = self.first.apply(input);
+        self.second.apply(intermediate)
+    }
+}
+
+// 具体的转换步骤
+struct ParseInt;
+impl Transform for ParseInt {
+    type Input = String;
+    type Output = Result<i64, String>;
+
+    fn apply(&self, input: String) -> Result<i64, String> {
+        input.trim().parse::<i64>().map_err(|e| format!("解析失败: {}", e))
+    }
+}
+
+struct Validate {
+    min: i64,
+    max: i64,
+}
+
+impl Transform for Validate {
+    type Input = Result<i64, String>;
+    type Output = Result<i64, String>;
+
+    fn apply(&self, input: Result<i64, String>) -> Result<i64, String> {
+        input.and_then(|n| {
+            if n >= self.min && n <= self.max {
+                Ok(n)
+            } else {
+                Err(format!("值 {} 不在范围 [{}, {}] 内", n, self.min, self.max))
+            }
+        })
+    }
+}
+
+struct FormatOutput;
+impl Transform for FormatOutput {
+    type Input = Result<i64, String>;
+    type Output = String;
+
+    fn apply(&self, input: Result<i64, String>) -> String {
+        match input {
+            Ok(n) => format!("有效值: {}", n),
+            Err(e) => format!("错误: {}", e),
+        }
+    }
+}
+
+// 辅助函数，方便链式组合
+fn pipe<A: Transform, B: Transform<Input = A::Output>>(a: A, b: B) -> Pipeline<A, B> {
+    Pipeline { first: a, second: b }
+}
+
+fn main() {
+    // 构建管道：解析 → 验证 → 格式化
+    let pipeline = pipe(
+        pipe(ParseInt, Validate { min: 1, max: 100 }),
+        FormatOutput,
+    );
+
+    let inputs = vec![
+        "42".to_string(),
+        "0".to_string(),
+        "abc".to_string(),
+        "99".to_string(),
+        "150".to_string(),
+    ];
+
+    for input in inputs {
+        let result = pipeline.apply(input.clone());
+        println!("输入 {:>5} → {}", format!("\"{}\"", input), result);
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 可扩展的序列化框架
+
+```rs
+use std::collections::HashMap;
+
+// 使用 GAT 定义序列化框架
+trait Serializer {
+    type Output;
+    type SeqSerializer<'a>: SeqSerializer<Output = Self::Output> where Self: 'a;
+    type MapSerializer<'a>: MapSerializer<Output = Self::Output> where Self: 'a;
+
+    fn serialize_str(&mut self, value: &str) -> Self::Output;
+    fn serialize_i64(&mut self, value: i64) -> Self::Output;
+    fn serialize_bool(&mut self, value: bool) -> Self::Output;
+    fn serialize_seq(&mut self, len: usize) -> Self::SeqSerializer<'_>;
+    fn serialize_map(&mut self, len: usize) -> Self::MapSerializer<'_>;
+}
+
+trait SeqSerializer {
+    type Output;
+    fn serialize_element(&mut self, value: &str);
+    fn end(self) -> Self::Output;
+}
+
+trait MapSerializer {
+    type Output;
+    fn serialize_entry(&mut self, key: &str, value: &str);
+    fn end(self) -> Self::Output;
+}
+
+// JSON 序列化器实现
+struct JsonSerializer {
+    output: String,
+}
+
+impl JsonSerializer {
+    fn new() -> Self {
+        JsonSerializer { output: String::new() }
+    }
+}
+
+struct JsonSeqSerializer<'a> {
+    parent: &'a mut JsonSerializer,
+    items: Vec<String>,
+}
+
+struct JsonMapSerializer<'a> {
+    parent: &'a mut JsonSerializer,
+    entries: Vec<(String, String)>,
+}
+
+impl Serializer for JsonSerializer {
+    type Output = String;
+    type SeqSerializer<'a> = JsonSeqSerializer<'a> where Self: 'a;
+    type MapSerializer<'a> = JsonMapSerializer<'a> where Self: 'a;
+
+    fn serialize_str(&mut self, value: &str) -> String {
+        format!("\"{}\"", value)
+    }
+
+    fn serialize_i64(&mut self, value: i64) -> String {
+        value.to_string()
+    }
+
+    fn serialize_bool(&mut self, value: bool) -> String {
+        value.to_string()
+    }
+
+    fn serialize_seq(&mut self, _len: usize) -> JsonSeqSerializer<'_> {
+        JsonSeqSerializer { parent: self, items: Vec::new() }
+    }
+
+    fn serialize_map(&mut self, _len: usize) -> JsonMapSerializer<'_> {
+        JsonMapSerializer { parent: self, entries: Vec::new() }
+    }
+}
+
+impl<'a> SeqSerializer for JsonSeqSerializer<'a> {
+    type Output = String;
+
+    fn serialize_element(&mut self, value: &str) {
+        self.items.push(format!("\"{}\"", value));
+    }
+
+    fn end(self) -> String {
+        format!("[{}]", self.items.join(", "))
+    }
+}
+
+impl<'a> MapSerializer for JsonMapSerializer<'a> {
+    type Output = String;
+
+    fn serialize_entry(&mut self, key: &str, value: &str) {
+        self.entries.push((format!("\"{}\"", key), format!("\"{}\"", value)));
+    }
+
+    fn end(self) -> String {
+        let pairs: Vec<String> = self.entries.iter()
+            .map(|(k, v)| format!("{}: {}", k, v))
+            .collect();
+        format!("{{{}}}", pairs.join(", "))
+    }
+}
+
+fn main() {
+    let mut serializer = JsonSerializer::new();
+
+    // 序列化基本类型
+    println!("{}", serializer.serialize_str("hello"));
+    println!("{}", serializer.serialize_i64(42));
+    println!("{}", serializer.serialize_bool(true));
+
+    // 序列化序列
+    let mut seq = serializer.serialize_seq(3);
+    seq.serialize_element("apple");
+    seq.serialize_element("banana");
+    seq.serialize_element("cherry");
+    let json_array = seq.end();
+    println!("{}", json_array);
+
+    // 序列化映射
+    let mut map = serializer.serialize_map(2);
+    map.serialize_entry("name", "Alice");
+    map.serialize_entry("role", "developer");
+    let json_object = map.end();
+    println!("{}", json_object);
+}
+```
+
+## 🔗 相关概念
+
+- **GAT 基础**：泛型关联类型的定义和基本用法
+- **GAT 与 async trait**：GAT 在异步编程中的应用
+- **Trait 对象**：含 GAT 的 Trait 在动态分发中的限制
+- **高阶 Trait bound（HRTB）**：`for<'a>` 语法与 GAT 的配合
 
 ## 📝 学习检查点
 
-- [ ] 理解GAT 高阶抽象模式的核心概念
-- [ ] 能够在实际项目中应用GAT 高阶抽象模式
+- [ ] 理解如何使用 GAT 模拟高阶类型（HKT）
+- [ ] 掌握 LendingIterator 模式及其组合器
+- [ ] 能够使用 GAT 构建类型安全的处理管道
+- [ ] 了解 GAT 在序列化等框架设计中的应用
+
+## 🚀 下一步
+
+→ [GAT 与 async trait](./08-gat-async-trait)

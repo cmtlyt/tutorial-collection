@@ -5,13 +5,294 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「criterion 统计基准测试」相关知识。
+**Criterion.rs** 是 Rust 生态中最流行的基准测试框架。相比内置的 `cargo bench`，Criterion 提供了**统计分析**、**回归检测**、**HTML 报告**等高级功能，且在稳定版 Rust 上即可使用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+Criterion 的核心优势：
+- **统计可靠性**：自动计算置信区间和噪声估计
+- **变更检测**：自动对比上一次运行结果，检测性能回归
+- **参数化测试**：方便用不同输入大小测试同一函数
+- **HTML 报告**：生成包含图表的详细性能报告
+
+## 🎯 项目配置
+
+### Cargo.toml 配置
+
+```toml
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "my_benchmark"
+harness = false
+```
+
+### 基础基准测试
+
+创建 `benches/my_benchmark.rs`：
+
+```rs
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+
+fn fibonacci_recursive(n: u64) -> u64 {
+    match n {
+        0 => 0,
+        1 => 1,
+        _ => fibonacci_recursive(n - 1) + fibonacci_recursive(n - 2),
+    }
+}
+
+fn fibonacci_iterative(n: u64) -> u64 {
+    if n <= 1 {
+        return n;
+    }
+    let mut prev = 0u64;
+    let mut curr = 1u64;
+    for _ in 2..=n {
+        let next = prev + curr;
+        prev = curr;
+        curr = next;
+    }
+    curr
+}
+
+fn fibonacci_benchmarks(c: &mut Criterion) {
+    c.bench_function("fibonacci_recursive_20", |b| {
+        b.iter(|| fibonacci_recursive(black_box(20)))
+    });
+
+    c.bench_function("fibonacci_iterative_20", |b| {
+        b.iter(|| fibonacci_iterative(black_box(20)))
+    });
+
+    c.bench_function("fibonacci_iterative_100", |b| {
+        b.iter(|| fibonacci_iterative(black_box(100)))
+    });
+}
+
+criterion_group!(benches, fibonacci_benchmarks);
+criterion_main!(benches);
+```
+
+运行：
+
+```bash
+cargo bench
+```
+
+## 🔧 参数化基准测试
+
+### 使用 BenchmarkGroup
+
+```rs
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+
+fn sort_std(data: &mut Vec<i32>) {
+    data.sort();
+}
+
+fn sort_unstable(data: &mut Vec<i32>) {
+    data.sort_unstable();
+}
+
+fn sort_by_key(data: &mut Vec<i32>) {
+    data.sort_by_key(|&x| std::cmp::Reverse(x));
+}
+
+fn sorting_benchmarks(c: &mut Criterion) {
+    let sizes = [100, 1_000, 10_000];
+
+    let mut group = c.benchmark_group("sorting");
+
+    for &size in &sizes {
+        // 生成反序数据（最坏情况）
+        let data: Vec<i32> = (0..size).rev().collect();
+
+        group.bench_with_input(
+            BenchmarkId::new("std_sort", size),
+            &data,
+            |b, data| {
+                b.iter(|| {
+                    let mut d = data.clone();
+                    sort_std(black_box(&mut d));
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("unstable_sort", size),
+            &data,
+            |b, data| {
+                b.iter(|| {
+                    let mut d = data.clone();
+                    sort_unstable(black_box(&mut d));
+                })
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, sorting_benchmarks);
+criterion_main!(benches);
+```
+
+### 吞吐量基准测试
+
+```rs
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+
+fn count_chars_iter(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn count_chars_bytes(text: &str) -> usize {
+    text.as_bytes().iter().filter(|&&b| (b & 0xC0) != 0x80).count()
+}
+
+fn throughput_benchmarks(c: &mut Criterion) {
+    let texts = vec![
+        ("small", "Hello, world!".to_string()),
+        ("medium", "a".repeat(1_000)),
+        ("large", "a".repeat(100_000)),
+    ];
+
+    let mut group = c.benchmark_group("char_counting");
+
+    for (name, text) in &texts {
+        let bytes = text.len() as u64;
+        group.throughput(Throughput::Bytes(bytes));
+
+        group.bench_with_input(
+            BenchmarkId::new("iter", name),
+            text,
+            |b, text| b.iter(|| count_chars_iter(black_box(text))),
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("bytes", name),
+            text,
+            |b, text| b.iter(|| count_chars_bytes(black_box(text))),
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, throughput_benchmarks);
+criterion_main!(benches);
+```
+
+## 📝 实际应用示例
+
+### 数据结构操作基准测试
+
+```rs
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::collections::{HashMap, BTreeMap, Vec};
+
+fn hashmap_operations(c: &mut Criterion) {
+    let sizes = [100, 1_000, 10_000];
+    let mut group = c.benchmark_group("map_insert");
+
+    for &size in &sizes {
+        group.bench_with_input(
+            BenchmarkId::new("HashMap", size),
+            &size,
+            |b, &size| {
+                b.iter(|| {
+                    let mut map = HashMap::with_capacity(size);
+                    for i in 0..size {
+                        map.insert(i, i * 2);
+                    }
+                    black_box(map)
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("BTreeMap", size),
+            &size,
+            |b, &size| {
+                b.iter(|| {
+                    let mut map = BTreeMap::new();
+                    for i in 0..size {
+                        map.insert(i, i * 2);
+                    }
+                    black_box(map)
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("Vec_push", size),
+            &size,
+            |b, &size| {
+                b.iter(|| {
+                    let mut vec = Vec::with_capacity(size);
+                    for i in 0..size {
+                        vec.push((i, i * 2));
+                    }
+                    black_box(vec)
+                })
+            },
+        );
+    }
+    group.finish();
+
+    // 查找性能
+    let mut lookup_group = c.benchmark_group("map_lookup");
+    let size = 10_000;
+
+    let hashmap: HashMap<usize, usize> = (0..size).map(|i| (i, i * 2)).collect();
+    let btreemap: BTreeMap<usize, usize> = (0..size).map(|i| (i, i * 2)).collect();
+    let sorted_vec: Vec<(usize, usize)> = (0..size).map(|i| (i, i * 2)).collect();
+
+    lookup_group.bench_function("HashMap", |b| {
+        b.iter(|| {
+            for i in (0..size).step_by(10) {
+                black_box(hashmap.get(&i));
+            }
+        })
+    });
+
+    lookup_group.bench_function("BTreeMap", |b| {
+        b.iter(|| {
+            for i in (0..size).step_by(10) {
+                black_box(btreemap.get(&i));
+            }
+        })
+    });
+
+    lookup_group.bench_function("Vec_binary_search", |b| {
+        b.iter(|| {
+            for i in (0..size).step_by(10) {
+                black_box(sorted_vec.binary_search_by_key(&i, |&(k, _)| k));
+            }
+        })
+    });
+
+    lookup_group.finish();
+}
+
+criterion_group!(benches, hashmap_operations);
+criterion_main!(benches);
+```
+
+## 🔗 相关概念
+
+- **cargo bench**：Rust 内置的基准测试工具
+- **flamegraph 火焰图**：可视化哪些函数占用最多时间
+- **编译器优化级别**：基准测试应在 release 模式下运行
+- **统计学基础**：理解置信区间和 p 值
 
 ## 📝 学习检查点
 
-- [ ] 理解criterion 统计基准测试的核心概念
-- [ ] 能够在实际项目中应用criterion 统计基准测试
+- [ ] 能够配置和运行 criterion 基准测试
+- [ ] 掌握参数化基准测试（BenchmarkGroup）
+- [ ] 理解吞吐量基准测试（Throughput）
+- [ ] 能够解读 criterion 的统计输出和回归报告
+
+## 🚀 下一步
+
+→ [flamegraph 火焰图](./04-flamegraph)

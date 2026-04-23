@@ -5,13 +5,467 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Unsafe Rust中的「不变量维护」相关知识。
+**不变量（Invariant）** 是指在程序执行期间必须始终为真的条件。在 unsafe Rust 中，不变量的维护至关重要——编译器无法自动验证 unsafe 代码是否维持了这些不变量，一旦违反就会导致未定义行为。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+常见的不变量类型：
+- **类型不变量**：类型的内部状态必须满足的条件（如 `Vec` 的 `len <= capacity`）
+- **安全不变量**：确保内存安全的条件（如指针必须有效且已对齐）
+- **逻辑不变量**：业务逻辑要求的条件（如排序数组必须保持排序）
+
+## 🎯 理解不变量
+
+### 类型不变量示例
+
+```rs
+/// 一个非空字符串类型。
+///
+/// 不变量：内部字符串的长度始终 >= 1。
+#[derive(Debug, Clone)]
+struct NonEmptyString {
+    inner: String,
+}
+
+impl NonEmptyString {
+    /// 创建 NonEmptyString。
+    ///
+    /// 如果输入为空，返回 None。
+    fn new(s: &str) -> Option<Self> {
+        if s.is_empty() {
+            None
+        } else {
+            Some(NonEmptyString { inner: s.to_string() })
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        &self.inner
+    }
+
+    /// 返回第一个字符。
+    ///
+    /// 因为不变量保证字符串非空，此方法不会 panic。
+    fn first_char(&self) -> char {
+        // 不变量保证这里不会 panic
+        self.inner.chars().next().unwrap()
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// 追加内容（保持不变量：追加后仍然非空）。
+    fn push_str(&mut self, s: &str) {
+        self.inner.push_str(s);
+        // 不变量自然维持：追加只会增加长度
+    }
+
+    /// 截断到指定长度。
+    ///
+    /// 最少保留 1 个字节，维护非空不变量。
+    fn truncate(&mut self, new_len: usize) {
+        let actual_len = new_len.max(1); // 维护不变量
+        if actual_len < self.inner.len() {
+            // 确保在字符边界上截断
+            let mut end = actual_len;
+            while end < self.inner.len() && !self.inner.is_char_boundary(end) {
+                end += 1;
+            }
+            self.inner.truncate(end);
+        }
+    }
+}
+
+impl std::fmt::Display for NonEmptyString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner)
+    }
+}
+
+fn main() {
+    let greeting = NonEmptyString::new("Hello").unwrap();
+    println!("字符串: {}", greeting);
+    println!("首字符: {}", greeting.first_char());
+    println!("长度: {}", greeting.len());
+
+    let empty = NonEmptyString::new("");
+    println!("空字符串: {:?}", empty); // None
+
+    let mut name = NonEmptyString::new("Alice").unwrap();
+    name.push_str(" Smith");
+    println!("追加后: {}", name);
+
+    name.truncate(1);
+    println!("截断后: {} (len={})", name, name.len());
+}
+```
+
+### 使用 debug_assert 验证不变量
+
+```rs
+/// 有界整数：值始终在 [min, max] 范围内。
+#[derive(Debug, Clone, Copy)]
+struct BoundedInt {
+    value: i32,
+    min: i32,
+    max: i32,
+}
+
+impl BoundedInt {
+    fn new(value: i32, min: i32, max: i32) -> Option<Self> {
+        if min > max {
+            return None;
+        }
+        if value < min || value > max {
+            return None;
+        }
+        let result = BoundedInt { value, min, max };
+        result.check_invariant();
+        Some(result)
+    }
+
+    /// 在 debug 模式下验证不变量。
+    #[inline]
+    fn check_invariant(&self) {
+        debug_assert!(self.min <= self.max, "min({}) > max({})", self.min, self.max);
+        debug_assert!(
+            self.value >= self.min && self.value <= self.max,
+            "value({}) 不在 [{}, {}] 范围内",
+            self.value, self.min, self.max
+        );
+    }
+
+    fn get(&self) -> i32 {
+        self.value
+    }
+
+    fn set(&mut self, value: i32) -> bool {
+        if value >= self.min && value <= self.max {
+            self.value = value;
+            self.check_invariant();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn add(&mut self, delta: i32) -> bool {
+        let new_value = self.value.saturating_add(delta);
+        self.set(new_value)
+    }
+
+    fn clamp_set(&mut self, value: i32) {
+        self.value = value.clamp(self.min, self.max);
+        self.check_invariant();
+    }
+}
+
+impl std::fmt::Display for BoundedInt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}∈[{},{}]", self.value, self.min, self.max)
+    }
+}
+
+fn main() {
+    let mut health = BoundedInt::new(100, 0, 100).unwrap();
+    println!("初始: {}", health);
+
+    health.add(-30);
+    println!("受伤: {}", health);
+
+    let success = health.set(150);
+    println!("设置 150: {} (当前: {})", success, health);
+
+    health.clamp_set(200);
+    println!("钳位 200: {}", health);
+
+    health.clamp_set(-50);
+    println!("钳位 -50: {}", health);
+
+    // 无效范围
+    let invalid = BoundedInt::new(5, 10, 1);
+    println!("无效范围: {:?}", invalid); // None
+}
+```
+
+## 🔧 unsafe 代码中的不变量维护
+
+### 手动内存管理的不变量
+
+```rs
+use std::fmt;
+
+/// 固定容量的栈。
+///
+/// 不变量：
+/// 1. `len <= capacity`
+/// 2. `buffer[0..len]` 中的所有元素都已初始化
+/// 3. `buffer[len..capacity]` 中的所有元素都未初始化
+struct FixedStack<T> {
+    buffer: *mut T,
+    len: usize,
+    capacity: usize,
+}
+
+impl<T> FixedStack<T> {
+    fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "容量必须大于 0");
+        let layout = std::alloc::Layout::array::<T>(capacity).unwrap();
+        let buffer = unsafe { std::alloc::alloc(layout) as *mut T };
+        if buffer.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        FixedStack { buffer, len: 0, capacity }
+    }
+
+    fn push(&mut self, value: T) -> Result<(), T> {
+        // 维护不变量 1：len <= capacity
+        if self.len >= self.capacity {
+            return Err(value);
+        }
+        unsafe {
+            // 维护不变量 2：写入后 buffer[len] 已初始化
+            self.buffer.add(self.len).write(value);
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        unsafe {
+            // 维护不变量 3：读取后 buffer[len] 变为未初始化
+            Some(self.buffer.add(self.len).read())
+        }
+    }
+
+    fn peek(&self) -> Option<&T> {
+        if self.len == 0 {
+            return None;
+        }
+        unsafe { Some(&*self.buffer.add(self.len - 1)) }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn is_full(&self) -> bool {
+        self.len == self.capacity
+    }
+}
+
+impl<T> Drop for FixedStack<T> {
+    fn drop(&mut self) {
+        // 维护清理不变量：只 drop 已初始化的元素
+        while self.pop().is_some() {}
+
+        let layout = std::alloc::Layout::array::<T>(self.capacity).unwrap();
+        unsafe {
+            std::alloc::dealloc(self.buffer as *mut u8, layout);
+        }
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for FixedStack<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut items = Vec::new();
+        for i in 0..self.len {
+            unsafe {
+                items.push(format!("{:?}", &*self.buffer.add(i)));
+            }
+        }
+        write!(f, "FixedStack{:?}", items)
+    }
+}
+
+fn main() {
+    let mut stack: FixedStack<String> = FixedStack::new(3);
+
+    stack.push("first".to_string()).unwrap();
+    stack.push("second".to_string()).unwrap();
+    stack.push("third".to_string()).unwrap();
+
+    println!("{:?} (len={}, cap={})", stack, stack.len(), stack.capacity());
+    println!("满了: {}", stack.is_full());
+
+    // 满了之后推入失败
+    let result = stack.push("overflow".to_string());
+    println!("溢出推入: {:?}", result.err().map(|s| s));
+
+    println!("顶部: {:?}", stack.peek());
+    println!("弹出: {:?}", stack.pop());
+    println!("弹出: {:?}", stack.pop());
+    println!("{:?} (len={})", stack, stack.len());
+}
+```
+
+## 📝 实际应用示例
+
+### 带不变量验证的 BitSet
+
+```rs
+/// 位集合：紧凑地存储一组 0..capacity 范围内的整数。
+///
+/// 不变量：
+/// 1. `data.len() == (capacity + 63) / 64`
+/// 2. 超出 capacity 的位始终为 0
+struct BitSet {
+    data: Vec<u64>,
+    capacity: usize,
+    count: usize,
+}
+
+impl BitSet {
+    fn new(capacity: usize) -> Self {
+        let num_words = (capacity + 63) / 64;
+        BitSet {
+            data: vec![0u64; num_words],
+            capacity,
+            count: 0,
+        }
+    }
+
+    fn insert(&mut self, index: usize) -> bool {
+        if index >= self.capacity {
+            return false;
+        }
+        let word = index / 64;
+        let bit = index % 64;
+        let mask = 1u64 << bit;
+
+        if self.data[word] & mask == 0 {
+            self.data[word] |= mask;
+            self.count += 1;
+            true
+        } else {
+            false // 已存在
+        }
+    }
+
+    fn remove(&mut self, index: usize) -> bool {
+        if index >= self.capacity {
+            return false;
+        }
+        let word = index / 64;
+        let bit = index % 64;
+        let mask = 1u64 << bit;
+
+        if self.data[word] & mask != 0 {
+            self.data[word] &= !mask;
+            self.count -= 1;
+            true
+        } else {
+            false // 不存在
+        }
+    }
+
+    fn contains(&self, index: usize) -> bool {
+        if index >= self.capacity {
+            return false;
+        }
+        let word = index / 64;
+        let bit = index % 64;
+        self.data[word] & (1u64 << bit) != 0
+    }
+
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.capacity).filter(|&i| self.contains(i))
+    }
+
+    fn union(&self, other: &BitSet) -> BitSet {
+        let cap = self.capacity.max(other.capacity);
+        let mut result = BitSet::new(cap);
+        let max_words = result.data.len();
+
+        for i in 0..max_words {
+            let a = self.data.get(i).copied().unwrap_or(0);
+            let b = other.data.get(i).copied().unwrap_or(0);
+            result.data[i] = a | b;
+        }
+        result.count = result.iter().count();
+        result
+    }
+
+    fn intersection(&self, other: &BitSet) -> BitSet {
+        let cap = self.capacity.min(other.capacity);
+        let mut result = BitSet::new(cap);
+        let max_words = result.data.len();
+
+        for i in 0..max_words {
+            let a = self.data.get(i).copied().unwrap_or(0);
+            let b = other.data.get(i).copied().unwrap_or(0);
+            result.data[i] = a & b;
+        }
+        result.count = result.iter().count();
+        result
+    }
+}
+
+impl std::fmt::Debug for BitSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let elements: Vec<usize> = self.iter().collect();
+        write!(f, "BitSet({:?})", elements)
+    }
+}
+
+fn main() {
+    let mut set_a = BitSet::new(100);
+    for i in [2, 3, 5, 7, 11, 13, 17, 19] {
+        set_a.insert(i);
+    }
+    println!("集合 A（质数）: {:?}, len={}", set_a, set_a.len());
+
+    let mut set_b = BitSet::new(100);
+    for i in (0..20).step_by(2) {
+        set_b.insert(i);
+    }
+    println!("集合 B（偶数）: {:?}, len={}", set_b, set_b.len());
+
+    let union = set_a.union(&set_b);
+    println!("并集: {:?}, len={}", union, union.len());
+
+    let intersection = set_a.intersection(&set_b);
+    println!("交集: {:?}, len={}", intersection, intersection.len());
+
+    println!("包含 7: {}", set_a.contains(7));
+    set_a.remove(7);
+    println!("移除 7 后包含 7: {}", set_a.contains(7));
+}
+```
+
+## 🔗 相关概念
+
+- **安全抽象**：不变量维护是安全抽象的核心
+- **安全契约文档化**：不变量必须被清楚地记录
+- **debug_assert**：在开发阶段验证不变量
+- **Drop**：析构函数中也必须维护不变量
 
 ## 📝 学习检查点
 
-- [ ] 理解不变量维护的核心概念
-- [ ] 能够在实际项目中应用不变量维护
+- [ ] 理解类型不变量、安全不变量、逻辑不变量的区别
+- [ ] 掌握使用 debug_assert 在开发阶段验证不变量
+- [ ] 能够在 unsafe 代码中正确维护内存相关的不变量
+- [ ] 理解 Drop 实现中不变量维护的重要性
+
+## 🚀 下一步
+
+→ [安全契约文档化](./09-safety-contracts)

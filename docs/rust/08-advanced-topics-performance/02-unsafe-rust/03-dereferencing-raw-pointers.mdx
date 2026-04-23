@@ -5,13 +5,287 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Unsafe Rust中的「解引用裸指针」相关知识。
+**裸指针（Raw Pointers）** 是 Rust 中的 `*const T`（不可变裸指针）和 `*mut T`（可变裸指针）。与引用不同，裸指针不受借用检查器约束，**创建**裸指针是安全的，但**解引用**裸指针必须在 `unsafe` 块中进行。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+裸指针的特点：
+- 允许存在多个指向同一位置的可变裸指针
+- 不保证指向有效内存
+- 允许为空
+- 没有自动清理机制
+
+## 🎯 创建与解引用
+
+### 从引用创建裸指针
+
+```rs
+fn main() {
+    let mut value = 42;
+
+    // 创建裸指针是安全的（不需要 unsafe）
+    let const_ptr: *const i32 = &value as *const i32;
+    let mut_ptr: *mut i32 = &mut value as *mut i32;
+
+    // 也可以使用隐式转换
+    let const_ptr2: *const i32 = &value;
+    let mut_ptr2: *mut i32 = &mut value;
+
+    println!("const_ptr 地址: {:p}", const_ptr);
+    println!("mut_ptr 地址: {:p}", mut_ptr);
+
+    // 解引用裸指针需要 unsafe
+    unsafe {
+        println!("*const_ptr = {}", *const_ptr);
+
+        // 通过可变裸指针修改值
+        *mut_ptr = 100;
+        println!("修改后 *const_ptr = {}", *const_ptr);
+    }
+
+    println!("value = {}", value); // 100
+}
+```
+
+### 从地址创建裸指针
+
+```rs
+fn main() {
+    let value = 42i32;
+    let address = &value as *const i32 as usize;
+    println!("地址: 0x{:x}", address);
+
+    // 从地址重建裸指针
+    let reconstructed = address as *const i32;
+
+    unsafe {
+        println!("重建后的值: {}", *reconstructed);
+    }
+
+    // 可以创建指向任意地址的裸指针（创建是安全的）
+    let arbitrary_ptr = 0x12345678 as *const i32;
+    println!("任意地址指针: {:p}", arbitrary_ptr);
+    // unsafe { *arbitrary_ptr } // 千万不要解引用！这是未定义行为
+}
+```
+
+## 🔧 裸指针的常见操作
+
+### 指针算术
+
+```rs
+fn main() {
+    let array = [10, 20, 30, 40, 50];
+    let base_ptr: *const i32 = array.as_ptr();
+
+    unsafe {
+        // 使用 offset / add 进行指针算术
+        for i in 0..array.len() {
+            let element = *base_ptr.add(i);
+            println!("[{}] = {} (地址: {:p})", i, element, base_ptr.add(i));
+        }
+
+        // 指针之间的距离
+        let first = base_ptr;
+        let last = base_ptr.add(4);
+        let distance = last.offset_from(first);
+        println!("\n首尾距离: {} 个元素", distance);
+    }
+}
+```
+
+### 可变裸指针操作
+
+```rs
+fn main() {
+    let mut data = vec![1, 2, 3, 4, 5];
+    let ptr: *mut i32 = data.as_mut_ptr();
+    let len = data.len();
+
+    // 通过裸指针反转数组
+    unsafe {
+        let mut left = 0;
+        let mut right = len - 1;
+        while left < right {
+            let left_ptr = ptr.add(left);
+            let right_ptr = ptr.add(right);
+            std::ptr::swap(left_ptr, right_ptr);
+            left += 1;
+            right -= 1;
+        }
+    }
+
+    println!("反转后: {:?}", data); // [5, 4, 3, 2, 1]
+
+    // 通过裸指针写入
+    unsafe {
+        ptr.add(0).write(100);
+        ptr.add(4).write(500);
+    }
+
+    println!("修改后: {:?}", data); // [100, 4, 3, 2, 500]
+}
+```
+
+### 空指针检查
+
+```rs
+fn find_element(data: &[i32], target: i32) -> *const i32 {
+    for item in data {
+        if *item == target {
+            return item as *const i32;
+        }
+    }
+    std::ptr::null()  // 返回空指针表示未找到
+}
+
+fn main() {
+    let numbers = [10, 20, 30, 40, 50];
+
+    let found = find_element(&numbers, 30);
+    let not_found = find_element(&numbers, 99);
+
+    // 解引用前检查空指针
+    if !found.is_null() {
+        unsafe {
+            println!("找到: {} (地址: {:p})", *found, found);
+        }
+    }
+
+    if not_found.is_null() {
+        println!("未找到目标值");
+    }
+
+    // 使用 as_ref 安全地转换为 Option<&T>
+    unsafe {
+        let found_ref: Option<&i32> = found.as_ref();
+        let not_found_ref: Option<&i32> = not_found.as_ref();
+        println!("found_ref: {:?}", found_ref);       // Some(30)
+        println!("not_found_ref: {:?}", not_found_ref); // None
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 实现简单的链表节点
+
+```rs
+use std::ptr;
+
+struct Node {
+    value: i32,
+    next: *mut Node,
+}
+
+struct SimpleList {
+    head: *mut Node,
+    len: usize,
+}
+
+impl SimpleList {
+    fn new() -> Self {
+        SimpleList { head: ptr::null_mut(), len: 0 }
+    }
+
+    fn push_front(&mut self, value: i32) {
+        let new_node = Box::into_raw(Box::new(Node {
+            value,
+            next: self.head,
+        }));
+        self.head = new_node;
+        self.len += 1;
+    }
+
+    fn pop_front(&mut self) -> Option<i32> {
+        if self.head.is_null() {
+            return None;
+        }
+        unsafe {
+            let old_head = Box::from_raw(self.head);
+            self.head = old_head.next;
+            self.len -= 1;
+            Some(old_head.value)
+        }
+    }
+
+    fn peek(&self) -> Option<i32> {
+        if self.head.is_null() {
+            None
+        } else {
+            unsafe { Some((*self.head).value) }
+        }
+    }
+
+    fn iter(&self) -> SimpleListIter {
+        SimpleListIter { current: self.head }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+struct SimpleListIter {
+    current: *mut Node,
+}
+
+impl Iterator for SimpleListIter {
+    type Item = i32;
+
+    fn next(&mut self) -> Option<i32> {
+        if self.current.is_null() {
+            None
+        } else {
+            unsafe {
+                let value = (*self.current).value;
+                self.current = (*self.current).next;
+                Some(value)
+            }
+        }
+    }
+}
+
+impl Drop for SimpleList {
+    fn drop(&mut self) {
+        while self.pop_front().is_some() {}
+    }
+}
+
+fn main() {
+    let mut list = SimpleList::new();
+
+    list.push_front(3);
+    list.push_front(2);
+    list.push_front(1);
+
+    println!("长度: {}", list.len());
+    println!("头部: {:?}", list.peek());
+
+    print!("遍历: ");
+    for value in list.iter() {
+        print!("{} ", value);
+    }
+    println!();
+
+    println!("弹出: {:?}", list.pop_front());
+    println!("弹出: {:?}", list.pop_front());
+    println!("长度: {}", list.len());
+}
+```
+
+## 🔗 相关概念
+
+- **unsafe 块与 unsafe fn**：裸指针解引用必须在 unsafe 块中
+- **调用 unsafe 函数**：`std::ptr` 模块的许多函数需要在 unsafe 中调用
+- **安全抽象**：在裸指针操作上构建安全的数据结构
+- **FFI**：裸指针是与 C 代码交互的主要方式
 
 ## 📝 学习检查点
 
-- [ ] 理解解引用裸指针的核心概念
-- [ ] 能够在实际项目中应用解引用裸指针
+- [ ] 理解 `*const T` 和 `*mut T` 的区别
+- [ ] 掌握从引用创建裸指针和从裸指针解引用的方法
+- [ ] 了解指针算术操作（`add`、`offset`）
+- [ ] 能够使用裸指针实现简单的数据结构
+
+## 🚀 下一步
+
+→ [调用 unsafe 函数](./04-calling-unsafe-functions)

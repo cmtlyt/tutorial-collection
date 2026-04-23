@@ -5,13 +5,354 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解高级类型系统中的「GAT 与 async trait」相关知识。
+**async trait** 是 Rust 异步编程中的核心需求之一。从 Rust 1.75 开始，原生支持在 Trait 中定义 `async fn`。而 GAT 在此之前一直是实现零成本 async trait 的关键技术基础。即使在原生 async trait 到来之后，GAT 仍然在高级异步抽象中扮演重要角色——尤其是当你需要从异步方法返回借用数据时。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+本节将探讨 GAT 与 async trait 的关系、原生 async trait 的使用方式，以及 GAT 在异步编程中仍然不可替代的场景。
+
+## 🎯 原生 async fn in trait
+
+### 基本用法（Rust 1.75+）
+
+```rs
+use std::collections::HashMap;
+
+// Rust 1.75+ 支持在 trait 中直接使用 async fn
+trait KeyValueStore {
+    async fn get(&self, key: &str) -> Option<String>;
+    async fn set(&mut self, key: &str, value: &str);
+    async fn delete(&mut self, key: &str) -> bool;
+}
+
+// 内存实现
+struct InMemoryStore {
+    data: HashMap<String, String>,
+}
+
+impl InMemoryStore {
+    fn new() -> Self {
+        InMemoryStore { data: HashMap::new() }
+    }
+}
+
+impl KeyValueStore for InMemoryStore {
+    async fn get(&self, key: &str) -> Option<String> {
+        // 模拟异步操作
+        self.data.get(key).cloned()
+    }
+
+    async fn set(&mut self, key: &str, value: &str) {
+        self.data.insert(key.to_string(), value.to_string());
+    }
+
+    async fn delete(&mut self, key: &str) -> bool {
+        self.data.remove(key).is_some()
+    }
+}
+
+// 使用泛型约束（静态分发）
+async fn initialize_store<S: KeyValueStore>(store: &mut S) {
+    store.set("app.name", "MyApp").await;
+    store.set("app.version", "1.0.0").await;
+    store.set("app.debug", "false").await;
+}
+
+#[tokio::main]
+async fn main() {
+    let mut store = InMemoryStore::new();
+
+    initialize_store(&mut store).await;
+
+    if let Some(name) = store.get("app.name").await {
+        println!("应用名: {}", name);
+    }
+
+    if let Some(version) = store.get("app.version").await {
+        println!("版本: {}", version);
+    }
+
+    let deleted = store.delete("app.debug").await;
+    println!("删除 app.debug: {}", deleted);
+    println!("再次获取: {:?}", store.get("app.debug").await);
+}
+```
+
+:::tip 依赖说明
+以上示例需要在 `Cargo.toml` 中添加 `tokio` 依赖：
+```toml
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+```
 :::
+
+### 动态分发的限制
+
+原生 async trait 在使用 `dyn Trait` 时需要注意：
+
+```rs
+use std::collections::HashMap;
+
+// 使用 trait_variant 或手动指定 Send bound
+// 默认的 async fn in trait 返回的 Future 不是 Send 的
+trait DataSource: Send + Sync {
+    // 添加返回值 Send 约束以支持跨线程使用
+    fn fetch(&self, key: &str) -> impl std::future::Future<Output = Option<String>> + Send + '_;
+}
+
+struct CacheSource {
+    cache: HashMap<String, String>,
+}
+
+impl CacheSource {
+    fn new() -> Self {
+        let mut cache = HashMap::new();
+        cache.insert("user:1".to_string(), "Alice".to_string());
+        cache.insert("user:2".to_string(), "Bob".to_string());
+        CacheSource { cache }
+    }
+}
+
+impl DataSource for CacheSource {
+    fn fetch(&self, key: &str) -> impl std::future::Future<Output = Option<String>> + Send + '_ {
+        async move {
+            self.cache.get(key).cloned()
+        }
+    }
+}
+
+struct DefaultSource;
+
+impl DataSource for DefaultSource {
+    fn fetch(&self, _key: &str) -> impl std::future::Future<Output = Option<String>> + Send + '_ {
+        async move {
+            Some("default".to_string())
+        }
+    }
+}
+
+// 使用泛型约束进行静态分发
+async fn query<D: DataSource>(source: &D, key: &str) -> String {
+    source.fetch(key).await.unwrap_or_else(|| "未找到".to_string())
+}
+
+#[tokio::main]
+async fn main() {
+    let cache = CacheSource::new();
+    let default = DefaultSource;
+
+    println!("缓存查询: {}", query(&cache, "user:1").await);
+    println!("缓存查询: {}", query(&cache, "user:99").await);
+    println!("默认查询: {}", query(&default, "anything").await);
+}
+```
+
+## 🔧 GAT 在异步 Trait 中的作用
+
+### 返回借用数据的异步方法
+
+原生 async trait 无法轻松表达"返回借用 self 数据的异步方法"。GAT 在这种场景下仍然是关键：
+
+```rs
+use std::future::Future;
+
+// 使用 GAT 精确控制 Future 的生命周期
+trait AsyncReader {
+    type ReadFuture<'a>: Future<Output = &'a [u8]> where Self: 'a;
+
+    fn read_chunk(&self, offset: usize, size: usize) -> Self::ReadFuture<'_>;
+}
+
+struct BufferReader {
+    data: Vec<u8>,
+}
+
+impl BufferReader {
+    fn new(data: Vec<u8>) -> Self {
+        BufferReader { data }
+    }
+}
+
+impl AsyncReader for BufferReader {
+    type ReadFuture<'a> = std::future::Ready<&'a [u8]> where Self: 'a;
+
+    fn read_chunk(&self, offset: usize, size: usize) -> Self::ReadFuture<'_> {
+        let end = (offset + size).min(self.data.len());
+        let start = offset.min(end);
+        std::future::ready(&self.data[start..end])
+    }
+}
+
+async fn read_all_chunks<R: AsyncReader>(reader: &R, chunk_size: usize, total_len: usize) {
+    let mut offset = 0;
+    let mut chunk_num = 0;
+    while offset < total_len {
+        let chunk = reader.read_chunk(offset, chunk_size).await;
+        if chunk.is_empty() {
+            break;
+        }
+        chunk_num += 1;
+        println!("块 #{}: {:?} ({} 字节)", chunk_num, chunk, chunk.len());
+        offset += chunk_size;
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let reader = BufferReader::new(data.clone());
+
+    println!("分块读取（每块 3 字节）:");
+    read_all_chunks(&reader, 3, data.len()).await;
+}
+```
+
+## 📝 实际应用示例
+
+### 异步中间件链
+
+```rs
+use std::future::Future;
+use std::pin::Pin;
+
+// 请求和响应类型
+#[derive(Debug, Clone)]
+struct Request {
+    path: String,
+    method: String,
+    headers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+struct Response {
+    status: u16,
+    body: String,
+}
+
+impl Response {
+    fn ok(body: &str) -> Self {
+        Response { status: 200, body: body.to_string() }
+    }
+
+    fn not_found() -> Self {
+        Response { status: 404, body: "Not Found".to_string() }
+    }
+
+    fn unauthorized() -> Self {
+        Response { status: 401, body: "Unauthorized".to_string() }
+    }
+}
+
+// 异步处理器 trait
+trait AsyncHandler: Send + Sync {
+    fn handle(&self, req: Request) -> Pin<Box<dyn Future<Output = Response> + Send + '_>>;
+}
+
+// 日志中间件
+struct LoggingMiddleware<H> {
+    inner: H,
+}
+
+impl<H: AsyncHandler> AsyncHandler for LoggingMiddleware<H> {
+    fn handle(&self, req: Request) -> Pin<Box<dyn Future<Output = Response> + Send + '_>> {
+        Box::pin(async move {
+            println!("[LOG] {} {}", req.method, req.path);
+            let response = self.inner.handle(req).await;
+            println!("[LOG] 响应状态: {}", response.status);
+            response
+        })
+    }
+}
+
+// 认证中间件
+struct AuthMiddleware<H> {
+    inner: H,
+    token: String,
+}
+
+impl<H: AsyncHandler> AsyncHandler for AuthMiddleware<H> {
+    fn handle(&self, req: Request) -> Pin<Box<dyn Future<Output = Response> + Send + '_>> {
+        Box::pin(async move {
+            let has_auth = req.headers.iter()
+                .any(|(key, value)| key == "Authorization" && value == &self.token);
+
+            if has_auth || req.path == "/public" {
+                self.inner.handle(req).await
+            } else {
+                println!("[AUTH] 认证失败: {}", req.path);
+                Response::unauthorized()
+            }
+        })
+    }
+}
+
+// 实际的业务处理器
+struct AppHandler;
+
+impl AsyncHandler for AppHandler {
+    fn handle(&self, req: Request) -> Pin<Box<dyn Future<Output = Response> + Send + '_>> {
+        Box::pin(async move {
+            match req.path.as_str() {
+                "/" => Response::ok("Welcome!"),
+                "/api/data" => Response::ok("{\"data\": [1, 2, 3]}"),
+                "/public" => Response::ok("Public content"),
+                _ => Response::not_found(),
+            }
+        })
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    // 构建中间件链: 日志 → 认证 → 业务处理
+    let handler = LoggingMiddleware {
+        inner: AuthMiddleware {
+            inner: AppHandler,
+            token: "secret-token".to_string(),
+        },
+    };
+
+    // 测试请求
+    let requests = vec![
+        Request {
+            path: "/public".to_string(),
+            method: "GET".to_string(),
+            headers: vec![],
+        },
+        Request {
+            path: "/api/data".to_string(),
+            method: "GET".to_string(),
+            headers: vec![
+                ("Authorization".to_string(), "secret-token".to_string()),
+            ],
+        },
+        Request {
+            path: "/api/data".to_string(),
+            method: "GET".to_string(),
+            headers: vec![],
+        },
+    ];
+
+    for req in requests {
+        println!("\n--- 请求: {} {} ---", req.method, req.path);
+        let response = handler.handle(req).await;
+        println!("结果: {} - {}", response.status, response.body);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **GAT 基础**：泛型关联类型的语法和基本概念
+- **GAT 高阶抽象模式**：GAT 在非异步场景中的高级用法
+- **async/await**：Rust 异步编程基础
+- **Pin 与 Unpin**：异步编程中的固定语义
 
 ## 📝 学习检查点
 
-- [ ] 理解GAT 与 async trait的核心概念
-- [ ] 能够在实际项目中应用GAT 与 async trait
+- [ ] 理解原生 async fn in trait 的用法和限制
+- [ ] 掌握 GAT 在异步 Trait 中返回借用数据的方式
+- [ ] 了解 async trait 在动态分发中的注意事项
+- [ ] 能够使用异步 Trait 构建中间件链
+
+## 🚀 下一步
+
+→ [编译期状态机](./09-compile-time-state-machines)

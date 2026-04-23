@@ -5,13 +5,290 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「编译时间优化策略」相关知识。
+Rust 的编译速度一直是开发者关注的焦点。虽然 Rust 编译器在安全检查和优化上做了大量工作，但过长的编译时间会影响开发体验。本节将介绍减少编译时间的实用策略，从依赖管理到编译配置，从增量编译到并行构建。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+影响编译时间的主要因素：
+- **依赖数量和大小**：每个依赖都需要编译
+- **泛型和宏**：大量泛型单态化和过程宏展开很耗时
+- **优化级别**：更高的优化级别编译更慢
+- **链接时间**：链接阶段可能占总时间的很大比例
+
+## 🎯 诊断编译时间
+
+### 使用 cargo build --timings
+
+```bash
+# 生成编译时间分析报告（HTML格式）
+cargo build --timings --release
+
+# 输出文件: target/cargo-timings/cargo-timing.html
+# 包含每个 crate 的编译时间和依赖关系图
+```
+
+### 使用 cargo build -Z timings（nightly）
+
+```bash
+# 更详细的时间分析
+cargo +nightly build -Z timings
+
+# 环境变量控制
+CARGO_LOG=cargo::core::compiler::timings=info cargo build
+```
+
+### 自行计时
+
+```bash
+# 清理后全量编译计时
+cargo clean
+time cargo build
+
+# 增量编译计时（修改一个文件后）
+touch src/main.rs
+time cargo build
+
+# 只看检查时间（不生成代码）
+time cargo check
+```
+
+## 🔧 依赖优化
+
+### 审查和精简依赖
+
+```bash
+# 查看依赖树
+cargo tree | head -50
+
+# 查看重复依赖
+cargo tree -d
+
+# 查看编译各 crate 的时间
+cargo build --timings
+```
+
+```toml
+# Cargo.toml — 按需启用依赖特性
+
+[dependencies]
+# 不好：启用所有特性
+# serde = { version = "1", features = ["derive"] }
+# tokio = { version = "1", features = ["full"] }
+
+# 好：只启用需要的特性
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+
+# 减少依赖链
+# 如果只需要 JSON 解析，使用轻量级的 serde_json 就够了
+# 不要引入整个 Web 框架
+```
+
+### 使用 workspace 分割大型项目
+
+```toml
+# 根 Cargo.toml
+[workspace]
+members = [
+    "core",       # 核心逻辑（很少变动）
+    "api",        # API 层（经常变动）
+    "cli",        # CLI 入口
+]
+
+# 好处：
+# 1. 修改 api 不需要重新编译 core
+# 2. 各 crate 可以并行编译
+# 3. 更好的增量编译效果
+```
+
+## 📊 编译配置优化
+
+### 使用更快的链接器
+
+链接阶段通常占编译时间的 20%-50%。使用更快的链接器可以显著减少编译时间：
+
+```toml
+# .cargo/config.toml
+
+# Linux: 使用 mold 链接器（最快）
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# macOS: 使用 lld 链接器
+# [target.x86_64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# 安装 mold:
+# Ubuntu: sudo apt install mold
+# Arch: sudo pacman -S mold
+# macOS: brew install mold
+```
+
+### 开发配置优化
+
+```toml
+# Cargo.toml
+
+[profile.dev]
+opt-level = 0         # 最快编译
+debug = true          # 调试信息
+incremental = true    # 增量编译（默认开启）
+
+# 依赖库在开发时也做一些优化（加快运行速度，编译一次后就缓存了）
+[profile.dev.package."*"]
+opt-level = 2
+
+# 特定慢依赖单独配置
+[profile.dev.package.image]
+opt-level = 2
+
+[profile.dev.package.regex]
+opt-level = 2
+```
+
+### 使用 sccache 缓存编译结果
+
+```bash
+# 安装 sccache
+cargo install sccache
+
+# 设置为编译缓存
+export RUSTC_WRAPPER=sccache
+
+# 或在 .cargo/config.toml 中设置
+# [build]
+# rustc-wrapper = "sccache"
+
+# 查看缓存统计
+sccache --show-stats
+```
+
+## 🔧 代码层面的优化
+
+### 减少泛型膨胀
+
+```rs
+use std::fmt::Display;
+
+// 不好：每种类型都会生成一份独立的代码
+fn log_bad<T: Display>(level: &str, message: T) {
+    println!("[{}] {}", level, message);
+}
+
+// 好：将泛型部分最小化，非泛型逻辑提取出来
+fn log_good<T: Display>(level: &str, message: T) {
+    log_inner(level, &message.to_string());
+}
+
+fn log_inner(level: &str, message: &str) {
+    // 这个函数只编译一次，不管有多少种 T
+    println!("[{}] {}", level, message);
+}
+
+// 更好的方式：直接接受 &dyn Display
+fn log_dynamic(level: &str, message: &dyn Display) {
+    println!("[{}] {}", level, message);
+}
+
+fn main() {
+    log_good("INFO", "应用启动");
+    log_good("DEBUG", 42);
+    log_good("WARN", 3.14);
+
+    log_dynamic("INFO", &"动态分发");
+    log_dynamic("DEBUG", &42);
+
+    println!("\n泛型膨胀优化:");
+    println!("  1. 将泛型函数的非泛型部分提取到独立函数");
+    println!("  2. 考虑使用 &dyn Trait 代替泛型（接受轻微运行时开销）");
+    println!("  3. 限制泛型参数的种类数量");
+}
+```
+
+### 条件编译减少不必要的代码
+
+```rs
+// 只在需要时编译的模块
+#[cfg(feature = "advanced-logging")]
+mod advanced_logging {
+    pub fn setup() {
+        println!("高级日志已启用");
+    }
+}
+
+// 只在测试时编译
+#[cfg(test)]
+mod heavy_test_utils {
+    pub fn generate_test_data() -> Vec<i32> {
+        (0..10000).collect()
+    }
+}
+
+fn main() {
+    println!("条件编译策略:");
+    println!("  1. 使用 feature flags 控制可选功能");
+    println!("  2. 将测试工具放在 #[cfg(test)] 中");
+    println!("  3. 平台特定代码用 #[cfg(target_os)] 保护");
+
+    #[cfg(feature = "advanced-logging")]
+    advanced_logging::setup();
+
+    #[cfg(not(feature = "advanced-logging"))]
+    println!("  高级日志未启用（减少编译量）");
+}
+```
+
+## 📝 实际应用示例
+
+### 编译时间优化清单
+
+```rs
+fn main() {
+    println!("╔════════════════════════════════════════════╗");
+    println!("║       Rust 编译时间优化清单                ║");
+    println!("╠════════════════════════════════════════════╣");
+    println!("║                                            ║");
+    println!("║ 🔗 链接器优化（效果最显著）                ║");
+    println!("║   □ 使用 mold（Linux）或 lld 链接器       ║");
+    println!("║   □ 减少 30%-60% 的链接时间               ║");
+    println!("║                                            ║");
+    println!("║ 📦 依赖优化                                ║");
+    println!("║   □ 精简 feature flags                    ║");
+    println!("║   □ 移除未使用的依赖                       ║");
+    println!("║   □ 避免重复依赖（cargo tree -d）          ║");
+    println!("║                                            ║");
+    println!("║ ⚙️  编译配置                                ║");
+    println!("║   □ dev 模式下依赖用 opt-level = 2        ║");
+    println!("║   □ 启用 sccache 编译缓存                 ║");
+    println!("║   □ 使用 cargo check 代替 cargo build     ║");
+    println!("║                                            ║");
+    println!("║ 🏗️  项目结构                                ║");
+    println!("║   □ 使用 workspace 分割大型项目            ║");
+    println!("║   □ 稳定代码提取到独立 crate               ║");
+    println!("║   □ 减少泛型单态化膨胀                     ║");
+    println!("║                                            ║");
+    println!("║ 📊 诊断工具                                ║");
+    println!("║   □ cargo build --timings                 ║");
+    println!("║   □ cargo tree -d                         ║");
+    println!("║   □ sccache --show-stats                  ║");
+    println!("║                                            ║");
+    println!("╚════════════════════════════════════════════╝");
+}
+```
+
+## 🔗 相关概念
+
+- **编译器优化级别**：opt-level 影响编译时间
+- **LTO**：LTO 会增加编译时间，开发时应禁用
+- **增量编译**：Rust 默认启用，只重新编译改变的部分
+- **cargo check**：只做类型检查不生成代码，比 build 快很多
 
 ## 📝 学习检查点
 
-- [ ] 理解编译时间优化策略的核心概念
-- [ ] 能够在实际项目中应用编译时间优化策略
+- [ ] 能够使用 `cargo build --timings` 诊断编译时间
+- [ ] 掌握使用更快链接器（mold/lld）的配置方法
+- [ ] 了解依赖优化和 feature flag 精简策略
+- [ ] 能够配置 sccache 编译缓存
+
+## 🚀 下一步
+
+→ [测试](../../09-engineering-best-practices/01-testing/01-testing-overview)

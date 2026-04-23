@@ -5,13 +5,288 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解高级类型系统中的「动态大小类型（DST）」相关知识。
+**动态大小类型（Dynamically Sized Types, DST）** 是指在编译时无法确定大小的类型。Rust 中大多数类型在编译时都有已知的固定大小，但有些类型的大小只能在运行时确定。这类类型也被称为 **unsized 类型** 或 **`?Sized` 类型**。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+最常见的 DST 包括：
+- **`str`**：字符串切片的底层类型（注意不是 `&str`）
+- **`[T]`**：切片的底层类型（注意不是 `&[T]`）
+- **`dyn Trait`**：Trait 对象的底层类型
+
+由于编译器需要知道每个值占用的内存大小，DST 不能直接存放在栈上，必须通过某种指针间接使用。
+
+## 🎯 理解 DST
+
+### 为什么需要了解 DST
+
+```rs
+fn main() {
+    // 以下是 Sized 类型（编译时已知大小）
+    let number: i32 = 42;           // 4 字节
+    let flag: bool = true;          // 1 字节
+    let array: [i32; 5] = [1, 2, 3, 4, 5]; // 20 字节
+
+    println!("i32 大小: {} 字节", std::mem::size_of::<i32>());
+    println!("bool 大小: {} 字节", std::mem::size_of::<bool>());
+    println!("[i32; 5] 大小: {} 字节", std::mem::size_of::<[i32; 5]>());
+
+    // 以下是通过引用使用的 DST
+    let greeting: &str = "Hello";           // str 是 DST，但 &str 是 Sized
+    let slice: &[i32] = &array[1..4];       // [i32] 是 DST，但 &[i32] 是 Sized
+
+    println!("&str 大小: {} 字节", std::mem::size_of::<&str>());      // 16（胖指针）
+    println!("&[i32] 大小: {} 字节", std::mem::size_of::<&[i32]>());  // 16（胖指针）
+    println!("&i32 大小: {} 字节", std::mem::size_of::<&i32>());      // 8（普通指针）
+
+    println!("内容: {}, {:?}", greeting, slice);
+}
+```
+
+### 胖指针（Fat Pointer）
+
+DST 必须通过**胖指针**使用，胖指针包含两部分信息：
+
+```rs
+fn main() {
+    // 普通引用：只有一个指针（8 字节，在 64 位系统上）
+    let value = 42i32;
+    let reference: &i32 = &value;
+    println!("&i32 大小: {} 字节", std::mem::size_of_val(&reference)); // 8
+
+    // 切片引用：指针 + 长度（16 字节）
+    let array = [1, 2, 3, 4, 5];
+    let slice: &[i32] = &array[..];
+    println!("&[i32] 大小: {} 字节", std::mem::size_of_val(&slice));   // 16
+
+    // 字符串切片引用：指针 + 长度（16 字节）
+    let text: &str = "Hello, Rust!";
+    println!("&str 大小: {} 字节", std::mem::size_of_val(&text));      // 16
+
+    // Trait 对象引用：指针 + vtable 指针（16 字节）
+    let boxed: Box<dyn std::fmt::Display> = Box::new(42);
+    println!("Box<dyn Display> 大小: {} 字节", std::mem::size_of_val(&boxed)); // 16
+
+    println!("值: {}, 切片: {:?}, 文本: {}", reference, slice, text);
+    println!("Trait 对象: {}", boxed);
+}
+```
+
+## 🔧 常见的 DST 类型
+
+### 切片类型 `[T]`
+
+```rs
+// 接受切片引用的函数
+fn sum_slice(data: &[i32]) -> i32 {
+    data.iter().sum()
+}
+
+fn print_elements<T: std::fmt::Debug>(items: &[T]) {
+    for (index, item) in items.iter().enumerate() {
+        println!("  [{}]: {:?}", index, item);
+    }
+}
+
+fn main() {
+    let array = [10, 20, 30, 40, 50];
+
+    // 从数组创建切片
+    let full_slice: &[i32] = &array;
+    let partial_slice: &[i32] = &array[1..4];
+
+    println!("完整切片之和: {}", sum_slice(full_slice));
+    println!("部分切片之和: {}", sum_slice(partial_slice));
+
+    let names = ["Alice", "Bob", "Charlie"];
+    println!("名字列表:");
+    print_elements(&names);
+}
+```
+
+### Trait 对象 `dyn Trait`
+
+```rs
+use std::fmt;
+
+trait Shape: fmt::Display {
+    fn area(&self) -> f64;
+    fn perimeter(&self) -> f64;
+}
+
+struct Circle {
+    radius: f64,
+}
+
+struct Rectangle {
+    width: f64,
+    height: f64,
+}
+
+impl Shape for Circle {
+    fn area(&self) -> f64 {
+        std::f64::consts::PI * self.radius * self.radius
+    }
+    fn perimeter(&self) -> f64 {
+        2.0 * std::f64::consts::PI * self.radius
+    }
+}
+
+impl fmt::Display for Circle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "圆(半径={})", self.radius)
+    }
+}
+
+impl Shape for Rectangle {
+    fn area(&self) -> f64 {
+        self.width * self.height
+    }
+    fn perimeter(&self) -> f64 {
+        2.0 * (self.width + self.height)
+    }
+}
+
+impl fmt::Display for Rectangle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "矩形({}x{})", self.width, self.height)
+    }
+}
+
+// 使用 Trait 对象（DST）的函数
+fn describe_shape(shape: &dyn Shape) {
+    println!("{}: 面积={:.2}, 周长={:.2}", shape, shape.area(), shape.perimeter());
+}
+
+fn total_area(shapes: &[Box<dyn Shape>]) -> f64 {
+    shapes.iter().map(|s| s.area()).sum()
+}
+
+fn main() {
+    let circle = Circle { radius: 5.0 };
+    let rect = Rectangle { width: 4.0, height: 6.0 };
+
+    describe_shape(&circle);
+    describe_shape(&rect);
+
+    let shapes: Vec<Box<dyn Shape>> = vec![
+        Box::new(Circle { radius: 3.0 }),
+        Box::new(Rectangle { width: 2.0, height: 5.0 }),
+        Box::new(Circle { radius: 1.5 }),
+    ];
+
+    println!("总面积: {:.2}", total_area(&shapes));
+}
+```
+
+### 在 struct 中使用 DST
+
+结构体的**最后一个字段**可以是 DST，这使得该结构体本身也成为 DST：
+
+```rs
+use std::fmt;
+
+// 最后一个字段是 DST，整个 struct 也是 DST
+struct Header {
+    length: u32,
+    data: [u8],  // DST 字段必须放在最后
+}
+
+// 更实用的例子：自定义的切片包装器
+#[repr(transparent)]
+struct Path(str);
+
+impl Path {
+    fn new(path: &str) -> &Path {
+        // 安全地将 &str 转换为 &Path
+        // 因为 Path 是 str 的透明包装
+        unsafe { &*(path as *const str as *const Path) }
+    }
+
+    fn extension(&self) -> Option<&str> {
+        self.0.rsplit('.').next()
+    }
+
+    fn file_name(&self) -> Option<&str> {
+        self.0.rsplit('/').next()
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Path {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", &self.0)
+    }
+}
+
+fn main() {
+    let path = Path::new("/home/user/document.txt");
+    println!("路径: {}", path);
+    println!("文件名: {:?}", path.file_name());
+    println!("扩展名: {:?}", path.extension());
+    println!("字符串: {}", path.as_str());
+}
+```
+
+## 📝 实际应用示例
+
+### 通用数据容器
+
+```rs
+use std::fmt;
+
+// 使用 Trait 对象实现类型擦除的容器
+struct TypeErasedVec {
+    items: Vec<Box<dyn fmt::Debug>>,
+}
+
+impl TypeErasedVec {
+    fn new() -> Self {
+        TypeErasedVec { items: Vec::new() }
+    }
+
+    fn push<T: fmt::Debug + 'static>(&mut self, item: T) {
+        self.items.push(Box::new(item));
+    }
+
+    fn debug_print(&self) {
+        for (index, item) in self.items.iter().enumerate() {
+            println!("[{}] {:?}", index, item);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+}
+
+fn main() {
+    let mut container = TypeErasedVec::new();
+    container.push(42i32);
+    container.push("hello");
+    container.push(vec![1, 2, 3]);
+    container.push(true);
+
+    println!("容器大小: {}", container.len());
+    container.debug_print();
+}
+```
+
+## 🔗 相关概念
+
+- **Sized trait**：标记类型在编译时是否有已知大小
+- **`?Sized` bound**：放宽 `Sized` 约束以接受 DST
+- **Trait 对象**：`dyn Trait` 是典型的 DST 应用
+- **胖指针**：DST 引用的底层表示
 
 ## 📝 学习检查点
 
-- [ ] 理解动态大小类型（DST）的核心概念
-- [ ] 能够在实际项目中应用动态大小类型（DST）
+- [ ] 理解什么是动态大小类型以及它们为什么不能直接放在栈上
+- [ ] 掌握胖指针的组成（数据指针 + 元数据）
+- [ ] 了解 `str`、`[T]`、`dyn Trait` 三种常见 DST
+- [ ] 能够在 struct 中使用 DST 字段
+
+## 🚀 下一步
+
+→ [Sized trait](./05-sized-trait)

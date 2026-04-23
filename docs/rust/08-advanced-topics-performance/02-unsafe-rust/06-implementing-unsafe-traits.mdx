@@ -5,13 +5,295 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Unsafe Rust中的「实现 unsafe trait」相关知识。
+**unsafe trait** 是指那些实现时需要保证某些编译器无法自动验证的不变量的 trait。`unsafe trait` 的定义者声明"实现此 trait 需要满足特定的安全契约"，而实现者通过 `unsafe impl` 承诺"我已经手动验证这些契约成立"。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+标准库中最重要的 unsafe trait：
+- **`Send`**：类型的值可以安全地跨线程发送
+- **`Sync`**：类型的引用可以安全地被多个线程共享
+- **`GlobalAlloc`**：全局内存分配器接口
+
+## 🎯 Send 与 Sync
+
+### 自动实现机制
+
+大多数类型会自动实现 `Send` 和 `Sync`，但某些类型需要手动实现：
+
+```rs
+use std::cell::Cell;
+
+// 大多数类型自动实现 Send 和 Sync
+fn assert_send<T: Send>() {}
+fn assert_sync<T: Sync>() {}
+
+fn main() {
+    // 以下类型自动实现了 Send 和 Sync
+    assert_send::<i32>();
+    assert_sync::<i32>();
+    assert_send::<String>();
+    assert_sync::<String>();
+    assert_send::<Vec<i32>>();
+    assert_sync::<Vec<i32>>();
+
+    // Cell<T> 实现了 Send 但没有实现 Sync
+    assert_send::<Cell<i32>>();
+    // assert_sync::<Cell<i32>>(); // 编译错误！
+
+    // *const T 和 *mut T 既没有 Send 也没有 Sync
+    // assert_send::<*const i32>(); // 编译错误！
+    // assert_sync::<*const i32>(); // 编译错误！
+
+    println!("类型安全检查通过");
+}
+```
+
+### 手动实现 Send 和 Sync
+
+```rs
+use std::fmt;
+
+// 包含裸指针的类型不会自动实现 Send/Sync
+struct SharedBuffer {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl SharedBuffer {
+    fn new(size: usize) -> Self {
+        let layout = std::alloc::Layout::from_size_align(size, 1).unwrap();
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        SharedBuffer { ptr, len: size }
+    }
+
+    fn write(&mut self, offset: usize, data: &[u8]) {
+        assert!(offset + data.len() <= self.len, "写入越界");
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(offset), data.len());
+        }
+    }
+
+    fn read(&self, offset: usize, len: usize) -> Vec<u8> {
+        assert!(offset + len <= self.len, "读取越界");
+        let mut result = vec![0u8; len];
+        unsafe {
+            std::ptr::copy_nonoverlapping(self.ptr.add(offset), result.as_mut_ptr(), len);
+        }
+        result
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl Drop for SharedBuffer {
+    fn drop(&mut self) {
+        let layout = std::alloc::Layout::from_size_align(self.len, 1).unwrap();
+        unsafe {
+            std::alloc::dealloc(self.ptr, layout);
+        }
+    }
+}
+
+impl fmt::Debug for SharedBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SharedBuffer(len={})", self.len)
+    }
+}
+
+// Safety: SharedBuffer 内部的裸指针指向独占的堆内存，
+// 该内存不会被其他代码访问，因此可以安全地跨线程发送。
+unsafe impl Send for SharedBuffer {}
+
+// Safety: SharedBuffer 的 read 方法只进行只读访问，
+// 但 write 方法需要 &mut self，编译器会保证排他访问。
+// 因此共享引用 &SharedBuffer 可以安全地被多线程共享。
+unsafe impl Sync for SharedBuffer {}
+
+fn main() {
+    let mut buffer = SharedBuffer::new(64);
+    buffer.write(0, b"Hello, unsafe trait!");
+    let data = buffer.read(0, 20);
+    println!("读取: {:?}", String::from_utf8_lossy(&data));
+    println!("缓冲区: {:?}", buffer);
+
+    // 现在可以跨线程使用了
+    let handle = std::thread::spawn(move || {
+        let data = buffer.read(0, 5);
+        println!("子线程读取: {:?}", String::from_utf8_lossy(&data));
+        buffer.len()
+    });
+
+    let len = handle.join().unwrap();
+    println!("缓冲区长度: {}", len);
+}
+```
+
+## 🔧 自定义 unsafe trait
+
+### 定义和实现
+
+```rs
+/// 一个标记类型可以安全地进行零初始化的 unsafe trait。
+///
+/// # Safety
+///
+/// 实现者必须保证该类型的全零字节表示是一个有效的值。
+/// 例如，`bool` 不能实现此 trait，因为 `0x02` 不是有效的 bool 值，
+/// 尽管 `0x00`（false）是有效的。
+unsafe trait Zeroable {
+    fn zeroed() -> Self;
+}
+
+unsafe impl Zeroable for u8 {
+    fn zeroed() -> Self { 0 }
+}
+
+unsafe impl Zeroable for u32 {
+    fn zeroed() -> Self { 0 }
+}
+
+unsafe impl Zeroable for u64 {
+    fn zeroed() -> Self { 0 }
+}
+
+unsafe impl Zeroable for f32 {
+    fn zeroed() -> Self { 0.0 }
+}
+
+unsafe impl Zeroable for f64 {
+    fn zeroed() -> Self { 0.0 }
+}
+
+// 对于复合类型，所有字段都必须是 Zeroable
+#[repr(C)]
+#[derive(Debug)]
+struct Vector3 {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+// Safety: Vector3 的所有字段都是 f64，全零表示是有效的 (0.0, 0.0, 0.0)
+unsafe impl Zeroable for Vector3 {
+    fn zeroed() -> Self {
+        Vector3 { x: 0.0, y: 0.0, z: 0.0 }
+    }
+}
+
+fn create_zeroed_array<T: Zeroable + std::fmt::Debug>(count: usize) -> Vec<T> {
+    (0..count).map(|_| T::zeroed()).collect()
+}
+
+fn main() {
+    let zeros_u32: Vec<u32> = create_zeroed_array(5);
+    println!("u32 零数组: {:?}", zeros_u32);
+
+    let zeros_f64: Vec<f64> = create_zeroed_array(3);
+    println!("f64 零数组: {:?}", zeros_f64);
+
+    let vectors: Vec<Vector3> = create_zeroed_array(2);
+    println!("Vector3 零数组: {:?}", vectors);
+}
+```
+
+## 📝 实际应用示例
+
+### 类型安全的资源标记
+
+```rs
+/// 标记一个类型代表有效的数据库字段类型。
+///
+/// # Safety
+///
+/// 实现者必须保证：
+/// 1. 该类型可以安全地序列化为数据库支持的格式
+/// 2. 从数据库读取的数据可以安全地反序列化为该类型
+unsafe trait DbField: std::fmt::Debug {
+    fn type_name() -> &'static str;
+    fn to_db_string(&self) -> String;
+}
+
+unsafe impl DbField for i32 {
+    fn type_name() -> &'static str { "INTEGER" }
+    fn to_db_string(&self) -> String { self.to_string() }
+}
+
+unsafe impl DbField for i64 {
+    fn type_name() -> &'static str { "BIGINT" }
+    fn to_db_string(&self) -> String { self.to_string() }
+}
+
+unsafe impl DbField for String {
+    fn type_name() -> &'static str { "TEXT" }
+    fn to_db_string(&self) -> String { format!("'{}'", self.replace('\'', "''")) }
+}
+
+unsafe impl DbField for f64 {
+    fn type_name() -> &'static str { "REAL" }
+    fn to_db_string(&self) -> String { self.to_string() }
+}
+
+unsafe impl DbField for bool {
+    fn type_name() -> &'static str { "BOOLEAN" }
+    fn to_db_string(&self) -> String { if *self { "1" } else { "0" }.to_string() }
+}
+
+struct Column<T: DbField> {
+    name: String,
+    value: T,
+}
+
+impl<T: DbField> Column<T> {
+    fn new(name: &str, value: T) -> Self {
+        Column { name: name.to_string(), value }
+    }
+
+    fn to_sql_fragment(&self) -> String {
+        format!("{} = {}", self.name, self.value.to_db_string())
+    }
+
+    fn column_definition(&self) -> String {
+        format!("{} {}", self.name, T::type_name())
+    }
+}
+
+fn main() {
+    let id = Column::new("id", 42i32);
+    let name = Column::new("name", "O'Brien".to_string());
+    let score = Column::new("score", 95.5f64);
+    let active = Column::new("active", true);
+
+    println!("列定义:");
+    println!("  {}", id.column_definition());
+    println!("  {}", name.column_definition());
+    println!("  {}", score.column_definition());
+    println!("  {}", active.column_definition());
+
+    println!("\nSQL 片段:");
+    println!("  {}", id.to_sql_fragment());
+    println!("  {}", name.to_sql_fragment());
+    println!("  {}", score.to_sql_fragment());
+    println!("  {}", active.to_sql_fragment());
+}
+```
+
+## 🔗 相关概念
+
+- **unsafe 块与 unsafe fn**：理解 unsafe 的基础
+- **Send 和 Sync**：最常见的 unsafe trait
+- **标记 trait**：`Sized`、`Copy` 等自动 trait
+- **安全契约文档化**：实现 unsafe trait 时必须文档化安全保证
 
 ## 📝 学习检查点
 
-- [ ] 理解实现 unsafe trait的核心概念
-- [ ] 能够在实际项目中应用实现 unsafe trait
+- [ ] 理解 unsafe trait 与普通 trait 的区别
+- [ ] 掌握 Send 和 Sync 的含义以及手动实现的场景
+- [ ] 能够定义自己的 unsafe trait 并文档化安全契约
+- [ ] 理解编译器自动实现 Send/Sync 的规则
+
+## 🚀 下一步
+
+→ [安全抽象](./07-safe-abstractions)

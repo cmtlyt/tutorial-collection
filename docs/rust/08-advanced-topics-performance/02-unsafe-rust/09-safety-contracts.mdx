@@ -5,13 +5,379 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Unsafe Rust中的「安全契约文档化」相关知识。
+**安全契约（Safety Contract）** 是 unsafe 代码中最重要的文档实践。当一个函数被标记为 `unsafe`，或者内部使用了 `unsafe` 块，开发者有责任清楚地记录：调用者需要满足什么条件、实现者保证了什么行为。这些文档化的约定就是安全契约。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+Rust 社区已形成标准的文档约定：
+- **`# Safety`** 段落：说明调用 unsafe 函数时必须满足的前置条件
+- **`// SAFETY:`** 注释：说明 unsafe 块中为什么操作是安全的
+
+## 🎯 unsafe fn 的文档约定
+
+### `# Safety` 段落
+
+每个 `unsafe fn` 都**必须**有一个 `# Safety` 文档段落，列出所有前置条件：
+
+```rs
+/// 从缓冲区的指定偏移位置读取一个值。
+///
+/// 这个函数直接从裸指针读取，跳过了边界检查。
+///
+/// # Safety
+///
+/// 调用者必须保证：
+/// - `buffer` 必须是一个有效的、已对齐的指向 `T` 类型数组的指针
+/// - `offset` 必须小于缓冲区中的元素数量
+/// - `buffer` 指向的内存在调用期间不能被其他线程修改
+unsafe fn read_at<T: Copy>(buffer: *const T, offset: usize) -> T {
+    *buffer.add(offset)
+}
+
+/// 将两个不重叠的内存区域互换。
+///
+/// # Safety
+///
+/// 调用者必须保证：
+/// - `a` 和 `b` 都是有效的、可写的、已对齐的指针
+/// - `a` 和 `b` 指向的内存区域不能重叠（即 `a` 和 `b` 之间的距离 >= `count`）
+/// - 两个指针指向的内存区域内的 `count` 个 `T` 值都已被正确初始化
+unsafe fn swap_regions<T>(a: *mut T, b: *mut T, count: usize) {
+    for i in 0..count {
+        std::ptr::swap(a.add(i), b.add(i));
+    }
+}
+
+fn main() {
+    let data = [10, 20, 30, 40, 50];
+    let value = unsafe {
+        // SAFETY: data 是有效数组，偏移 2 < 长度 5
+        read_at(data.as_ptr(), 2)
+    };
+    println!("读取: {}", value); // 30
+
+    let mut arr = [1, 2, 3, 4, 5, 6];
+    unsafe {
+        // SAFETY:
+        // - arr.as_mut_ptr() 和 arr.as_mut_ptr().add(3) 都是有效指针
+        // - 前 3 个元素和后 3 个元素不重叠
+        // - 所有 6 个元素都已初始化
+        swap_regions(arr.as_mut_ptr(), arr.as_mut_ptr().add(3), 3);
+    }
+    println!("交换后: {:?}", arr); // [4, 5, 6, 1, 2, 3]
+}
+```
+
+### 条件式安全（Panics vs Safety）
+
+区分 panics（运行时错误但不是 UB）和 safety violations（可能导致未定义行为）：
+
+```rs
+use std::fmt;
+
+/// 从排序数组中使用二分查找定位元素。
+///
+/// # Safety
+///
+/// 调用者必须保证 `data` 已按升序排序。如果数据未排序，
+/// 函数不会导致未定义行为，但返回的结果可能不正确。
+///
+/// # Panics
+///
+/// 如果 `data` 为空，此函数会 panic。
+///
+/// # Examples
+///
+/// ```
+/// let sorted = [1, 3, 5, 7, 9];
+/// let result = unsafe { binary_search(&sorted, 5) };
+/// assert_eq!(result, Some(2));
+/// ```
+unsafe fn binary_search(data: &[i32], target: i32) -> Option<usize> {
+    assert!(!data.is_empty(), "数据不能为空");
+
+    let mut low = 0;
+    let mut high = data.len() - 1;
+
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        match data[mid].cmp(&target) {
+            std::cmp::Ordering::Equal => return Some(mid),
+            std::cmp::Ordering::Less => low = mid + 1,
+            std::cmp::Ordering::Greater => {
+                if mid == 0 {
+                    break;
+                }
+                high = mid - 1;
+            }
+        }
+    }
+    None
+}
+
+fn main() {
+    let sorted = [2, 4, 6, 8, 10, 12, 14, 16];
+
+    let result = unsafe {
+        // SAFETY: sorted 数组已按升序排列
+        binary_search(&sorted, 10)
+    };
+    println!("查找 10: {:?}", result); // Some(4)
+
+    let result = unsafe {
+        // SAFETY: sorted 数组已按升序排列
+        binary_search(&sorted, 7)
+    };
+    println!("查找 7: {:?}", result); // None
+}
+```
+
+## 🔧 unsafe 块的 SAFETY 注释
+
+### `// SAFETY:` 注释
+
+每个 `unsafe` 块都应有一个 `// SAFETY:` 注释，解释为什么此处的 unsafe 操作是安全的：
+
+```rs
+fn process_buffer(data: &mut [u8]) {
+    let len = data.len();
+    let ptr = data.as_mut_ptr();
+
+    if len >= 4 {
+        // SAFETY: 已检查 len >= 4，因此从 ptr 开始读取 4 字节不会越界。
+        // ptr 来自有效的可变切片，已正确对齐。
+        unsafe {
+            let first_four = std::slice::from_raw_parts(ptr, 4);
+            println!("前四字节: {:?}", first_four);
+        }
+    }
+
+    if len >= 2 {
+        // SAFETY: 已检查 len >= 2，因此索引 0 和 len-1 都在范围内。
+        // 两个指针指向不同位置（因为 len >= 2），所以不重叠。
+        unsafe {
+            std::ptr::swap(ptr, ptr.add(len - 1));
+        }
+        println!("交换首尾后: {:?}", data);
+    }
+}
+
+fn main() {
+    let mut buffer = vec![1u8, 2, 3, 4, 5];
+    process_buffer(&mut buffer);
+}
+```
+
+### 多步骤 SAFETY 推理
+
+```rs
+/// 合并两个已排序的切片为一个排序的 Vec。
+fn merge_sorted(left: &[i32], right: &[i32]) -> Vec<i32> {
+    let total_len = left.len() + right.len();
+    let mut result = Vec::with_capacity(total_len);
+    let result_ptr = result.as_mut_ptr();
+
+    let mut left_idx = 0;
+    let mut right_idx = 0;
+    let mut write_idx = 0;
+
+    while left_idx < left.len() && right_idx < right.len() {
+        // SAFETY:
+        // 1. result 的容量为 total_len，write_idx < total_len（因为总写入数等于消耗的元素数）
+        // 2. left_idx < left.len()，所以 left[left_idx] 不越界
+        // 3. right_idx < right.len()，所以 right[right_idx] 不越界
+        // 4. result_ptr.add(write_idx) 不会超出分配的内存
+        unsafe {
+            if left[left_idx] <= right[right_idx] {
+                result_ptr.add(write_idx).write(left[left_idx]);
+                left_idx += 1;
+            } else {
+                result_ptr.add(write_idx).write(right[right_idx]);
+                right_idx += 1;
+            }
+        }
+        write_idx += 1;
+    }
+
+    // 复制剩余元素
+    while left_idx < left.len() {
+        // SAFETY: write_idx < total_len，left_idx < left.len()
+        unsafe {
+            result_ptr.add(write_idx).write(left[left_idx]);
+        }
+        left_idx += 1;
+        write_idx += 1;
+    }
+
+    while right_idx < right.len() {
+        // SAFETY: write_idx < total_len，right_idx < right.len()
+        unsafe {
+            result_ptr.add(write_idx).write(right[right_idx]);
+        }
+        right_idx += 1;
+        write_idx += 1;
+    }
+
+    // SAFETY: 已写入 write_idx 个元素（== total_len），所有元素已初始化
+    unsafe {
+        result.set_len(write_idx);
+    }
+
+    result
+}
+
+fn main() {
+    let left = [1, 3, 5, 7, 9];
+    let right = [2, 4, 6, 8, 10];
+    let merged = merge_sorted(&left, &right);
+    println!("合并: {:?}", merged);
+
+    let a = [1, 4, 7];
+    let b = [2, 3, 5, 6, 8];
+    let merged2 = merge_sorted(&a, &b);
+    println!("合并: {:?}", merged2);
+}
+```
+
+## 📝 实际应用示例
+
+### 完整文档化的安全 API
+
+```rs
+use std::fmt;
+
+/// 固定大小的栈分配缓冲区。
+///
+/// 将数据存储在栈上预分配的数组中，避免堆分配。
+/// 适用于小数据量、性能关键的场景。
+///
+/// # Invariants
+///
+/// - `len` 始终 <= `N`
+/// - `data[0..len]` 中的所有元素都已通过 `MaybeUninit::write` 初始化
+/// - `data[len..N]` 中的元素处于未初始化状态
+pub struct StackBuffer<T, const N: usize> {
+    data: [std::mem::MaybeUninit<T>; N],
+    len: usize,
+}
+
+impl<T, const N: usize> StackBuffer<T, N> {
+    /// 创建一个空的 StackBuffer。
+    pub fn new() -> Self {
+        StackBuffer {
+            // SAFETY: MaybeUninit<T> 的数组不需要初始化
+            data: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            len: 0,
+        }
+    }
+
+    /// 推入一个元素。如果缓冲区已满，返回 Err。
+    pub fn push(&mut self, value: T) -> Result<(), T> {
+        if self.len >= N {
+            return Err(value);
+        }
+        // SAFETY: self.len < N，所以 self.data[self.len] 在数组范围内
+        self.data[self.len].write(value);
+        self.len += 1;
+        Ok(())
+    }
+
+    /// 弹出最后一个元素。
+    pub fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        // SAFETY: self.data[self.len] 在 push 时已被初始化，
+        // 且 len 已减一保证不会被重复读取
+        Some(unsafe { self.data[self.len].assume_init_read() })
+    }
+
+    /// 获取元素的不可变引用。
+    pub fn get(&self, index: usize) -> Option<&T> {
+        if index >= self.len {
+            return None;
+        }
+        // SAFETY: index < self.len，所以 self.data[index] 已初始化
+        Some(unsafe { self.data[index].assume_init_ref() })
+    }
+
+    /// 返回已使用的切片。
+    pub fn as_slice(&self) -> &[T] {
+        // SAFETY: self.data[0..self.len] 中的所有元素都已初始化，
+        // 且 MaybeUninit<T> 与 T 有相同的内存布局
+        unsafe {
+            std::slice::from_raw_parts(self.data.as_ptr() as *const T, self.len)
+        }
+    }
+
+    /// 返回当前元素数量。
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// 返回缓冲区容量。
+    pub fn capacity(&self) -> usize {
+        N
+    }
+
+    /// 检查缓冲区是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl<T, const N: usize> Drop for StackBuffer<T, N> {
+    fn drop(&mut self) {
+        // SAFETY: 只 drop self.data[0..self.len] 中已初始化的元素
+        for i in 0..self.len {
+            unsafe {
+                self.data[i].assume_init_drop();
+            }
+        }
+    }
+}
+
+impl<T: fmt::Debug, const N: usize> fmt::Debug for StackBuffer<T, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.as_slice().iter()).finish()
+    }
+}
+
+fn main() {
+    let mut buf: StackBuffer<String, 4> = StackBuffer::new();
+
+    buf.push("hello".to_string()).unwrap();
+    buf.push("world".to_string()).unwrap();
+    buf.push("from".to_string()).unwrap();
+    buf.push("rust".to_string()).unwrap();
+
+    println!("缓冲区: {:?}", buf);
+    println!("长度: {}/{}", buf.len(), buf.capacity());
+    println!("索引 1: {:?}", buf.get(1));
+    println!("切片: {:?}", buf.as_slice());
+
+    // 满了之后推入失败
+    let overflow = buf.push("overflow".to_string());
+    println!("溢出: {:?}", overflow.err());
+
+    println!("弹出: {:?}", buf.pop());
+    println!("弹出后: {:?}", buf);
+}
+```
+
+## 🔗 相关概念
+
+- **unsafe 块与 unsafe fn**：安全契约是 unsafe 代码的必要文档
+- **不变量维护**：安全契约记录了不变量的要求
+- **Miri**：可以验证 unsafe 代码是否违反了安全契约
+- **Clippy lint**：`clippy::undocumented_unsafe_blocks` 会检查未文档化的 unsafe 块
 
 ## 📝 学习检查点
 
-- [ ] 理解安全契约文档化的核心概念
-- [ ] 能够在实际项目中应用安全契约文档化
+- [ ] 掌握 `# Safety` 文档段落的编写规范
+- [ ] 掌握 `// SAFETY:` 行内注释的使用
+- [ ] 理解前置条件与不变量的关系
+- [ ] 能够为复杂的 unsafe 代码编写完整的安全契约
+
+## 🚀 下一步
+
+→ [Miri 检测未定义行为](./10-miri-undefined-behavior)

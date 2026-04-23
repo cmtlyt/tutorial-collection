@@ -5,13 +5,270 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「flamegraph 火焰图」相关知识。
+**火焰图（Flamegraph）** 是一种可视化程序性能分析数据的方式，由 Brendan Gregg 发明。它将程序的调用栈信息以层叠的方式展示，宽度代表函数占用的时间比例，使得性能瓶颈一目了然。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+在 Rust 生态中，**`cargo-flamegraph`** 是最常用的火焰图工具，它底层使用 `perf`（Linux）或 `dtrace`（macOS）来收集性能采样数据。
+
+## 🎯 安装和使用
+
+### 安装 cargo-flamegraph
+
+```bash
+cargo install flamegraph
+```
+
+系统依赖：
+- **Linux**：需要安装 `perf`（`linux-tools-generic` 或 `perf` 包）
+- **macOS**：需要安装 `dtrace`（通常已预装）
+
+### 基本使用
+
+```bash
+# 生成火焰图（默认输出 flamegraph.svg）
+cargo flamegraph
+
+# 指定二进制文件
+cargo flamegraph --bin my_app
+
+# 指定运行参数
+cargo flamegraph -- --input data.txt
+
+# 指定输出文件
+cargo flamegraph -o profile.svg
+
+# 生成反转火焰图（icicle graph）
+cargo flamegraph --reverse
+```
+
+### 为基准测试生成火焰图
+
+```bash
+# 为 criterion 基准测试生成火焰图
+cargo flamegraph --bench my_benchmark -- --bench
+
+# 对特定的 benchmark 函数生成火焰图
+cargo flamegraph --bench my_benchmark -- --bench "sorting"
+```
+
+## 🔧 可分析的示例程序
+
+### CPU 密集型程序
+
+```rs
+use std::time::Instant;
+
+fn is_prime(n: u64) -> bool {
+    if n < 2 {
+        return false;
+    }
+    if n == 2 || n == 3 {
+        return true;
+    }
+    if n % 2 == 0 || n % 3 == 0 {
+        return false;
+    }
+    let mut i = 5;
+    while i * i <= n {
+        if n % i == 0 || n % (i + 2) == 0 {
+            return false;
+        }
+        i += 6;
+    }
+    true
+}
+
+fn count_primes(limit: u64) -> usize {
+    (2..limit).filter(|&n| is_prime(n)).count()
+}
+
+fn sieve_of_eratosthenes(limit: usize) -> Vec<bool> {
+    let mut is_prime = vec![true; limit];
+    if limit > 0 {
+        is_prime[0] = false;
+    }
+    if limit > 1 {
+        is_prime[1] = false;
+    }
+
+    let mut i = 2;
+    while i * i < limit {
+        if is_prime[i] {
+            let mut j = i * i;
+            while j < limit {
+                is_prime[j] = false;
+                j += i;
+            }
+        }
+        i += 1;
+    }
+    is_prime
+}
+
+fn count_primes_sieve(limit: usize) -> usize {
+    sieve_of_eratosthenes(limit).iter().filter(|&&b| b).count()
+}
+
+fn matrix_multiply(a: &Vec<Vec<f64>>, b: &Vec<Vec<f64>>) -> Vec<Vec<f64>> {
+    let n = a.len();
+    let mut result = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n {
+                result[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    result
+}
+
+fn main() {
+    let limit = 100_000;
+
+    // 素数计算
+    let start = Instant::now();
+    let count1 = count_primes(limit);
+    let time1 = start.elapsed();
+
+    let start = Instant::now();
+    let count2 = count_primes_sieve(limit as usize);
+    let time2 = start.elapsed();
+
+    println!("逐个检查: {} 个素数, 耗时 {:?}", count1, time1);
+    println!("筛法:      {} 个素数, 耗时 {:?}", count2, time2);
+
+    // 矩阵乘法
+    let size = 100;
+    let a: Vec<Vec<f64>> = (0..size)
+        .map(|i| (0..size).map(|j| (i * size + j) as f64).collect())
+        .collect();
+    let b = a.clone();
+
+    let start = Instant::now();
+    let result = matrix_multiply(&a, &b);
+    let time = start.elapsed();
+
+    println!("\n{}x{} 矩阵乘法: {:?}", size, size, time);
+    println!("结果 [0][0] = {:.2}", result[0][0]);
+
+    println!("\n运行 `cargo flamegraph` 查看性能分析");
+}
+```
+
+## 📊 如何阅读火焰图
+
+### 火焰图结构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        main                                  │ ← 宽度 = 100% 时间
+├──────────────────────────┬──────────────────────────────────┤
+│     count_primes         │        matrix_multiply            │
+├────────┬─────────────────┤                                  │
+│ filter │   is_prime       │                                  │
+│        ├────────┬────────┤                                  │
+│        │ n%2    │ loop   │                                  │
+└────────┴────────┴────────┴──────────────────────────────────┘
+
+- 横轴宽度：函数占用 CPU 时间的比例（越宽 = 越多时间）
+- 纵轴层叠：调用栈深度（下方调用上方）
+- 颜色：无特殊含义（仅用于区分）
+- 重点关注：顶部最宽的方块（"flat" 时间最多的函数）
+```
+
+### 关键指标
+
+- **宽的顶层方块**：该函数本身（不含子调用）消耗了大量 CPU
+- **宽的底层方块**：该函数（含子调用）消耗了大量 CPU
+- **深的调用栈**：可能存在不必要的递归或调用层级
+
+## 📝 实际应用示例
+
+### 优化前后对比
+
+```rs
+use std::collections::HashMap;
+use std::time::Instant;
+
+// 优化前：频繁的堆分配
+fn word_count_naive(text: &str) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for word in text.split_whitespace() {
+        let word = word.to_lowercase(); // 每次都分配新 String
+        *counts.entry(word).or_insert(0) += 1;
+    }
+    counts
+}
+
+// 优化后：预分配 + 减少分配
+fn word_count_optimized(text: &str) -> HashMap<String, usize> {
+    let word_count_estimate = text.len() / 5; // 粗略估计单词数
+    let mut counts = HashMap::with_capacity(word_count_estimate);
+    let mut lower_buf = String::new();
+
+    for word in text.split_whitespace() {
+        lower_buf.clear();
+        for c in word.chars() {
+            lower_buf.extend(c.to_lowercase());
+        }
+        counts.entry(lower_buf.clone())
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+    }
+    counts
+}
+
+fn generate_text(word_count: usize) -> String {
+    let words = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
+                 "Hello", "World", "Rust", "Performance", "Optimization", "is", "fun"];
+    let mut text = String::with_capacity(word_count * 8);
+    for i in 0..word_count {
+        if i > 0 {
+            text.push(' ');
+        }
+        text.push_str(words[i % words.len()]);
+    }
+    text
+}
+
+fn main() {
+    let text = generate_text(100_000);
+
+    let start = Instant::now();
+    let counts1 = word_count_naive(&text);
+    let time1 = start.elapsed();
+
+    let start = Instant::now();
+    let counts2 = word_count_optimized(&text);
+    let time2 = start.elapsed();
+
+    println!("朴素版本: {:?} ({} 个不同单词)", time1, counts1.len());
+    println!("优化版本: {:?} ({} 个不同单词)", time2, counts2.len());
+    println!("加速比: {:.2}x", time1.as_nanos() as f64 / time2.as_nanos() as f64);
+
+    // 打印前几个高频词
+    let mut sorted: Vec<_> = counts1.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1));
+    println!("\n高频词:");
+    for (word, count) in sorted.iter().take(5) {
+        println!("  {}: {}", word, count);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **cargo bench**：基准测试提供数据，火焰图提供可视化
+- **criterion**：可以结合 criterion 生成特定基准测试的火焰图
+- **perf / valgrind**：火焰图底层依赖的性能采样工具
+- **编译器优化级别**：火焰图应在 release 模式下生成
 
 ## 📝 学习检查点
 
-- [ ] 理解flamegraph 火焰图的核心概念
-- [ ] 能够在实际项目中应用flamegraph 火焰图
+- [ ] 能够安装和使用 `cargo-flamegraph`
+- [ ] 掌握火焰图的阅读方法（宽度、层叠关系）
+- [ ] 理解火焰图中的"顶层宽方块"意味着什么
+- [ ] 能够通过火焰图识别性能瓶颈
+
+## 🚀 下一步
+
+→ [perf / valgrind 集成](./05-perf-valgrind)

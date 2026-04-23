@@ -5,13 +5,367 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Unsafe Rust中的「Miri 检测未定义行为」相关知识。
+**Miri** 是 Rust 官方提供的实验性解释器，它可以检测 unsafe Rust 代码中的**未定义行为（Undefined Behavior, UB）**。Miri 通过在 MIR（Mid-level Intermediate Representation）层面解释执行程序，能够捕捉到许多编译器和常规测试无法发现的内存安全问题。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+Miri 可以检测的问题包括：
+- 越界内存访问
+- 使用未初始化内存
+- 使用已释放的内存（use-after-free）
+- 无效的指针解引用
+- 违反指针别名规则（Stacked Borrows）
+- 数据竞争（实验性）
+- 内存泄漏
+
+## 🎯 安装和使用 Miri
+
+### 安装
+
+```bash
+# 安装 Miri（需要 nightly 工具链）
+rustup +nightly component add miri
+
+# 验证安装
+cargo +nightly miri --version
+```
+
+### 基本使用
+
+```bash
+# 使用 Miri 运行项目
+cargo +nightly miri run
+
+# 使用 Miri 运行测试
+cargo +nightly miri test
+
+# 使用 Miri 运行特定测试
+cargo +nightly miri test test_name
+```
+
+## 🔧 Miri 能检测的问题
+
+### 越界访问
+
+```rs
+fn main() {
+    let array = [1, 2, 3];
+    let ptr = array.as_ptr();
+
+    // 正确的访问
+    let valid = unsafe { *ptr.add(2) };
+    println!("有效访问: {}", valid);
+
+    // 以下代码在 Miri 下会报错（越界访问）：
+    // let invalid = unsafe { *ptr.add(5) };
+    // println!("越界: {}", invalid);
+
+    println!("Miri 会检测越界的裸指针访问");
+}
+```
+
+### 使用未初始化内存
+
+```rs
+use std::mem::MaybeUninit;
+
+fn safe_example() {
+    // 正确：先初始化再读取
+    let mut value = MaybeUninit::<i32>::uninit();
+    value.write(42);
+    let initialized = unsafe { value.assume_init() };
+    println!("正确初始化: {}", initialized);
+}
+
+fn main() {
+    safe_example();
+
+    // 以下代码在 Miri 下会报错（读取未初始化内存）：
+    // let uninit: MaybeUninit<i32> = MaybeUninit::uninit();
+    // let bad = unsafe { uninit.assume_init() };
+
+    println!("Miri 会检测对未初始化内存的读取");
+}
+```
+
+### use-after-free
+
+```rs
+fn main() {
+    // 正确的使用方式
+    let data = Box::new(42);
+    let value = *data; // 在 drop 之前使用
+    println!("正确使用: {}", value);
+
+    // 以下模式在 Miri 下会被检测到（use-after-free）：
+    // let ptr = Box::into_raw(Box::new(100));
+    // unsafe {
+    //     drop(Box::from_raw(ptr)); // 释放内存
+    //     let bad = *ptr;            // 使用已释放的内存！
+    // }
+
+    println!("Miri 会检测 use-after-free");
+}
+```
+
+### 违反别名规则（Stacked Borrows）
+
+```rs
+fn main() {
+    // 正确的别名使用
+    let mut data = 42;
+    let reference = &mut data;
+    *reference = 100;
+    println!("正确修改: {}", data);
+
+    // Miri 的 Stacked Borrows 模型可以检测更微妙的别名违规
+    // 例如：通过裸指针绕过借用规则
+    let mut value = 10;
+    let ptr1 = &mut value as *mut i32;
+
+    unsafe {
+        // 正确：通过单个指针修改
+        *ptr1 = 20;
+        println!("通过 ptr1 修改: {}", *ptr1);
+    }
+
+    println!("Miri 的 Stacked Borrows 检查别名违规");
+}
+```
+
+## 📊 编写 Miri 友好的测试
+
+### 测试 unsafe 代码
+
+```rs
+// 模拟一个简单的手动管理内存的栈
+struct UnsafeStack<T> {
+    ptr: *mut T,
+    len: usize,
+    capacity: usize,
+}
+
+impl<T> UnsafeStack<T> {
+    fn new(capacity: usize) -> Self {
+        let layout = std::alloc::Layout::array::<T>(capacity).unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) as *mut T };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        UnsafeStack { ptr, len: 0, capacity }
+    }
+
+    fn push(&mut self, value: T) -> bool {
+        if self.len >= self.capacity {
+            return false;
+        }
+        unsafe {
+            self.ptr.add(self.len).write(value);
+        }
+        self.len += 1;
+        true
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        unsafe { Some(self.ptr.add(self.len).read()) }
+    }
+
+    fn peek(&self) -> Option<&T> {
+        if self.len == 0 {
+            return None;
+        }
+        unsafe { Some(&*self.ptr.add(self.len - 1)) }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl<T> Drop for UnsafeStack<T> {
+    fn drop(&mut self) {
+        // 先 drop 所有已初始化的元素
+        while self.pop().is_some() {}
+
+        let layout = std::alloc::Layout::array::<T>(self.capacity).unwrap();
+        unsafe {
+            std::alloc::dealloc(self.ptr as *mut u8, layout);
+        }
+    }
+}
+
+// 这些测试可以通过 cargo +nightly miri test 运行
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_push_pop() {
+        let mut stack = UnsafeStack::new(4);
+        assert!(stack.push(1));
+        assert!(stack.push(2));
+        assert!(stack.push(3));
+        assert_eq!(stack.pop(), Some(3));
+        assert_eq!(stack.pop(), Some(2));
+        assert_eq!(stack.pop(), Some(1));
+        assert_eq!(stack.pop(), None);
+    }
+
+    #[test]
+    fn test_capacity_limit() {
+        let mut stack = UnsafeStack::new(2);
+        assert!(stack.push(1));
+        assert!(stack.push(2));
+        assert!(!stack.push(3)); // 满了
+        assert_eq!(stack.len(), 2);
+    }
+
+    #[test]
+    fn test_peek() {
+        let mut stack = UnsafeStack::new(4);
+        assert_eq!(stack.peek(), None);
+        stack.push(42);
+        assert_eq!(stack.peek(), Some(&42));
+        // peek 不应该移除元素
+        assert_eq!(stack.peek(), Some(&42));
+        assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn test_with_strings() {
+        // 测试 Drop 类型以确保内存正确释放
+        let mut stack = UnsafeStack::new(3);
+        stack.push(String::from("hello"));
+        stack.push(String::from("world"));
+        assert_eq!(stack.pop(), Some(String::from("world")));
+        // stack 在这里被 drop，应该正确释放 "hello"
+    }
+
+    #[test]
+    fn test_empty_drop() {
+        // 空栈的 drop 不应该崩溃
+        let _stack: UnsafeStack<String> = UnsafeStack::new(4);
+    }
+}
+
+fn main() {
+    let mut stack = UnsafeStack::new(4);
+    stack.push("hello".to_string());
+    stack.push("world".to_string());
+    stack.push("miri".to_string());
+
+    println!("顶部: {:?}", stack.peek());
+    println!("长度: {}", stack.len());
+
+    while let Some(value) = stack.pop() {
+        println!("弹出: {}", value);
+    }
+
+    println!("\n运行 `cargo +nightly miri test` 可以检测上述代码的内存安全性");
+}
+```
+
+## 📝 实际应用示例
+
+### Miri 的常用配置
+
+```rs
+/// Miri 配置和使用指南示例。
+///
+/// 常用的 Miri 命令：
+///
+/// ```bash
+/// # 基本运行
+/// cargo +nightly miri run
+///
+/// # 运行测试
+/// cargo +nightly miri test
+///
+/// # 设置 Stacked Borrows（默认开启）
+/// MIRIFLAGS="-Zmiri-disable-stacked-borrows" cargo +nightly miri test
+///
+/// # 检测内存泄漏
+/// MIRIFLAGS="-Zmiri-disable-leak-checking" cargo +nightly miri test
+///
+/// # 设置随机种子（用于检测依赖随机行为的 bug）
+/// MIRIFLAGS="-Zmiri-seed=42" cargo +nightly miri test
+///
+/// # 使用 Tree Borrows 模型（替代 Stacked Borrows）
+/// MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test
+/// ```
+
+// 一个更完整的、Miri 友好的数据结构示例
+struct SafeVec<T> {
+    data: Vec<T>,
+}
+
+impl<T: Clone + std::fmt::Debug> SafeVec<T> {
+    fn new() -> Self {
+        SafeVec { data: Vec::new() }
+    }
+
+    fn push(&mut self, value: T) {
+        self.data.push(value);
+    }
+
+    fn get(&self, index: usize) -> Option<&T> {
+        self.data.get(index)
+    }
+
+    fn swap(&mut self, a: usize, b: usize) {
+        assert!(a < self.data.len() && b < self.data.len(), "索引越界");
+        // 使用安全的 swap 方法而非裸指针
+        self.data.swap(a, b);
+    }
+
+    fn reverse_in_place(&mut self) {
+        self.data.reverse();
+    }
+
+    fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+}
+
+fn main() {
+    let mut vec = SafeVec::new();
+    vec.push(1);
+    vec.push(2);
+    vec.push(3);
+    vec.push(4);
+    vec.push(5);
+
+    println!("原始: {:?}", vec.as_slice());
+
+    vec.swap(0, 4);
+    println!("交换后: {:?}", vec.as_slice());
+
+    vec.reverse_in_place();
+    println!("反转后: {:?}", vec.as_slice());
+
+    println!("索引 2: {:?}", vec.get(2));
+    println!("越界: {:?}", vec.get(100));
+
+    println!("\n提示: 使用 `cargo +nightly miri run` 验证此程序无未定义行为");
+}
+```
+
+## 🔗 相关概念
+
+- **unsafe 块与 unsafe fn**：Miri 主要检测 unsafe 代码中的问题
+- **安全契约文档化**：文档化的安全契约帮助理解 Miri 报告的错误
+- **不变量维护**：Miri 能帮助发现不变量被违反的情况
+- **Stacked Borrows / Tree Borrows**：Miri 使用的别名模型
 
 ## 📝 学习检查点
 
-- [ ] 理解Miri 检测未定义行为的核心概念
-- [ ] 能够在实际项目中应用Miri 检测未定义行为
+- [ ] 能够安装和使用 Miri
+- [ ] 理解 Miri 能检测的主要未定义行为类型
+- [ ] 能够编写 Miri 友好的测试用例
+- [ ] 了解 Miri 的常用配置选项
+
+## 🚀 下一步
+
+→ [性能优化](../03-performance-optimization/01-performance-optimization-overview)

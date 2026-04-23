@@ -5,13 +5,233 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「小字符串优化」相关知识。
+**小字符串优化（Small String Optimization, SSO）** 是一种将短字符串直接存储在栈上（内联在结构体内部），而非堆上的优化技术。标准库的 `String` 总是进行堆分配，但很多实际场景中字符串很短（如标识符、字段名、错误码等），为它们进行堆分配是浪费的。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+Rust 生态中有多个实现了 SSO 的 crate：
+- **`compact_str`**：最流行的 SSO 字符串库，API 与 `String` 兼容
+- **`smol_str`**：不可变的 SSO 字符串，适合只读场景
+- **`smartstring`**：另一个 SSO 实现
+
+## 🎯 SSO 的原理
+
+### 为什么 String 不够高效
+
+```rs
+fn main() {
+    // String 在 64 位系统上占用 24 字节（指针 + 长度 + 容量）
+    println!("String 大小: {} 字节", std::mem::size_of::<String>());
+
+    // 即使存储 "hi" 这样的短字符串，也需要：
+    // 1. 栈上 24 字节存储 String 结构体
+    // 2. 堆上额外分配（至少 2 字节用于数据）
+    let short = String::from("hi");
+    println!("短字符串 '{}' 实际占用:", short);
+    println!("  栈上: {} 字节", std::mem::size_of::<String>());
+    println!("  堆上: {} 字节 (容量={})", short.capacity(), short.capacity());
+
+    // SSO 的核心思想：24 字节的 String 结构体空间本身就够存储短字符串了
+    // 如果字符串 <= 23 字节，直接存在结构体内部，不需要堆分配
+    println!("\nSSO 可以在 24 字节内内联存储最多 23 字节的字符串");
+}
+```
+
+### 手动实现简单的 SSO
+
+```rs
+use std::fmt;
+
+const INLINE_CAP: usize = 23; // 24 字节 - 1 字节标记
+
+enum CompactStringInner {
+    Inline {
+        data: [u8; INLINE_CAP],
+        len: u8, // 也用作 inline/heap 标记
+    },
+    Heap(String),
+}
+
+struct CompactString {
+    inner: CompactStringInner,
+}
+
+impl CompactString {
+    fn new(s: &str) -> Self {
+        if s.len() <= INLINE_CAP {
+            let mut data = [0u8; INLINE_CAP];
+            data[..s.len()].copy_from_slice(s.as_bytes());
+            CompactString {
+                inner: CompactStringInner::Inline {
+                    data,
+                    len: s.len() as u8,
+                },
+            }
+        } else {
+            CompactString {
+                inner: CompactStringInner::Heap(s.to_string()),
+            }
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match &self.inner {
+            CompactStringInner::Inline { data, len } => {
+                unsafe { std::str::from_utf8_unchecked(&data[..*len as usize]) }
+            }
+            CompactStringInner::Heap(s) => s.as_str(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match &self.inner {
+            CompactStringInner::Inline { len, .. } => *len as usize,
+            CompactStringInner::Heap(s) => s.len(),
+        }
+    }
+
+    fn is_inline(&self) -> bool {
+        matches!(self.inner, CompactStringInner::Inline { .. })
+    }
+}
+
+impl fmt::Display for CompactString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl fmt::Debug for CompactString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let storage = if self.is_inline() { "inline" } else { "heap" };
+        write!(f, "CompactString({:?}, {})", self.as_str(), storage)
+    }
+}
+
+fn main() {
+    let short = CompactString::new("hello");
+    let medium = CompactString::new("this fits inline!!");  // 18 bytes, fits
+    let long = CompactString::new("this string is too long to be stored inline, so it goes to heap");
+
+    println!("{:?}", short);
+    println!("{:?}", medium);
+    println!("{:?}", long);
+
+    println!("\nCompactString 结构大小: {} 字节", std::mem::size_of::<CompactString>());
+    println!("String 结构大小:        {} 字节", std::mem::size_of::<String>());
+}
+```
+
+## 🔧 使用 compact_str crate
+
+### 基本用法
+
+在 `Cargo.toml` 中添加：
+
+```toml
+[dependencies]
+compact_str = "0.8"
+```
+
+```rs
+use compact_str::CompactString;
+
+fn main() {
+    // CompactString 的 API 与 String 几乎完全一致
+    let short: CompactString = CompactString::from("hello");
+    let long: CompactString = CompactString::from("this is a longer string that exceeds inline capacity");
+
+    println!("短字符串: {} (len={})", short, short.len());
+    println!("长字符串: {} (len={})", long, long.len());
+
+    // 支持 format!
+    let formatted = CompactString::from(format!("count: {}", 42));
+    println!("格式化: {}", formatted);
+
+    // 与 &str 和 String 互操作
+    let as_str: &str = short.as_str();
+    let as_string: String = long.to_string();
+    println!("as_str: {}", as_str);
+    println!("as_string: {}", as_string);
+}
+```
+
+## 📝 实际应用示例
+
+### 标识符和键值存储
+
+```rs
+use std::collections::HashMap;
+use std::time::Instant;
+
+// 场景：大量短键值对的存储
+// 许多配置项、字段名、标签名都是短字符串
+
+fn build_config_string(count: usize) -> HashMap<String, String> {
+    let mut map = HashMap::with_capacity(count);
+    for i in 0..count {
+        map.insert(format!("key_{}", i), format!("val_{}", i));
+    }
+    map
+}
+
+// 使用 &'static str 避免分配（适用于编译时已知的键）
+fn build_config_static(count: usize) -> HashMap<&'static str, String> {
+    let keys: Vec<&'static str> = vec![
+        "host", "port", "database", "username", "password",
+        "pool_size", "timeout", "retry", "log_level", "debug",
+    ];
+    let mut map = HashMap::with_capacity(keys.len());
+    for (i, key) in keys.iter().enumerate().take(count.min(keys.len())) {
+        map.insert(*key, format!("value_{}", i));
+    }
+    map
+}
+
+fn main() {
+    let count = 10_000;
+
+    let start = Instant::now();
+    let config1 = build_config_string(count);
+    let t1 = start.elapsed();
+
+    println!("String 键: {:?} ({} 项)", t1, config1.len());
+
+    let start = Instant::now();
+    let config2 = build_config_static(10);
+    let t2 = start.elapsed();
+
+    println!("静态键:    {:?} ({} 项)", t2, config2.len());
+
+    // 内存占用对比
+    println!("\n内存占用:");
+    println!("  String: {} 字节/个", std::mem::size_of::<String>());
+    println!("  &str:   {} 字节/个", std::mem::size_of::<&str>());
+
+    // 打印几个配置项
+    if let Some(val) = config2.get("host") {
+        println!("\n  host = {}", val);
+    }
+    if let Some(val) = config2.get("port") {
+        println!("  port = {}", val);
+    }
+
+    println!("\n提示: 对于大量短字符串，使用 compact_str 或字符串驻留（interning）");
+}
+```
+
+## 🔗 相关概念
+
+- **减少堆分配**：SSO 是减少堆分配的专门技术
+- **Cow 类型**：`Cow<str>` 可以延迟分配
+- **字符串驻留（Interning）**：对重复字符串只存储一份
+- **对象池**：另一种复用内存的方式
 
 ## 📝 学习检查点
 
-- [ ] 理解小字符串优化的核心概念
-- [ ] 能够在实际项目中应用小字符串优化
+- [ ] 理解 SSO 的核心原理（内联存储 vs 堆存储）
+- [ ] 了解标准库 `String` 的内存布局和开销
+- [ ] 知道何时使用 SSO（大量短字符串场景）
+- [ ] 了解 `compact_str`、`smol_str` 等 SSO crate
+
+## 🚀 下一步
+
+→ [对象池](./08-object-pool)

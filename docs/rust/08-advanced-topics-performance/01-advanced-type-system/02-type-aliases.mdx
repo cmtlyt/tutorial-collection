@@ -5,13 +5,254 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解高级类型系统中的「类型别名」相关知识。
+**类型别名（Type Alias）** 允许为已有类型创建一个新名称，使代码更具可读性和可维护性。在 Rust 中通过 `type` 关键字定义类型别名，它不会创建新类型，只是为现有类型提供一个替代名称。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+类型别名在以下场景中特别有用：
+- 简化冗长的泛型类型签名
+- 为特定领域创建语义化的类型名称
+- 统一错误类型的定义
+- 减少代码重复
+
+## 🎯 基础语法
+
+### 简单类型别名
+
+```rs
+// 为基本类型创建别名
+type Kilometers = i32;
+type Meters = i32;
+
+fn main() {
+    let distance: Kilometers = 42;
+    let height: Meters = 180;
+
+    // 类型别名不会创建新类型，因此可以混用
+    // 这既是优点也是需要注意的地方
+    let total: i32 = distance + height;
+    println!("总和: {}", total);
+}
+```
+
+:::warning 注意
+类型别名只是现有类型的另一个名字，编译器不会区分原始类型和别名类型。如果你需要类型安全的新类型，应该使用 **Newtype 模式**（用 struct 包装）。
 :::
+
+### 泛型类型别名
+
+```rs
+use std::collections::HashMap;
+
+// 简化复杂的泛型类型
+type StringMap<V> = HashMap<String, V>;
+type UserScores = HashMap<String, Vec<f64>>;
+
+fn get_top_score(scores: &UserScores) -> Option<(&String, &f64)> {
+    scores.iter()
+        .filter_map(|(name, scores)| {
+            scores.iter()
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .map(|score| (name, score))
+        })
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+}
+
+fn main() {
+    let mut scores: UserScores = HashMap::new();
+    scores.insert("Alice".to_string(), vec![95.0, 87.5, 92.0]);
+    scores.insert("Bob".to_string(), vec![88.0, 91.5, 85.0]);
+
+    if let Some((name, score)) = get_top_score(&scores) {
+        println!("最高分: {} - {:.1}", name, score);
+    }
+
+    let mut config: StringMap<String> = HashMap::new();
+    config.insert("host".to_string(), "localhost".to_string());
+    config.insert("port".to_string(), "8080".to_string());
+    println!("配置项数量: {}", config.len());
+}
+```
+
+## 🔧 简化复杂类型签名
+
+### Result 类型别名
+
+标准库中大量使用这种模式，`std::io::Result` 就是最典型的例子：
+
+```rs
+use std::fmt;
+use std::num::ParseIntError;
+
+// 为模块定义统一的 Result 类型
+type Result<T> = std::result::Result<T, AppError>;
+
+#[derive(Debug)]
+enum AppError {
+    ParseError(ParseIntError),
+    ValidationError(String),
+    NotFound(String),
+}
+
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppError::ParseError(err) => write!(f, "解析错误: {}", err),
+            AppError::ValidationError(msg) => write!(f, "验证错误: {}", msg),
+            AppError::NotFound(item) => write!(f, "未找到: {}", item),
+        }
+    }
+}
+
+fn parse_age(input: &str) -> Result<u8> {
+    let age: u8 = input.parse().map_err(AppError::ParseError)?;
+    if age > 150 {
+        return Err(AppError::ValidationError("年龄不合理".to_string()));
+    }
+    Ok(age)
+}
+
+fn find_user(name: &str) -> Result<String> {
+    match name {
+        "admin" => Ok("管理员用户".to_string()),
+        _ => Err(AppError::NotFound(name.to_string())),
+    }
+}
+
+fn main() {
+    match parse_age("25") {
+        Ok(age) => println!("年龄: {}", age),
+        Err(err) => println!("错误: {}", err),
+    }
+
+    match parse_age("200") {
+        Ok(age) => println!("年龄: {}", age),
+        Err(err) => println!("错误: {}", err),
+    }
+
+    match find_user("guest") {
+        Ok(user) => println!("用户: {}", user),
+        Err(err) => println!("错误: {}", err),
+    }
+}
+```
+
+### 简化闭包和函数指针类型
+
+```rs
+// 复杂的闭包类型别名
+type Transformer = Box<dyn Fn(f64) -> f64>;
+type Predicate<T> = Box<dyn Fn(&T) -> bool>;
+type Callback = Box<dyn FnOnce(String) -> ()>;
+
+fn apply_transformations(value: f64, transforms: &[Transformer]) -> f64 {
+    transforms.iter().fold(value, |acc, transform| transform(acc))
+}
+
+fn filter_with<T>(items: Vec<T>, predicate: Predicate<T>) -> Vec<T> {
+    items.into_iter().filter(|item| predicate(item)).collect()
+}
+
+fn main() {
+    let transforms: Vec<Transformer> = vec![
+        Box::new(|x| x * 2.0),
+        Box::new(|x| x + 10.0),
+        Box::new(|x| x.sqrt()),
+    ];
+
+    let result = apply_transformations(9.0, &transforms);
+    println!("变换结果: {:.2}", result); // (9 * 2 + 10).sqrt() = 5.29
+
+    let numbers = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let is_even: Predicate<i32> = Box::new(|n| n % 2 == 0);
+    let evens = filter_with(numbers, is_even);
+    println!("偶数: {:?}", evens);
+}
+```
+
+## 📝 实际应用示例
+
+### 网络编程中的类型别名
+
+```rs
+use std::collections::HashMap;
+
+// 模拟网络编程中的类型别名
+type Port = u16;
+type IpAddress = String;
+type Headers = HashMap<String, String>;
+type StatusCode = u16;
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: Headers,
+    body: Option<String>,
+}
+
+struct HttpResponse {
+    status: StatusCode,
+    headers: Headers,
+    body: String,
+}
+
+type Handler = Box<dyn Fn(&HttpRequest) -> HttpResponse>;
+type RouteTable = HashMap<String, Handler>;
+
+fn create_response(status: StatusCode, body: &str) -> HttpResponse {
+    let mut headers = Headers::new();
+    headers.insert("Content-Type".to_string(), "text/plain".to_string());
+    headers.insert("Content-Length".to_string(), body.len().to_string());
+
+    HttpResponse {
+        status,
+        headers,
+        body: body.to_string(),
+    }
+}
+
+fn main() {
+    let mut routes: RouteTable = HashMap::new();
+
+    routes.insert("/hello".to_string(), Box::new(|_req| {
+        create_response(200, "Hello, World!")
+    }));
+
+    routes.insert("/status".to_string(), Box::new(|_req| {
+        create_response(200, "OK")
+    }));
+
+    // 模拟请求
+    let request = HttpRequest {
+        method: "GET".to_string(),
+        path: "/hello".to_string(),
+        headers: Headers::new(),
+        body: None,
+    };
+
+    if let Some(handler) = routes.get(&request.path) {
+        let response = handler(&request);
+        println!("状态码: {}", response.status);
+        println!("响应体: {}", response.body);
+    }
+
+    let server_port: Port = 8080;
+    let server_ip: IpAddress = "127.0.0.1".to_string();
+    println!("服务器: {}:{}", server_ip, server_port);
+}
+```
+
+## 🔗 相关概念
+
+- **Newtype 模式**：当需要类型安全性时，使用 struct 包装替代类型别名
+- **泛型**：类型别名可以保留泛型参数，提供部分特化
+- **Trait 关联类型**：Trait 中的 `type` 定义的是关联类型，不是别名
 
 ## 📝 学习检查点
 
-- [ ] 理解类型别名的核心概念
-- [ ] 能够在实际项目中应用类型别名
+- [ ] 理解类型别名与新类型（Newtype）的区别
+- [ ] 能够使用类型别名简化复杂的泛型类型
+- [ ] 掌握 Result 类型别名模式
+- [ ] 了解类型别名在标准库中的应用
+
+## 🚀 下一步
+
+→ [Never 类型（!）](./03-never-type)

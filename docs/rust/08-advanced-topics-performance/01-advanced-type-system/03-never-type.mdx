@@ -5,13 +5,240 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解高级类型系统中的「Never 类型（!）」相关知识。
+**Never 类型（`!`）** 是 Rust 中的一种特殊类型，表示一个永远不会产生值的计算。它也被称为 **空类型（empty type）** 或 **底类型（bottom type）**。在类型理论中，`!` 可以被强制转换为任何其他类型，因为它永远不会实际产生一个值。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+Never 类型在以下场景中出现：
+- 永远不会返回的函数（发散函数）
+- `panic!`、`loop`、`process::exit` 等表达式
+- `match` 分支中需要统一类型的场景
+- `continue`、`break`、`return` 等控制流表达式
+
+## 🎯 发散函数
+
+### 基本概念
+
+返回类型为 `!` 的函数被称为**发散函数（diverging function）**，它们永远不会正常返回：
+
+```rs
+// 发散函数：永远不会返回
+fn forever() -> ! {
+    loop {
+        // 无限循环，永远不会退出
+    }
+}
+
+fn crash(message: &str) -> ! {
+    panic!("致命错误: {}", message);
+}
+
+fn exit_program() -> ! {
+    std::process::exit(1);
+}
+
+fn main() {
+    // 发散函数通常不会在 main 中直接调用
+    // 除非你确实想要终止程序
+    println!("程序正常运行");
+
+    // crash("测试"); // 取消注释会导致 panic
+}
+```
+
+### 标准库中的发散函数
+
+```rs
+fn main() {
+    // panic! 宏返回 !
+    let value: i32 = match "42".parse::<i32>() {
+        Ok(n) => n,
+        Err(_) => panic!("解析失败"),  // panic! 的类型是 !
+    };
+    println!("解析结果: {}", value);
+
+    // todo!() 和 unimplemented!() 也返回 !
+    let _placeholder: String = if true {
+        "hello".to_string()
+    } else {
+        todo!("稍后实现")  // ! 可以转换为 String
+    };
+}
+```
+
+## 🔧 Never 类型的类型强制转换
+
+`!` 最重要的特性是它可以被强制转换为**任何类型**。这是因为一个永远不会产生值的表达式，可以安全地"假装"它能产生任何类型的值——反正它永远不会真的产生。
+
+### 在 match 中的应用
+
+```rs
+fn parse_or_default(input: &str) -> i32 {
+    match input.parse::<i32>() {
+        Ok(n) => n,           // 类型: i32
+        Err(_) => return 0,   // return 的类型是 !，自动转换为 i32
+    }
+}
+
+fn describe_number(n: i32) -> &'static str {
+    match n {
+        0 => "零",
+        1..=9 => "个位数",
+        10..=99 => "两位数",
+        100..=999 => "三位数",
+        _ => panic!("数字太大了"),  // ! 转换为 &str
+    }
+}
+
+fn main() {
+    println!("{}", parse_or_default("42"));   // 42
+    println!("{}", parse_or_default("abc"));  // 0
+    println!("{}", describe_number(5));        // 个位数
+    println!("{}", describe_number(42));       // 两位数
+}
+```
+
+### 在 if/else 中的应用
+
+```rs
+fn get_value(optional: Option<i32>) -> i32 {
+    // continue、break、return 的类型都是 !
+    if let Some(v) = optional {
+        v
+    } else {
+        panic!("值不存在")  // ! 强制转换为 i32
+    }
+}
+
+fn process_items(items: &[i32]) -> Vec<i32> {
+    let mut result = Vec::new();
+    for &item in items {
+        let processed = if item > 0 {
+            item * 2
+        } else {
+            continue  // continue 的类型是 !，转换为 i32
+        };
+        result.push(processed);
+    }
+    result
+}
+
+fn main() {
+    println!("值: {}", get_value(Some(42)));
+
+    let items = vec![1, -2, 3, -4, 5];
+    let result = process_items(&items);
+    println!("处理结果: {:?}", result); // [2, 6, 10]
+}
+```
+
+## 🎯 实际应用场景
+
+### 服务器主循环
+
+```rs
+use std::collections::HashMap;
+
+struct Server {
+    handlers: HashMap<String, String>,
+    request_count: u64,
+}
+
+impl Server {
+    fn new() -> Self {
+        Server {
+            handlers: HashMap::new(),
+            request_count: 0,
+        }
+    }
+
+    fn register(&mut self, path: &str, response: &str) {
+        self.handlers.insert(path.to_string(), response.to_string());
+    }
+
+    fn handle_request(&mut self, path: &str) -> String {
+        self.request_count += 1;
+        match self.handlers.get(path) {
+            Some(response) => response.clone(),
+            None => "404 Not Found".to_string(),
+        }
+    }
+}
+
+// 模拟一个简化版的服务器运行（非无限循环以便示例可运行）
+fn run_server_demo() {
+    let mut server = Server::new();
+    server.register("/", "Welcome!");
+    server.register("/api", "API Response");
+
+    // 模拟处理几个请求
+    let paths = vec!["/", "/api", "/unknown"];
+    for path in paths {
+        let response = server.handle_request(path);
+        println!("[请求 #{}] {} -> {}", server.request_count, path, response);
+    }
+}
+
+fn main() {
+    run_server_demo();
+}
+```
+
+### 错误处理中的 Never 类型
+
+```rs
+use std::num::ParseIntError;
+
+#[derive(Debug)]
+enum ConfigError {
+    MissingField(String),
+    InvalidValue(String, ParseIntError),
+}
+
+fn get_config_value(key: &str) -> Result<String, ConfigError> {
+    // 模拟配置查找
+    match key {
+        "port" => Ok("8080".to_string()),
+        "workers" => Ok("4".to_string()),
+        _ => Err(ConfigError::MissingField(key.to_string())),
+    }
+}
+
+fn get_required_config(key: &str) -> String {
+    match get_config_value(key) {
+        Ok(value) => value,
+        // panic! 返回 !，可以用在需要 String 的地方
+        Err(ConfigError::MissingField(field)) => {
+            panic!("必需的配置项 '{}' 缺失", field)
+        }
+        Err(ConfigError::InvalidValue(field, err)) => {
+            panic!("配置项 '{}' 的值无效: {}", field, err)
+        }
+    }
+}
+
+fn main() {
+    let port = get_required_config("port");
+    println!("端口: {}", port);
+
+    let workers = get_required_config("workers");
+    println!("工作线程: {}", workers);
+
+    // get_required_config("missing"); // 取消注释会 panic
+}
+```
+
+## 🔗 相关概念
+
+- **类型别名**：`type Result<T> = std::result::Result<T, Error>` 常与 `!` 类型配合使用
+- **动态大小类型**：`!` 是零大小类型的极端情况
+- **Enum 变体**：无变体的枚举（`enum Void {}`）类似于 `!`，但 `!` 是内建类型
 
 ## 📝 学习检查点
 
-- [ ] 理解Never 类型（!）的核心概念
-- [ ] 能够在实际项目中应用Never 类型（!）
+- [ ] 理解 Never 类型（`!`）的含义及其在类型系统中的角色
+- [ ] 掌握发散函数的定义和使用场景
+- [ ] 理解 `!` 可以被强制转换为任何类型的原理
+- [ ] 能够识别标准库中返回 `!` 的函数和宏
+
+## 🚀 下一步
+
+→ [动态大小类型（DST）](./04-dynamically-sized-types)

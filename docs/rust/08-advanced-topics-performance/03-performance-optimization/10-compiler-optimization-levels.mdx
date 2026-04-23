@@ -5,13 +5,263 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「编译器优化级别」相关知识。
+Rust 编译器（`rustc`）基于 LLVM 后端，提供了多个**优化级别**来控制编译时间和运行时性能之间的权衡。不同的优化级别会影响内联、循环展开、死代码消除、向量化等优化策略的激进程度。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+理解优化级别对以下场景至关重要：
+- 开发阶段需要快速编译
+- 生产部署需要最高性能
+- 嵌入式场景需要最小二进制体积
+- 基准测试需要在正确的配置下运行
+
+## 🎯 优化级别总览
+
+### 各级别对比
+
+| 级别 | 命令 | 编译速度 | 运行性能 | 二进制大小 | 使用场景 |
+|------|------|----------|----------|------------|----------|
+| `0` | `cargo build` | 最快 | 最慢 | 较大 | 开发调试 |
+| `1` | - | 快 | 一般 | 中等 | 快速检查 |
+| `2` | `cargo build --release` | 慢 | 快 | 中等 | 生产默认 |
+| `3` | - | 最慢 | 最快 | 最大 | 极致性能 |
+| `s` | - | 慢 | 较快 | 较小 | 体积优化 |
+| `z` | - | 慢 | 一般 | 最小 | 嵌入式 |
+
+### 在 Cargo.toml 中配置
+
+```toml
+# 开发配置（cargo build）
+[profile.dev]
+opt-level = 0       # 默认值
+debug = true         # 包含调试信息
+overflow-checks = true  # 溢出检查
+
+# 发布配置（cargo build --release）
+[profile.release]
+opt-level = 3        # 最高优化
+debug = false        # 不包含调试信息
+lto = true           # 链接时优化
+strip = true         # 剥离符号
+
+# 测试配置
+[profile.test]
+opt-level = 0        # 测试用快速编译
+
+# 基准测试配置
+[profile.bench]
+opt-level = 3
+debug = true         # 保留调试信息用于性能分析
+
+# 自定义 profile
+[profile.release-with-debug]
+inherits = "release"
+debug = true         # release 性能 + 调试信息
+strip = false
+```
+
+## 🔧 各优化级别的详细说明
+
+### opt-level = 0（无优化）
+
+```rs
+fn main() {
+    // opt-level 0：编译器几乎不做优化
+    // 优点：编译速度最快，调试体验最好
+    // 缺点：运行速度很慢
+
+    let mut sum = 0i64;
+    for i in 0..1_000_000 {
+        sum += i;
+    }
+    println!("sum = {}", sum);
+
+    // 在 opt-level 0 下，上面的循环会被逐次执行
+    // 在 opt-level 2+ 下，编译器可能会将其优化为公式计算
+
+    println!("\n提示:");
+    println!("  cargo build          → opt-level 0 (调试)");
+    println!("  cargo build --release → opt-level 2 (发布)");
+}
+```
+
+### opt-level = 2 vs 3
+
+```rs
+use std::time::Instant;
+
+fn dot_product(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+fn matrix_vector_mul(matrix: &[Vec<f64>], vector: &[f64]) -> Vec<f64> {
+    matrix.iter().map(|row| dot_product(row, vector)).collect()
+}
+
+fn main() {
+    let size = 500;
+    let matrix: Vec<Vec<f64>> = (0..size)
+        .map(|i| (0..size).map(|j| (i * size + j) as f64 * 0.001).collect())
+        .collect();
+    let vector: Vec<f64> = (0..size).map(|i| i as f64 * 0.01).collect();
+
+    // 预热
+    let _ = matrix_vector_mul(&matrix, &vector);
+
+    let start = Instant::now();
+    let mut result = Vec::new();
+    for _ in 0..100 {
+        result = matrix_vector_mul(&matrix, &vector);
+    }
+    let elapsed = start.elapsed();
+
+    println!("矩阵-向量乘法 ({}x{}, 100次):", size, size);
+    println!("耗时: {:?}", elapsed);
+    println!("结果[0] = {:.4}", result[0]);
+
+    println!("\n对比不同优化级别:");
+    println!("  opt-level 0: 最慢（无优化）");
+    println!("  opt-level 2: 较快（标准优化，含向量化）");
+    println!("  opt-level 3: 最快（激进优化，更多内联和展开）");
+    println!("  opt-level 3 通常比 2 快 5%-20%，但编译更慢、二进制更大");
+}
+```
+
+### opt-level = "s" 和 "z"（体积优化）
+
+```rs
+fn main() {
+    // opt-level "s"：优化体积，同时保持合理性能
+    // opt-level "z"：最小化体积，允许性能有更大下降
+
+    // 适用于：
+    // - WebAssembly（减少下载大小）
+    // - 嵌入式系统（有限的 Flash 存储）
+    // - 容器镜像（减少镜像大小）
+
+    println!("体积优化配置示例:");
+    println!();
+    println!("[profile.release]");
+    println!("opt-level = \"z\"");
+    println!("lto = true");
+    println!("codegen-units = 1");
+    println!("strip = true");
+    println!("panic = \"abort\"");
+    println!();
+    println!("以上配置可以显著减小二进制体积");
+}
+```
+
+## 📊 其他重要编译选项
+
+### codegen-units
+
+```toml
+[profile.release]
+# codegen-units 控制并行编译单元数量
+# 更少的单元 = 更好的优化（跨单元内联），但编译更慢
+codegen-units = 1    # 最优性能，编译最慢
+# codegen-units = 16  # 默认值，平衡编译速度和优化
+```
+
+### panic 策略
+
+```toml
+[profile.release]
+# "unwind"：默认值，panic 时展开栈（支持 catch_unwind）
+# "abort"：panic 时直接终止进程（更小的二进制）
+panic = "abort"
+```
+
+### strip
+
+```toml
+[profile.release]
+# 剥离调试符号和符号表
+strip = true         # 等同于 strip = "symbols"
+# strip = "debuginfo"  # 只剥离调试信息
+# strip = "none"       # 不剥离
+```
+
+## 📝 实际应用示例
+
+### 不同场景的最佳配置
+
+```toml
+# ===== Web 服务器（最高性能）=====
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+# ===== CLI 工具（平衡体积和性能）=====
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true
+panic = "abort"
+
+# ===== WebAssembly（最小体积）=====
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# ===== 嵌入式（最小体积 + 无标准库）=====
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# ===== 性能分析（release 性能 + 调试信息）=====
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+strip = false
+
+# ===== 开发阶段优化依赖编译（加速开发体验）=====
+[profile.dev.package."*"]
+opt-level = 2  # 依赖库用 opt-level 2 编译
+```
+
+```rs
+fn main() {
+    println!("当前编译配置信息:");
+
+    #[cfg(debug_assertions)]
+    println!("  模式: Debug（opt-level 0）");
+
+    #[cfg(not(debug_assertions))]
+    println!("  模式: Release");
+
+    println!("  目标架构: {}", std::env::consts::ARCH);
+    println!("  操作系统: {}", std::env::consts::OS);
+
+    // 查看二进制大小的命令
+    println!("\n查看二进制大小:");
+    println!("  ls -la target/release/my_app");
+    println!("  size target/release/my_app    # (Linux)");
+    println!("  bloat 分析: cargo install cargo-bloat");
+    println!("  cargo bloat --release -n 10");
+}
+```
+
+## 🔗 相关概念
+
+- **LTO（链接时优化）**：跨 crate 边界的优化
+- **PGO（配置文件引导优化）**：基于运行时数据优化
+- **编译时间优化**：加速编译速度的策略
+- **cargo bench / criterion**：基准测试应在 release 模式下运行
 
 ## 📝 学习检查点
 
-- [ ] 理解编译器优化级别的核心概念
-- [ ] 能够在实际项目中应用编译器优化级别
+- [ ] 理解各优化级别（0, 1, 2, 3, s, z）的特点和适用场景
+- [ ] 能够在 Cargo.toml 中配置编译 profile
+- [ ] 掌握 codegen-units、panic、strip 等辅助选项
+- [ ] 能够为不同部署场景选择最佳配置
+
+## 🚀 下一步
+
+→ [LTO（链接时优化）](./11-lto-link-time-optimization)

@@ -5,13 +5,372 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解高级类型系统中的「Builder 模式」相关知识。
+**Builder 模式** 是一种创建型设计模式，用于分步骤构建复杂对象。在 Rust 中，Builder 模式特别重要，因为 Rust 没有函数默认参数和函数重载。结合类型系统，Rust 的 Builder 可以实现**编译期强制必填字段**——如果缺少必填字段，代码根本无法编译。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+Builder 模式在 Rust 生态中被广泛使用，例如：
+- `std::process::Command`
+- `reqwest::ClientBuilder`
+- `tokio::runtime::Builder`
+
+## 🎯 基础 Builder 模式
+
+### 简单 Builder
+
+```rs
+#[derive(Debug)]
+struct HttpRequest {
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+    timeout_ms: u64,
+}
+
+struct HttpRequestBuilder {
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+    timeout_ms: u64,
+}
+
+impl HttpRequestBuilder {
+    fn new(method: &str, url: &str) -> Self {
+        HttpRequestBuilder {
+            method: method.to_string(),
+            url: url.to_string(),
+            headers: Vec::new(),
+            body: None,
+            timeout_ms: 30_000, // 默认 30 秒
+        }
+    }
+
+    fn header(mut self, key: &str, value: &str) -> Self {
+        self.headers.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    fn body(mut self, body: &str) -> Self {
+        self.body = Some(body.to_string());
+        self
+    }
+
+    fn timeout(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    fn build(self) -> HttpRequest {
+        HttpRequest {
+            method: self.method,
+            url: self.url,
+            headers: self.headers,
+            body: self.body,
+            timeout_ms: self.timeout_ms,
+        }
+    }
+}
+
+fn main() {
+    // 链式调用构建请求
+    let request = HttpRequestBuilder::new("POST", "https://api.example.com/data")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "Bearer token123")
+        .body(r#"{"key": "value"}"#)
+        .timeout(5000)
+        .build();
+
+    println!("{:#?}", request);
+
+    // 最小配置
+    let simple_request = HttpRequestBuilder::new("GET", "https://example.com")
+        .build();
+
+    println!("\n简单请求: {:#?}", simple_request);
+}
+```
+
+## 🔧 类型安全的 Builder（Typestate Builder）
+
+### 编译期强制必填字段
+
+通过类型状态模式，可以在编译期保证所有必填字段都已设置：
+
+```rs
+use std::marker::PhantomData;
+
+// 字段状态标记
+struct Missing;
+struct Provided;
+
+// Builder 使用类型参数追踪哪些必填字段已设置
+struct ServerConfigBuilder<HostState, PortState> {
+    host: Option<String>,
+    port: Option<u16>,
+    max_connections: u32,
+    tls_enabled: bool,
+    _host_state: PhantomData<HostState>,
+    _port_state: PhantomData<PortState>,
+}
+
+#[derive(Debug)]
+struct ServerConfig {
+    host: String,
+    port: u16,
+    max_connections: u32,
+    tls_enabled: bool,
+}
+
+// 初始状态：所有必填字段都是 Missing
+impl ServerConfigBuilder<Missing, Missing> {
+    fn new() -> Self {
+        ServerConfigBuilder {
+            host: None,
+            port: None,
+            max_connections: 100,
+            tls_enabled: false,
+            _host_state: PhantomData,
+            _port_state: PhantomData,
+        }
+    }
+}
+
+// 设置 host：Missing → Provided
+impl<PortState> ServerConfigBuilder<Missing, PortState> {
+    fn host(self, host: &str) -> ServerConfigBuilder<Provided, PortState> {
+        ServerConfigBuilder {
+            host: Some(host.to_string()),
+            port: self.port,
+            max_connections: self.max_connections,
+            tls_enabled: self.tls_enabled,
+            _host_state: PhantomData,
+            _port_state: PhantomData,
+        }
+    }
+}
+
+// 设置 port：Missing → Provided
+impl<HostState> ServerConfigBuilder<HostState, Missing> {
+    fn port(self, port: u16) -> ServerConfigBuilder<HostState, Provided> {
+        ServerConfigBuilder {
+            host: self.host,
+            port: Some(port),
+            max_connections: self.max_connections,
+            tls_enabled: self.tls_enabled,
+            _host_state: PhantomData,
+            _port_state: PhantomData,
+        }
+    }
+}
+
+// 可选字段可以在任何状态下设置
+impl<HostState, PortState> ServerConfigBuilder<HostState, PortState> {
+    fn max_connections(mut self, max: u32) -> Self {
+        self.max_connections = max;
+        self
+    }
+
+    fn tls(mut self, enabled: bool) -> Self {
+        self.tls_enabled = enabled;
+        self
+    }
+}
+
+// build() 只在所有必填字段都 Provided 时可用
+impl ServerConfigBuilder<Provided, Provided> {
+    fn build(self) -> ServerConfig {
+        ServerConfig {
+            host: self.host.unwrap(),
+            port: self.port.unwrap(),
+            max_connections: self.max_connections,
+            tls_enabled: self.tls_enabled,
+        }
+    }
+}
+
+fn main() {
+    // 正确：所有必填字段都已设置
+    let config = ServerConfigBuilder::new()
+        .host("0.0.0.0")
+        .port(8080)
+        .max_connections(500)
+        .tls(true)
+        .build();
+
+    println!("服务器配置: {:#?}", config);
+
+    // 设置顺序可以调换
+    let config2 = ServerConfigBuilder::new()
+        .port(3000)
+        .tls(false)
+        .host("localhost")
+        .build();
+
+    println!("\n配置2: {:#?}", config2);
+
+    // 以下代码编译失败：
+    // ServerConfigBuilder::new().host("x").build();
+    // 错误！port 还是 Missing，没有 build() 方法
+
+    // ServerConfigBuilder::new().build();
+    // 错误！host 和 port 都是 Missing
+}
+```
+
+## 📝 实际应用示例
+
+### 查询构建器
+
+```rs
+#[derive(Debug)]
+struct Query {
+    table: String,
+    conditions: Vec<String>,
+    order_by: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    selected_columns: Vec<String>,
+}
+
+struct QueryBuilder {
+    table: String,
+    conditions: Vec<String>,
+    order_by: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    selected_columns: Vec<String>,
+}
+
+impl QueryBuilder {
+    fn from_table(table: &str) -> Self {
+        QueryBuilder {
+            table: table.to_string(),
+            conditions: Vec::new(),
+            order_by: None,
+            limit: None,
+            offset: None,
+            selected_columns: Vec::new(),
+        }
+    }
+
+    fn select(mut self, columns: &[&str]) -> Self {
+        self.selected_columns = columns.iter().map(|c| c.to_string()).collect();
+        self
+    }
+
+    fn where_clause(mut self, condition: &str) -> Self {
+        self.conditions.push(condition.to_string());
+        self
+    }
+
+    fn and_where(mut self, condition: &str) -> Self {
+        self.conditions.push(condition.to_string());
+        self
+    }
+
+    fn order_by(mut self, column: &str) -> Self {
+        self.order_by = Some(column.to_string());
+        self
+    }
+
+    fn limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    fn offset(mut self, offset: usize) -> Self {
+        self.offset = Some(offset);
+        self
+    }
+
+    fn build(self) -> Query {
+        Query {
+            table: self.table,
+            conditions: self.conditions,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            selected_columns: self.selected_columns,
+        }
+    }
+}
+
+impl Query {
+    fn to_sql(&self) -> String {
+        let columns = if self.selected_columns.is_empty() {
+            "*".to_string()
+        } else {
+            self.selected_columns.join(", ")
+        };
+
+        let mut sql = format!("SELECT {} FROM {}", columns, self.table);
+
+        if !self.conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&self.conditions.join(" AND "));
+        }
+
+        if let Some(ref order) = self.order_by {
+            sql.push_str(&format!(" ORDER BY {}", order));
+        }
+
+        if let Some(limit) = self.limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+
+        if let Some(offset) = self.offset {
+            sql.push_str(&format!(" OFFSET {}", offset));
+        }
+
+        sql
+    }
+}
+
+fn main() {
+    let query = QueryBuilder::from_table("users")
+        .select(&["id", "name", "email"])
+        .where_clause("age >= 18")
+        .and_where("active = true")
+        .order_by("name ASC")
+        .limit(10)
+        .offset(20)
+        .build();
+
+    println!("SQL: {}", query.to_sql());
+    println!("Query: {:#?}", query);
+
+    // 简单查询
+    let simple = QueryBuilder::from_table("products")
+        .where_clause("price < 100")
+        .limit(5)
+        .build();
+
+    println!("\nSQL: {}", simple.to_sql());
+
+    // 全表查询
+    let all = QueryBuilder::from_table("logs")
+        .order_by("created_at DESC")
+        .limit(100)
+        .build();
+
+    println!("SQL: {}", all.to_sql());
+}
+```
+
+## 🔗 相关概念
+
+- **编译期状态机**：Builder 模式是类型状态模式的经典应用
+- **Typestate 设计**：更系统化的类型状态方法论
+- **PhantomData**：在 Builder 中追踪字段状态
+- **所有权转移**：Builder 方法通过 `self`（而非 `&mut self`）实现状态转换
 
 ## 📝 学习检查点
 
-- [ ] 理解Builder 模式的核心概念
-- [ ] 能够在实际项目中应用Builder 模式
+- [ ] 理解基础 Builder 模式的实现
+- [ ] 掌握类型安全 Builder（Typestate Builder）的设计
+- [ ] 理解如何用类型参数追踪必填字段状态
+- [ ] 能够设计和实现实际项目中的 Builder
+
+## 🚀 下一步
+
+→ [Typestate 设计](./11-typestate-design)

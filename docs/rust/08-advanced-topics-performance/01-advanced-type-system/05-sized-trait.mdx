@@ -5,13 +5,308 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解高级类型系统中的「Sized trait」相关知识。
+**`Sized` trait** 是 Rust 中一个特殊的标记 trait（marker trait），用于标识在编译时大小已知的类型。它是 Rust 类型系统中最基础的 trait 之一，默认情况下所有泛型参数都隐含 `Sized` 约束。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+关键特点：
+- `Sized` 是一个**自动 trait**，编译器自动为所有编译时大小已知的类型实现
+- **不能手动实现** `Sized`
+- 泛型参数默认带有 `T: Sized` 约束
+- 使用 `?Sized` 可以**放宽**这个约束，允许接受 DST
+
+## 🎯 默认的 Sized 约束
+
+### 隐式 Sized bound
+
+```rs
+// 以下两个函数签名是等价的
+fn process_a<T>(value: T) {
+    println!("大小: {} 字节", std::mem::size_of::<T>());
+}
+
+fn process_b<T: Sized>(value: T) {
+    println!("大小: {} 字节", std::mem::size_of::<T>());
+}
+
+// 结构体的泛型参数也默认 Sized
+struct Container<T> {
+    value: T,  // T 必须是 Sized 的，否则编译器不知道分配多少空间
+}
+
+fn main() {
+    process_a(42i32);
+    process_b("hello".to_string());
+
+    let container = Container { value: vec![1, 2, 3] };
+    println!("容器值: {:?}", container.value);
+}
+```
+
+### 为什么需要 Sized
+
+```rs
+fn main() {
+    // 编译器需要知道每个类型的大小才能：
+    // 1. 在栈上分配空间
+    let number: i32 = 42;
+    println!("i32 大小: {} 字节", std::mem::size_of::<i32>());
+
+    // 2. 计算结构体布局
+    struct Point {
+        x: f64,
+        y: f64,
+    }
+    let point = Point { x: 1.0, y: 2.0 };
+    println!("Point 大小: {} 字节", std::mem::size_of::<Point>());
+    println!("Point: ({}, {})", point.x, point.y);
+
+    // 3. 确定数组元素偏移
+    let array: [i32; 4] = [10, 20, 30, 40];
+    println!("[i32; 4] 大小: {} 字节", std::mem::size_of::<[i32; 4]>());
+    println!("数组: {:?}", array);
+
+    // 4. 按值传递参数
+    fn double(n: i32) -> i32 { n * 2 }
+    println!("double(21) = {}", double(21));
+}
+```
+
+## 🔧 使用 ?Sized 放宽约束
+
+### 基本用法
+
+`?Sized` 是 Rust 中唯一的**放宽约束**语法，表示"类型可能是 Sized 的，也可能不是"：
+
+```rs
+use std::fmt::Display;
+
+// 默认：T 必须是 Sized
+fn print_sized<T: Display>(value: &T) {
+    println!("Sized 值: {}", value);
+}
+
+// 放宽约束：T 可以是 DST
+fn print_unsized<T: Display + ?Sized>(value: &T) {
+    println!("可能是 DST: {}", value);
+}
+
+fn main() {
+    let number = 42;
+    let text = "hello, world";
+
+    // print_sized 只能接受 Sized 类型的引用
+    print_sized(&number);
+    // print_sized(text);  // 编译错误！str 不是 Sized
+
+    // print_unsized 可以接受 Sized 和 DST 的引用
+    print_unsized(&number);  // i32 是 Sized，OK
+    print_unsized(text);     // str 是 DST，也 OK
+}
+```
+
+### 在 Trait 定义中使用
+
+```rs
+use std::fmt::Debug;
+
+// 可以同时处理 Sized 和 unsized 类型的 Trait
+trait Describable {
+    fn describe(&self) -> String;
+}
+
+// 为所有实现了 Debug + ?Sized 的类型提供默认实现
+impl<T: Debug + ?Sized> Describable for T {
+    fn describe(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
+fn print_description<T: Describable + ?Sized>(item: &T) {
+    println!("描述: {}", item.describe());
+}
+
+fn main() {
+    // Sized 类型
+    print_description(&42i32);
+    print_description(&vec![1, 2, 3]);
+
+    // DST 类型
+    let text: &str = "hello";
+    print_description(text);
+
+    let slice: &[i32] = &[1, 2, 3];
+    print_description(slice);
+}
+```
+
+### 在结构体中使用
+
+```rs
+use std::fmt::Debug;
+
+// 使用 ?Sized 的结构体，最后一个字段可以是 DST
+struct Wrapper<T: ?Sized> {
+    metadata: u32,
+    inner: T,
+}
+
+// 为 Sized 类型实现构造函数
+impl<T> Wrapper<T> {
+    fn new(metadata: u32, inner: T) -> Self {
+        Wrapper { metadata, inner }
+    }
+}
+
+// 为所有类型（包括 DST）实现方法
+impl<T: Debug + ?Sized> Wrapper<T> {
+    fn describe(&self) -> String {
+        format!("Wrapper(meta={}, inner={:?})", self.metadata, &self.inner)
+    }
+}
+
+fn main() {
+    // Sized 类型的 Wrapper
+    let wrapped_num = Wrapper::new(1, 42i32);
+    println!("{}", wrapped_num.describe());
+
+    let wrapped_vec = Wrapper::new(2, vec![1, 2, 3]);
+    println!("{}", wrapped_vec.describe());
+}
+```
+
+## 📊 标准库中的 ?Sized 应用
+
+### Box、Rc、Arc
+
+```rs
+use std::fmt::Display;
+
+fn main() {
+    // Box<T> 其中 T: ?Sized
+    // 这就是为什么可以创建 Box<dyn Display>
+    let boxed_int: Box<dyn Display> = Box::new(42);
+    let boxed_str: Box<dyn Display> = Box::new("hello".to_string());
+
+    println!("boxed_int: {}", boxed_int);
+    println!("boxed_str: {}", boxed_str);
+
+    // Rc 和 Arc 同理
+    use std::rc::Rc;
+    let shared: Rc<dyn Display> = Rc::new(3.14);
+    println!("shared: {}", shared);
+
+    // Box<[T]>：堆上的切片
+    let boxed_slice: Box<[i32]> = vec![1, 2, 3, 4, 5].into_boxed_slice();
+    println!("boxed_slice: {:?}", boxed_slice);
+    println!("长度: {}", boxed_slice.len());
+
+    // Box<str>：堆上的字符串切片
+    let boxed_str: Box<str> = "Hello, Rust!".into();
+    println!("boxed_str: {}", boxed_str);
+}
+```
+
+### Borrow 和 AsRef
+
+```rs
+use std::borrow::Borrow;
+
+// Borrow<T> 中 T: ?Sized
+fn check_key<Q>(map_key: &str, query: &Q) -> bool
+where
+    Q: ?Sized + PartialEq<str>,
+{
+    query == map_key
+}
+
+// AsRef<T> 中 T: ?Sized
+fn print_path<P: AsRef<std::path::Path>>(path: P) {
+    println!("路径: {}", path.as_ref().display());
+}
+
+fn borrow_example<T: Borrow<str>>(value: T) {
+    let borrowed: &str = value.borrow();
+    println!("借用的字符串: {}", borrowed);
+}
+
+fn main() {
+    // check_key 可以接受不同类型
+    println!("匹配: {}", check_key("hello", "hello"));
+    println!("不匹配: {}", check_key("hello", "world"));
+
+    // print_path 可以接受 &str, String, PathBuf 等
+    print_path("/home/user");
+    print_path(String::from("/tmp"));
+
+    // borrow_example 可以接受 String 和 &str
+    borrow_example("hello");
+    borrow_example(String::from("world"));
+}
+```
+
+## 📝 实际应用示例
+
+### 通用日志工具
+
+```rs
+use std::fmt::Display;
+
+enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+impl Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogLevel::Info => write!(f, "INFO"),
+            LogLevel::Warn => write!(f, "WARN"),
+            LogLevel::Error => write!(f, "ERROR"),
+        }
+    }
+}
+
+// 使用 ?Sized 使函数更通用
+fn log<T: Display + ?Sized>(level: LogLevel, message: &T) {
+    println!("[{}] {}", level, message);
+}
+
+fn log_with_context<T: Display + ?Sized, C: Display + ?Sized>(
+    level: LogLevel,
+    context: &C,
+    message: &T,
+) {
+    println!("[{}] [{}] {}", level, context, message);
+}
+
+fn main() {
+    // 可以传入 &str（DST 的引用）
+    log(LogLevel::Info, "应用启动");
+
+    // 也可以传入 String 的引用（Sized 类型的引用）
+    let message = format!("端口 {} 已打开", 8080);
+    log(LogLevel::Info, &message);
+
+    // 使用上下文
+    log_with_context(LogLevel::Warn, "数据库", "连接池即将耗尽");
+    log_with_context(LogLevel::Error, "认证", &format!("用户 {} 登录失败", "admin"));
+}
+```
+
+## 🔗 相关概念
+
+- **动态大小类型（DST）**：`?Sized` 约束允许接受 DST
+- **标记 trait**：`Sized` 是自动实现的标记 trait
+- **Trait 对象**：`dyn Trait` 是 DST，必须通过指针使用
+- **胖指针**：DST 引用的底层表示
 
 ## 📝 学习检查点
 
-- [ ] 理解Sized trait的核心概念
-- [ ] 能够在实际项目中应用Sized trait
+- [ ] 理解 `Sized` trait 的自动实现机制
+- [ ] 掌握泛型参数的隐式 `Sized` 约束
+- [ ] 能够正确使用 `?Sized` 放宽约束
+- [ ] 理解标准库中 `?Sized` 的应用场景
+
+## 🚀 下一步
+
+→ [泛型关联类型（GAT）](./06-generic-associated-types)

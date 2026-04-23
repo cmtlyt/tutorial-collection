@@ -5,13 +5,324 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「减少堆分配」相关知识。
+**堆分配（Heap Allocation）** 是性能优化中最值得关注的领域之一。每次堆分配都涉及系统调用或分配器内部的同步操作，频繁的小分配还会导致内存碎片化和缓存效率下降。Rust 的所有权模型天然鼓励栈分配，但在许多场景下仍然会发生不必要的堆分配。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+常见的堆分配来源：
+- `String`、`Vec`、`Box`、`HashMap` 等堆容器
+- 闭包捕获（`Box<dyn Fn>`）
+- `format!` 宏
+- 动态分发（`Box<dyn Trait>`）
+
+## 🎯 栈分配 vs 堆分配
+
+### 理解分配成本
+
+```rs
+use std::time::Instant;
+
+fn stack_allocation(iterations: usize) -> u64 {
+    let mut total: u64 = 0;
+    for i in 0..iterations {
+        // 栈分配：在编译时确定大小，极快
+        let array: [u64; 8] = [i as u64; 8];
+        total += array.iter().sum::<u64>();
+    }
+    total
+}
+
+fn heap_allocation(iterations: usize) -> u64 {
+    let mut total: u64 = 0;
+    for i in 0..iterations {
+        // 堆分配：每次循环都分配和释放
+        let vec: Vec<u64> = vec![i as u64; 8];
+        total += vec.iter().sum::<u64>();
+    }
+    total
+}
+
+fn heap_reuse(iterations: usize) -> u64 {
+    let mut total: u64 = 0;
+    // 预分配，循环中复用
+    let mut vec = Vec::with_capacity(8);
+    for i in 0..iterations {
+        vec.clear();
+        vec.extend(std::iter::repeat(i as u64).take(8));
+        total += vec.iter().sum::<u64>();
+    }
+    total
+}
+
+fn main() {
+    let n = 1_000_000;
+
+    let start = Instant::now();
+    let r1 = stack_allocation(n);
+    let t1 = start.elapsed();
+
+    let start = Instant::now();
+    let r2 = heap_allocation(n);
+    let t2 = start.elapsed();
+
+    let start = Instant::now();
+    let r3 = heap_reuse(n);
+    let t3 = start.elapsed();
+
+    println!("栈分配:      {:?} (结果: {})", t1, r1);
+    println!("堆分配:      {:?} (结果: {})", t2, r2);
+    println!("堆复用:      {:?} (结果: {})", t3, r3);
+    println!("堆/栈比:     {:.1}x", t2.as_nanos() as f64 / t1.as_nanos() as f64);
+}
+```
+
+## 🔧 实用优化技巧
+
+### 预分配容量
+
+```rs
+fn collect_without_capacity(count: usize) -> Vec<String> {
+    let mut result = Vec::new(); // 初始容量为 0
+    for i in 0..count {
+        // Vec 会多次重新分配：0 → 1 → 2 → 4 → 8 → 16 → ...
+        result.push(format!("item_{}", i));
+    }
+    result
+}
+
+fn collect_with_capacity(count: usize) -> Vec<String> {
+    let mut result = Vec::with_capacity(count); // 一次分配到位
+    for i in 0..count {
+        result.push(format!("item_{}", i));
+    }
+    result
+}
+
+fn collect_with_iterator(count: usize) -> Vec<String> {
+    // 迭代器的 collect 会利用 size_hint 预分配
+    (0..count).map(|i| format!("item_{}", i)).collect()
+}
+
+fn main() {
+    let count = 10_000;
+
+    let start = std::time::Instant::now();
+    let v1 = collect_without_capacity(count);
+    let t1 = start.elapsed();
+
+    let start = std::time::Instant::now();
+    let v2 = collect_with_capacity(count);
+    let t2 = start.elapsed();
+
+    let start = std::time::Instant::now();
+    let v3 = collect_with_iterator(count);
+    let t3 = start.elapsed();
+
+    println!("无预分配:  {:?} (len={})", t1, v1.len());
+    println!("预分配:    {:?} (len={})", t2, v2.len());
+    println!("迭代器:    {:?} (len={})", t3, v3.len());
+}
+```
+
+### 使用 Cow 避免不必要的克隆
+
+```rs
+use std::borrow::Cow;
+
+// 不使用 Cow：总是分配新 String
+fn normalize_name_clone(name: &str) -> String {
+    if name.contains(' ') {
+        name.trim().to_string()
+    } else {
+        name.to_string() // 不需要修改也要分配
+    }
+}
+
+// 使用 Cow：只在需要时分配
+fn normalize_name_cow(name: &str) -> Cow<'_, str> {
+    if name.contains(' ') {
+        Cow::Owned(name.trim().to_string())
+    } else {
+        Cow::Borrowed(name) // 零分配
+    }
+}
+
+fn process_config_value(value: &str) -> Cow<'_, str> {
+    if value.starts_with("${") && value.ends_with('}') {
+        // 需要展开变量，必须分配
+        let var_name = &value[2..value.len() - 1];
+        Cow::Owned(std::env::var(var_name).unwrap_or_else(|_| "undefined".to_string()))
+    } else {
+        // 直接使用原值，零分配
+        Cow::Borrowed(value)
+    }
+}
+
+fn main() {
+    // Cow::Borrowed — 无堆分配
+    let name = normalize_name_cow("Alice");
+    println!("不需修改: {} (borrowed={})", name, matches!(name, Cow::Borrowed(_)));
+
+    // Cow::Owned — 需要堆分配
+    let name = normalize_name_cow("  Bob  ");
+    println!("需要修改: {} (borrowed={})", name, matches!(name, Cow::Borrowed(_)));
+
+    let config_values = vec!["localhost", "${HOME}", "8080", "${USER}"];
+    for value in config_values {
+        let resolved = process_config_value(value);
+        let kind = if matches!(resolved, Cow::Borrowed(_)) { "借用" } else { "拥有" };
+        println!("  {} → {} ({})", value, resolved, kind);
+    }
+}
+```
+
+### 使用 ArrayVec / SmallVec 替代 Vec
+
+对于已知最大大小较小的集合，可以使用栈上的数组：
+
+```rs
+// 手动实现一个简单的栈上 Vec
+struct StackVec<T, const N: usize> {
+    data: [std::mem::MaybeUninit<T>; N],
+    len: usize,
+}
+
+impl<T, const N: usize> StackVec<T, N> {
+    fn new() -> Self {
+        StackVec {
+            data: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, value: T) -> bool {
+        if self.len >= N {
+            return false;
+        }
+        self.data[self.len].write(value);
+        self.len += 1;
+        true
+    }
+
+    fn as_slice(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const T, self.len) }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl<T, const N: usize> Drop for StackVec<T, N> {
+    fn drop(&mut self) {
+        for i in 0..self.len {
+            unsafe { self.data[i].assume_init_drop(); }
+        }
+    }
+}
+
+fn main() {
+    // 对于已知小集合，完全在栈上操作
+    let mut stack_vec: StackVec<i32, 8> = StackVec::new();
+    for i in 0..5 {
+        stack_vec.push(i * 10);
+    }
+    println!("StackVec: {:?} (len={})", stack_vec.as_slice(), stack_vec.len());
+
+    // 实际项目中推荐使用 smallvec crate：
+    // use smallvec::SmallVec;
+    // let mut sv: SmallVec<[i32; 8]> = SmallVec::new();
+    // 当元素数 <= 8 时在栈上，超过时自动溢出到堆上
+
+    println!("\n提示: 实际项目中使用 smallvec crate 获得更完善的实现");
+}
+```
+
+## 📝 实际应用示例
+
+### 字符串拼接优化
+
+```rs
+use std::fmt::Write;
+use std::time::Instant;
+
+// 方案 1：format! — 每次创建新 String
+fn build_csv_format(data: &[(String, i32, f64)]) -> String {
+    let mut result = String::new();
+    for (name, age, score) in data {
+        let line = format!("{},{},{:.2}\n", name, age, score);
+        result.push_str(&line);
+    }
+    result
+}
+
+// 方案 2：write! — 直接写入已有 String，避免中间分配
+fn build_csv_write(data: &[(String, i32, f64)]) -> String {
+    let mut result = String::with_capacity(data.len() * 30);
+    for (name, age, score) in data {
+        write!(result, "{},{},{:.2}\n", name, age, score).unwrap();
+    }
+    result
+}
+
+// 方案 3：push_str — 手动拼接，最少分配
+fn build_csv_push(data: &[(String, i32, f64)]) -> String {
+    let mut result = String::with_capacity(data.len() * 30);
+    let mut num_buf = String::with_capacity(16);
+    for (name, age, score) in data {
+        result.push_str(name);
+        result.push(',');
+        // 复用 num_buf 避免重复分配
+        num_buf.clear();
+        write!(num_buf, "{}", age).unwrap();
+        result.push_str(&num_buf);
+        result.push(',');
+        num_buf.clear();
+        write!(num_buf, "{:.2}", score).unwrap();
+        result.push_str(&num_buf);
+        result.push('\n');
+    }
+    result
+}
+
+fn main() {
+    let data: Vec<(String, i32, f64)> = (0..10_000)
+        .map(|i| (format!("user_{}", i), 20 + (i % 50) as i32, 60.0 + (i % 40) as f64))
+        .collect();
+
+    let start = Instant::now();
+    let r1 = build_csv_format(&data);
+    let t1 = start.elapsed();
+
+    let start = Instant::now();
+    let r2 = build_csv_write(&data);
+    let t2 = start.elapsed();
+
+    let start = Instant::now();
+    let r3 = build_csv_push(&data);
+    let t3 = start.elapsed();
+
+    println!("format!:   {:?} (len={})", t1, r1.len());
+    println!("write!:    {:?} (len={})", t2, r2.len());
+    println!("push_str:  {:?} (len={})", t3, r3.len());
+
+    assert_eq!(r1, r2);
+    assert_eq!(r2, r3);
+}
+```
+
+## 🔗 相关概念
+
+- **小字符串优化**：对短字符串避免堆分配的专门技术
+- **对象池**：复用已分配的对象避免重复分配
+- **竞技场分配**：批量分配 + 批量释放的高效模式
+- **编译器优化级别**：release 模式下编译器会进行部分分配优化
 
 ## 📝 学习检查点
 
-- [ ] 理解减少堆分配的核心概念
-- [ ] 能够在实际项目中应用减少堆分配
+- [ ] 理解栈分配和堆分配的性能差异
+- [ ] 掌握预分配容量（`with_capacity`）的使用
+- [ ] 能够使用 `Cow` 避免不必要的克隆
+- [ ] 了解字符串拼接的优化方法
+
+## 🚀 下一步
+
+→ [小字符串优化](./07-small-string-optimization)

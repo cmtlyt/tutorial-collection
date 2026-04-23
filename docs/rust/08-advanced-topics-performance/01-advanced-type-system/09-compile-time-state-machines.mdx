@@ -5,13 +5,403 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解高级类型系统中的「编译期状态机」相关知识。
+**编译期状态机（Compile-time State Machines）** 是一种利用 Rust 类型系统在编译时强制状态转换规则的设计模式。通过将状态编码为类型参数，编译器可以在编译时检查状态转换是否合法，从而将运行时错误转化为编译期错误。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+这种模式的核心思想是：
+- 每个**状态**对应一个不同的类型
+- **状态转换**通过消耗旧类型、返回新类型来实现
+- 非法的状态转换在编译时就会被拒绝
+
+## 🎯 基础概念
+
+### 传统运行时状态机的问题
+
+```rs
+// 运行时状态机：状态错误只能在运行时发现
+#[derive(Debug, PartialEq)]
+enum TrafficLight {
+    Red,
+    Yellow,
+    Green,
+}
+
+struct RuntimeTrafficController {
+    state: TrafficLight,
+}
+
+impl RuntimeTrafficController {
+    fn new() -> Self {
+        RuntimeTrafficController { state: TrafficLight::Red }
+    }
+
+    fn next(&mut self) -> Result<(), String> {
+        self.state = match self.state {
+            TrafficLight::Red => TrafficLight::Green,
+            TrafficLight::Green => TrafficLight::Yellow,
+            TrafficLight::Yellow => TrafficLight::Red,
+        };
+        Ok(())
+    }
+
+    // 运行时检查：只有绿灯才允许通行
+    fn allow_pass(&self) -> Result<bool, String> {
+        match self.state {
+            TrafficLight::Green => Ok(true),
+            _ => Ok(false),
+        }
+    }
+}
+
+fn main() {
+    let mut controller = RuntimeTrafficController::new();
+    println!("初始状态: {:?}", controller.state);
+    println!("允许通行: {:?}", controller.allow_pass());
+
+    controller.next().unwrap(); // Red → Green
+    println!("转换后: {:?}", controller.state);
+    println!("允许通行: {:?}", controller.allow_pass());
+
+    controller.next().unwrap(); // Green → Yellow
+    println!("转换后: {:?}", controller.state);
+}
+```
+
+### 编译期状态机的解决方案
+
+```rs
+use std::marker::PhantomData;
+
+// 将状态定义为类型（零大小类型）
+struct Red;
+struct Yellow;
+struct Green;
+
+// 状态机的核心结构体，状态作为类型参数
+struct TrafficLight<State> {
+    _state: PhantomData<State>,
+}
+
+// 只有 Red 状态才能创建新的交通灯
+impl TrafficLight<Red> {
+    fn new() -> Self {
+        println!("🔴 红灯亮起");
+        TrafficLight { _state: PhantomData }
+    }
+
+    // Red → Green：消耗 Red 状态，返回 Green 状态
+    fn turn_green(self) -> TrafficLight<Green> {
+        println!("🟢 切换到绿灯");
+        TrafficLight { _state: PhantomData }
+    }
+}
+
+impl TrafficLight<Green> {
+    // Green → Yellow
+    fn turn_yellow(self) -> TrafficLight<Yellow> {
+        println!("🟡 切换到黄灯");
+        TrafficLight { _state: PhantomData }
+    }
+
+    // 只有绿灯才有 allow_pass 方法
+    fn allow_pass(&self) {
+        println!("✅ 允许通行");
+    }
+}
+
+impl TrafficLight<Yellow> {
+    // Yellow → Red
+    fn turn_red(self) -> TrafficLight<Red> {
+        println!("🔴 切换到红灯");
+        TrafficLight { _state: PhantomData }
+    }
+}
+
+fn main() {
+    let red = TrafficLight::new();
+
+    // 正确的状态转换链
+    let green = red.turn_green();
+    green.allow_pass();
+    let yellow = green.turn_yellow();
+    let _red = yellow.turn_red();
+
+    // 以下代码无法编译（编译期状态检查）：
+    // red.turn_yellow();  // 错误！Red 没有 turn_yellow 方法
+    // yellow.allow_pass(); // 错误！Yellow 没有 allow_pass 方法
+}
+```
+
+## 🔧 TCP 连接状态机
+
+### 用类型编码连接状态
+
+```rs
+use std::marker::PhantomData;
+
+// 连接状态类型
+struct Closed;
+struct Listening;
+struct Connected;
+
+// TCP 连接
+struct TcpConnection<State> {
+    address: String,
+    port: u16,
+    _state: PhantomData<State>,
+}
+
+impl TcpConnection<Closed> {
+    fn new(address: &str, port: u16) -> Self {
+        println!("[创建] 连接对象: {}:{}", address, port);
+        TcpConnection {
+            address: address.to_string(),
+            port,
+            _state: PhantomData,
+        }
+    }
+
+    fn listen(self) -> TcpConnection<Listening> {
+        println!("[监听] 在 {}:{} 上监听", self.address, self.port);
+        TcpConnection {
+            address: self.address,
+            port: self.port,
+            _state: PhantomData,
+        }
+    }
+
+    fn connect(self) -> TcpConnection<Connected> {
+        println!("[连接] 正在连接 {}:{}", self.address, self.port);
+        TcpConnection {
+            address: self.address,
+            port: self.port,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl TcpConnection<Listening> {
+    fn accept(self) -> TcpConnection<Connected> {
+        println!("[接受] 接受来自客户端的连接");
+        TcpConnection {
+            address: self.address,
+            port: self.port,
+            _state: PhantomData,
+        }
+    }
+
+    fn close(self) -> TcpConnection<Closed> {
+        println!("[关闭] 停止监听");
+        TcpConnection {
+            address: self.address,
+            port: self.port,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl TcpConnection<Connected> {
+    fn send(&self, data: &str) {
+        println!("[发送] -> \"{}\" (到 {}:{})", data, self.address, self.port);
+    }
+
+    fn receive(&self) -> String {
+        let data = format!("来自 {}:{} 的响应", self.address, self.port);
+        println!("[接收] <- \"{}\"", data);
+        data
+    }
+
+    fn close(self) -> TcpConnection<Closed> {
+        println!("[关闭] 断开连接");
+        TcpConnection {
+            address: self.address,
+            port: self.port,
+            _state: PhantomData,
+        }
+    }
+}
+
+fn main() {
+    println!("=== 客户端模式 ===");
+    let conn = TcpConnection::new("192.168.1.1", 8080);
+    let connected = conn.connect();
+    connected.send("Hello, Server!");
+    let _response = connected.receive();
+    let _closed = connected.close();
+
+    println!("\n=== 服务器模式 ===");
+    let server = TcpConnection::new("0.0.0.0", 3000);
+    let listening = server.listen();
+    let client_conn = listening.accept();
+    client_conn.send("Welcome!");
+    let _closed = client_conn.close();
+
+    // 以下代码编译失败（保证协议正确性）：
+    // let conn = TcpConnection::new("x", 80);
+    // conn.send("data");  // 错误！Closed 状态不能发送数据
+    // conn.accept();       // 错误！Closed 状态不能接受连接
+}
+```
+
+## 📝 实际应用示例
+
+### 表单验证状态机
+
+```rs
+use std::marker::PhantomData;
+
+// 表单状态
+struct Draft;
+struct Validated;
+struct Submitted;
+
+#[derive(Debug, Clone)]
+struct FormData {
+    name: String,
+    email: String,
+    message: String,
+}
+
+struct Form<State> {
+    data: FormData,
+    errors: Vec<String>,
+    _state: PhantomData<State>,
+}
+
+impl Form<Draft> {
+    fn new() -> Self {
+        Form {
+            data: FormData {
+                name: String::new(),
+                email: String::new(),
+                message: String::new(),
+            },
+            errors: Vec::new(),
+            _state: PhantomData,
+        }
+    }
+
+    fn set_name(mut self, name: &str) -> Self {
+        self.data.name = name.to_string();
+        self
+    }
+
+    fn set_email(mut self, email: &str) -> Self {
+        self.data.email = email.to_string();
+        self
+    }
+
+    fn set_message(mut self, message: &str) -> Self {
+        self.data.message = message.to_string();
+        self
+    }
+
+    fn validate(self) -> Result<Form<Validated>, Form<Draft>> {
+        let mut errors = Vec::new();
+
+        if self.data.name.is_empty() {
+            errors.push("姓名不能为空".to_string());
+        }
+        if !self.data.email.contains('@') {
+            errors.push("邮箱格式无效".to_string());
+        }
+        if self.data.message.len() < 10 {
+            errors.push("消息至少需要 10 个字符".to_string());
+        }
+
+        if errors.is_empty() {
+            println!("✅ 验证通过");
+            Ok(Form {
+                data: self.data,
+                errors: Vec::new(),
+                _state: PhantomData,
+            })
+        } else {
+            println!("❌ 验证失败: {:?}", errors);
+            Err(Form {
+                data: self.data,
+                errors,
+                _state: PhantomData,
+            })
+        }
+    }
+}
+
+impl Form<Draft> {
+    fn get_errors(&self) -> &[String] {
+        &self.errors
+    }
+}
+
+impl Form<Validated> {
+    fn submit(self) -> Form<Submitted> {
+        println!("📤 提交表单: {:?}", self.data);
+        Form {
+            data: self.data,
+            errors: Vec::new(),
+            _state: PhantomData,
+        }
+    }
+}
+
+impl Form<Submitted> {
+    fn confirmation(&self) -> String {
+        format!("感谢 {}，您的消息已收到！我们将回复到 {}",
+                self.data.name, self.data.email)
+    }
+}
+
+fn main() {
+    println!("=== 成功提交 ===");
+    let form = Form::new()
+        .set_name("Alice")
+        .set_email("alice@example.com")
+        .set_message("这是一条测试消息，足够长。");
+
+    match form.validate() {
+        Ok(validated) => {
+            let submitted = validated.submit();
+            println!("{}", submitted.confirmation());
+        }
+        Err(form) => {
+            println!("错误: {:?}", form.get_errors());
+        }
+    }
+
+    println!("\n=== 验证失败 ===");
+    let bad_form = Form::new()
+        .set_name("")
+        .set_email("invalid")
+        .set_message("短");
+
+    match bad_form.validate() {
+        Ok(validated) => {
+            let submitted = validated.submit();
+            println!("{}", submitted.confirmation());
+        }
+        Err(form) => {
+            println!("需要修正的错误: {:?}", form.get_errors());
+        }
+    }
+
+    // 以下代码编译失败：
+    // Form::new().submit();  // 错误！Draft 状态不能提交
+}
+```
+
+## 🔗 相关概念
+
+- **PhantomData**：用于在类型参数中携带不使用的类型信息
+- **Builder 模式**：编译期状态机的一种常见应用
+- **Typestate 设计**：更系统化的类型状态设计方法论
+- **零大小类型（ZST）**：状态标记类型不占用运行时内存
 
 ## 📝 学习检查点
 
-- [ ] 理解编译期状态机的核心概念
-- [ ] 能够在实际项目中应用编译期状态机
+- [ ] 理解编译期状态机与运行时状态机的区别
+- [ ] 掌握使用 PhantomData 编码状态的方法
+- [ ] 能够设计状态转换方法（消耗旧状态，返回新状态）
+- [ ] 了解编译期状态机在协议和表单验证中的应用
+
+## 🚀 下一步
+
+→ [Builder 模式](./10-builder-pattern)

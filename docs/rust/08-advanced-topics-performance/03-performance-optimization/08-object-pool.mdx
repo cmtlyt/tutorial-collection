@@ -5,13 +5,309 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「对象池」相关知识。
+**对象池（Object Pool）** 是一种性能优化模式，通过预分配和复用对象来避免频繁的堆分配和释放。当创建和销毁对象的成本较高，或者需要频繁创建大量同类对象时，对象池可以显著提升性能。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+对象池的核心思想：
+- **预分配**：在初始化时分配一批对象
+- **借出/归还**：需要对象时从池中借出，用完后归还
+- **复用**：归还的对象被重置后可以再次借出
+- **避免分配**：借出和归还操作不涉及系统级的内存分配
+
+## 🎯 基础对象池实现
+
+### 简单的 Vec 对象池
+
+```rs
+struct ObjectPool<T> {
+    available: Vec<T>,
+    factory: Box<dyn Fn() -> T>,
+}
+
+impl<T> ObjectPool<T> {
+    fn new<F: Fn() -> T + 'static>(capacity: usize, factory: F) -> Self {
+        let mut available = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            available.push(factory());
+        }
+        ObjectPool {
+            available,
+            factory: Box::new(factory),
+        }
+    }
+
+    fn acquire(&mut self) -> T {
+        self.available.pop().unwrap_or_else(|| (self.factory)())
+    }
+
+    fn release(&mut self, item: T) {
+        self.available.push(item);
+    }
+
+    fn available_count(&self) -> usize {
+        self.available.len()
+    }
+}
+
+fn main() {
+    // 创建一个 Vec<u8> 的对象池
+    let mut pool: ObjectPool<Vec<u8>> = ObjectPool::new(5, || Vec::with_capacity(1024));
+
+    println!("池中可用: {}", pool.available_count());
+
+    // 借出对象
+    let mut buf1 = pool.acquire();
+    let mut buf2 = pool.acquire();
+    println!("借出 2 个后: {}", pool.available_count());
+
+    // 使用对象
+    buf1.extend_from_slice(b"Hello, Pool!");
+    buf2.extend_from_slice(b"Buffer 2 data");
+    println!("buf1: {:?}", std::str::from_utf8(&buf1).unwrap());
+    println!("buf2: {:?}", std::str::from_utf8(&buf2).unwrap());
+
+    // 归还前清理
+    buf1.clear();
+    buf2.clear();
+    pool.release(buf1);
+    pool.release(buf2);
+    println!("归还后: {}", pool.available_count());
+
+    // 复用：借出的对象保留了之前的容量
+    let buf3 = pool.acquire();
+    println!("复用的缓冲区容量: {}", buf3.capacity()); // 仍然是 1024
+}
+```
+
+### 带自动归还的对象池
+
+```rs
+use std::cell::RefCell;
+use std::ops::{Deref, DerefMut};
+
+struct AutoPool<T> {
+    inner: RefCell<Vec<T>>,
+    factory: Box<dyn Fn() -> T>,
+}
+
+struct Pooled<'a, T> {
+    pool: &'a AutoPool<T>,
+    item: Option<T>,
+}
+
+impl<T> AutoPool<T> {
+    fn new<F: Fn() -> T + 'static>(capacity: usize, factory: F) -> Self {
+        let mut items = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            items.push(factory());
+        }
+        AutoPool {
+            inner: RefCell::new(items),
+            factory: Box::new(factory),
+        }
+    }
+
+    fn acquire(&self) -> Pooled<'_, T> {
+        let item = self.inner.borrow_mut().pop().unwrap_or_else(|| (self.factory)());
+        Pooled { pool: self, item: Some(item) }
+    }
+
+    fn available(&self) -> usize {
+        self.inner.borrow().len()
+    }
+}
+
+impl<'a, T> Deref for Pooled<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.item.as_ref().unwrap()
+    }
+}
+
+impl<'a, T> DerefMut for Pooled<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.item.as_mut().unwrap()
+    }
+}
+
+impl<'a, T> Drop for Pooled<'a, T> {
+    fn drop(&mut self) {
+        if let Some(item) = self.item.take() {
+            self.pool.inner.borrow_mut().push(item);
+        }
+    }
+}
+
+fn main() {
+    let pool: AutoPool<Vec<u8>> = AutoPool::new(3, || Vec::with_capacity(256));
+    println!("初始可用: {}", pool.available());
+
+    {
+        let mut buf = pool.acquire();
+        buf.extend_from_slice(b"auto-return!");
+        println!("使用中: {}, 可用: {}", std::str::from_utf8(&buf).unwrap(), pool.available());
+        // buf 在这里离开作用域，自动归还到池中
+    }
+
+    println!("自动归还后: {}", pool.available());
+
+    // 模拟并发使用
+    {
+        let mut handles = Vec::new();
+        for i in 0..5 {
+            let mut buf = pool.acquire();
+            buf.clear();
+            buf.extend_from_slice(format!("task_{}", i).as_bytes());
+            handles.push(buf);
+        }
+        println!("借出 5 个后: {}", pool.available());
+        // 所有 handles 在这里 drop，自动归还
+    }
+
+    println!("全部归还后: {}", pool.available());
+}
+```
+
+## 📝 实际应用示例
+
+### 连接池模式
+
+```rs
+use std::fmt;
+use std::time::Instant;
+
+#[derive(Debug)]
+struct Connection {
+    id: u32,
+    host: String,
+    created_at: Instant,
+    query_count: u64,
+}
+
+impl Connection {
+    fn new(id: u32, host: &str) -> Self {
+        println!("  [新建连接 #{}]", id);
+        Connection {
+            id,
+            host: host.to_string(),
+            created_at: Instant::now(),
+            query_count: 0,
+        }
+    }
+
+    fn execute(&mut self, query: &str) -> String {
+        self.query_count += 1;
+        format!("连接#{} 执行: {} (第{}次查询)", self.id, query, self.query_count)
+    }
+
+    fn reset(&mut self) {
+        // 重置连接状态但保留连接本身
+        self.query_count = 0;
+    }
+}
+
+impl fmt::Display for Connection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Connection(id={}, host={}, queries={})",
+               self.id, self.host, self.query_count)
+    }
+}
+
+struct ConnectionPool {
+    available: Vec<Connection>,
+    in_use: usize,
+    max_size: usize,
+    next_id: u32,
+    host: String,
+}
+
+impl ConnectionPool {
+    fn new(host: &str, initial_size: usize, max_size: usize) -> Self {
+        let mut available = Vec::with_capacity(max_size);
+        for i in 0..initial_size {
+            available.push(Connection::new(i as u32, host));
+        }
+        ConnectionPool {
+            available,
+            in_use: 0,
+            max_size,
+            next_id: initial_size as u32,
+            host: host.to_string(),
+        }
+    }
+
+    fn acquire(&mut self) -> Option<Connection> {
+        if let Some(mut conn) = self.available.pop() {
+            conn.reset();
+            self.in_use += 1;
+            Some(conn)
+        } else if self.in_use < self.max_size {
+            let conn = Connection::new(self.next_id, &self.host);
+            self.next_id += 1;
+            self.in_use += 1;
+            Some(conn)
+        } else {
+            None // 池已满
+        }
+    }
+
+    fn release(&mut self, conn: Connection) {
+        self.in_use -= 1;
+        self.available.push(conn);
+    }
+
+    fn stats(&self) -> String {
+        format!("可用: {}, 使用中: {}, 最大: {}",
+                self.available.len(), self.in_use, self.max_size)
+    }
+}
+
+fn main() {
+    println!("创建连接池（初始2个，最大5个）:");
+    let mut pool = ConnectionPool::new("db.example.com", 2, 5);
+    println!("状态: {}\n", pool.stats());
+
+    // 模拟多个"请求"使用连接
+    let mut connections = Vec::new();
+
+    for i in 0..4 {
+        if let Some(mut conn) = pool.acquire() {
+            let result = conn.execute(&format!("SELECT * FROM table_{}", i));
+            println!("{}", result);
+            connections.push(conn);
+        }
+    }
+    println!("\n使用中: {}", pool.stats());
+
+    // 归还连接
+    for conn in connections {
+        pool.release(conn);
+    }
+    println!("全部归还: {}", pool.stats());
+
+    // 复用连接（不需要新建）
+    if let Some(mut conn) = pool.acquire() {
+        let result = conn.execute("SELECT 1");
+        println!("\n复用: {}", result);
+        println!("连接信息: {}", conn);
+        pool.release(conn);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **减少堆分配**：对象池是减少堆分配的重要策略
+- **竞技场分配**：批量分配的另一种方式
+- **RAII**：`Pooled` 包装器利用 RAII 自动归还
+- **Deref/DerefMut**：让池化对象透明地像原始对象一样使用
 
 ## 📝 学习检查点
 
-- [ ] 理解对象池的核心概念
-- [ ] 能够在实际项目中应用对象池
+- [ ] 理解对象池的核心思想和适用场景
+- [ ] 能够实现基础的对象池
+- [ ] 掌握使用 RAII（Drop）实现自动归还
+- [ ] 了解连接池等实际应用模式
+
+## 🚀 下一步
+
+→ [竞技场分配](./09-arena-allocation)

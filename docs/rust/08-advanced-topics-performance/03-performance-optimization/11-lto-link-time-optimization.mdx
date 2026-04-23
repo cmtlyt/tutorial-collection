@@ -5,13 +5,242 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「LTO（链接时优化）」相关知识。
+**LTO（Link-Time Optimization，链接时优化）** 是一种在链接阶段进行跨编译单元优化的技术。正常编译时，每个 crate（或 codegen unit）被独立编译和优化，编译器只能在单个单元内部进行优化。LTO 打破了这一限制，允许编译器在链接时看到所有代码，进行全局优化。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+LTO 的主要效果：
+- **跨 crate 内联**：将依赖库的函数内联到调用处
+- **全局死代码消除**：移除未使用的函数和代码
+- **更好的常量传播**：跨 crate 边界传播常量
+- **减小二进制体积**：消除冗余代码
+
+## 🎯 LTO 的类型
+
+### Fat LTO vs Thin LTO
+
+Rust 支持两种 LTO 模式：
+
+```toml
+[profile.release]
+# Fat LTO（完全 LTO）：所有代码合并为一个编译单元
+# 优点：最优的优化效果
+# 缺点：编译时间最长，内存占用高
+lto = "fat"
+# 或者简写为：
+# lto = true
+
+# Thin LTO：轻量级 LTO
+# 优点：编译速度比 Fat LTO 快很多，仍然可以跨 crate 优化
+# 缺点：优化效果略弱于 Fat LTO
+# lto = "thin"
+
+# 禁用 LTO
+# lto = false   # 默认值（dev profile）
+# lto = "off"   # 同上
+```
+
+### 配置对比
+
+| 配置 | 编译时间 | 运行性能 | 二进制大小 | 推荐场景 |
+|------|----------|----------|------------|----------|
+| `lto = false` | 最快 | 基准 | 最大 | 开发阶段 |
+| `lto = "thin"` | 中等 | 较好 | 较小 | CI/CD、大型项目 |
+| `lto = "fat"` | 最慢 | 最好 | 最小 | 生产部署 |
+
+## 🔧 实际配置
+
+### 生产环境配置
+
+```toml
+# Cargo.toml
+
+[profile.release]
+opt-level = 3
+lto = "fat"          # 完全 LTO
+codegen-units = 1    # 配合 LTO 效果更好
+strip = true         # 剥离符号
+
+# 大型项目可以使用 Thin LTO 加速 CI
+[profile.ci-release]
+inherits = "release"
+lto = "thin"         # 比 fat 快，效果接近
+codegen-units = 4    # 允许一些并行编译
+```
+
+### 查看 LTO 效果
+
+```rs
+use std::time::Instant;
+
+// 模拟跨模块调用的场景
+mod math_utils {
+    pub fn fast_pow(mut base: f64, mut exp: u32) -> f64 {
+        let mut result = 1.0;
+        while exp > 0 {
+            if exp & 1 == 1 {
+                result *= base;
+            }
+            base *= base;
+            exp >>= 1;
+        }
+        result
+    }
+
+    pub fn clamp(value: f64, min: f64, max: f64) -> f64 {
+        if value < min {
+            min
+        } else if value > max {
+            max
+        } else {
+            value
+        }
+    }
+}
+
+mod statistics {
+    use super::math_utils;
+
+    pub fn compute_normalized_powers(data: &[f64], power: u32) -> Vec<f64> {
+        let max_val = data.iter()
+            .map(|&x| math_utils::fast_pow(x.abs(), power))
+            .fold(0.0f64, f64::max);
+
+        if max_val == 0.0 {
+            return vec![0.0; data.len()];
+        }
+
+        data.iter()
+            .map(|&x| {
+                let powered = math_utils::fast_pow(x.abs(), power);
+                math_utils::clamp(powered / max_val, 0.0, 1.0)
+            })
+            .collect()
+    }
+}
+
+fn main() {
+    let data: Vec<f64> = (0..100_000).map(|i| (i as f64) * 0.01).collect();
+
+    let start = Instant::now();
+    let mut result = Vec::new();
+    for _ in 0..100 {
+        result = statistics::compute_normalized_powers(&data, 3);
+    }
+    let elapsed = start.elapsed();
+
+    println!("归一化幂计算 ({}个元素, 100次): {:?}", data.len(), elapsed);
+    println!("result[0] = {:.6}", result[0]);
+    println!("result[50000] = {:.6}", result[50000]);
+
+    // LTO 效果说明
+    println!("\n没有 LTO: math_utils::fast_pow 和 clamp 是跨模块调用，不会被内联");
+    println!("有 LTO:   编译器可以将这些小函数内联到调用处，消除函数调用开销");
+    println!("\n测试方法:");
+    println!("  1. 先用 lto = false 编译并运行");
+    println!("  2. 改为 lto = true 编译并运行");
+    println!("  3. 对比耗时差异");
+}
+```
+
+## 📊 LTO 对二进制大小的影响
+
+### 检查二进制大小
+
+```bash
+# 编译不同 LTO 配置
+# 在 Cargo.toml 中修改 lto 选项后：
+
+cargo build --release
+ls -la target/release/my_app
+
+# 使用 cargo-bloat 分析各函数占用
+cargo install cargo-bloat
+cargo bloat --release -n 20
+
+# 使用 cargo-size 查看段大小
+cargo install cargo-size
+cargo size --release -- -A
+```
+
+```rs
+fn main() {
+    println!("LTO 对二进制大小的典型影响:");
+    println!();
+    println!("  配置                     大小     变化");
+    println!("  ─────────────────────────────────────");
+    println!("  lto=false, units=16      ~5.0MB   基准");
+    println!("  lto=\"thin\", units=1      ~3.5MB   -30%");
+    println!("  lto=\"fat\", units=1       ~3.2MB   -36%");
+    println!("  lto=\"fat\" + strip        ~2.8MB   -44%");
+    println!("  lto=\"fat\" + strip + \"z\"  ~2.2MB   -56%");
+    println!();
+    println!("注意: 以上数据仅为示意，实际效果取决于项目依赖和代码量");
+    println!();
+    println!("查看当前二进制的段信息:");
+    println!("  size target/release/my_app   (Linux/macOS)");
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的生产优化配置
+
+```toml
+# Cargo.toml — 生产级优化配置
+
+[profile.release]
+# 性能优化
+opt-level = 3        # 最高优化级别
+lto = "fat"          # 完全链接时优化
+codegen-units = 1    # 单编译单元（最优优化）
+
+# 体积优化
+strip = true         # 剥离符号
+panic = "abort"      # abort 而非 unwind（减小体积）
+
+# 快速 release 构建（用于 CI）
+[profile.release-fast]
+inherits = "release"
+lto = "thin"         # Thin LTO 更快
+codegen-units = 4    # 允许并行编译
+strip = false        # 保留符号（方便调试 CI 问题）
+
+# 最小体积（用于 Docker/嵌入式）
+[profile.release-small]
+inherits = "release"
+opt-level = "z"      # 优化体积
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+```
+
+```rs
+fn main() {
+    println!("推荐的编译流程:");
+    println!();
+    println!("  开发阶段:  cargo build              (快速编译)");
+    println!("  CI 构建:   cargo build --profile release-fast");
+    println!("  生产部署:  cargo build --release     (完全优化)");
+    println!("  容器镜像:  cargo build --profile release-small");
+    println!();
+    println!("当前可执行文件路径: {:?}", std::env::current_exe().ok());
+}
+```
+
+## 🔗 相关概念
+
+- **编译器优化级别**：LTO 与 opt-level 配合使用效果最佳
+- **PGO（配置文件引导优化）**：可与 LTO 叠加使用
+- **codegen-units**：与 LTO 配合，设为 1 获得最佳效果
+- **编译时间优化**：LTO 会增加编译时间，需要权衡
 
 ## 📝 学习检查点
 
-- [ ] 理解LTO（链接时优化）的核心概念
-- [ ] 能够在实际项目中应用LTO（链接时优化）
+- [ ] 理解 Fat LTO 和 Thin LTO 的区别
+- [ ] 能够在 Cargo.toml 中配置 LTO
+- [ ] 了解 LTO 对编译时间、运行性能、二进制大小的影响
+- [ ] 能够为不同场景选择合适的 LTO 配置
+
+## 🚀 下一步
+
+→ [PGO（配置文件引导优化）](./12-pgo-profile-guided-optimization)

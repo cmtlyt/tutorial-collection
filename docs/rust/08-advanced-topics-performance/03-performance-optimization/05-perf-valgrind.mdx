@@ -5,13 +5,287 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解性能优化中的「perf / valgrind 集成」相关知识。
+**perf** 和 **Valgrind** 是两个强大的 Linux 性能分析工具，可以与 Rust 程序无缝集成。它们从不同维度分析程序性能：
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+- **perf**：基于硬件性能计数器的采样分析器，开销极低，适合生产环境
+- **Valgrind（Cachegrind/Callgrind）**：基于模拟的分析器，可以精确到指令级别，但运行速度较慢
+
+## 🎯 perf 的使用
+
+### 安装和基本命令
+
+```bash
+# Ubuntu/Debian 安装
+sudo apt install linux-tools-generic linux-tools-$(uname -r)
+
+# 编译 Rust 程序（保留调试符号）
+cargo build --release
+
+# 基本性能采样
+perf stat ./target/release/my_app
+
+# 详细性能采样
+perf record -g ./target/release/my_app
+
+# 查看报告
+perf report
+```
+
+### Cargo.toml 配置
+
+为了在 release 模式下保留调试符号（用于 perf 分析），需要配置：
+
+```toml
+[profile.release]
+debug = true  # 保留调试符号
+
+[profile.bench]
+debug = true
+```
+
+### 使用 perf stat
+
+`perf stat` 收集程序运行的硬件计数器统计信息：
+
+```bash
+# 基本统计
+perf stat ./target/release/my_app
+
+# 输出示例：
+# Performance counter stats for './target/release/my_app':
+#
+#        1,234.56 msec task-clock
+#              42      context-switches
+#               3      cpu-migrations
+#          12,345      page-faults
+#   4,567,890,123      cycles
+#   3,456,789,012      instructions    # 0.76 insn per cycle
+#     567,890,123      branches
+#      12,345,678      branch-misses   # 2.17% of all branches
+```
+
+### 使用 perf record + perf report
+
+```bash
+# 记录性能数据（-g 启用调用图）
+perf record -g --call-graph dwarf ./target/release/my_app
+
+# 交互式查看报告
+perf report
+
+# 生成文本报告
+perf report --stdio | head -100
+```
+
+## 🔧 Valgrind 的使用
+
+### 安装
+
+```bash
+# Ubuntu/Debian
+sudo apt install valgrind
+
+# macOS (仅部分版本支持)
+brew install valgrind
+```
+
+### Cachegrind：缓存分析
+
+```bash
+# 运行 Cachegrind 分析
+valgrind --tool=cachegrind ./target/release/my_app
+
+# 输出示例：
+# ==12345== I   refs:      1,234,567,890
+# ==12345== I1  misses:          123,456
+# ==12345== LLi misses:           12,345
+# ==12345== D   refs:        567,890,123
+# ==12345== D1  misses:        1,234,567
+# ==12345== LLd misses:          123,456
+
+# 使用 cg_annotate 查看详细的逐行分析
+cg_annotate cachegrind.out.12345
+```
+
+### Callgrind：调用图分析
+
+```bash
+# 运行 Callgrind 分析
+valgrind --tool=callgrind ./target/release/my_app
+
+# 使用 KCachegrind 可视化（需要安装 KCachegrind）
+kcachegrind callgrind.out.12345
+
+# 或使用命令行工具
+callgrind_annotate callgrind.out.12345
+```
+
+### Massif：堆内存分析
+
+```bash
+# 运行 Massif 堆分析
+valgrind --tool=massif ./target/release/my_app
+
+# 查看堆使用报告
+ms_print massif.out.12345
+```
+
+## 📊 可分析的示例程序
+
+### 缓存友好 vs 缓存不友好
+
+```rs
+use std::time::Instant;
+
+const SIZE: usize = 1000;
+
+// 行优先遍历（缓存友好）
+fn sum_row_major(matrix: &Vec<Vec<i64>>) -> i64 {
+    let mut sum = 0i64;
+    for row in matrix {
+        for &val in row {
+            sum += val;
+        }
+    }
+    sum
+}
+
+// 列优先遍历（缓存不友好）
+fn sum_column_major(matrix: &Vec<Vec<i64>>) -> i64 {
+    let mut sum = 0i64;
+    let rows = matrix.len();
+    let cols = if rows > 0 { matrix[0].len() } else { 0 };
+    for j in 0..cols {
+        for i in 0..rows {
+            sum += matrix[i][j];
+        }
+    }
+    sum
+}
+
+// 扁平数组（最缓存友好）
+fn sum_flat(data: &[i64]) -> i64 {
+    data.iter().sum()
+}
+
+fn main() {
+    // 创建矩阵
+    let matrix: Vec<Vec<i64>> = (0..SIZE)
+        .map(|i| (0..SIZE).map(|j| (i * SIZE + j) as i64).collect())
+        .collect();
+    let flat: Vec<i64> = (0..(SIZE * SIZE) as i64).collect();
+
+    // 预热
+    let _ = sum_row_major(&matrix);
+    let _ = sum_column_major(&matrix);
+    let _ = sum_flat(&flat);
+
+    // 行优先
+    let start = Instant::now();
+    let mut result = 0i64;
+    for _ in 0..10 {
+        result = sum_row_major(&matrix);
+    }
+    let row_time = start.elapsed();
+
+    // 列优先
+    let start = Instant::now();
+    for _ in 0..10 {
+        result = sum_column_major(&matrix);
+    }
+    let col_time = start.elapsed();
+
+    // 扁平数组
+    let start = Instant::now();
+    for _ in 0..10 {
+        result = sum_flat(&flat);
+    }
+    let flat_time = start.elapsed();
+
+    println!("矩阵大小: {}x{}", SIZE, SIZE);
+    println!("行优先: {:?}", row_time);
+    println!("列优先: {:?}", col_time);
+    println!("扁平:   {:?}", flat_time);
+    println!("列/行比: {:.2}x", col_time.as_nanos() as f64 / row_time.as_nanos() as f64);
+    println!("结果: {}", result);
+    println!("\n使用以下命令查看缓存命中率差异:");
+    println!("  valgrind --tool=cachegrind ./target/release/my_app");
+}
+```
+
+## 📝 实际应用示例
+
+### DHAT：动态堆分析（Rust 专用）
+
+Rust 有一个专门的堆分析工具 `dhat`，可以直接作为 crate 使用：
+
+```toml
+# Cargo.toml
+[dependencies]
+dhat = "0.3"
+
+[profile.release]
+debug = true
+```
+
+```rs
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
+fn process_strings(count: usize) -> Vec<String> {
+    let mut result = Vec::new(); // 不预分配
+    for i in 0..count {
+        let s = format!("item_{}", i); // 每次 format! 都分配
+        result.push(s);
+    }
+    result
+}
+
+fn process_strings_optimized(count: usize) -> Vec<String> {
+    let mut result = Vec::with_capacity(count); // 预分配
+    let mut buffer = String::with_capacity(16);
+    for i in 0..count {
+        buffer.clear();
+        buffer.push_str("item_");
+        buffer.push_str(&i.to_string());
+        result.push(buffer.clone());
+    }
+    result
+}
+
+fn main() {
+    // dhat profiling 只在运行时激活
+    let _profiler = dhat::Profiler::new_heap();
+
+    println!("=== 未优化版本 ===");
+    let v1 = process_strings(10_000);
+    println!("处理了 {} 个字符串", v1.len());
+
+    println!("\n=== 优化版本 ===");
+    let v2 = process_strings_optimized(10_000);
+    println!("处理了 {} 个字符串", v2.len());
+
+    // dhat profiler 会在 drop 时打印摘要
+    // 完整报告保存在 dhat-heap.json 中
+    // 使用 https://nnethercote.github.io/dh_view/dh_view.html 查看
+    println!("\ndhat 报告将在程序退出时生成");
+}
+```
+
+## 🔗 相关概念
+
+- **flamegraph 火焰图**：perf 数据可以转换为火焰图
+- **cargo bench / criterion**：基准测试提供定量数据
+- **减少堆分配**：Valgrind/DHAT 帮助发现不必要的分配
+- **编译器优化级别**：分析应在 release 模式下进行
 
 ## 📝 学习检查点
 
-- [ ] 理解perf / valgrind 集成的核心概念
-- [ ] 能够在实际项目中应用perf / valgrind 集成
+- [ ] 能够使用 perf stat 查看程序的硬件计数器统计
+- [ ] 能够使用 perf record + perf report 分析热点函数
+- [ ] 了解 Valgrind 的 Cachegrind、Callgrind、Massif 工具
+- [ ] 能够使用 dhat 分析 Rust 程序的堆分配
+
+## 🚀 下一步
+
+→ [减少堆分配](./06-reducing-heap-allocations)

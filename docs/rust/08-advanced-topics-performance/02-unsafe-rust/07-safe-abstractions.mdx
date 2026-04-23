@@ -5,13 +5,376 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Unsafe Rust中的「安全抽象」相关知识。
+**安全抽象（Safe Abstraction）** 是 Rust unsafe 编程的核心原则：将 unsafe 操作封装在安全的 API 内部，对外只暴露安全接口。标准库中的 `Vec`、`String`、`HashMap` 等类型内部都大量使用 unsafe 代码，但提供的 API 都是完全安全的。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+安全抽象的核心思想：
+- **外部安全，内部 unsafe**：unsafe 代码被限制在模块边界内
+- **封装不变量**：通过类型系统和 API 设计保证不变量不会被外部破坏
+- **最小 unsafe 表面积**：尽量减少 unsafe 代码的数量
+
+## 🎯 安全抽象的原则
+
+### 标准库的典范：split_at_mut
+
+`split_at_mut` 是安全抽象的经典案例——它在内部使用 unsafe 代码，但对外提供完全安全的接口：
+
+```rs
+// 模拟标准库的 split_at_mut 实现
+fn my_split_at_mut(slice: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {
+    let len = slice.len();
+    let ptr = slice.as_mut_ptr();
+
+    // 安全检查：确保 mid 不越界
+    assert!(mid <= len, "mid({}) > len({})", mid, len);
+
+    // 内部 unsafe：我们知道两个切片不会重叠
+    // 因此不违反"同时存在多个可变引用"的规则
+    unsafe {
+        (
+            std::slice::from_raw_parts_mut(ptr, mid),
+            std::slice::from_raw_parts_mut(ptr.add(mid), len - mid),
+        )
+    }
+}
+
+fn main() {
+    let mut data = vec![1, 2, 3, 4, 5, 6];
+
+    let (left, right) = my_split_at_mut(&mut data, 3);
+    left[0] = 10;
+    right[0] = 40;
+
+    // 两个可变切片可以同时操作不同区域
+    for item in left.iter_mut() {
+        *item *= 2;
+    }
+
+    println!("left: {:?}", left);   // [20, 4, 6]
+    println!("right: {:?}", right); // [40, 5, 6]
+}
+```
+
+### 封装不变量
+
+```rs
+/// 一个始终保持排序的数组。
+///
+/// 不变量：`data` 始终是升序排列的。
+/// 所有修改操作都维护此不变量。
+struct SortedVec<T: Ord> {
+    data: Vec<T>,
+}
+
+impl<T: Ord> SortedVec<T> {
+    fn new() -> Self {
+        SortedVec { data: Vec::new() }
+    }
+
+    /// 插入元素并保持排序。
+    fn insert(&mut self, value: T) {
+        let pos = self.data.binary_search(&value).unwrap_or_else(|pos| pos);
+        self.data.insert(pos, value);
+    }
+
+    /// 检查元素是否存在（利用已排序的特性使用二分查找）。
+    fn contains(&self, value: &T) -> bool {
+        self.data.binary_search(value).is_ok()
+    }
+
+    /// 返回只读切片，外部无法破坏排序不变量。
+    fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// 移除并返回最小元素。
+    fn pop_min(&mut self) -> Option<T> {
+        if self.data.is_empty() {
+            None
+        } else {
+            Some(self.data.remove(0))
+        }
+    }
+
+    /// 移除并返回最大元素。
+    fn pop_max(&mut self) -> Option<T> {
+        self.data.pop()
+    }
+}
+
+fn main() {
+    let mut sorted = SortedVec::new();
+    sorted.insert(5);
+    sorted.insert(1);
+    sorted.insert(8);
+    sorted.insert(3);
+    sorted.insert(2);
+
+    println!("排序数组: {:?}", sorted.as_slice()); // [1, 2, 3, 5, 8]
+    println!("包含 3: {}", sorted.contains(&3));     // true
+    println!("包含 4: {}", sorted.contains(&4));     // false
+    println!("最小: {:?}", sorted.pop_min());        // Some(1)
+    println!("最大: {:?}", sorted.pop_max());        // Some(8)
+    println!("剩余: {:?}", sorted.as_slice());       // [2, 3, 5]
+}
+```
+
+## 🔧 构建安全的数据结构
+
+### 安全的环形缓冲区
+
+```rs
+use std::fmt;
+
+struct RingBuffer<T> {
+    buffer: Vec<Option<T>>,
+    head: usize,   // 读取位置
+    tail: usize,   // 写入位置
+    len: usize,
+    capacity: usize,
+}
+
+impl<T> RingBuffer<T> {
+    fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "容量必须大于 0");
+        let mut buffer = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            buffer.push(None);
+        }
+        RingBuffer {
+            buffer,
+            head: 0,
+            tail: 0,
+            len: 0,
+            capacity,
+        }
+    }
+
+    fn push(&mut self, item: T) -> Option<T> {
+        let evicted = if self.len == self.capacity {
+            // 缓冲区满了，覆盖最旧的元素
+            let old = self.buffer[self.head].take();
+            self.head = (self.head + 1) % self.capacity;
+            old
+        } else {
+            self.len += 1;
+            None
+        };
+
+        self.buffer[self.tail] = Some(item);
+        self.tail = (self.tail + 1) % self.capacity;
+        evicted
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+        let item = self.buffer[self.head].take();
+        self.head = (self.head + 1) % self.capacity;
+        self.len -= 1;
+        item
+    }
+
+    fn peek(&self) -> Option<&T> {
+        if self.len == 0 {
+            None
+        } else {
+            self.buffer[self.head].as_ref()
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn is_full(&self) -> bool {
+        self.len == self.capacity
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for RingBuffer<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut items = Vec::new();
+        let mut pos = self.head;
+        for _ in 0..self.len {
+            if let Some(ref item) = self.buffer[pos] {
+                items.push(format!("{:?}", item));
+            }
+            pos = (pos + 1) % self.capacity;
+        }
+        write!(f, "RingBuffer[{}]", items.join(", "))
+    }
+}
+
+fn main() {
+    let mut ring = RingBuffer::new(3);
+
+    println!("推入 1, 2, 3:");
+    ring.push(1);
+    ring.push(2);
+    ring.push(3);
+    println!("  {:?} (len={}, full={})", ring, ring.len(), ring.is_full());
+
+    println!("推入 4（覆盖最旧的 1）:");
+    let evicted = ring.push(4);
+    println!("  被驱逐: {:?}", evicted);
+    println!("  {:?}", ring);
+
+    println!("弹出: {:?}", ring.pop());
+    println!("弹出: {:?}", ring.pop());
+    println!("  {:?} (len={})", ring, ring.len());
+}
+```
+
+## 📝 实际应用示例
+
+### 安全的内存池
+
+```rs
+use std::fmt;
+
+struct Pool<T> {
+    storage: Vec<Option<T>>,
+    free_indices: Vec<usize>,
+    active_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PoolHandle(usize);
+
+impl<T> Pool<T> {
+    fn new(capacity: usize) -> Self {
+        let mut storage = Vec::with_capacity(capacity);
+        let mut free_indices = Vec::with_capacity(capacity);
+        for i in (0..capacity).rev() {
+            storage.push(None);
+            free_indices.push(i);
+        }
+        Pool {
+            storage,
+            free_indices,
+            active_count: 0,
+        }
+    }
+
+    fn allocate(&mut self, value: T) -> Option<PoolHandle> {
+        let index = self.free_indices.pop()?;
+        self.storage[index] = Some(value);
+        self.active_count += 1;
+        Some(PoolHandle(index))
+    }
+
+    fn deallocate(&mut self, handle: PoolHandle) -> Option<T> {
+        if handle.0 >= self.storage.len() {
+            return None;
+        }
+        let value = self.storage[handle.0].take()?;
+        self.free_indices.push(handle.0);
+        self.active_count -= 1;
+        Some(value)
+    }
+
+    fn get(&self, handle: PoolHandle) -> Option<&T> {
+        if handle.0 >= self.storage.len() {
+            return None;
+        }
+        self.storage[handle.0].as_ref()
+    }
+
+    fn get_mut(&mut self, handle: PoolHandle) -> Option<&mut T> {
+        if handle.0 >= self.storage.len() {
+            return None;
+        }
+        self.storage[handle.0].as_mut()
+    }
+
+    fn active_count(&self) -> usize {
+        self.active_count
+    }
+
+    fn available(&self) -> usize {
+        self.free_indices.len()
+    }
+}
+
+#[derive(Debug)]
+struct Particle {
+    x: f32,
+    y: f32,
+    velocity_x: f32,
+    velocity_y: f32,
+}
+
+impl fmt::Display for Particle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Particle({:.1}, {:.1})", self.x, self.y)
+    }
+}
+
+fn main() {
+    let mut pool: Pool<Particle> = Pool::new(4);
+
+    let h1 = pool.allocate(Particle { x: 0.0, y: 0.0, velocity_x: 1.0, velocity_y: 0.5 }).unwrap();
+    let h2 = pool.allocate(Particle { x: 5.0, y: 3.0, velocity_x: -0.5, velocity_y: 1.0 }).unwrap();
+    let h3 = pool.allocate(Particle { x: 10.0, y: 7.0, velocity_x: 0.0, velocity_y: -1.0 }).unwrap();
+
+    println!("活跃: {}, 可用: {}", pool.active_count(), pool.available());
+
+    // 更新粒子位置
+    if let Some(particle) = pool.get_mut(h1) {
+        particle.x += particle.velocity_x;
+        particle.y += particle.velocity_y;
+    }
+
+    // 读取粒子
+    for handle in [h1, h2, h3] {
+        if let Some(p) = pool.get(handle) {
+            println!("  {}", p);
+        }
+    }
+
+    // 释放粒子
+    let released = pool.deallocate(h2);
+    println!("\n释放: {:?}", released.map(|p| format!("{}", p)));
+    println!("活跃: {}, 可用: {}", pool.active_count(), pool.available());
+
+    // 复用空间
+    let h4 = pool.allocate(Particle { x: 20.0, y: 15.0, velocity_x: 2.0, velocity_y: 2.0 }).unwrap();
+    println!("新粒子: {}", pool.get(h4).unwrap());
+    println!("活跃: {}, 可用: {}", pool.active_count(), pool.available());
+}
+```
+
+## 🔗 相关概念
+
+- **unsafe 块与 unsafe fn**：安全抽象的基础构建块
+- **不变量维护**：安全抽象必须维护的内部一致性
+- **安全契约文档化**：记录安全保证的最佳实践
+- **模块边界**：Rust 的隐私系统如何帮助维护不变量
 
 ## 📝 学习检查点
 
-- [ ] 理解安全抽象的核心概念
-- [ ] 能够在实际项目中应用安全抽象
+- [ ] 理解安全抽象的核心原则
+- [ ] 掌握如何使用类型系统封装不变量
+- [ ] 能够在 unsafe 代码上构建安全的 API
+- [ ] 了解标准库中安全抽象的典型案例
+
+## 🚀 下一步
+
+→ [不变量维护](./08-invariant-maintenance)

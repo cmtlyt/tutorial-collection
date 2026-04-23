@@ -5,13 +5,284 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Unsafe Rust中的「可变静态变量」相关知识。
+在 Rust 中，**可变静态变量（`static mut`）** 是全局可变状态。由于任何代码都可以在任何时候访问全局静态变量，编译器无法保证不存在数据竞争，因此读写 `static mut` 变量都是 unsafe 操作。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+`static mut` 的特点：
+- 具有 `'static` 生命周期
+- 在多线程环境中极易引发数据竞争
+- 读取和写入都需要 `unsafe` 块
+- 在大多数场景下，应优先使用更安全的替代方案
+
+## 🎯 基本用法
+
+### 声明和访问
+
+```rs
+static mut REQUEST_COUNT: u64 = 0;
+static mut LAST_ERROR: Option<String> = None;
+
+fn increment_count() {
+    unsafe {
+        REQUEST_COUNT += 1;
+    }
+}
+
+fn get_count() -> u64 {
+    unsafe { REQUEST_COUNT }
+}
+
+fn set_error(msg: &str) {
+    unsafe {
+        LAST_ERROR = Some(msg.to_string());
+    }
+}
+
+fn get_error() -> Option<String> {
+    unsafe { LAST_ERROR.clone() }
+}
+
+fn main() {
+    increment_count();
+    increment_count();
+    increment_count();
+    println!("请求计数: {}", get_count());
+
+    set_error("连接超时");
+    println!("最后错误: {:?}", get_error());
+}
+```
+
+:::warning 危险
+`static mut` 在多线程环境中是未定义行为的主要来源。即使在单线程程序中也应谨慎使用。
 :::
+
+### static vs static mut vs const
+
+```rs
+// const：编译期常量，会被内联到使用处
+const MAX_SIZE: usize = 1024;
+
+// static：不可变全局变量，有固定内存地址
+static APP_NAME: &str = "MyApp";
+static VERSION: (u32, u32, u32) = (1, 0, 0);
+
+// static mut：可变全局变量，读写都是 unsafe
+static mut INITIALIZED: bool = false;
+
+fn main() {
+    // const 和 static 可以安全访问
+    println!("最大大小: {}", MAX_SIZE);
+    println!("应用: {} v{}.{}.{}", APP_NAME, VERSION.0, VERSION.1, VERSION.2);
+
+    // static 有固定地址
+    println!("APP_NAME 地址: {:p}", &APP_NAME);
+
+    // static mut 需要 unsafe
+    unsafe {
+        if !INITIALIZED {
+            println!("首次初始化");
+            INITIALIZED = true;
+        }
+        println!("已初始化: {}", INITIALIZED);
+    }
+}
+```
+
+## 🔧 安全替代方案
+
+在绝大多数场景下，应使用以下安全替代方案代替 `static mut`：
+
+### 使用 Atomic 类型
+
+```rs
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+
+// 原子类型：线程安全的全局计数器
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+fn increment() -> u64 {
+    COUNTER.fetch_add(1, Ordering::SeqCst)
+}
+
+fn get_count() -> u64 {
+    COUNTER.load(Ordering::SeqCst)
+}
+
+fn enable() {
+    ENABLED.store(true, Ordering::SeqCst);
+}
+
+fn is_enabled() -> bool {
+    ENABLED.load(Ordering::SeqCst)
+}
+
+fn main() {
+    // 完全安全，无需 unsafe
+    increment();
+    increment();
+    increment();
+    println!("计数器: {}", get_count());
+
+    enable();
+    println!("已启用: {}", is_enabled());
+}
+```
+
+### 使用 OnceLock（Rust 1.70+）
+
+```rs
+use std::sync::OnceLock;
+use std::collections::HashMap;
+
+// OnceLock：线程安全的一次性初始化
+static CONFIG: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+fn get_config() -> &'static HashMap<String, String> {
+    CONFIG.get_or_init(|| {
+        let mut map = HashMap::new();
+        map.insert("host".to_string(), "localhost".to_string());
+        map.insert("port".to_string(), "8080".to_string());
+        map.insert("debug".to_string(), "true".to_string());
+        println!("配置已初始化");
+        map
+    })
+}
+
+fn main() {
+    // 第一次调用会触发初始化
+    let config = get_config();
+    println!("host: {}", config.get("host").unwrap());
+
+    // 后续调用直接返回已初始化的值
+    let config2 = get_config();
+    println!("port: {}", config2.get("port").unwrap());
+}
+```
+
+### 使用 Mutex/RwLock
+
+```rs
+use std::sync::{Mutex, RwLock, OnceLock};
+
+// 全局可变状态的安全方案
+static LOGS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static SETTINGS: OnceLock<RwLock<Settings>> = OnceLock::new();
+
+struct Settings {
+    log_level: String,
+    max_retries: u32,
+}
+
+fn get_logs() -> &'static Mutex<Vec<String>> {
+    LOGS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn get_settings() -> &'static RwLock<Settings> {
+    SETTINGS.get_or_init(|| RwLock::new(Settings {
+        log_level: "INFO".to_string(),
+        max_retries: 3,
+    }))
+}
+
+fn log_message(msg: &str) {
+    let mut logs = get_logs().lock().unwrap();
+    logs.push(msg.to_string());
+}
+
+fn update_log_level(level: &str) {
+    let mut settings = get_settings().write().unwrap();
+    settings.log_level = level.to_string();
+}
+
+fn main() {
+    log_message("应用启动");
+    log_message("加载配置");
+
+    // 读取设置（多个读者可以并发）
+    {
+        let settings = get_settings().read().unwrap();
+        println!("日志级别: {}", settings.log_level);
+        println!("最大重试: {}", settings.max_retries);
+    }
+
+    // 更新设置
+    update_log_level("DEBUG");
+    log_message("日志级别已更新");
+
+    // 打印所有日志
+    let logs = get_logs().lock().unwrap();
+    println!("\n所有日志:");
+    for (i, log) in logs.iter().enumerate() {
+        println!("  [{}] {}", i, log);
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### static mut 的合理使用场景
+
+虽然大多数情况应避免 `static mut`，但在以下场景中它可能是合理的：
+
+```rs
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// 场景：单线程的初始化 + 原子标志保证只初始化一次
+static INIT_DONE: AtomicBool = AtomicBool::new(false);
+static mut LOOKUP_TABLE: [u32; 256] = [0u32; 256];
+
+/// 初始化查找表（只应调用一次）
+fn initialize_lookup_table() {
+    // 使用原子标志保证只初始化一次
+    if INIT_DONE.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return; // 已经初始化过了
+    }
+
+    unsafe {
+        for i in 0..256 {
+            // CRC32 简化示例
+            let mut crc = i as u32;
+            for _ in 0..8 {
+                if crc & 1 != 0 {
+                    crc = (crc >> 1) ^ 0xEDB88320;
+                } else {
+                    crc >>= 1;
+                }
+            }
+            LOOKUP_TABLE[i] = crc;
+        }
+    }
+    println!("查找表初始化完成");
+}
+
+fn lookup(index: u8) -> u32 {
+    initialize_lookup_table(); // 确保已初始化
+    unsafe { LOOKUP_TABLE[index as usize] }
+}
+
+fn main() {
+    // 多次调用不会重复初始化
+    println!("lookup(0) = 0x{:08X}", lookup(0));
+    println!("lookup(1) = 0x{:08X}", lookup(1));
+    println!("lookup(255) = 0x{:08X}", lookup(255));
+}
+```
+
+## 🔗 相关概念
+
+- **unsafe 块与 unsafe fn**：访问 `static mut` 需要 unsafe 块
+- **Atomic 类型**：线程安全的原子操作，是 `static mut` 的主要替代方案
+- **OnceLock/Mutex/RwLock**：更高级的线程安全全局状态管理
+- **Send 与 Sync**：理解为什么 `static mut` 在多线程中不安全
 
 ## 📝 学习检查点
 
-- [ ] 理解可变静态变量的核心概念
-- [ ] 能够在实际项目中应用可变静态变量
+- [ ] 理解 `static mut` 为什么需要 unsafe
+- [ ] 掌握 `const`、`static`、`static mut` 的区别
+- [ ] 能够选择合适的安全替代方案（Atomic、OnceLock、Mutex）
+- [ ] 了解 `static mut` 的合理使用场景
+
+## 🚀 下一步
+
+→ [实现 unsafe trait](./06-implementing-unsafe-traits)
