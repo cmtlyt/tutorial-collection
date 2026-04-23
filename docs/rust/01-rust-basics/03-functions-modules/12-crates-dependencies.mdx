@@ -1,17 +1,573 @@
 # crate 与外部依赖
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解函数与模块中的「crate 与外部依赖」相关知识。
+Crate 是 Rust 的编译单元和包分发单位。每个 Rust 项目至少包含一个 crate，而 Cargo 是 Rust 的官方包管理器和构建工具，负责管理项目的依赖关系、编译流程和发布。Rust 的生态系统通过 [crates.io](https://crates.io) 提供了大量高质量的第三方库，掌握 crate 和依赖管理是构建实际项目的必备技能。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 crate 的类型
+
+### 二进制 crate（Binary Crate）
+
+二进制 crate 编译后生成可执行文件，必须包含 `main` 函数作为入口：
+
+```rust
+// src/main.rs —— 二进制 crate 的入口
+fn main() {
+    println!("Hello, this is a binary crate!");
+}
+```
+
+### 库 crate（Library Crate）
+
+库 crate 不包含 `main` 函数，编译后生成 `.rlib` 文件，供其他 crate 使用：
+
+```rust
+// src/lib.rs —— 库 crate 的入口
+pub fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+```
+
+### 一个项目同时包含两种 crate
+
+```
+my_project/
+├── Cargo.toml
+└── src/
+    ├── lib.rs      ← 库 crate
+    └── main.rs     ← 二进制 crate
+```
+
+在 `main.rs` 中通过 crate 名称引用库 crate 的内容：
+
+```rust
+// src/main.rs
+use my_project::greet;
+
+fn main() {
+    let message = greet("Rust");
+    println!("{}", message);
+}
+```
+
+### 多个二进制 crate
+
+一个项目可以有多个二进制 crate，放在 `src/bin/` 目录下：
+
+```
+my_project/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── main.rs          ← 默认二进制 crate
+    └── bin/
+        ├── server.rs    ← 额外的二进制 crate
+        └── client.rs    ← 额外的二进制 crate
+```
+
+```rust
+// src/bin/server.rs
+use my_project::greet;
+
+fn main() {
+    println!("Starting server...");
+    println!("{}", greet("Server"));
+}
+```
+
+运行指定的二进制 crate：
+
+```bash
+cargo run --bin server
+cargo run --bin client
+cargo run              # 运行默认的 src/main.rs
+```
+
+## 📦 Cargo.toml 详解
+
+### 基本结构
+
+```toml
+[package]
+name = "my_project"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+description = "A sample Rust project"
+license = "MIT"
+
+[dependencies]
+serde = "1.0"
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+
+[build-dependencies]
+cc = "1.0"
+```
+
+### 关键字段说明
+
+| 字段 | 作用 | 示例 |
+|------|------|------|
+| `name` | 包名（也是 crate 名称） | `"my_project"` |
+| `version` | 语义化版本号 | `"0.1.0"` |
+| `edition` | Rust 版本（影响语法特性） | `"2021"` |
+| `[dependencies]` | 运行时依赖 | `serde = "1.0"` |
+| `[dev-dependencies]` | 仅测试和开发时使用的依赖 | `assert_cmd = "2.0"` |
+| `[build-dependencies]` | 构建脚本使用的依赖 | `cc = "1.0"` |
+
+## 🔗 添加外部依赖
+
+### 使用 cargo add 命令
+
+最简单的添加依赖方式是使用 `cargo add` 命令：
+
+```bash
+# 添加最新版本
+cargo add serde
+
+# 添加指定版本
+cargo add serde@1.0.193
+
+# 添加并启用特性
+cargo add serde --features derive
+
+# 添加开发依赖
+cargo add --dev assert_cmd
+
+# 移除依赖
+cargo remove serde
+```
+
+### 手动编辑 Cargo.toml
+
+也可以直接编辑 `Cargo.toml` 文件：
+
+```toml
+[dependencies]
+# 简写形式：仅指定版本
+rand = "0.8"
+
+# 完整形式：指定版本和特性
+serde = { version = "1.0", features = ["derive"] }
+
+# 指定 Git 仓库
+my_lib = { git = "https://github.com/user/my_lib.git", branch = "main" }
+
+# 指定本地路径（用于开发时的本地依赖）
+local_lib = { path = "../local_lib" }
+```
+
+### 版本号语义
+
+Rust 的依赖版本遵循语义化版本（SemVer）规范：
+
+| 写法 | 含义 | 等价范围 |
+|------|------|---------|
+| `"1.0.0"` | 兼容版本 | `>=1.0.0, <2.0.0` |
+| `"0.8.5"` | 兼容版本 | `>=0.8.5, <0.9.0` |
+| `"=1.0.0"` | 精确版本 | 仅 `1.0.0` |
+| `">=1.0, <1.5"` | 范围版本 | `>=1.0.0, <1.5.0` |
+| `"~1.0.0"` | 最小兼容 | `>=1.0.0, <1.1.0` |
+| `"*"` | 任意版本 | 所有版本 |
+
+:::tip 默认的 ^ 语义
+`"1.0.0"` 实际上等同于 `"^1.0.0"`，表示兼容 `1.x.x` 的任何版本。这是 Rust 最常用的版本约束方式。
 :::
+
+## 🔒 Cargo.lock 文件
+
+`Cargo.lock` 记录了所有依赖的精确版本，确保构建的可复现性：
+
+```bash
+# 更新所有依赖到兼容的最新版本
+cargo update
+
+# 更新指定依赖
+cargo update serde
+
+# 查看依赖树
+cargo tree
+```
+
+:::tip Cargo.lock 的版本控制策略
+- **二进制项目**：应当将 `Cargo.lock` 提交到版本控制，确保所有人使用相同的依赖版本
+- **库项目**：通常不提交 `Cargo.lock`（在 `.gitignore` 中忽略），让下游用户决定具体版本
+:::
+
+## ⚙️ Features（特性）
+
+特性是 Rust 的条件编译机制，允许用户按需启用库的功能子集：
+
+### 使用依赖的特性
+
+```toml
+[dependencies]
+# 启用 derive 特性
+serde = { version = "1.0", features = ["derive"] }
+
+# 启用多个特性
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+
+# 启用所有特性（谨慎使用）
+tokio = { version = "1", features = ["full"] }
+
+# 禁用默认特性
+some_lib = { version = "1.0", default-features = false }
+
+# 禁用默认特性后手动选择
+some_lib = { version = "1.0", default-features = false, features = ["feature_a"] }
+```
+
+### 定义自己的特性
+
+在你的 crate 中，可以通过 `[features]` 表定义特性：
+
+```toml
+[features]
+# 默认启用的特性
+default = ["json"]
+
+# 各个特性
+json = ["serde", "serde_json"]
+xml = ["quick-xml"]
+logging = ["log", "env_logger"]
+
+# 特性可以依赖其他特性
+full = ["json", "xml", "logging"]
+
+[dependencies]
+serde = { version = "1.0", optional = true }
+serde_json = { version = "1.0", optional = true }
+quick-xml = { version = "0.31", optional = true }
+log = { version = "0.4", optional = true }
+env_logger = { version = "0.10", optional = true }
+```
+
+在代码中使用条件编译：
+
+```rust
+// 仅在启用 json 特性时编译
+#[cfg(feature = "json")]
+pub mod json_support {
+    use serde::{Serialize, Deserialize};
+
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct Config {
+        pub name: String,
+        pub value: i32,
+    }
+
+    pub fn parse_json(input: &str) -> Result<Config, serde_json::Error> {
+        serde_json::from_str(input)
+    }
+}
+
+// 仅在启用 logging 特性时编译
+#[cfg(feature = "logging")]
+pub fn init_logging() {
+    env_logger::init();
+    log::info!("Logging initialized");
+}
+
+// 始终可用的核心功能
+pub fn core_function() -> String {
+    "This is always available".to_string()
+}
+```
+
+## 🏗️ Workspace（工作区）
+
+当项目变大时，可以使用 workspace 将多个 crate 组织在一起：
+
+### 工作区结构
+
+```
+my_workspace/
+├── Cargo.toml           ← 工作区根配置
+├── crates/
+│   ├── core/
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       └── lib.rs
+│   ├── api/
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       └── lib.rs
+│   └── cli/
+│       ├── Cargo.toml
+│       └── src/
+│           └── main.rs
+```
+
+### 工作区根 Cargo.toml
+
+```toml
+[workspace]
+members = [
+    "crates/core",
+    "crates/api",
+    "crates/cli",
+]
+
+# 共享的依赖版本（避免各成员使用不同版本）
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+```
+
+### 成员 crate 的 Cargo.toml
+
+```toml
+# crates/core/Cargo.toml
+[package]
+name = "my_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde.workspace = true    # 使用工作区统一的版本
+```
+
+```toml
+# crates/api/Cargo.toml
+[package]
+name = "my_api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+my_core = { path = "../core" }   # 引用工作区内的其他 crate
+serde.workspace = true
+```
+
+### 工作区常用命令
+
+```bash
+# 构建所有成员
+cargo build
+
+# 构建指定成员
+cargo build -p my_core
+
+# 运行指定二进制 crate
+cargo run -p cli
+
+# 测试所有成员
+cargo test
+
+# 测试指定成员
+cargo test -p my_api
+```
+
+## 📝 实际应用示例
+
+### 使用外部 crate 构建命令行工具
+
+一个典型的使用外部依赖的例子。`Cargo.toml` 配置如下：
+
+```toml
+[package]
+name = "word_counter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 本示例不需要外部依赖，使用标准库即可
+```
+
+```rust
+// src/main.rs
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+
+fn count_words(text: &str) -> HashMap<String, usize> {
+    let mut word_counts: HashMap<String, usize> = HashMap::new();
+
+    for word in text.split_whitespace() {
+        let cleaned = word
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+
+        if !cleaned.is_empty() {
+            *word_counts.entry(cleaned).or_insert(0) += 1;
+        }
+    }
+
+    word_counts
+}
+
+fn top_words(counts: &HashMap<String, usize>, limit: usize) -> Vec<(&str, usize)> {
+    let mut sorted: Vec<(&str, usize)> = counts
+        .iter()
+        .map(|(word, &count)| (word.as_str(), count))
+        .collect();
+
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.truncate(limit);
+    sorted
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+
+    let text = if args.len() > 1 {
+        match fs::read_to_string(&args[1]) {
+            Ok(content) => content,
+            Err(error) => {
+                eprintln!("Error reading file '{}': {}", args[1], error);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        "the quick brown fox jumps over the lazy dog the fox the dog".to_string()
+    };
+
+    let counts = count_words(&text);
+    let total_words: usize = counts.values().sum();
+    let unique_words = counts.len();
+
+    println!("=== Word Counter ===");
+    println!("Total words: {}", total_words);
+    println!("Unique words: {}", unique_words);
+    println!("\nTop 10 words:");
+
+    for (index, (word, count)) in top_words(&counts, 10).iter().enumerate() {
+        println!("  {}. {} ({})", index + 1, word, count);
+    }
+}
+```
+
+### 组织模块化的库 crate
+
+```rust
+// src/lib.rs
+pub mod text {
+    pub fn word_count(text: &str) -> usize {
+        text.split_whitespace().count()
+    }
+
+    pub fn char_count(text: &str) -> usize {
+        text.chars().count()
+    }
+
+    pub fn line_count(text: &str) -> usize {
+        text.lines().count()
+    }
+
+    pub fn truncate(text: &str, max_length: usize) -> String {
+        if text.len() <= max_length {
+            text.to_string()
+        } else {
+            format!("{}...", &text[..max_length.saturating_sub(3)])
+        }
+    }
+}
+
+pub mod validation {
+    pub fn is_valid_email(email: &str) -> bool {
+        let parts: Vec<&str> = email.split('@').collect();
+        if parts.len() != 2 {
+            return false;
+        }
+        let local = parts[0];
+        let domain = parts[1];
+
+        !local.is_empty()
+            && !domain.is_empty()
+            && domain.contains('.')
+            && !domain.starts_with('.')
+            && !domain.ends_with('.')
+    }
+
+    pub fn is_strong_password(password: &str) -> bool {
+        let has_uppercase = password.chars().any(|c| c.is_uppercase());
+        let has_lowercase = password.chars().any(|c| c.is_lowercase());
+        let has_digit = password.chars().any(|c| c.is_ascii_digit());
+        let has_special = password.chars().any(|c| !c.is_alphanumeric());
+        let long_enough = password.len() >= 8;
+
+        has_uppercase && has_lowercase && has_digit && has_special && long_enough
+    }
+}
+
+// 重导出最常用的函数
+pub use text::word_count;
+pub use validation::is_valid_email;
+```
+
+使用这个库 crate：
+
+```rust
+// src/main.rs（或另一个依赖此库的 crate）
+use my_project::{word_count, is_valid_email};
+use my_project::text;
+use my_project::validation;
+
+fn main() {
+    // 使用重导出的函数
+    let count = word_count("Hello world from Rust");
+    println!("Word count: {}", count);
+
+    let valid = is_valid_email("user@example.com");
+    println!("Email valid: {}", valid);
+
+    // 使用完整模块路径
+    let lines = text::line_count("line1\nline2\nline3");
+    println!("Line count: {}", lines);
+
+    let truncated = text::truncate("A very long string that needs truncation", 20);
+    println!("Truncated: {}", truncated);
+
+    let strong = validation::is_strong_password("MyP@ss1234");
+    println!("Strong password: {}", strong);
+}
+```
+
+## 🛠️ 常用 Cargo 命令
+
+| 命令 | 作用 |
+|------|------|
+| `cargo new project_name` | 创建新的二进制项目 |
+| `cargo new --lib lib_name` | 创建新的库项目 |
+| `cargo build` | 编译项目（debug 模式） |
+| `cargo build --release` | 编译项目（release 模式，启用优化） |
+| `cargo run` | 编译并运行 |
+| `cargo test` | 运行测试 |
+| `cargo check` | 快速检查代码是否能编译（不生成二进制文件） |
+| `cargo doc --open` | 生成并打开文档 |
+| `cargo add crate_name` | 添加依赖 |
+| `cargo update` | 更新依赖 |
+| `cargo tree` | 显示依赖树 |
+| `cargo clippy` | 运行 lint 检查（需安装 clippy） |
+| `cargo fmt` | 格式化代码（需安装 rustfmt） |
+
+## 🔗 相关概念
+
+- **mod 与文件组织**：crate 内部的模块组织方式
+- **pub 可见性控制**：控制 crate 对外暴露的 API
+- **use 导入与重导出**：从外部 crate 导入项以及库的 API 设计
 
 ## 📝 学习检查点
 
-- [ ] 理解crate 与外部依赖的核心概念
-- [ ] 能够在实际项目中应用crate 与外部依赖
+- [ ] 理解二进制 crate 和库 crate 的区别
+- [ ] 掌握 `Cargo.toml` 的依赖配置语法和版本号语义
+- [ ] 了解 `Cargo.lock` 的作用和版本控制策略
+- [ ] 理解 features（特性）的定义和条件编译用法
+- [ ] 了解 workspace 的组织方式和常用 Cargo 命令
+
+## 🚀 下一步
+
+→ [所有权系统](../../02-ownership-borrowing/01-ownership-system/01-ownership-system-overview)

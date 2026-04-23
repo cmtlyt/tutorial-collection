@@ -5,13 +5,290 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解基础语法中的「if let / while let 语法糖」相关知识。
+`if let` 和 `while let` 是 `match` 表达式的语法糖，用于简化"只关心一种模式"的场景。当你只需要匹配 `Option` 的 `Some`、`Result` 的 `Ok` 或枚举的某个特定变体时，使用 `if let` / `while let` 比完整的 `match` 更加简洁。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 if let
+
+### 基本语法
+
+```rust
+fn main() {
+    let some_value: Option<i32> = Some(42);
+
+    // 使用 match（较冗长）
+    match some_value {
+        Some(value) => println!("Got: {}", value),
+        None => {} // 不做任何事但必须写
+    }
+
+    // 使用 if let（更简洁）
+    if let Some(value) = some_value {
+        println!("Got: {}", value);
+    }
+}
+```
+
+### if let / else
+
+```rust
+fn main() {
+    let config_value: Option<&str> = None;
+
+    if let Some(value) = config_value {
+        println!("Config: {}", value);
+    } else {
+        println!("Using default config");
+    }
+}
+```
+
+### if let 链
+
+```rust
+fn main() {
+    let value: Option<i32> = Some(42);
+
+    if let Some(number) = value {
+        if number > 0 {
+            println!("{} is a positive number", number);
+        }
+    }
+}
+```
+
+### 匹配 Result
+
+```rust
+fn main() {
+    let input = "123";
+
+    if let Ok(number) = input.parse::<i32>() {
+        println!("Parsed: {}", number);
+    } else {
+        println!("Failed to parse '{}'", input);
+    }
+
+    let bad_input = "abc";
+    if let Ok(number) = bad_input.parse::<i32>() {
+        println!("Parsed: {}", number);
+    } else {
+        println!("Failed to parse '{}'", bad_input);
+    }
+}
+```
+
+### 匹配枚举变体
+
+```rust
+enum Message {
+    Text(String),
+    Number(i32),
+    Quit,
+}
+
+fn process(message: &Message) {
+    if let Message::Text(content) = message {
+        println!("Text message: {}", content);
+    }
+
+    if let Message::Number(value) = message {
+        println!("Number: {}", value);
+    }
+
+    if let Message::Quit = message {
+        println!("Quit signal received");
+    }
+}
+
+fn main() {
+    let messages = vec![
+        Message::Text(String::from("Hello")),
+        Message::Number(42),
+        Message::Quit,
+    ];
+
+    for message in &messages {
+        process(message);
+    }
+}
+```
+
+## 🔄 while let
+
+`while let` 在模式持续匹配时重复执行循环体：
+
+### 消费 Option 序列
+
+```rust
+fn main() {
+    let mut stack = vec![1, 2, 3, 4, 5];
+
+    // pop() 返回 Option<T>，为 None 时循环结束
+    while let Some(top) = stack.pop() {
+        println!("Popped: {}", top);
+    }
+
+    println!("Stack is now empty: {:?}", stack);
+}
+```
+
+### 处理迭代器
+
+```rust
+fn main() {
+    let values = vec!["42", "hello", "100", "world", "7"];
+    let mut iter = values.iter();
+
+    // 逐个尝试解析，直到迭代器耗尽
+    while let Some(&text) = iter.next() {
+        if let Ok(number) = text.parse::<i32>() {
+            println!("Parsed number: {}", number);
+        } else {
+            println!("Skipped non-number: {}", text);
+        }
+    }
+}
+```
+
+### 消费队列
+
+```rust
+use std::collections::VecDeque;
+
+fn main() {
+    let mut queue = VecDeque::new();
+    queue.push_back("task1");
+    queue.push_back("task2");
+    queue.push_back("task3");
+
+    while let Some(task) = queue.pop_front() {
+        println!("Processing: {}", task);
+    }
+
+    println!("All tasks completed");
+}
+```
+
+## 📊 if let vs match：何时选择
+
+| 场景 | 推荐使用 |
+|------|----------|
+| 只关心一种模式 | `if let` |
+| 需要处理所有情况 | `match` |
+| 需要穷尽性检查 | `match` |
+| 匹配 2-3 种变体 | `match` |
+| 循环中匹配直到失败 | `while let` |
+
+```rust
+fn main() {
+    let value: Option<i32> = Some(42);
+
+    // ✅ 推荐：只关心 Some 的情况
+    if let Some(number) = value {
+        println!("Got: {}", number);
+    }
+
+    // ❌ 过度使用 match：只关心一种情况却写了完整 match
+    // match value {
+    //     Some(number) => println!("Got: {}", number),
+    //     None => {},
+    // }
+
+    // ✅ 推荐：需要处理所有情况
+    let result = match value {
+        Some(n) if n > 0 => "positive",
+        Some(_) => "non-positive",
+        None => "none",
+    };
+    println!("Result: {}", result);
+}
+```
+
+## 📝 实际应用示例
+
+### 解析配置文件行
+
+```rust
+fn parse_config_line(line: &str) -> Option<(String, String)> {
+    let line = line.trim();
+
+    // 跳过空行和注释
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+
+    // 查找 '=' 分隔符
+    if let Some(pos) = line.find('=') {
+        let key = line[..pos].trim().to_string();
+        let value = line[pos + 1..].trim().to_string();
+        Some((key, value))
+    } else {
+        None
+    }
+}
+
+fn main() {
+    let config_text = "
+# Server config
+host = localhost
+port = 8080
+  
+debug = true
+# max_connections = 100
+invalid line
+    ";
+
+    println!("Parsed config:");
+    for line in config_text.lines() {
+        if let Some((key, value)) = parse_config_line(line) {
+            println!("  {} = {}", key, value);
+        }
+    }
+}
+```
+
+### 安全的链式处理
+
+```rust
+fn get_first_word_length(text: &str) -> Option<usize> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(first_word) = trimmed.split_whitespace().next() {
+        Some(first_word.len())
+    } else {
+        None
+    }
+}
+
+fn main() {
+    let texts = vec!["Hello World", "  Rust  ", "", "   ", "Single"];
+
+    for text in texts {
+        if let Some(length) = get_first_word_length(text) {
+            println!("'{}' -> first word length: {}", text, length);
+        } else {
+            println!("'{}' -> no words found", text);
+        }
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **match 模式匹配**：if let 和 while let 的完整形式
+- **Option 与 Result**：最常用的匹配对象
+- **枚举**：自定义可匹配的类型
 
 ## 📝 学习检查点
 
-- [ ] 理解if let / while let 语法糖的核心概念
-- [ ] 能够在实际项目中应用if let / while let 语法糖
+- [ ] 理解 if let 和 match 的关系
+- [ ] 能够使用 if let 简化单模式匹配
+- [ ] 掌握 while let 在循环中消费 Option 的用法
+- [ ] 知道何时使用 if let vs match
+
+## 🚀 下一步
+
+→ [函数与模块](../03-functions-modules/01-functions-modules-overview)

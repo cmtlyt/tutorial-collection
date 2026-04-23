@@ -5,13 +5,248 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解函数与模块中的「Fn / FnMut / FnOnce trait」相关知识。
+Rust 中的每个闭包都会自动实现 `Fn`、`FnMut` 或 `FnOnce` 中的一个或多个 trait。这三个 trait 描述了闭包如何使用捕获的变量：`FnOnce` 消费捕获的变量（只能调用一次），`FnMut` 可变借用捕获的变量，`Fn` 不可变借用捕获的变量。三者之间存在继承关系：`Fn: FnMut: FnOnce`。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 三种闭包 Trait
+
+### 继承关系
+
+```
+FnOnce（所有闭包都实现）
+  ↑
+FnMut（不消费变量的闭包实现）
+  ↑
+Fn（不修改变量的闭包实现）
+```
+
+这意味着：
+- 实现了 `Fn` 的闭包，也自动实现了 `FnMut` 和 `FnOnce`
+- 实现了 `FnMut` 的闭包，也自动实现了 `FnOnce`
+- `FnOnce` 是最宽松的约束
+
+### Fn：不可变借用
+
+```rust
+fn call_twice<F: Fn()>(f: F) {
+    f();
+    f(); // 可以多次调用
+}
+
+fn main() {
+    let message = String::from("Hello");
+
+    // 这个闭包只读取 message（不可变借用）
+    let printer = || println!("{}", message);
+
+    call_twice(printer);
+
+    // message 仍然可用
+    println!("Still available: {}", message);
+}
+```
+
+### FnMut：可变借用
+
+```rust
+fn call_n_times<F: FnMut()>(mut f: F, times: usize) {
+    for _ in 0..times {
+        f(); // 可以多次调用
+    }
+}
+
+fn main() {
+    let mut counter = 0;
+
+    // 这个闭包修改 counter（可变借用）
+    let mut incrementer = || {
+        counter += 1;
+        println!("Counter: {}", counter);
+    };
+
+    // 注意：FnMut 闭包需要可变绑定来调用
+    incrementer();
+    incrementer();
+    incrementer();
+
+    // 闭包借用结束后，counter 可用
+    println!("Final counter: {}", counter);
+}
+```
+
+### FnOnce：消费所有权
+
+```rust
+fn call_once<F: FnOnce() -> String>(f: F) -> String {
+    f() // 只能调用一次
+}
+
+fn main() {
+    let name = String::from("Rust");
+
+    // 这个闭包消费 name（移动所有权）
+    let greeter = || {
+        let greeting = format!("Hello, {}!", name);
+        // name 的所有权被移动到闭包内部
+        greeting
+    };
+
+    let result = call_once(greeter);
+    println!("{}", result);
+
+    // greeter 和 name 都不能再使用
+}
+```
+
+## 📊 对比总结
+
+| Trait | 捕获方式 | 调用次数 | 闭包变量要求 |
+|-------|----------|----------|-------------|
+| `Fn` | 不可变引用 `&T` | 无限次 | 不可变 |
+| `FnMut` | 可变引用 `&mut T` | 无限次 | 可变（`mut`） |
+| `FnOnce` | 所有权 `T` | 仅一次 | 可变或不可变 |
+
+## 🔧 函数参数中使用闭包 Trait
+
+### 选择合适的 Trait Bound
+
+```rust
+// 最严格：闭包不修改也不消费捕获的变量
+fn apply<F: Fn(i32) -> i32>(f: F, value: i32) -> i32 {
+    f(value)
+}
+
+// 中等：闭包可能修改捕获的变量
+fn apply_mut<F: FnMut(i32) -> i32>(mut f: F, value: i32) -> i32 {
+    f(value)
+}
+
+// 最宽松：闭包可能消费捕获的变量
+fn apply_once<F: FnOnce(i32) -> i32>(f: F, value: i32) -> i32 {
+    f(value)
+}
+
+fn main() {
+    let offset = 10;
+
+    // Fn 闭包：只读取 offset
+    let add_offset = |x| x + offset;
+    println!("apply: {}", apply(add_offset, 5));
+
+    // FnMut 闭包：修改外部变量
+    let mut total = 0;
+    let mut accumulate = |x| {
+        total += x;
+        total
+    };
+    println!("apply_mut: {}", apply_mut(&mut accumulate, 5));
+    println!("apply_mut: {}", apply_mut(&mut accumulate, 3));
+    println!("Total: {}", total);
+
+    // FnOnce 闭包：消费捕获的变量
+    let name = String::from("World");
+    let greet = |x| format!("Hello {} from {}", x, name);
+    println!("apply_once: {}", apply_once(greet, 42));
+}
+```
+
+### 选择原则
+
+```rust
+// 尽量使用最严格的约束，给调用者最大的灵活性
+// Fn > FnMut > FnOnce
+
+// ✅ 推荐：如果只需读取，使用 Fn
+fn transform<F: Fn(i32) -> i32>(values: &[i32], f: F) -> Vec<i32> {
+    values.iter().map(|&v| f(v)).collect()
+}
+
+fn main() {
+    let multiplier = 3;
+    let result = transform(&[1, 2, 3, 4], |x| x * multiplier);
+    println!("Transformed: {:?}", result);
+}
+```
+
+## 📝 实际应用示例
+
+### 事件回调系统
+
+```rust
+struct EventHandler {
+    callbacks: Vec<Box<dyn Fn(&str)>>,
+}
+
+impl EventHandler {
+    fn new() -> Self {
+        EventHandler {
+            callbacks: Vec::new(),
+        }
+    }
+
+    fn on_event(&mut self, callback: impl Fn(&str) + 'static) {
+        self.callbacks.push(Box::new(callback));
+    }
+
+    fn trigger(&self, event: &str) {
+        for callback in &self.callbacks {
+            callback(event);
+        }
+    }
+}
+
+fn main() {
+    let mut handler = EventHandler::new();
+
+    handler.on_event(|event| {
+        println!("[Logger] Event: {}", event);
+    });
+
+    handler.on_event(|event| {
+        println!("[Monitor] Received: {}", event.to_uppercase());
+    });
+
+    handler.trigger("user_login");
+    handler.trigger("page_view");
+}
+```
+
+### 可配置的处理器
+
+```rust
+fn process_numbers(numbers: &[i32], predicate: impl Fn(i32) -> bool) -> Vec<i32> {
+    numbers.iter()
+        .copied()
+        .filter(|&n| predicate(n))
+        .collect()
+}
+
+fn main() {
+    let data = vec![1, -3, 5, -7, 2, 8, -1, 4, 9, -6];
+
+    let positives = process_numbers(&data, |n| n > 0);
+    println!("Positives: {:?}", positives);
+
+    let large = process_numbers(&data, |n| n.abs() > 5);
+    println!("Large (abs > 5): {:?}", large);
+
+    let even = process_numbers(&data, |n| n % 2 == 0);
+    println!("Even: {:?}", even);
+}
+```
+
+## 🔗 相关概念
+
+- **闭包语法与类型推断**：闭包的基本用法
+- **闭包捕获环境**：闭包如何决定使用哪种 trait
+- **move 闭包**：强制以 FnOnce 方式捕获
 
 ## 📝 学习检查点
 
-- [ ] 理解Fn / FnMut / FnOnce trait的核心概念
-- [ ] 能够在实际项目中应用Fn / FnMut / FnOnce trait
+- [ ] 理解 Fn、FnMut、FnOnce 三个 trait 的区别
+- [ ] 知道它们的继承关系
+- [ ] 能够在函数签名中选择合适的闭包 trait bound
+- [ ] 理解 `impl Fn(...)` 和 `Box<dyn Fn(...)>` 的使用场景
+
+## 🚀 下一步
+
+→ [闭包捕获环境](./07-closure-capture)

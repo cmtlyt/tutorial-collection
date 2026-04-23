@@ -5,13 +5,225 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解函数与模块中的「发散函数」相关知识。
+发散函数（Diverging Functions）是指永远不会正常返回的函数，其返回类型标注为 `!`（读作 "never type"）。这类函数要么永远循环、要么终止程序（如 `panic!`）、要么通过其他方式使控制流永远不会到达函数末尾。`!` 类型可以被强制转换为任何其他类型，这在类型系统中有重要作用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Never 类型（!）
+
+### 基本语法
+
+```rust
+// 返回 ! 表示此函数永远不会返回
+fn forever_loop() -> ! {
+    loop {
+        // 无限循环，永远不会返回
+    }
+}
+
+fn crash(message: &str) -> ! {
+    panic!("Fatal error: {}", message);
+}
+
+fn main() {
+    // crash("Something went wrong");
+    println!("This line is reachable because we didn't call crash()");
+}
+```
+
+### 标准库中的发散函数
+
+```rust
+fn main() {
+    // panic! 宏是发散的
+    // panic!("error");
+
+    // process::exit 是发散的
+    // std::process::exit(1);
+
+    // todo! 宏是发散的（开发占位）
+    // todo!("implement later");
+
+    // unimplemented! 宏是发散的
+    // unimplemented!("not yet");
+
+    // unreachable! 宏是发散的
+    // unreachable!("should never reach here");
+
+    println!("All diverging functions are commented out to keep the program running");
+}
+```
+
+## 💡 ! 类型的特殊性质
+
+`!` 类型可以被强制转换为任何类型，这使得它在很多场景下非常有用：
+
+### 在 match 分支中使用
+
+```rust
+fn parse_or_default(input: &str) -> i32 {
+    match input.parse::<i32>() {
+        Ok(value) => value,
+        Err(_) => panic!("Invalid input: {}", input),
+        // panic! 返回 !，可以被当作 i32
+    }
+}
+
+fn main() {
+    let result = parse_or_default("42");
+    println!("Parsed: {}", result);
+}
+```
+
+### 在 if let / match 中与其他类型共存
+
+```rust
+fn get_value(optional: Option<i32>) -> i32 {
+    // unwrap 内部就是用 ! 实现的
+    // None 分支 panic!（返回 !），可以当作 i32
+    match optional {
+        Some(value) => value,
+        None => panic!("Expected a value, got None"),
+    }
+}
+
+fn main() {
+    let value = get_value(Some(42));
+    println!("Value: {}", value);
+}
+```
+
+### continue 和 break 也是 ! 类型
+
+```rust
+fn first_positive(numbers: &[i32]) -> Option<i32> {
+    for &number in numbers {
+        let positive = if number > 0 {
+            number
+        } else {
+            continue // continue 返回 !，可以当作 i32
+        };
+        return Some(positive);
+    }
+    None
+}
+
+fn main() {
+    let data = [-3, -1, 0, 5, 8];
+    match first_positive(&data) {
+        Some(value) => println!("First positive: {}", value),
+        None => println!("No positive numbers"),
+    }
+}
+```
+
+## 🔧 常用发散宏
+
+### todo!
+
+用于标记尚未实现的代码，开发时使用：
+
+```rust
+fn calculate_tax(income: f64) -> f64 {
+    if income <= 0.0 {
+        return 0.0;
+    }
+    // 在开发阶段，可以用 todo! 占位
+    // 运行到这里时会 panic 并提示 "not yet implemented"
+    todo!("Implement tax calculation for income: {}", income)
+}
+
+fn main() {
+    let tax = calculate_tax(0.0);
+    println!("Tax: {}", tax);
+
+    // 下面这行会 panic：
+    // let tax = calculate_tax(50000.0);
+}
+```
+
+### unreachable!
+
+标记逻辑上不可能到达的代码路径：
+
+```rust
+fn describe_digit(digit: u8) -> &'static str {
+    match digit {
+        0 => "zero",
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        4 => "four",
+        5 => "five",
+        6 => "six",
+        7 => "seven",
+        8 => "eight",
+        9 => "nine",
+        _ => unreachable!("Input was validated to be 0-9"),
+    }
+}
+
+fn main() {
+    // 只传入已验证的 0-9 数字
+    for digit in 0..=9 {
+        println!("{}: {}", digit, describe_digit(digit));
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 自定义错误处理
+
+```rust
+fn must_parse_port(input: &str) -> u16 {
+    match input.parse::<u16>() {
+        Ok(port) if port > 0 => port,
+        Ok(_) => panic!("Port must be greater than 0"),
+        Err(error) => panic!("Invalid port '{}': {}", input, error),
+    }
+}
+
+fn main() {
+    let port = must_parse_port("8080");
+    println!("Server will listen on port {}", port);
+}
+```
+
+### 与 loop 结合
+
+```rust
+fn find_target(haystack: &[i32], target: i32) -> usize {
+    let mut index = 0;
+    loop {
+        if index >= haystack.len() {
+            panic!("Target {} not found in {:?}", target, haystack);
+        }
+        if haystack[index] == target {
+            break index; // break 带值返回 usize
+        }
+        index += 1;
+    }
+}
+
+fn main() {
+    let data = [10, 20, 30, 40, 50];
+    let position = find_target(&data, 30);
+    println!("Found target at index {}", position);
+}
+```
+
+## 🔗 相关概念
+
+- **函数定义**：普通函数的返回类型
+- **表达式与语句**：! 类型在表达式中的作用
+- **match 模式匹配**：穷尽匹配中 ! 的应用
 
 ## 📝 学习检查点
 
-- [ ] 理解发散函数的核心概念
-- [ ] 能够在实际项目中应用发散函数
+- [ ] 理解 `!` 类型的含义和用途
+- [ ] 知道 `!` 可以被强制转换为任何类型
+- [ ] 掌握 `todo!`、`unreachable!`、`panic!` 等宏的使用场景
+- [ ] 理解 `continue` 和 `break` 在类型系统中的角色
+
+## 🚀 下一步
+
+→ [闭包语法与类型推断](./05-closure-syntax)

@@ -5,13 +5,252 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解环境搭建与工具链中的「构建配置（dev / release）」相关知识。
+Cargo 通过 profile（构建配置）来控制编译器的优化级别、调试信息等选项。Rust 预定义了四种 profile：`dev`、`release`、`test` 和 `bench`。合理配置 profile 可以在开发效率和运行性能之间取得最佳平衡。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 预定义 Profile
+
+### dev profile
+
+`cargo build` 默认使用 dev profile，优先编译速度：
+
+```toml
+# Cargo.toml 中的默认 dev 配置（通常无需手动写出）
+[profile.dev]
+opt-level = 0          # 无优化
+debug = true           # 包含调试信息
+debug-assertions = true  # 启用调试断言
+overflow-checks = true   # 启用整数溢出检查
+lto = false            # 不启用链接时优化
+incremental = true     # 启用增量编译
+```
+
+### release profile
+
+`cargo build --release` 使用 release profile，优先运行性能：
+
+```toml
+# Cargo.toml 中的默认 release 配置
+[profile.release]
+opt-level = 3          # 最高优化级别
+debug = false          # 不包含调试信息
+debug-assertions = false # 禁用调试断言
+overflow-checks = false  # 禁用整数溢出检查
+lto = false            # 不启用链接时优化
+incremental = false    # 不启用增量编译
+```
+
+### test 和 bench profile
+
+```toml
+# test profile 继承自 dev
+[profile.test]
+opt-level = 0
+
+# bench profile 继承自 release
+[profile.bench]
+opt-level = 3
+```
+
+## 🔧 配置选项详解
+
+### opt-level：优化级别
+
+| 值 | 说明 | 适用场景 |
+|----|------|----------|
+| `0` | 无优化 | 开发调试 |
+| `1` | 基本优化 | 需要一定性能的调试 |
+| `2` | 中等优化 | 平衡编译时间和性能 |
+| `3` | 最高优化 | 生产部署 |
+| `"s"` | 优化二进制大小 | 嵌入式或 WASM |
+| `"z"` | 最小化二进制大小 | 极限大小优化 |
+
+### debug：调试信息
+
+```toml
+[profile.release]
+# 布尔值
+debug = false    # 无调试信息
+debug = true     # 完整调试信息（等价于 2）
+
+# 数字值
+debug = 0        # 无调试信息
+debug = 1        # 行号信息
+debug = 2        # 完整调试信息
+```
+
+### lto：链接时优化
+
+```toml
+[profile.release]
+# 不启用 LTO
+lto = false
+
+# 精简 LTO（推荐，平衡编译时间和优化效果）
+lto = "thin"
+
+# 完整 LTO（最大优化，编译时间最长）
+lto = true
+# 等价于
+lto = "fat"
+```
+
+### strip：移除符号信息
+
+```toml
+[profile.release]
+# 不移除
+strip = "none"
+
+# 移除调试信息
+strip = "debuginfo"
+
+# 移除所有符号信息（最小二进制）
+strip = "symbols"
+# 等价于
+strip = true
+```
+
+### codegen-units：代码生成单元
+
+```toml
+[profile.release]
+# 较少的 codegen-units 可以提升优化效果，但增加编译时间
+codegen-units = 1     # 最优性能
+# 默认值为 256（dev）或 16（release）
+```
+
+### panic：panic 行为
+
+```toml
+[profile.release]
+# 默认：展开调用栈（支持 catch_unwind）
+panic = "unwind"
+
+# 直接终止（更小的二进制，更快的编译）
+panic = "abort"
+```
+
+## 📊 不同场景的推荐配置
+
+### 开发调试（默认 dev 即可）
+
+```toml
+[profile.dev]
+opt-level = 0
+debug = true
+```
+
+### 生产部署（性能优先）
+
+```toml
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+```
+
+### 极限性能优化
+
+```toml
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+```
+
+### 最小二进制体积
+
+```toml
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+```
+
+### 加速开发编译
+
+对于大型项目，可以为 dev 中的依赖启用优化：
+
+```toml
+# 仅优化依赖，不优化本项目代码
+[profile.dev.package."*"]
+opt-level = 2
+```
+
+这在使用如 `image`、`regex` 等计算密集型库时特别有用，能显著加速运行时性能而不影响本项目代码的编译速度。
+
+## 📝 实际应用示例
+
+### 对比不同 profile 的效果
+
+创建一个简单的性能测试程序：
+
+```rust
+use std::time::Instant;
+
+fn fibonacci(number: u64) -> u64 {
+    if number <= 1 {
+        return number;
+    }
+    fibonacci(number - 1) + fibonacci(number - 2)
+}
+
+fn main() {
+    let number = 40;
+    let start = Instant::now();
+    let result = fibonacci(number);
+    let duration = start.elapsed();
+
+    println!("fibonacci({}) = {}", number, result);
+    println!("Time: {:?}", duration);
+}
+```
+
+```bash
+# dev 模式运行（无优化，较慢）
+cargo run
+# 输出示例：Time: 1.2s
+
+# release 模式运行（优化后，快很多）
+cargo run --release
+# 输出示例：Time: 0.3s
+```
+
+### 查看编译产物大小
+
+```bash
+# dev 构建
+cargo build
+ls -lh target/debug/my-project
+
+# release 构建
+cargo build --release
+ls -lh target/release/my-project
+
+# 带 strip 的 release 构建
+# 在 Cargo.toml 中设置 strip = true 后
+cargo build --release
+ls -lh target/release/my-project
+```
+
+## 🔗 相关概念
+
+- **Cargo.toml 配置**：项目清单文件详解
+- **Cargo 包管理器**：构建命令的使用
+- **依赖管理**：依赖的编译配置
 
 ## 📝 学习检查点
 
-- [ ] 理解构建配置（dev / release）的核心概念
-- [ ] 能够在实际项目中应用构建配置（dev / release）
+- [ ] 理解 dev 和 release profile 的默认差异
+- [ ] 掌握 opt-level、lto、strip 等关键配置项
+- [ ] 能够根据场景选择合适的构建配置
+- [ ] 了解 `[profile.dev.package."*"]` 的优化技巧
+
+## 🚀 下一步
+
+→ [基础语法](../02-basic-syntax/01-basic-syntax-overview)

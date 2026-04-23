@@ -1,17 +1,465 @@
 # pub 可见性控制
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解函数与模块中的「pub 可见性控制」相关知识。
+Rust 中所有项（函数、结构体、枚举、常量、模块等）**默认都是私有的**。只有标记为 `pub` 的项才能被外部模块访问。Rust 提供了细粒度的可见性控制机制，除了简单的 `pub` 和私有之外，还支持 `pub(crate)`、`pub(super)`、`pub(in path)` 等限定范围的可见性修饰符，让你精确控制 API 的暴露范围。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 默认私有
+
+### 私有性规则
+
+Rust 的可见性规则核心原则：**子模块可以访问所有祖先模块的私有项，但祖先模块不能访问子模块的私有项**。
+
+```rust
+mod outer {
+    fn private_function() {
+        println!("I'm private to outer");
+    }
+
+    pub fn public_function() {
+        println!("I'm public");
+        // 可以调用同模块的私有函数
+        private_function();
+        // 不能访问子模块的私有函数
+        // inner::secret(); // 错误：secret 是私有的
+    }
+
+    mod inner {
+        fn secret() {
+            println!("I'm private to inner");
+        }
+
+        pub fn visible() {
+            // 子模块可以访问父模块的私有函数
+            super::private_function();
+            // 也可以调用自己模块的私有函数
+            secret();
+        }
+    }
+}
+
+fn main() {
+    outer::public_function();
+    // outer::private_function();   // 错误：私有函数
+    // outer::inner::visible();     // 错误：inner 模块本身是私有的
+}
+```
+
+### 模块可见性 vs 项可见性
+
+模块本身也需要是 `pub` 的，否则外部无法访问其中的任何内容，即使内部的项标记了 `pub`：
+
+```rust
+mod api {
+    // 模块是私有的，外部无法访问
+    mod handlers {
+        pub fn handle_request() {
+            println!("Handling request");
+        }
+    }
+
+    // 模块是公开的，外部可以访问其中的公开项
+    pub mod routes {
+        pub fn list_routes() {
+            println!("Available routes: /users, /posts");
+        }
+    }
+
+    pub fn process() {
+        // 同一个父模块中，可以访问私有子模块的公开项
+        handlers::handle_request();
+        routes::list_routes();
+    }
+}
+
+fn main() {
+    api::process();
+    api::routes::list_routes();
+    // api::handlers::handle_request(); // 错误：handlers 模块是私有的
+}
+```
+
+## 🔒 pub 修饰符详解
+
+### pub —— 完全公开
+
+`pub` 让项对所有外部代码可见：
+
+```rust
+pub mod utils {
+    pub fn format_name(first: &str, last: &str) -> String {
+        format!("{} {}", capitalize(first), capitalize(last))
+    }
+
+    // 内部辅助函数保持私有
+    fn capitalize(text: &str) -> String {
+        let mut chars = text.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(first_char) => {
+                first_char.to_uppercase().to_string() + chars.as_str()
+            }
+        }
+    }
+}
+
+fn main() {
+    let name = utils::format_name("john", "doe");
+    println!("{}", name); // "John Doe"
+}
+```
+
+### pub(crate) —— crate 内可见
+
+`pub(crate)` 让项在整个 crate 内可见，但不会暴露给外部 crate。这非常适合内部共享但不想作为公开 API 的项：
+
+```rust
+mod database {
+    // 仅 crate 内可见，不会成为公开 API
+    pub(crate) fn get_connection_string() -> String {
+        "postgres://localhost:5432/mydb".to_string()
+    }
+
+    pub fn query(sql: &str) -> Vec<String> {
+        let conn = get_connection_string();
+        println!("Executing on {}: {}", conn, sql);
+        vec!["result1".to_string(), "result2".to_string()]
+    }
+}
+
+mod api {
+    pub fn fetch_users() -> Vec<String> {
+        // 可以在同一个 crate 的其他模块中访问 pub(crate) 项
+        let conn = super::database::get_connection_string();
+        println!("API using connection: {}", conn);
+        super::database::query("SELECT * FROM users")
+    }
+}
+
+fn main() {
+    let users = api::fetch_users();
+    println!("Users: {:?}", users);
+}
+```
+
+### pub(super) —— 父模块可见
+
+`pub(super)` 让项仅对父模块可见：
+
+```rust
+mod service {
+    mod validation {
+        // 仅对父模块 service 可见
+        pub(super) fn validate_email(email: &str) -> bool {
+            email.contains('@') && email.contains('.')
+        }
+
+        pub(super) fn validate_name(name: &str) -> bool {
+            !name.is_empty() && name.len() <= 100
+        }
+
+        // 私有辅助函数
+        fn sanitize(input: &str) -> String {
+            input.trim().to_string()
+        }
+    }
+
+    pub fn register_user(name: &str, email: &str) -> Result<String, String> {
+        // 父模块可以访问 pub(super) 项
+        if !validation::validate_name(name) {
+            return Err("Invalid name".to_string());
+        }
+        if !validation::validate_email(email) {
+            return Err("Invalid email".to_string());
+        }
+        Ok(format!("User {} registered with {}", name, email))
+    }
+}
+
+fn main() {
+    match service::register_user("Alice", "alice@example.com") {
+        Ok(message) => println!("{}", message),
+        Err(error) => println!("Error: {}", error),
+    }
+
+    // service::validation::validate_email("test"); // 错误：validate_email 不可见
+}
+```
+
+### pub(in path) —— 指定路径可见
+
+`pub(in path)` 可以精确指定项对哪个祖先模块可见：
+
+```rust
+mod company {
+    pub mod department {
+        pub mod team {
+            // 仅对 company::department 可见
+            pub(in crate::company::department) fn internal_meeting() {
+                println!("Team internal meeting");
+            }
+
+            pub fn public_standup() {
+                println!("Daily standup");
+                internal_meeting();
+            }
+        }
+
+        pub fn department_review() {
+            // department 可以访问
+            team::internal_meeting();
+            team::public_standup();
+        }
+    }
+
+    pub fn company_event() {
+        department::department_review();
+        department::team::public_standup();
+        // department::team::internal_meeting(); // 错误：不在指定路径范围内
+    }
+}
+
+fn main() {
+    company::company_event();
+}
+```
+
+## 📊 可见性修饰符总结
+
+| 修饰符 | 可见范围 | 典型使用场景 |
+|--------|----------|-------------|
+| 无（默认） | 当前模块及其子模块 | 内部实现细节 |
+| `pub` | 所有外部代码 | 公开 API |
+| `pub(crate)` | 当前 crate 内 | crate 内部共享的工具函数 |
+| `pub(super)` | 父模块 | 子模块向父模块暴露接口 |
+| `pub(in path)` | 指定祖先模块 | 精确控制可见范围 |
+
+## 🏗️ 结构体与枚举的可见性
+
+### 结构体字段的可见性
+
+结构体的可见性和其字段的可见性是**独立控制**的。结构体可以是公开的，但其字段可以是私有的：
+
+```rust
+mod account {
+    pub struct User {
+        pub name: String,           // 公开字段
+        pub email: String,          // 公开字段
+        password_hash: String,      // 私有字段
+        pub(crate) role: String,    // crate 内可见
+    }
+
+    impl User {
+        // 通过公开构造函数来创建实例（因为外部无法直接设置私有字段）
+        pub fn new(name: &str, email: &str, password: &str) -> Self {
+            User {
+                name: name.to_string(),
+                email: email.to_string(),
+                password_hash: hash_password(password),
+                role: "user".to_string(),
+            }
+        }
+
+        pub fn verify_password(&self, password: &str) -> bool {
+            self.password_hash == hash_password(password)
+        }
+
+        pub fn display(&self) -> String {
+            format!("{} <{}> [{}]", self.name, self.email, self.role)
+        }
+    }
+
+    fn hash_password(password: &str) -> String {
+        format!("hashed_{}", password)
+    }
+}
+
+fn main() {
+    let user = account::User::new("Alice", "alice@example.com", "secret123");
+
+    // 可以访问公开字段
+    println!("Name: {}", user.name);
+    println!("Email: {}", user.email);
+
+    // 不能访问私有字段
+    // println!("Hash: {}", user.password_hash); // 错误
+
+    // 不能直接构造（因为有私有字段）
+    // let user2 = account::User {
+    //     name: "Bob".to_string(),
+    //     email: "bob@example.com".to_string(),
+    //     password_hash: "xxx".to_string(), // 错误
+    //     role: "admin".to_string(),
+    // };
+
+    println!("Password valid: {}", user.verify_password("secret123"));
+    println!("{}", user.display());
+}
+```
+
+### 枚举变体的可见性
+
+与结构体不同，枚举只要自身是 `pub` 的，其所有变体自动公开。你不能单独控制每个变体的可见性：
+
+```rust
+mod status {
+    // 枚举是 pub 的，所有变体自动公开
+    pub enum OrderStatus {
+        Pending,
+        Processing,
+        Shipped { tracking_number: String },
+        Delivered,
+        Cancelled { reason: String },
+    }
+
+    impl OrderStatus {
+        pub fn description(&self) -> &str {
+            match self {
+                OrderStatus::Pending => "Order is pending",
+                OrderStatus::Processing => "Order is being processed",
+                OrderStatus::Shipped { .. } => "Order has been shipped",
+                OrderStatus::Delivered => "Order has been delivered",
+                OrderStatus::Cancelled { .. } => "Order has been cancelled",
+            }
+        }
+    }
+}
+
+fn main() {
+    // 可以直接使用所有变体
+    let order = status::OrderStatus::Shipped {
+        tracking_number: "TRK-12345".to_string(),
+    };
+    println!("{}", order.description());
+
+    let cancelled = status::OrderStatus::Cancelled {
+        reason: "Customer request".to_string(),
+    };
+    println!("{}", cancelled.description());
+}
+```
+
+## 📝 实际应用示例
+
+### 封装良好的模块设计
+
+```rust
+mod config {
+    use std::collections::HashMap;
+
+    pub struct AppConfig {
+        settings: HashMap<String, String>, // 私有：不直接暴露内部存储
+    }
+
+    impl AppConfig {
+        pub fn new() -> Self {
+            let mut settings = HashMap::new();
+            settings.insert("host".to_string(), "localhost".to_string());
+            settings.insert("port".to_string(), "8080".to_string());
+            settings.insert("debug".to_string(), "false".to_string());
+            AppConfig { settings }
+        }
+
+        pub fn get(&self, key: &str) -> Option<&str> {
+            self.settings.get(key).map(|value| value.as_str())
+        }
+
+        pub fn set(&mut self, key: &str, value: &str) {
+            self.settings.insert(key.to_string(), value.to_string());
+        }
+
+        pub fn server_address(&self) -> String {
+            let host = self.get("host").unwrap_or("localhost");
+            let port = self.get("port").unwrap_or("8080");
+            format!("{}:{}", host, port)
+        }
+
+        // crate 内部可用的调试方法
+        pub(crate) fn dump(&self) {
+            for (key, value) in &self.settings {
+                println!("  {} = {}", key, value);
+            }
+        }
+    }
+}
+
+fn main() {
+    let mut app_config = config::AppConfig::new();
+    println!("Server: {}", app_config.server_address());
+
+    app_config.set("port", "3000");
+    println!("Updated server: {}", app_config.server_address());
+
+    // crate 内部可以调用 dump
+    println!("All settings:");
+    app_config.dump();
+}
+```
+
+### 分层架构中的可见性
+
+```rust
+mod app {
+    pub mod api {
+        pub fn handle_request(path: &str) -> String {
+            match path {
+                "/users" => {
+                    let users = super::service::list_users();
+                    format!("Users: {:?}", users)
+                }
+                _ => "Not Found".to_string(),
+            }
+        }
+    }
+
+    // service 模块仅 crate 内可见
+    pub(crate) mod service {
+        pub fn list_users() -> Vec<String> {
+            let raw_data = super::repository::fetch_all();
+            raw_data.into_iter()
+                .map(|name| format!("User({})", name))
+                .collect()
+        }
+    }
+
+    // repository 模块仅在 app 模块内可见
+    mod repository {
+        pub(super) fn fetch_all() -> Vec<String> {
+            vec![
+                "Alice".to_string(),
+                "Bob".to_string(),
+                "Charlie".to_string(),
+            ]
+        }
+    }
+}
+
+fn main() {
+    let response = app::api::handle_request("/users");
+    println!("{}", response);
+
+    // app::repository::fetch_all(); // 错误：repository 是私有模块
+    // app::service::list_users();   // crate 内可访问
+}
+```
+
+## 🔗 相关概念
+
+- **mod 与文件组织**：模块定义与可见性控制配合使用
+- **use 导入与重导出**：`pub use` 可以改变项的对外可见路径
+- **结构体与枚举**：字段级别的可见性控制是 Rust 封装的核心
 
 ## 📝 学习检查点
 
-- [ ] 理解pub 可见性控制的核心概念
-- [ ] 能够在实际项目中应用pub 可见性控制
+- [ ] 理解 Rust 默认私有的设计理念
+- [ ] 掌握 `pub`、`pub(crate)`、`pub(super)`、`pub(in path)` 的区别
+- [ ] 理解结构体字段可见性与结构体可见性独立控制的机制
+- [ ] 了解枚举变体自动继承枚举可见性的规则
+- [ ] 能够为模块设计合理的可见性层级
+
+## 🚀 下一步
+
+→ [use 导入与重导出](./11-use-imports)

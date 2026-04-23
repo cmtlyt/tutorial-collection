@@ -5,13 +5,255 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解函数与模块中的「move 闭包」相关知识。
+`move` 闭包使用 `move` 关键字强制闭包获取所有捕获变量的**所有权**，而不是借用。即使闭包内部只是读取变量，加上 `move` 后也会将变量的所有权移动到闭包中。这在需要将闭包传递给新线程或返回闭包时尤为重要，因为闭包需要拥有数据的所有权才能安全地独立于原始作用域使用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本语法
+
+### 不使用 move
+
+```rust
+fn main() {
+    let name = String::from("Alice");
+
+    // 普通闭包：通过引用捕获 name
+    let greet = || {
+        println!("Hello, {}!", name);
+    };
+
+    greet();
+    // name 仍然可用（只是被借用了）
+    println!("name is still: {}", name);
+}
+```
+
+### 使用 move
+
+```rust
+fn main() {
+    let name = String::from("Alice");
+
+    // move 闭包：获取 name 的所有权
+    let greet = move || {
+        println!("Hello, {}!", name);
+    };
+
+    greet();
+    // name 已被移动到闭包中，不能再使用
+    // println!("{}", name); // 错误：value used after move
+}
+```
+
+## 🔍 move 的效果
+
+### 对不同类型的影响
+
+```rust
+fn main() {
+    let number = 42;           // i32，实现了 Copy
+    let text = String::from("hello"); // String，没有实现 Copy
+
+    let closure = move || {
+        println!("number: {}, text: {}", number, text);
+    };
+
+    closure();
+
+    // number 实现了 Copy，move 时会复制一份，原始变量仍可用
+    println!("number is still: {}", number);
+
+    // text 没有实现 Copy，move 后所有权转移，不可再用
+    // println!("text: {}", text); // 错误：value used after move
+}
+```
+
+### Copy 类型 vs 非 Copy 类型
+
+| 类型 | move 行为 | 原始变量 |
+|------|----------|----------|
+| `i32`、`f64`、`bool` 等 Copy 类型 | 复制值到闭包 | 仍可用 |
+| `String`、`Vec`、`Box` 等非 Copy 类型 | 移动所有权到闭包 | 不可用 |
+
+## 🧵 move 闭包与线程
+
+move 闭包最常见的使用场景是在创建新线程时。线程可能比创建它的作用域存活更久，因此必须拥有数据的所有权：
+
+```rust
+use std::thread;
+
+fn main() {
+    let message = String::from("Hello from thread!");
+
+    // 必须使用 move，否则编译错误
+    // 因为线程可能比 main 函数的当前作用域更长寿
+    let handle = thread::spawn(move || {
+        println!("{}", message);
+    });
+
+    // message 已移动到线程闭包中
+    // println!("{}", message); // 错误
+
+    handle.join().unwrap();
+}
+```
+
+### 没有 move 时的错误
+
+```rust
+use std::thread;
+
+fn main() {
+    let data = vec![1, 2, 3];
+
+    // 如果不用 move，编译器会报错：
+    // "closure may outlive the current function, but it borrows `data`"
+    // let handle = thread::spawn(|| {
+    //     println!("{:?}", data);
+    // });
+
+    // 正确：使用 move
+    let handle = thread::spawn(move || {
+        println!("{:?}", data);
+    });
+
+    handle.join().unwrap();
+}
+```
+
+## 🔄 返回闭包
+
+从函数中返回闭包时，通常也需要 move，因为闭包必须拥有捕获变量的所有权才能在函数返回后继续使用：
+
+```rust
+fn make_greeter(name: String) -> impl Fn() {
+    // 必须使用 move，否则 name 在函数返回后被释放
+    move || {
+        println!("Hello, {}!", name);
+    }
+}
+
+fn make_adder(base: i32) -> impl Fn(i32) -> i32 {
+    // i32 是 Copy 类型，move 会复制值
+    move |x| base + x
+}
+
+fn main() {
+    let greet_alice = make_greeter(String::from("Alice"));
+    greet_alice();
+    greet_alice();
+
+    let add_ten = make_adder(10);
+    println!("10 + 5 = {}", add_ten(5));
+    println!("10 + 20 = {}", add_ten(20));
+}
+```
+
+## 💡 move 与闭包 Trait 的关系
+
+`move` 关键字只影响**捕获方式**（引用 vs 所有权），不影响闭包实现的 trait 类型（Fn / FnMut / FnOnce）。闭包实现哪个 trait 取决于它如何**使用**捕获的变量：
+
+```rust
+fn main() {
+    let name = String::from("Alice");
+
+    // move 闭包，但只是读取 name → 实现 Fn
+    let greet = move || {
+        println!("Hello, {}!", name);
+    };
+
+    // 可以多次调用（因为实现了 Fn）
+    greet();
+    greet();
+    greet();
+}
+```
+
+```rust
+fn main() {
+    let data = vec![1, 2, 3];
+
+    // move 闭包，消费了 data（drop） → 只实现 FnOnce
+    let consume = move || {
+        drop(data);
+        println!("Data has been dropped");
+    };
+
+    consume();
+    // consume(); // 错误：不能再次调用，因为 data 已被 drop
+}
+```
+
+## 📝 实际应用示例
+
+### 多线程数据处理
+
+```rust
+use std::thread;
+
+fn main() {
+    let data = vec![1, 2, 3, 4, 5, 6, 7, 8];
+
+    // 将数据分成两半，分别在不同线程中处理
+    let mid = data.len() / 2;
+    let first_half = data[..mid].to_vec();
+    let second_half = data[mid..].to_vec();
+
+    let handle1 = thread::spawn(move || {
+        let sum: i32 = first_half.iter().sum();
+        println!("First half sum: {}", sum);
+        sum
+    });
+
+    let handle2 = thread::spawn(move || {
+        let sum: i32 = second_half.iter().sum();
+        println!("Second half sum: {}", sum);
+        sum
+    });
+
+    let sum1 = handle1.join().unwrap();
+    let sum2 = handle2.join().unwrap();
+    println!("Total sum: {}", sum1 + sum2);
+}
+```
+
+### 闭包工厂
+
+```rust
+fn make_filter(min: i32, max: i32) -> impl Fn(&i32) -> bool {
+    move |&value| value >= min && value <= max
+}
+
+fn make_mapper(multiplier: i32, offset: i32) -> impl Fn(i32) -> i32 {
+    move |value| value * multiplier + offset
+}
+
+fn main() {
+    let numbers = vec![1, 5, 10, 15, 20, 25, 30];
+
+    let in_range = make_filter(10, 25);
+    let transform = make_mapper(2, 3);
+
+    let result: Vec<i32> = numbers.iter()
+        .filter(|n| in_range(n))
+        .map(|&n| transform(n))
+        .collect();
+
+    println!("Filtered and transformed: {:?}", result);
+}
+```
+
+## 🔗 相关概念
+
+- **闭包捕获环境**：自动捕获 vs move 强制所有权
+- **Fn / FnMut / FnOnce trait**：move 不影响 trait 类型
+- **所有权系统**：move 与所有权转移的关系
 
 ## 📝 学习检查点
 
-- [ ] 理解move 闭包的核心概念
-- [ ] 能够在实际项目中应用move 闭包
+- [ ] 理解 move 闭包与普通闭包的区别
+- [ ] 知道 move 对 Copy 类型和非 Copy 类型的不同影响
+- [ ] 了解为什么线程闭包通常需要 move
+- [ ] 能够从函数中返回 move 闭包
+
+## 🚀 下一步
+
+→ [mod 与文件组织](./09-mod-file-organization)

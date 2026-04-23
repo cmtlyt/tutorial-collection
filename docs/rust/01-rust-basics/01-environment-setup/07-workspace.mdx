@@ -5,13 +5,278 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解环境搭建与工具链中的「工作空间（Workspace）」相关知识。
+Workspace（工作空间）是 Cargo 提供的多包管理功能，允许你在一个仓库中管理多个相关的 crate。工作空间中的所有 crate 共享同一个 `Cargo.lock` 文件和 `target` 目录，确保依赖版本一致并减少重复编译。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 创建工作空间
+
+### 基本结构
+
+```
+my-workspace/
+├── Cargo.toml          # 工作空间根配置
+├── Cargo.lock           # 共享的锁文件
+├── target/              # 共享的构建目录
+├── crates/
+│   ├── my-app/          # 二进制 crate
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       └── main.rs
+│   ├── my-core/         # 核心库 crate
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       └── lib.rs
+│   └── my-utils/        # 工具库 crate
+│       ├── Cargo.toml
+│       └── src/
+│           └── lib.rs
+```
+
+### 工作空间根 Cargo.toml
+
+```toml
+[workspace]
+# 列出工作空间中的所有成员
+members = [
+    "crates/my-app",
+    "crates/my-core",
+    "crates/my-utils",
+]
+
+# 使用通配符匹配
+# members = ["crates/*"]
+
+# 工作空间级别的依赖（供成员继承）
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tokio = { version = "1", features = ["full"] }
+
+# 工作空间级别的包信息（供成员继承）
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Your Name <you@example.com>"]
+```
+
+:::tip
+工作空间根 `Cargo.toml` 不包含 `[package]` 节，它仅用于定义工作空间配置。
 :::
+
+### 成员 crate 的 Cargo.toml
+
+成员 crate 可以通过 `workspace = true` 继承工作空间级别的配置：
+
+```toml
+# crates/my-app/Cargo.toml
+[package]
+name = "my-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# 继承工作空间依赖
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+
+# 引用工作空间内的其他 crate
+my-core = { path = "../my-core" }
+my-utils = { path = "../my-utils" }
+
+# 成员自己的独立依赖
+clap = { version = "4", features = ["derive"] }
+```
+
+```toml
+# crates/my-core/Cargo.toml
+[package]
+name = "my-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+```
+
+```toml
+# crates/my-utils/Cargo.toml
+[package]
+name = "my-utils"
+version.workspace = true
+edition.workspace = true
+```
+
+## 🔨 工作空间操作
+
+### 构建与运行
+
+```bash
+# 构建所有成员
+cargo build
+
+# 构建指定成员
+cargo build -p my-core
+
+# 运行指定二进制
+cargo run -p my-app
+
+# 测试所有成员
+cargo test
+
+# 测试指定成员
+cargo test -p my-core
+
+# 检查所有成员
+cargo check
+```
+
+### 排除成员
+
+```toml
+[workspace]
+members = ["crates/*"]
+exclude = ["crates/experimental"]
+```
+
+## 📝 实际应用示例
+
+### 搭建一个完整的工作空间
+
+```bash
+# 创建工作空间目录
+mkdir my-workspace && cd my-workspace
+
+# 创建成员 crate
+mkdir -p crates
+cargo new crates/my-app
+cargo new crates/my-core --lib
+cargo new crates/my-utils --lib
+```
+
+创建工作空间根 `Cargo.toml`：
+
+```toml
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+```
+
+编辑 `crates/my-utils/src/lib.rs`：
+
+```rust
+/// 将字符串首字母大写
+pub fn capitalize(input: &str) -> String {
+    let mut chars = input.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => {
+            let upper: String = first.to_uppercase().collect();
+            upper + chars.as_str()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capitalize() {
+        assert_eq!(capitalize("hello"), "Hello");
+        assert_eq!(capitalize(""), "");
+        assert_eq!(capitalize("a"), "A");
+    }
+}
+```
+
+编辑 `crates/my-core/src/lib.rs`：
+
+```rust
+use my_utils::capitalize;
+
+pub fn greet(name: &str) -> String {
+    let capitalized_name = capitalize(name);
+    format!("Hello, {}!", capitalized_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_greet() {
+        assert_eq!(greet("world"), "Hello, World!");
+    }
+}
+```
+
+更新 `crates/my-core/Cargo.toml` 添加依赖：
+
+```toml
+[package]
+name = "my-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+my-utils = { path = "../my-utils" }
+```
+
+编辑 `crates/my-app/src/main.rs`：
+
+```rust
+use my_core::greet;
+
+fn main() {
+    println!("{}", greet("rust"));
+}
+```
+
+更新 `crates/my-app/Cargo.toml`：
+
+```toml
+[package]
+name = "my-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+my-core = { path = "../my-core" }
+```
+
+```bash
+# 运行
+cargo run -p my-app
+# 输出：Hello, Rust!
+
+# 测试所有 crate
+cargo test
+```
+
+## 🔗 相关概念
+
+- **Cargo.toml 配置**：单个 crate 的配置详解
+- **依赖管理与 crates.io**：依赖解析和版本管理
+- **构建配置**：工作空间级别的构建配置
 
 ## 📝 学习检查点
 
-- [ ] 理解工作空间（Workspace）的核心概念
-- [ ] 能够在实际项目中应用工作空间（Workspace）
+- [ ] 理解工作空间的作用和优势
+- [ ] 能够创建和配置工作空间
+- [ ] 掌握 `workspace.dependencies` 依赖继承
+- [ ] 了解工作空间的常用操作命令
+
+## 🚀 下一步
+
+→ [依赖管理与 crates.io](./08-dependency-management)

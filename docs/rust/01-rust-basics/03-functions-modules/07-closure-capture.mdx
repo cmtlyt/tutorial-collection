@@ -5,13 +5,220 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解函数与模块中的「闭包捕获环境」相关知识。
+闭包与普通函数最大的区别在于：闭包可以**捕获**其定义所在作用域中的变量。Rust 编译器会根据闭包对捕获变量的使用方式，自动选择最高效的捕获方式——不可变引用、可变引用或所有权转移。这种机制使得闭包既灵活又安全。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 三种捕获方式
+
+### 1. 不可变引用捕获（&T）
+
+当闭包只需要读取变量时，编译器选择不可变引用捕获：
+
+```rust
+fn main() {
+    let name = String::from("Alice");
+    let age = 25;
+
+    // 闭包只读取 name 和 age，使用不可变引用捕获
+    let describe = || {
+        println!("{} is {} years old", name, age);
+    };
+
+    describe();
+    describe(); // 可以多次调用
+
+    // name 和 age 仍然可用（只是被借用了）
+    println!("Name is still: {}", name);
+}
+```
+
+### 2. 可变引用捕获（&mut T）
+
+当闭包需要修改变量时，编译器选择可变引用捕获：
+
+```rust
+fn main() {
+    let mut total = 0;
+    let mut items = Vec::new();
+
+    // 闭包修改 total 和 items，使用可变引用捕获
+    let mut add_item = |item: &str, price: i32| {
+        items.push(String::from(item));
+        total += price;
+    };
+
+    add_item("Apple", 3);
+    add_item("Banana", 2);
+    add_item("Cherry", 5);
+
+    // 闭包的可变借用结束后才能访问 total 和 items
+    // 这里不再使用 add_item，所以借用结束
+    println!("Items: {:?}", items);
+    println!("Total: {}", total);
+}
+```
+
+### 3. 所有权转移捕获（T）
+
+当闭包消费了变量（如将其移动到返回值中），编译器选择所有权转移：
+
+```rust
+fn main() {
+    let name = String::from("Alice");
+
+    // 闭包消费了 name（将其移动到了返回的 String 中）
+    let greeting = || {
+        format!("Hello, {}!", name) // name 被移动
+    };
+
+    // 只能调用一次
+    let result = greeting();
+    println!("{}", result);
+    // greeting(); // 错误：闭包已经消费了 name
+}
+```
+
+## 🔍 编译器的选择规则
+
+编译器按照以下优先级选择捕获方式（从最优先到最不优先）：
+
+1. **不可变引用** `&T`：如果闭包只需要读取变量
+2. **可变引用** `&mut T`：如果闭包需要修改变量
+3. **所有权** `T`：如果闭包需要消费变量
+
+```rust
+fn main() {
+    let a = String::from("read only");
+    let mut b = String::from("will mutate");
+    let c = String::from("will consume");
+
+    let closure = || {
+        // a: 只读取 → 不可变引用
+        println!("{}", a);
+
+        // b: 修改 → 可变引用
+        // 注意：这里的 b 需要是外部 mut 的
+    };
+
+    closure();
+    println!("a is still here: {}", a);
+
+    let mut mutating_closure = || {
+        b.push_str(" - modified");
+    };
+    mutating_closure();
+    println!("b after mutation: {}", b);
+
+    let consuming_closure = || {
+        drop(c); // 消费 c
+    };
+    consuming_closure();
+    // c 已被消费，不可用
+}
+```
+
+## 📊 捕获方式与变量生命周期
+
+### 借用检查规则仍然适用
+
+```rust
+fn main() {
+    let mut data = vec![1, 2, 3];
+
+    // 闭包可变借用 data
+    let mut modify = || {
+        data.push(4);
+    };
+
+    // 在闭包的借用期间，不能再借用 data
+    // println!("{:?}", data); // 错误：data 已被可变借用
+
+    modify();
+
+    // 闭包的借用在这里结束，data 再次可用
+    println!("{:?}", data); // [1, 2, 3, 4]
+}
+```
+
+### 闭包调用后释放借用
+
+```rust
+fn main() {
+    let mut numbers = vec![1, 2, 3];
+
+    // 创建闭包并立即使用
+    {
+        let mut adder = || numbers.push(4);
+        adder();
+    } // adder 被丢弃，借用结束
+
+    // 现在可以访问 numbers
+    println!("{:?}", numbers);
+
+    // 再创建一个新闭包
+    let sum: i32 = numbers.iter().sum();
+    println!("Sum: {}", sum);
+}
+```
+
+## 📝 实际应用示例
+
+### 计数器工厂
+
+```rust
+fn make_counter(initial: i32) -> impl FnMut() -> i32 {
+    let mut count = initial;
+    move || {
+        count += 1;
+        count
+    }
+}
+
+fn main() {
+    let mut counter_a = make_counter(0);
+    let mut counter_b = make_counter(100);
+
+    println!("A: {}", counter_a()); // 1
+    println!("A: {}", counter_a()); // 2
+    println!("B: {}", counter_b()); // 101
+    println!("A: {}", counter_a()); // 3
+    println!("B: {}", counter_b()); // 102
+}
+```
+
+### 过滤器组合
+
+```rust
+fn main() {
+    let min_value = 3;
+    let max_value = 8;
+
+    let data = vec![1, 5, 2, 8, 3, 9, 4, 7, 6];
+
+    // 闭包捕获 min_value 和 max_value（不可变引用）
+    let in_range: Vec<&i32> = data.iter()
+        .filter(|&&x| x >= min_value && x <= max_value)
+        .collect();
+
+    println!("Values in range [{}, {}]: {:?}", min_value, max_value, in_range);
+
+    // 原始变量仍然可用
+    println!("Range: {} to {}", min_value, max_value);
+}
+```
+
+## 🔗 相关概念
+
+- **闭包语法与类型推断**：闭包的基本定义
+- **Fn / FnMut / FnOnce trait**：捕获方式决定闭包实现哪个 trait
+- **move 闭包**：强制将所有变量以所有权方式捕获
 
 ## 📝 学习检查点
 
-- [ ] 理解闭包捕获环境的核心概念
-- [ ] 能够在实际项目中应用闭包捕获环境
+- [ ] 理解三种捕获方式的区别
+- [ ] 知道编译器如何自动选择捕获方式
+- [ ] 理解闭包捕获与借用检查规则的关系
+- [ ] 能够判断闭包使用了哪种捕获方式
+
+## 🚀 下一步
+
+→ [move 闭包](./08-move-closures)

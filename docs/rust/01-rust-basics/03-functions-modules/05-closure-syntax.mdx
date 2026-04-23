@@ -5,13 +5,219 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解函数与模块中的「闭包语法与类型推断」相关知识。
+闭包（Closure）是 Rust 中的匿名函数，可以捕获其定义所在作用域中的变量。闭包使用 `|参数| 表达式` 的语法，相比普通函数更加简洁。闭包的参数类型和返回类型通常可以由编译器自动推断，无需手动标注。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 闭包语法
+
+### 基本语法
+
+```rust
+fn main() {
+    // 最简形式：单表达式
+    let double = |x| x * 2;
+    println!("double(5) = {}", double(5));
+
+    // 多参数
+    let add = |a, b| a + b;
+    println!("add(3, 4) = {}", add(3, 4));
+
+    // 无参数
+    let greeting = || println!("Hello from closure!");
+    greeting();
+
+    // 多行闭包（使用代码块）
+    let calculate = |x: i32, y: i32| {
+        let sum = x + y;
+        let product = x * y;
+        format!("sum = {}, product = {}", sum, product)
+    };
+    println!("{}", calculate(3, 5));
+}
+```
+
+### 闭包 vs 函数的语法对比
+
+```rust
+// 普通函数
+fn add_fn(x: i32, y: i32) -> i32 {
+    x + y
+}
+
+fn main() {
+    // 完全标注的闭包
+    let add_v1 = |x: i32, y: i32| -> i32 { x + y };
+
+    // 省略返回类型
+    let add_v2 = |x: i32, y: i32| { x + y };
+
+    // 省略花括号（单表达式）
+    let add_v3 = |x: i32, y: i32| x + y;
+
+    // 省略参数类型（类型推断）
+    let add_v4 = |x, y| x + y;
+
+    println!("{}", add_fn(1, 2));
+    println!("{}", add_v1(1, 2));
+    println!("{}", add_v2(1, 2));
+    println!("{}", add_v3(1, 2));
+    println!("{}", add_v4(1, 2));
+}
+```
+
+## 🔍 类型推断
+
+### 编译器根据使用推断类型
+
+```rust
+fn main() {
+    // 编译器根据第一次调用推断参数和返回类型
+    let process = |x| x + 1;
+    let result: i32 = process(5);
+    println!("Result: {}", result);
+
+    // 一旦类型确定，就不能再用其他类型调用
+    // let float_result = process(5.0); // 错误：已推断为 i32
+}
+```
+
+### 需要显式标注的场景
+
+```rust
+fn main() {
+    // 当编译器无法推断时，需要手动标注
+    let parse = |s: &str| -> i32 {
+        s.parse().unwrap_or(0)
+    };
+
+    println!("Parsed: {}", parse("42"));
+    println!("Parsed: {}", parse("abc"));
+}
+```
+
+## 🔗 闭包捕获变量
+
+闭包可以使用其定义所在作用域中的变量（这是普通函数做不到的）：
+
+```rust
+fn main() {
+    let name = "Rust";
+    let threshold = 60;
+
+    // 闭包捕获 name 和 threshold
+    let check_score = |score: i32| {
+        if score >= threshold {
+            format!("{} passed with score {}", name, score)
+        } else {
+            format!("{} failed with score {}", name, score)
+        }
+    };
+
+    println!("{}", check_score(85));
+    println!("{}", check_score(45));
+}
+```
+
+## 🛠️ 闭包作为参数
+
+### 传递给标准库方法
+
+```rust
+fn main() {
+    let mut numbers = vec![5, 2, 8, 1, 9, 3];
+
+    // sort_by：接受闭包作为比较函数
+    numbers.sort_by(|a, b| a.cmp(b));
+    println!("Sorted ascending: {:?}", numbers);
+
+    numbers.sort_by(|a, b| b.cmp(a));
+    println!("Sorted descending: {:?}", numbers);
+
+    // filter：接受闭包作为过滤条件
+    let numbers = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let evens: Vec<&i32> = numbers.iter().filter(|&&n| n % 2 == 0).collect();
+    println!("Evens: {:?}", evens);
+
+    // map：接受闭包作为转换函数
+    let doubled: Vec<i32> = numbers.iter().map(|&n| n * 2).collect();
+    println!("Doubled: {:?}", doubled);
+}
+```
+
+### 传递给自定义函数
+
+```rust
+fn apply_twice<F: Fn(i32) -> i32>(f: F, value: i32) -> i32 {
+    f(f(value))
+}
+
+fn main() {
+    let increment = |x| x + 1;
+    let double = |x| x * 2;
+
+    println!("increment twice: {}", apply_twice(increment, 5)); // 7
+    println!("double twice: {}", apply_twice(double, 3));        // 12
+}
+```
+
+## 📝 实际应用示例
+
+### 数据处理管道
+
+```rust
+fn main() {
+    let raw_data = vec!["42", "hello", "100", "", "7", "world", "88"];
+
+    // 使用闭包链式处理数据
+    let valid_numbers: Vec<i32> = raw_data
+        .iter()
+        .filter(|s| !s.is_empty())              // 过滤空字符串
+        .filter_map(|s| s.parse::<i32>().ok())   // 尝试解析，忽略失败
+        .filter(|&n| n > 10)                     // 只保留大于 10 的
+        .collect();
+
+    println!("Valid numbers > 10: {:?}", valid_numbers);
+
+    // 自定义排序
+    let mut words = vec!["banana", "apple", "cherry", "date"];
+    words.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
+    println!("Sorted by length then alphabetically: {:?}", words);
+}
+```
+
+### 延迟计算
+
+```rust
+fn expensive_computation(input: i32) -> i32 {
+    println!("  Computing for {}...", input);
+    input * input + input
+}
+
+fn main() {
+    let compute = |x| expensive_computation(x);
+
+    let should_compute = true;
+
+    if should_compute {
+        println!("Result: {}", compute(5));
+    } else {
+        println!("Skipped computation");
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **Fn / FnMut / FnOnce trait**：闭包的三种类型
+- **闭包捕获环境**：闭包如何捕获变量
+- **move 闭包**：强制转移所有权的闭包
 
 ## 📝 学习检查点
 
-- [ ] 理解闭包语法与类型推断的核心概念
-- [ ] 能够在实际项目中应用闭包语法与类型推断
+- [ ] 掌握闭包的基本语法
+- [ ] 理解闭包的类型推断机制
+- [ ] 能够将闭包传递给标准库方法
+- [ ] 了解闭包捕获外部变量的能力
+
+## 🚀 下一步
+
+→ [Fn / FnMut / FnOnce trait](./06-fn-fnmut-fnonce)

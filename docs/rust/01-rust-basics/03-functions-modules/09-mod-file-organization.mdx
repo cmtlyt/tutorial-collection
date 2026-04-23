@@ -1,17 +1,412 @@
 # mod 与文件组织
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解函数与模块中的「mod 与文件组织」相关知识。
+Rust 使用 `mod` 关键字来定义和组织模块。模块系统是 Rust 代码组织的核心机制，它允许你将代码分割成逻辑单元，控制作用域和命名空间，并管理代码的可见性。Rust 的模块系统与文件系统紧密结合——每个模块可以内联定义，也可以映射到独立的文件或目录。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 内联模块
+
+### 基本定义
+
+最简单的模块定义方式是在同一个文件内使用 `mod` 关键字：
+
+```rust
+mod math {
+    pub fn add(a: i32, b: i32) -> i32 {
+        a + b
+    }
+
+    pub fn subtract(a: i32, b: i32) -> i32 {
+        a - b
+    }
+
+    fn internal_helper() -> i32 {
+        // 私有函数，模块外部无法访问
+        42
+    }
+}
+
+fn main() {
+    let sum = math::add(3, 5);
+    let diff = math::subtract(10, 4);
+    println!("3 + 5 = {}", sum);
+    println!("10 - 4 = {}", diff);
+
+    // math::internal_helper(); // 错误：函数是私有的
+}
+```
+
+### 嵌套模块
+
+模块可以嵌套定义，形成树状结构：
+
+```rust
+mod network {
+    pub mod http {
+        pub fn get(url: &str) -> String {
+            format!("GET request to {}", url)
+        }
+
+        pub fn post(url: &str, body: &str) -> String {
+            format!("POST request to {} with body: {}", url, body)
+        }
+    }
+
+    pub mod tcp {
+        pub fn connect(address: &str) -> String {
+            format!("TCP connection to {}", address)
+        }
+    }
+
+    // 私有模块，外部不可访问
+    mod internal {
+        pub fn log(message: &str) {
+            println!("[internal] {}", message);
+        }
+    }
+}
+
+fn main() {
+    let response = network::http::get("https://example.com");
+    println!("{}", response);
+
+    let connection = network::tcp::connect("127.0.0.1:8080");
+    println!("{}", connection);
+
+    // network::internal::log("test"); // 错误：internal 模块是私有的
+}
+```
+
+## 📁 文件与模块的映射
+
+### 单文件模块
+
+当项目变大时，可以将模块拆分到独立文件中。假设项目结构如下：
+
+```
+src/
+├── main.rs
+└── math.rs
+```
+
+在 `main.rs` 中声明模块：
+
+```rust
+// src/main.rs
+mod math; // 编译器会自动查找 src/math.rs
+
+fn main() {
+    let result = math::add(3, 5);
+    println!("3 + 5 = {}", result);
+}
+```
+
+在 `math.rs` 中实现模块内容（注意不需要再写 `mod math {}`）：
+
+```rust
+// src/math.rs
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+pub fn subtract(a: i32, b: i32) -> i32 {
+    a - b
+}
+```
+
+### 目录模块
+
+当一个模块需要包含子模块时，可以使用目录结构。有两种方式组织：
+
+#### 方式一：使用 `mod.rs`（传统风格）
+
+```
+src/
+├── main.rs
+└── network/
+    ├── mod.rs
+    ├── http.rs
+    └── tcp.rs
+```
+
+```rust
+// src/network/mod.rs
+pub mod http;
+pub mod tcp;
+```
+
+```rust
+// src/network/http.rs
+pub fn get(url: &str) -> String {
+    format!("GET request to {}", url)
+}
+```
+
+```rust
+// src/network/tcp.rs
+pub fn connect(address: &str) -> String {
+    format!("TCP connection to {}", address)
+}
+```
+
+#### 方式二：使用同名文件（推荐的现代风格）
+
+```
+src/
+├── main.rs
+├── network.rs       ← 替代 network/mod.rs
+└── network/
+    ├── http.rs
+    └── tcp.rs
+```
+
+```rust
+// src/network.rs
+pub mod http;
+pub mod tcp;
+```
+
+子模块文件内容与方式一完全相同。两种方式功能等价，但**方式二**是 Rust 2018 edition 后推荐的风格，因为避免了项目中出现大量 `mod.rs` 导致的文件难以区分问题。
+
+:::tip 两种风格不可混用
+对于同一个模块，`network/mod.rs` 和 `network.rs` 不能同时存在，否则编译器会报错。
 :::
+
+### 在 main.rs 中使用
+
+```rust
+// src/main.rs
+mod network;
+
+fn main() {
+    let response = network::http::get("https://example.com");
+    println!("{}", response);
+
+    let connection = network::tcp::connect("127.0.0.1:8080");
+    println!("{}", connection);
+}
+```
+
+## 🔍 模块路径
+
+### 绝对路径与相对路径
+
+Rust 中引用模块内的项可以使用两种路径：
+
+```rust
+mod garden {
+    pub mod vegetables {
+        pub fn grow() {
+            println!("Growing vegetables!");
+        }
+    }
+
+    pub mod fruits {
+        pub fn harvest() {
+            // 绝对路径：从 crate 根开始
+            crate::garden::vegetables::grow();
+
+            // 相对路径：从当前模块开始
+            super::vegetables::grow();
+
+            println!("Harvesting fruits!");
+        }
+    }
+}
+
+fn main() {
+    // 从 main 调用使用绝对路径
+    crate::garden::fruits::harvest();
+
+    // 也可以使用相对路径（因为 garden 在同一层级）
+    garden::fruits::harvest();
+}
+```
+
+### 路径关键字
+
+| 关键字 | 含义 | 示例 |
+|--------|------|------|
+| `crate` | 当前 crate 的根 | `crate::module::func()` |
+| `self` | 当前模块 | `self::func()` |
+| `super` | 父模块 | `super::func()` |
+
+```rust
+mod outer {
+    pub fn hello() {
+        println!("Hello from outer!");
+    }
+
+    pub mod inner {
+        pub fn call_parent() {
+            // super 指向父模块 outer
+            super::hello();
+        }
+
+        pub fn call_self() {
+            // self 指向当前模块 inner
+            self::helper();
+        }
+
+        pub fn helper() {
+            println!("Helper from inner!");
+        }
+    }
+}
+
+fn main() {
+    outer::inner::call_parent();
+    outer::inner::call_self();
+}
+```
+
+## 📝 实际应用示例
+
+### 多层级项目结构
+
+一个典型的 Rust 项目模块组织：
+
+```
+src/
+├── main.rs
+├── config.rs
+├── db.rs
+├── models.rs
+├── routes.rs
+├── routes/
+│   ├── users.rs
+│   └── posts.rs
+├── services.rs
+└── services/
+    ├── auth.rs
+    └── email.rs
+```
+
+```rust
+// src/models.rs
+pub struct User {
+    pub id: u64,
+    pub name: String,
+    pub email: String,
+}
+
+impl User {
+    pub fn new(id: u64, name: &str, email: &str) -> Self {
+        User {
+            id,
+            name: name.to_string(),
+            email: email.to_string(),
+        }
+    }
+
+    pub fn display(&self) -> String {
+        format!("User({}: {} <{}>)", self.id, self.name, self.email)
+    }
+}
+```
+
+```rust
+// src/services/auth.rs
+use crate::models::User;
+
+pub fn authenticate(username: &str, password: &str) -> Option<User> {
+    // 模拟认证逻辑
+    if username == "admin" && password == "secret" {
+        Some(User::new(1, "admin", "admin@example.com"))
+    } else {
+        None
+    }
+}
+
+pub fn is_valid_token(token: &str) -> bool {
+    token.len() > 10
+}
+```
+
+```rust
+// src/services.rs
+pub mod auth;
+pub mod email;
+```
+
+```rust
+// src/main.rs
+mod config;
+mod db;
+mod models;
+mod routes;
+mod services;
+
+fn main() {
+    match services::auth::authenticate("admin", "secret") {
+        Some(user) => println!("Authenticated: {}", user.display()),
+        None => println!("Authentication failed"),
+    }
+}
+```
+
+### lib crate 与 bin crate 共存
+
+一个 crate 可以同时包含库和可执行文件：
+
+```
+my_project/
+├── Cargo.toml
+├── src/
+│   ├── lib.rs       ← 库入口
+│   ├── main.rs      ← 二进制入口
+│   └── utils.rs
+```
+
+```rust
+// src/lib.rs
+pub mod utils;
+
+pub fn library_function() -> String {
+    let message = utils::format_message("Hello from library");
+    message
+}
+```
+
+```rust
+// src/utils.rs
+pub fn format_message(input: &str) -> String {
+    format!("[{}] {}", chrono_placeholder(), input)
+}
+
+fn chrono_placeholder() -> String {
+    "2026-04-23".to_string()
+}
+```
+
+```rust
+// src/main.rs
+// 通过 crate 名称引用 lib.rs 中的内容
+use my_project::library_function;
+
+fn main() {
+    let result = library_function();
+    println!("{}", result);
+}
+```
+
+## 🔗 相关概念
+
+- **pub 可见性控制**：控制模块中哪些项可以被外部访问
+- **use 导入与重导出**：简化模块路径的引用方式
+- **crate 与外部依赖**：管理项目级别的代码包
 
 ## 📝 学习检查点
 
-- [ ] 理解mod 与文件组织的核心概念
-- [ ] 能够在实际项目中应用mod 与文件组织
+- [ ] 理解 `mod` 关键字的作用和内联模块的定义方式
+- [ ] 掌握文件与模块的映射关系（单文件和目录两种方式）
+- [ ] 了解 `mod.rs` 和同名文件两种目录模块风格的区别
+- [ ] 能够使用 `crate`、`self`、`super` 进行模块路径引用
+- [ ] 能够设计合理的多文件项目结构
+
+## 🚀 下一步
+
+→ [pub 可见性控制](./10-pub-visibility)

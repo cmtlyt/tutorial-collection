@@ -1,17 +1,519 @@
 # use 导入与重导出
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解函数与模块中的「use 导入与重导出」相关知识。
+在 Rust 中，`use` 关键字用于将模块路径中的项引入当前作用域，避免每次都写完整的路径。除了简化路径之外，`use` 还可以结合 `pub` 实现**重导出（re-export）**，让你灵活地重新组织对外暴露的 API 结构。掌握 `use` 的各种用法是编写清晰、可维护的 Rust 代码的基础。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本导入
+
+### 导入函数
+
+```rust
+mod math {
+    pub fn add(a: i32, b: i32) -> i32 {
+        a + b
+    }
+
+    pub fn multiply(a: i32, b: i32) -> i32 {
+        a * b
+    }
+}
+
+// 导入单个函数
+use math::add;
+
+fn main() {
+    // 直接使用函数名，不需要完整路径
+    let sum = add(3, 5);
+    println!("3 + 5 = {}", sum);
+
+    // 未导入的仍需完整路径
+    let product = math::multiply(3, 5);
+    println!("3 * 5 = {}", product);
+}
+```
+
+### 导入模块
+
+对于函数，Rust 的惯用做法是**导入其父模块**而不是函数本身，以便清楚地知道函数来自哪里：
+
+```rust
+mod network {
+    pub mod http {
+        pub fn get(url: &str) -> String {
+            format!("GET {}", url)
+        }
+
+        pub fn post(url: &str, body: &str) -> String {
+            format!("POST {} body={}", url, body)
+        }
+    }
+}
+
+// 导入模块而不是具体函数（惯用做法）
+use network::http;
+
+fn main() {
+    // 调用时保留模块名前缀，更清晰
+    let response = http::get("https://example.com");
+    println!("{}", response);
+
+    let result = http::post("https://example.com/api", "data");
+    println!("{}", result);
+}
+```
+
+### 导入结构体和枚举
+
+对于结构体、枚举等类型，惯用做法是**直接导入类型本身**：
+
+```rust
+use std::collections::HashMap;
+use std::io::Result;
+
+fn main() {
+    // 直接使用类型名
+    let mut scores: HashMap<String, i32> = HashMap::new();
+    scores.insert("Alice".to_string(), 95);
+    scores.insert("Bob".to_string(), 87);
+
+    for (name, score) in &scores {
+        println!("{}: {}", name, score);
+    }
+}
+```
+
+## 🔄 嵌套路径与批量导入
+
+### 嵌套路径
+
+当从同一个模块导入多个项时，可以使用花括号合并路径：
+
+```rust
+// 不推荐：重复的路径前缀
+// use std::collections::HashMap;
+// use std::collections::HashSet;
+// use std::collections::BTreeMap;
+
+// 推荐：合并相同前缀
+use std::collections::{HashMap, HashSet, BTreeMap};
+
+fn main() {
+    let mut map: HashMap<String, i32> = HashMap::new();
+    map.insert("a".to_string(), 1);
+
+    let mut set: HashSet<i32> = HashSet::new();
+    set.insert(42);
+
+    let mut btree: BTreeMap<String, i32> = BTreeMap::new();
+    btree.insert("first".to_string(), 1);
+
+    println!("map: {:?}", map);
+    println!("set: {:?}", set);
+    println!("btree: {:?}", btree);
+}
+```
+
+### 嵌套路径中使用 self
+
+当需要同时导入模块本身和模块中的项时，使用 `self` 表示模块本身：
+
+```rust
+use std::io::{self, Write, BufRead};
+
+fn main() {
+    // io 是模块本身（来自 self）
+    let stdin = io::stdin();
+
+    // Write 和 BufRead 是 trait，直接使用
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    handle.write_all(b"Hello from stdout!\n").unwrap();
+}
+```
+
+### glob 导入（通配符）
+
+使用 `*` 导入模块中所有公开项。通常**不推荐**在生产代码中使用，因为会导致命名空间污染，但在测试和 prelude 模式中很常见：
+
+```rust
+mod shapes {
+    pub const PI: f64 = 3.14159265358979;
+
+    pub fn circle_area(radius: f64) -> f64 {
+        PI * radius * radius
+    }
+
+    pub fn rectangle_area(width: f64, height: f64) -> f64 {
+        width * height
+    }
+
+    pub fn triangle_area(base: f64, height: f64) -> f64 {
+        0.5 * base * height
+    }
+}
+
+// 导入 shapes 模块中所有公开项
+use shapes::*;
+
+fn main() {
+    println!("Circle area (r=5): {:.2}", circle_area(5.0));
+    println!("Rectangle area (3x4): {:.2}", rectangle_area(3.0, 4.0));
+    println!("Triangle area (6x3): {:.2}", triangle_area(6.0, 3.0));
+    println!("PI = {}", PI);
+}
+```
+
+## 📛 as 别名
+
+当两个模块导出了同名的项，或者想给导入的项一个更清晰的名称时，使用 `as` 关键字：
+
+### 解决命名冲突
+
+```rust
+use std::fmt::Result as FmtResult;
+use std::io::Result as IoResult;
+
+fn format_output() -> FmtResult {
+    Ok(())
+}
+
+fn read_input() -> IoResult<String> {
+    Ok("input data".to_string())
+}
+
+fn main() {
+    let fmt_result = format_output();
+    println!("Format result: {:?}", fmt_result);
+
+    let io_result = read_input();
+    println!("IO result: {:?}", io_result);
+}
+```
+
+### 简化长路径
+
+```rust
+use std::collections::HashMap as Map;
+use std::collections::BTreeMap as OrderedMap;
+
+fn main() {
+    let mut config: Map<String, String> = Map::new();
+    config.insert("key".to_string(), "value".to_string());
+
+    let mut sorted_config: OrderedMap<String, String> = OrderedMap::new();
+    sorted_config.insert("alpha".to_string(), "first".to_string());
+    sorted_config.insert("beta".to_string(), "second".to_string());
+
+    println!("Config: {:?}", config);
+    println!("Sorted config: {:?}", sorted_config);
+}
+```
+
+## 📤 pub use 重导出
+
+`pub use` 是 Rust 模块系统中非常强大的机制。它将一个项导入当前模块的同时，也将其作为当前模块的公开项重新导出。这让你可以将内部的复杂模块结构扁平化，为外部用户提供简洁的 API：
+
+### 基本重导出
+
+```rust
+mod internal {
+    pub mod database {
+        pub struct Connection {
+            pub host: String,
+            pub port: u16,
+        }
+
+        impl Connection {
+            pub fn new(host: &str, port: u16) -> Self {
+                Connection {
+                    host: host.to_string(),
+                    port,
+                }
+            }
+
+            pub fn connect(&self) -> String {
+                format!("Connected to {}:{}", self.host, self.port)
+            }
+        }
+    }
+
+    pub mod cache {
+        pub struct RedisClient {
+            pub address: String,
+        }
+
+        impl RedisClient {
+            pub fn new(address: &str) -> Self {
+                RedisClient {
+                    address: address.to_string(),
+                }
+            }
+        }
+    }
+}
+
+// 重导出：简化外部使用路径
+pub use internal::database::Connection;
+pub use internal::cache::RedisClient;
+
+fn main() {
+    // 外部用户可以直接使用 Connection，无需知道 internal::database
+    let conn = Connection::new("localhost", 5432);
+    println!("{}", conn.connect());
+
+    let cache = RedisClient::new("redis://localhost:6379");
+    println!("Cache address: {}", cache.address);
+}
+```
+
+### 构建 prelude 模块
+
+许多 Rust 库使用 `prelude` 模块，通过 `pub use` 收集最常用的类型，方便用户一次性导入：
+
+```rust
+mod models {
+    pub struct User {
+        pub name: String,
+    }
+
+    impl User {
+        pub fn new(name: &str) -> Self {
+            User { name: name.to_string() }
+        }
+    }
+
+    pub struct Post {
+        pub title: String,
+        pub author: String,
+    }
+
+    impl Post {
+        pub fn new(title: &str, author: &str) -> Self {
+            Post {
+                title: title.to_string(),
+                author: author.to_string(),
+            }
+        }
+    }
+}
+
+mod errors {
+    #[derive(Debug)]
+    pub enum AppError {
+        NotFound(String),
+        Unauthorized,
+        Internal(String),
+    }
+
+    impl std::fmt::Display for AppError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                AppError::NotFound(msg) => write!(f, "Not found: {}", msg),
+                AppError::Unauthorized => write!(f, "Unauthorized"),
+                AppError::Internal(msg) => write!(f, "Internal error: {}", msg),
+            }
+        }
+    }
+}
+
+// prelude 模块：收集最常用的导出项
+mod prelude {
+    pub use crate::models::{User, Post};
+    pub use crate::errors::AppError;
+}
+
+// 用户只需一行就能导入所有常用类型
+use prelude::*;
+
+fn main() {
+    let user = User::new("Alice");
+    let post = Post::new("Hello Rust", &user.name);
+
+    println!("User: {}", user.name);
+    println!("Post: {} by {}", post.title, post.author);
+
+    let error = AppError::NotFound("page".to_string());
+    println!("Error: {}", error);
+}
+```
+
+### 重命名导出
+
+`pub use` 也可以结合 `as` 进行重命名导出：
+
+```rust
+mod v1 {
+    pub fn process(data: &str) -> String {
+        format!("[v1] processed: {}", data)
+    }
+}
+
+mod v2 {
+    pub fn process(data: &str) -> String {
+        format!("[v2] processed: {}", data)
+    }
+}
+
+// 重命名导出，对外暴露清晰的 API
+pub use v2::process as process_data;
+pub use v1::process as process_data_legacy;
+
+fn main() {
+    let result = process_data("hello");
+    println!("{}", result);
+
+    let legacy_result = process_data_legacy("hello");
+    println!("{}", legacy_result);
+}
+```
+
+## 📊 use 导入惯例总结
+
+| 导入目标 | 惯用做法 | 示例 |
+|----------|---------|------|
+| 函数 | 导入父模块 | `use std::io;` → `io::stdin()` |
+| 结构体/枚举 | 直接导入类型 | `use std::collections::HashMap;` |
+| 同名类型 | 使用 `as` 别名 | `use std::fmt::Result as FmtResult;` |
+| trait | 直接导入 | `use std::io::Write;` |
+| 批量导入 | 使用嵌套路径 | `use std::io::{self, Read, Write};` |
+| 测试/prelude | 可用 glob `*` | `use crate::prelude::*;` |
+
+## 📝 实际应用示例
+
+### 库的公开 API 设计
+
+```rust
+// 内部模块结构（复杂但有条理）
+mod core {
+    pub mod parser {
+        pub fn parse(input: &str) -> Vec<String> {
+            input.split_whitespace()
+                .map(|word| word.to_string())
+                .collect()
+        }
+    }
+
+    pub mod formatter {
+        pub fn format_list(items: &[String]) -> String {
+            items.iter()
+                .enumerate()
+                .map(|(index, item)| format!("{}. {}", index + 1, item))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+}
+
+mod utils {
+    pub fn capitalize(text: &str) -> String {
+        let mut chars = text.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(first) => {
+                format!("{}{}", first.to_uppercase(), chars.collect::<String>())
+            }
+        }
+    }
+}
+
+// 对外暴露简洁的 API（用户无需了解内部结构）
+pub use core::parser::parse;
+pub use core::formatter::format_list;
+pub use utils::capitalize;
+
+fn main() {
+    let tokens = parse("hello world from rust");
+    println!("Parsed: {:?}", tokens);
+
+    let formatted = format_list(&tokens);
+    println!("Formatted:\n{}", formatted);
+
+    let capitalized = capitalize("rust");
+    println!("Capitalized: {}", capitalized);
+}
+```
+
+### 多模块间的协作导入
+
+```rust
+mod config {
+    pub struct Settings {
+        pub app_name: String,
+        pub max_connections: usize,
+    }
+
+    impl Settings {
+        pub fn default_settings() -> Self {
+            Settings {
+                app_name: "MyApp".to_string(),
+                max_connections: 100,
+            }
+        }
+    }
+}
+
+mod server {
+    // 从兄弟模块导入
+    use crate::config::Settings;
+
+    pub struct Server {
+        settings: Settings,
+        running: bool,
+    }
+
+    impl Server {
+        pub fn new(settings: Settings) -> Self {
+            Server {
+                settings,
+                running: false,
+            }
+        }
+
+        pub fn start(&mut self) {
+            self.running = true;
+            println!(
+                "{} started with max {} connections",
+                self.settings.app_name, self.settings.max_connections
+            );
+        }
+
+        pub fn status(&self) -> &str {
+            if self.running { "running" } else { "stopped" }
+        }
+    }
+}
+
+use config::Settings;
+use server::Server;
+
+fn main() {
+    let settings = Settings::default_settings();
+    let mut app_server = Server::new(settings);
+
+    println!("Server status: {}", app_server.status());
+    app_server.start();
+    println!("Server status: {}", app_server.status());
+}
+```
+
+## 🔗 相关概念
+
+- **mod 与文件组织**：`use` 需要配合模块路径使用
+- **pub 可见性控制**：`pub use` 可以改变项的对外可见路径
+- **crate 与外部依赖**：`use` 导入外部 crate 的项
 
 ## 📝 学习检查点
 
-- [ ] 理解use 导入与重导出的核心概念
-- [ ] 能够在实际项目中应用use 导入与重导出
+- [ ] 掌握 `use` 导入函数、类型、trait 的惯用方式
+- [ ] 了解嵌套路径和 `self` 的使用场景
+- [ ] 理解 `as` 别名解决命名冲突的方法
+- [ ] 掌握 `pub use` 重导出的作用和 prelude 模式
+- [ ] 能够为库设计合理的公开 API 导出结构
+
+## 🚀 下一步
+
+→ [crate 与外部依赖](./12-crates-dependencies)

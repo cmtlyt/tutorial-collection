@@ -5,13 +5,307 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解环境搭建与工具链中的「Cargo.toml 配置」相关知识。
+`Cargo.toml` 是 Rust 项目的清单文件（manifest），使用 TOML 格式编写。它定义了项目的元数据、依赖关系、构建配置等信息。理解 `Cargo.toml` 的结构和常用配置是管理 Rust 项目的基础。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 文件结构总览
+
+一个完整的 `Cargo.toml` 文件包含以下主要节：
+
+```toml
+[package]
+name = "my-project"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+description = "A brief description of the project"
+license = "MIT"
+repository = "https://github.com/user/my-project"
+readme = "README.md"
+keywords = ["rust", "example"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+
+[dev-dependencies]
+
+[build-dependencies]
+
+[features]
+
+[[bin]]
+
+[profile.dev]
+
+[profile.release]
+```
+
+## 📦 [package] 节
+
+### 必填字段
+
+```toml
+[package]
+name = "my-project"       # 包名，必须唯一（在 crates.io 上）
+version = "0.1.0"         # 语义化版本号
+edition = "2021"           # Rust Edition（2015 / 2018 / 2021 / 2024）
+```
+
+### 常用可选字段
+
+```toml
+[package]
+name = "my-project"
+version = "0.1.0"
+edition = "2021"
+
+# 作者信息
+authors = ["Alice <alice@example.com>", "Bob <bob@example.com>"]
+
+# 项目描述（发布到 crates.io 时必须）
+description = "A fast and reliable CLI tool"
+
+# 许可证（发布到 crates.io 时必须）
+license = "MIT OR Apache-2.0"
+
+# 源码仓库地址
+repository = "https://github.com/user/my-project"
+
+# 项目主页
+homepage = "https://my-project.example.com"
+
+# 文档地址
+documentation = "https://docs.rs/my-project"
+
+# README 文件路径
+readme = "README.md"
+
+# 搜索关键词（最多 5 个）
+keywords = ["cli", "tool", "parser"]
+
+# 分类（最多 5 个）
+categories = ["command-line-utilities"]
+
+# 最低 Rust 版本要求
+rust-version = "1.75.0"
+
+# 排除和包含文件（发布时）
+exclude = ["tests/*", "benches/*"]
+include = ["src/**/*", "Cargo.toml", "README.md"]
+```
+
+### Rust Edition
+
+Edition 决定了可用的语言特性和编译行为：
+
+| Edition | 发布年份 | 主要变化 |
+|---------|----------|----------|
+| 2015 | 2015 | 初始版本 |
+| 2018 | 2018 | 模块路径改进、async/await |
+| 2021 | 2021 | 闭包捕获改进、IntoIterator for arrays |
+| 2024 | 2024 | RPIT lifetime capture、unsafe 改进 |
+
+## 📋 依赖配置
+
+### [dependencies] - 运行时依赖
+
+```toml
+[dependencies]
+# 最简形式：版本号字符串
+serde = "1.0"
+
+# 完整形式：表格格式
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+# 启用 derive 宏
+serde = { version = "1.0", features = ["derive"] }
+
+# Git 仓库依赖
+my-crate = { git = "https://github.com/user/my-crate.git", branch = "main" }
+
+# 本地路径依赖
+my-local-crate = { path = "../my-local-crate" }
+
+# 可选依赖（与 features 配合使用）
+fancy-output = { version = "0.2", optional = true }
+```
+
+### [dev-dependencies] - 开发依赖
+
+仅在测试和基准测试中使用的依赖：
+
+```toml
+[dev-dependencies]
+assert_cmd = "2.0"       # 命令行测试
+predicates = "3.0"       # 断言工具
+tempfile = "3.0"         # 临时文件
+criterion = "0.5"        # 基准测试
+```
+
+### [build-dependencies] - 构建依赖
+
+在编译期间（build.rs）使用的依赖：
+
+```toml
+[build-dependencies]
+cc = "1.0"               # 编译 C 代码
+bindgen = "0.69"         # 生成 FFI 绑定
+```
+
+## 🎛️ [features] 节
+
+Features 允许在编译时条件性地启用功能：
+
+```toml
+[features]
+# 默认启用的 features
+default = ["json"]
+
+# 定义 features
+json = ["dep:serde_json"]
+yaml = ["dep:serde_yaml"]
+full = ["json", "yaml"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", optional = true }
+serde_yaml = { version = "0.9", optional = true }
+```
+
+在代码中使用条件编译：
+
+```rust
+#[cfg(feature = "json")]
+pub fn parse_json(input: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let value: serde_json::Value = serde_json::from_str(input)?;
+    Ok(format!("{}", value))
+}
+
+fn main() {
+    #[cfg(feature = "json")]
+    {
+        let result = parse_json(r#"{"name": "Rust"}"#);
+        println!("{:?}", result);
+    }
+
+    #[cfg(not(feature = "json"))]
+    {
+        println!("JSON feature is not enabled");
+    }
+}
+```
+
+使用方式：
+
+```bash
+# 使用默认 features
+cargo build
+
+# 启用指定 feature
+cargo build --features json
+
+# 启用多个 features
+cargo build --features "json yaml"
+
+# 禁用默认 features
+cargo build --no-default-features
+
+# 禁用默认 features 并启用指定 feature
+cargo build --no-default-features --features yaml
+```
+
+## 🎯 二进制与库目标
+
+### 多个二进制目标
+
+```toml
+# 主二进制（src/main.rs）
+[[bin]]
+name = "my-app"
+path = "src/main.rs"
+
+# 额外的二进制目标
+[[bin]]
+name = "my-tool"
+path = "src/bin/tool.rs"
+```
+
+也可以直接在 `src/bin/` 目录下创建文件，Cargo 会自动将每个文件识别为独立的二进制目标：
+
+```
+src/
+├── main.rs           # 默认二进制目标
+└── bin/
+    ├── tool.rs       # 二进制目标 tool
+    └── helper.rs     # 二进制目标 helper
+```
+
+```bash
+# 运行指定二进制
+cargo run --bin my-tool
+cargo run --bin helper
+```
+
+### 同时包含库和二进制
+
+```toml
+[lib]
+name = "my_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "my-app"
+path = "src/main.rs"
+```
+
+## 📝 实际应用示例
+
+### 一个典型的 CLI 工具 Cargo.toml
+
+```toml
+[package]
+name = "my-cli"
+version = "0.1.0"
+edition = "2021"
+description = "A fast command-line utility"
+license = "MIT"
+rust-version = "1.75.0"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tokio = { version = "1", features = ["full"], optional = true }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.0"
+
+[features]
+default = []
+async-mode = ["dep:tokio"]
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+```
+
+## 🔗 相关概念
+
+- **Cargo 包管理器**：Cargo 的核心命令和用法
+- **依赖管理与 crates.io**：深入了解依赖解析
+- **工作空间（Workspace）**：多包项目管理
+- **构建配置**：profile 的详细配置
 
 ## 📝 学习检查点
 
-- [ ] 理解Cargo.toml 配置的核心概念
-- [ ] 能够在实际项目中应用Cargo.toml 配置
+- [ ] 理解 Cargo.toml 的整体结构
+- [ ] 掌握 [package] 节的必填和常用字段
+- [ ] 能够正确配置不同类型的依赖
+- [ ] 理解 features 的定义和使用方式
+- [ ] 了解如何配置多个二进制目标
+
+## 🚀 下一步
+
+→ [工作空间（Workspace）](./07-workspace)
