@@ -5,13 +5,340 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解结构体与枚举中的「if let 与 matches! 宏」相关知识。
+当你只关心 `match` 中的某一个分支时，完整的 `match` 表达式会显得过于冗长。Rust 提供了 `if let` 和 `while let` 作为语法糖来简化这种场景，以及 `matches!` 宏来快速判断值是否匹配某个模式。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 if let
+
+### 基本用法
+
+`if let` 将模式匹配与条件判断合二为一，只处理你关心的那个分支：
+
+```rust
+fn main() {
+    let config_value: Option<u16> = Some(8080);
+
+    // 使用 match（冗长写法）
+    match config_value {
+        Some(port) => println!("端口: {}", port),
+        None => {}
+    }
+
+    // 使用 if let（简洁写法）
+    if let Some(port) = config_value {
+        println!("端口: {}", port);
+    }
+
+    // if let 可以搭配 else
+    if let Some(port) = config_value {
+        println!("使用配置端口: {}", port);
+    } else {
+        println!("使用默认端口: 3000");
+    }
+}
+```
+
+### 搭配枚举使用
+
+```rust
+#[derive(Debug)]
+enum Payment {
+    CreditCard { number: String, expiry: String },
+    Cash(f64),
+    BankTransfer { account: String },
+}
+
+fn process_credit_card(payment: &Payment) {
+    if let Payment::CreditCard { number, expiry } = payment {
+        let masked = format!("****{}", &number[number.len() - 4..]);
+        println!("处理信用卡: {}, 有效期: {}", masked, expiry);
+    }
+}
+
+fn main() {
+    let payments = vec![
+        Payment::CreditCard {
+            number: String::from("4111111111111234"),
+            expiry: String::from("12/26"),
+        },
+        Payment::Cash(50.0),
+        Payment::BankTransfer {
+            account: String::from("CN123456"),
+        },
+    ];
+
+    for payment in &payments {
+        process_credit_card(payment);
+    }
+}
+```
+
+## 🎯 while let
+
+`while let` 在循环中持续匹配模式，直到匹配失败时终止循环：
+
+```rust
+fn main() {
+    let mut stack = vec![1, 2, 3, 4, 5];
+
+    // pop() 返回 Option<T>，None 时循环结束
+    while let Some(top) = stack.pop() {
+        println!("弹出: {}", top);
+    }
+    println!("栈已清空");
+
+    // 实用场景：解析令牌流
+    let mut chars = "hello".chars();
+    while let Some(character) = chars.next() {
+        print!("{} ", character);
+    }
+    println!();
+}
+```
+
+### 迭代器消费
+
+```rust
+fn main() {
+    let data = vec![
+        Some(1),
+        Some(2),
+        None,
+        Some(4),
+    ];
+
+    let mut iter = data.into_iter();
+
+    // 遇到 None 时停止
+    while let Some(Some(value)) = iter.next() {
+        println!("值: {}", value);
+    }
+    // 输出: 值: 1, 值: 2（遇到 None 后停止）
+}
+```
+
+## 🎯 matches! 宏
+
+`matches!` 宏返回 `bool`，用于快速判断值是否匹配某个模式，非常适合在条件判断和过滤中使用：
+
+### 基本用法
+
+```rust
+#[derive(Debug)]
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+    Banned,
+}
+
+fn main() {
+    let status = Status::Active;
+
+    // 传统写法
+    let is_active = match status {
+        Status::Active => true,
+        _ => false,
+    };
+
+    // 使用 matches! 宏（简洁写法）
+    let is_active = matches!(status, Status::Active);
+    println!("是否活跃: {}", is_active);
+
+    // 多模式匹配
+    let can_login = matches!(status, Status::Active | Status::Pending);
+    println!("可以登录: {}", can_login);
+}
+```
+
+### 搭配守卫条件
+
+```rust
+fn main() {
+    let numbers = vec![1, -2, 3, -4, 5, 0, -6];
+
+    // matches! 搭配 if 守卫
+    let positive_count = numbers
+        .iter()
+        .filter(|n| matches!(n, x if **x > 0))
+        .count();
+    println!("正数个数: {}", positive_count);
+
+    // 检查字符类型
+    let input = "Hello, 世界! 123";
+    let letter_count = input
+        .chars()
+        .filter(|c| matches!(c, 'a'..='z' | 'A'..='Z'))
+        .count();
+    println!("英文字母个数: {}", letter_count);
+}
+```
+
+### 在复杂过滤中使用
+
+```rust
+#[derive(Debug)]
+enum TaskStatus {
+    Todo,
+    InProgress { assignee: String },
+    Done,
+    Cancelled { reason: String },
+}
+
+#[derive(Debug)]
+struct Task {
+    title: String,
+    status: TaskStatus,
+}
+
+fn main() {
+    let tasks = vec![
+        Task {
+            title: String::from("设计架构"),
+            status: TaskStatus::Done,
+        },
+        Task {
+            title: String::from("编写代码"),
+            status: TaskStatus::InProgress {
+                assignee: String::from("Alice"),
+            },
+        },
+        Task {
+            title: String::from("编写测试"),
+            status: TaskStatus::Todo,
+        },
+        Task {
+            title: String::from("旧功能"),
+            status: TaskStatus::Cancelled {
+                reason: String::from("需求变更"),
+            },
+        },
+    ];
+
+    // 筛选未完成的任务
+    let active_tasks: Vec<&Task> = tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Todo | TaskStatus::InProgress { .. }
+            )
+        })
+        .collect();
+
+    println!("未完成的任务:");
+    for task in &active_tasks {
+        println!("  - {}", task.title);
+    }
+
+    // 统计已取消的任务
+    let cancelled_count = tasks
+        .iter()
+        .filter(|task| matches!(task.status, TaskStatus::Cancelled { .. }))
+        .count();
+    println!("已取消: {} 个", cancelled_count);
+}
+```
+
+## 📝 实际应用示例
+
+### 日志级别过滤器
+
+```rust
+#[derive(Debug, PartialEq)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+struct LogEntry {
+    level: LogLevel,
+    message: String,
+}
+
+struct Logger {
+    min_level: LogLevel,
+}
+
+impl Logger {
+    fn new(min_level: LogLevel) -> Logger {
+        Logger { min_level }
+    }
+
+    fn should_log(&self, level: &LogLevel) -> bool {
+        let level_value = |l: &LogLevel| match l {
+            LogLevel::Trace => 0,
+            LogLevel::Debug => 1,
+            LogLevel::Info => 2,
+            LogLevel::Warn => 3,
+            LogLevel::Error => 4,
+        };
+        level_value(level) >= level_value(&self.min_level)
+    }
+
+    fn log(&self, entry: &LogEntry) {
+        if self.should_log(&entry.level) {
+            let prefix = match &entry.level {
+                LogLevel::Trace => "[TRACE]",
+                LogLevel::Debug => "[DEBUG]",
+                LogLevel::Info => " [INFO]",
+                LogLevel::Warn => " [WARN]",
+                LogLevel::Error => "[ERROR]",
+            };
+            println!("{} {}", prefix, entry.message);
+        }
+    }
+}
+
+fn main() {
+    let logger = Logger::new(LogLevel::Info);
+
+    let entries = vec![
+        LogEntry {
+            level: LogLevel::Debug,
+            message: String::from("变量值: x=42"),
+        },
+        LogEntry {
+            level: LogLevel::Info,
+            message: String::from("服务器启动"),
+        },
+        LogEntry {
+            level: LogLevel::Warn,
+            message: String::from("内存使用率 85%"),
+        },
+        LogEntry {
+            level: LogLevel::Error,
+            message: String::from("数据库连接失败"),
+        },
+    ];
+
+    for entry in &entries {
+        logger.log(entry);
+    }
+
+    // 使用 matches! 快速过滤严重日志
+    let critical_count = entries
+        .iter()
+        .filter(|e| matches!(e.level, LogLevel::Warn | LogLevel::Error))
+        .count();
+    println!("\n严重日志: {} 条", critical_count);
+}
+```
+
+## 🔗 相关概念
+
+- **[模式匹配与解构](./09-pattern-matching-destructuring)**：完整的 `match` 表达式
+- **[Option 与 Result](./08-option-result)**：`if let` 最常用于处理 Option/Result
 
 ## 📝 学习检查点
 
-- [ ] 理解if let 与 matches! 宏的核心概念
-- [ ] 能够在实际项目中应用if let 与 matches! 宏
+- [ ] 掌握 `if let` 作为 `match` 单分支简写的用法
+- [ ] 理解 `while let` 在循环中持续匹配的机制
+- [ ] 能够使用 `matches!` 宏进行快速模式判断
+- [ ] 能够根据场景选择 `match`、`if let` 或 `matches!`
+
+## 🚀 下一步
+
+→ [Trait 系统总览](../02-trait-system/01-trait-system-overview)

@@ -5,13 +5,260 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「Clone 与 Copy」相关知识。
+`Clone` 和 `Copy` 是控制 Rust 值复制行为的两个核心 Trait。`Copy` 表示值可以通过简单的位拷贝来复制（隐式、无开销），`Clone` 表示值可以被显式地深拷贝。所有 `Copy` 类型都自动实现了 `Clone`，但反过来不成立。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 Copy trait
+
+### 什么是 Copy
+
+`Copy` 类型在赋值或传参时执行**位拷贝**而不是移动，原始值仍然可用：
+
+```rust
+fn main() {
+    // i32 实现了 Copy
+    let a = 42;
+    let b = a;  // 位拷贝，a 仍然可用
+    println!("a = {}, b = {}", a, b);
+
+    // String 没有实现 Copy
+    let s1 = String::from("hello");
+    let s2 = s1;  // 移动，s1 不再可用
+    // println!("{}", s1); // 编译错误
+    println!("{}", s2);
+}
+```
+
+### 哪些类型是 Copy 的
+
+```rust
+fn main() {
+    // 所有基本类型都是 Copy 的
+    let integer: i32 = 42;
+    let float: f64 = 3.14;
+    let boolean: bool = true;
+    let character: char = 'A';
+
+    // 所有成员都是 Copy 的元组也是 Copy 的
+    let tuple = (1, 2.0, true);
+    let tuple_copy = tuple;
+    println!("{:?}", tuple); // 仍然可用
+
+    // 固定大小数组，如果元素是 Copy 的
+    let array = [1, 2, 3];
+    let array_copy = array;
+    println!("{:?}", array); // 仍然可用
+
+    // 引用（不可变引用）是 Copy 的
+    let reference = &integer;
+    let ref_copy = reference;
+    println!("{} {}", reference, ref_copy);
+
+    // 以下类型不是 Copy 的：
+    // String, Vec<T>, Box<T>, HashMap<K,V> 等堆分配类型
+    let _ = (integer, float, boolean, character);
+}
+```
+
+### 自定义 Copy 类型
+
+```rust
+// 所有字段都是 Copy 时，结构体可以派生 Copy
+#[derive(Debug, Clone, Copy)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Color(u8, u8, u8);
+
+fn move_point(point: Point, dx: f64, dy: f64) -> Point {
+    Point {
+        x: point.x + dx,
+        y: point.y + dy,
+    }
+}
+
+fn main() {
+    let origin = Point { x: 0.0, y: 0.0 };
+    let moved = move_point(origin, 3.0, 4.0); // origin 被复制，不是移动
+    println!("原点仍可用: {:?}", origin);
+    println!("移动后: {:?}", moved);
+
+    let red = Color(255, 0, 0);
+    let red_copy = red;
+    println!("red: {:?}, copy: {:?}", red, red_copy);
+}
+```
+
+:::warning Copy 的限制
+如果结构体中包含任何非 `Copy` 字段（如 `String`、`Vec<T>`），则该结构体**不能**实现 `Copy`：
+```rust
+// 编译错误：String 没有实现 Copy
+// #[derive(Clone, Copy)]
+// struct User {
+//     name: String, // String 不是 Copy 的
+//     age: u32,
+// }
+```
 :::
+
+## 🎯 Clone trait
+
+### 显式克隆
+
+`Clone` 提供 `.clone()` 方法进行显式的深拷贝：
+
+```rust
+fn main() {
+    let s1 = String::from("hello");
+    let s2 = s1.clone(); // 显式深拷贝
+    println!("s1 = {}, s2 = {}", s1, s2); // 两个都可用
+
+    let vec1 = vec![1, 2, 3];
+    let vec2 = vec1.clone();
+    println!("vec1 = {:?}, vec2 = {:?}", vec1, vec2);
+}
+```
+
+### 自定义 Clone
+
+```rust
+#[derive(Debug)]
+struct Document {
+    title: String,
+    content: String,
+    version: u32,
+}
+
+impl Clone for Document {
+    fn clone(&self) -> Self {
+        Document {
+            title: self.title.clone(),
+            content: self.content.clone(),
+            version: self.version + 1, // 克隆时版本号自增
+        }
+    }
+}
+
+fn main() {
+    let doc = Document {
+        title: String::from("设计文档"),
+        content: String::from("第一版内容"),
+        version: 1,
+    };
+
+    let doc_v2 = doc.clone();
+    println!("原始: {:?}", doc);
+    println!("克隆: {:?}", doc_v2);
+}
+```
+
+## 🎯 Clone vs Copy 的区别
+
+| 特性 | Copy | Clone |
+|------|------|-------|
+| 触发方式 | 隐式（赋值/传参时自动） | 显式（调用 `.clone()`） |
+| 性能 | 总是位拷贝（固定开销） | 可能涉及堆分配（开销不固定） |
+| 语义 | 按位复制 | 深拷贝（可自定义行为） |
+| 要求 | 所有字段必须是 Copy | 所有字段必须是 Clone |
+| 关系 | Copy 自动实现 Clone | Clone 不一定是 Copy |
+
+```rust
+#[derive(Debug, Clone)]
+struct Config {
+    name: String,        // Clone 但不是 Copy
+    max_retries: u32,    // Copy（也是 Clone）
+}
+
+fn main() {
+    let config1 = Config {
+        name: String::from("production"),
+        max_retries: 3,
+    };
+
+    // 必须显式 clone，因为 Config 不是 Copy
+    let config2 = config1.clone();
+    println!("config1: {:?}", config1);
+    println!("config2: {:?}", config2);
+
+    // max_retries 是 Copy 的，直接赋值不移动
+    let retries = config1.max_retries;
+    println!("retries: {}, config1 仍可用: {:?}", retries, config1);
+}
+```
+
+## 📝 实际应用示例
+
+### 快照模式
+
+```rust
+#[derive(Debug, Clone)]
+struct AppState {
+    counter: u32,
+    items: Vec<String>,
+    last_action: String,
+}
+
+impl AppState {
+    fn new() -> Self {
+        AppState {
+            counter: 0,
+            items: Vec::new(),
+            last_action: String::from("初始化"),
+        }
+    }
+
+    fn add_item(&mut self, item: &str) {
+        self.items.push(item.to_string());
+        self.counter += 1;
+        self.last_action = format!("添加 '{}'", item);
+    }
+
+    fn remove_last(&mut self) -> Option<String> {
+        let removed = self.items.pop();
+        if let Some(ref item) = removed {
+            self.last_action = format!("删除 '{}'", item);
+        }
+        removed
+    }
+}
+
+fn main() {
+    let mut state = AppState::new();
+    let mut history: Vec<AppState> = Vec::new();
+
+    // 保存快照
+    history.push(state.clone());
+
+    state.add_item("苹果");
+    history.push(state.clone());
+
+    state.add_item("香蕉");
+    history.push(state.clone());
+
+    state.remove_last();
+
+    println!("当前状态: {:#?}", state);
+    println!("\n历史记录 ({} 个快照):", history.len());
+    for (index, snapshot) in history.iter().enumerate() {
+        println!("  快照 {}: items={:?}, action={}", index, snapshot.items, snapshot.last_action);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[比较 trait](./08-comparison-traits)**：PartialEq / Eq 等用于比较的 Trait
+- **[命名字段结构体](../01-structs-enums/02-named-field-structs)**：结构体更新语法中的 Clone 行为
 
 ## 📝 学习检查点
 
-- [ ] 理解Clone 与 Copy的核心概念
-- [ ] 能够在实际项目中应用Clone 与 Copy
+- [ ] 理解 `Copy` 的位拷贝语义和适用条件
+- [ ] 理解 `Clone` 的显式深拷贝语义
+- [ ] 掌握 `Copy` 和 `Clone` 的区别和关系
+- [ ] 能够自定义 `Clone` 实现
+
+## 🚀 下一步
+
+→ [比较 trait（PartialEq / Eq / Ord）](./08-comparison-traits)

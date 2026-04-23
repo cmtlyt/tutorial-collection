@@ -5,13 +5,305 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「Display 与 Debug」相关知识。
+`Display` 和 `Debug` 是 Rust 中最常用的格式化 Trait。`Display` 用于面向用户的友好输出（通过 `{}` 格式化），`Debug` 用于面向开发者的调试输出（通过 `{:?}` 格式化）。`Debug` 可以自动派生，而 `Display` 必须手动实现。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Debug trait
+
+### 自动派生
+
+使用 `#[derive(Debug)]` 可以自动为结构体和枚举生成 `Debug` 实现：
+
+```rust
+#[derive(Debug)]
+struct User {
+    name: String,
+    age: u32,
+    email: String,
+}
+
+#[derive(Debug)]
+enum Role {
+    Admin,
+    Editor { department: String },
+    Viewer,
+}
+
+fn main() {
+    let user = User {
+        name: String::from("Alice"),
+        age: 28,
+        email: String::from("alice@example.com"),
+    };
+
+    // {:?} 紧凑格式
+    println!("{:?}", user);
+
+    // {:#?} 美化格式（带缩进）
+    println!("{:#?}", user);
+
+    let role = Role::Editor {
+        department: String::from("技术部"),
+    };
+    println!("角色: {:?}", role);
+
+    // dbg! 宏：输出到 stderr，并返回值的所有权
+    let value = dbg!(2 + 3);
+    println!("value = {}", value);
+}
+```
+
+### 手动实现 Debug
+
+当自动派生无法满足需求时，可以手动实现：
+
+```rust
+use std::fmt;
+
+struct Password(String);
+
+// 手动实现 Debug，隐藏密码内容
+impl fmt::Debug for Password {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Password(***)")
+    }
+}
+
+struct Credentials {
+    username: String,
+    password: Password,
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Credentials")
+            .field("username", &self.username)
+            .field("password", &self.password)
+            .finish()
+    }
+}
+
+fn main() {
+    let creds = Credentials {
+        username: String::from("admin"),
+        password: Password(String::from("super_secret_123")),
+    };
+    println!("{:?}", creds);
+    println!("{:#?}", creds);
+}
+```
+
+## 🎯 Display trait
+
+`Display` 必须手动实现，使用 `fmt::Formatter` 写入格式化内容：
+
+```rust
+use std::fmt;
+
+struct Temperature {
+    celsius: f64,
+}
+
+impl fmt::Display for Temperature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.1}°C", self.celsius)
+    }
+}
+
+#[derive(Debug)]
+struct Color {
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+impl fmt::Display for Color {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{:02X}{:02X}{:02X}", self.red, self.green, self.blue)
+    }
+}
+
+fn main() {
+    let temp = Temperature { celsius: 36.6 };
+    println!("体温: {}", temp);      // Display
+    // println!("{:?}", temp);        // 没有 #[derive(Debug)]，无法使用
+
+    let color = Color {
+        red: 255,
+        green: 128,
+        blue: 0,
+    };
+    println!("颜色: {}", color);     // Display: #FF8000
+    println!("调试: {:?}", color);   // Debug: Color { red: 255, green: 128, blue: 0 }
+}
+```
+
+### 为枚举实现 Display
+
+```rust
+use std::fmt;
+
+enum HttpStatus {
+    Ok,
+    NotFound,
+    InternalServerError,
+    Custom(u16, String),
+}
+
+impl fmt::Display for HttpStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HttpStatus::Ok => write!(f, "200 OK"),
+            HttpStatus::NotFound => write!(f, "404 Not Found"),
+            HttpStatus::InternalServerError => write!(f, "500 Internal Server Error"),
+            HttpStatus::Custom(code, message) => write!(f, "{} {}", code, message),
+        }
+    }
+}
+
+fn main() {
+    let statuses = vec![
+        HttpStatus::Ok,
+        HttpStatus::NotFound,
+        HttpStatus::InternalServerError,
+        HttpStatus::Custom(429, String::from("Too Many Requests")),
+    ];
+
+    for status in &statuses {
+        println!("HTTP {}", status);
+    }
+}
+```
+
+## 🎯 Display 与 ToString
+
+实现了 `Display` 的类型自动获得 `ToString` 的实现：
+
+```rust
+use std::fmt;
+
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
+}
+
+fn main() {
+    let point = Point { x: 3.0, y: 4.0 };
+
+    // Display
+    println!("{}", point);
+
+    // 自动获得 to_string()
+    let point_string: String = point.to_string();
+    println!("字符串: {}", point_string);
+
+    // 在 format! 中使用
+    let message = format!("坐标 {} 到原点的距离是 {:.2}", point, (point.x.powi(2) + point.y.powi(2)).sqrt());
+    println!("{}", message);
+}
+```
+
+## 📝 实际应用示例
+
+### 表格格式化输出
+
+```rust
+use std::fmt;
+
+struct Table {
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+}
+
+impl Table {
+    fn new(headers: Vec<&str>) -> Table {
+        Table {
+            headers: headers.into_iter().map(String::from).collect(),
+            rows: Vec::new(),
+        }
+    }
+
+    fn add_row(&mut self, row: Vec<&str>) {
+        self.rows.push(row.into_iter().map(String::from).collect());
+    }
+
+    fn column_widths(&self) -> Vec<usize> {
+        let mut widths: Vec<usize> = self.headers.iter().map(|h| h.len()).collect();
+        for row in &self.rows {
+            for (index, cell) in row.iter().enumerate() {
+                if index < widths.len() && cell.len() > widths[index] {
+                    widths[index] = cell.len();
+                }
+            }
+        }
+        widths
+    }
+}
+
+impl fmt::Display for Table {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let widths = self.column_widths();
+
+        // 打印表头
+        for (index, header) in self.headers.iter().enumerate() {
+            if index > 0 {
+                write!(f, " | ")?;
+            }
+            write!(f, "{:width$}", header, width = widths[index])?;
+        }
+        writeln!(f)?;
+
+        // 打印分隔线
+        for (index, width) in widths.iter().enumerate() {
+            if index > 0 {
+                write!(f, "-+-")?;
+            }
+            write!(f, "{}", "-".repeat(*width))?;
+        }
+        writeln!(f)?;
+
+        // 打印数据行
+        for row in &self.rows {
+            for (index, cell) in row.iter().enumerate() {
+                if index > 0 {
+                    write!(f, " | ")?;
+                }
+                write!(f, "{:width$}", cell, width = widths[index])?;
+            }
+            writeln!(f)?;
+        }
+
+        Ok(())
+    }
+}
+
+fn main() {
+    let mut table = Table::new(vec!["名称", "版本", "语言"]);
+    table.add_row(vec!["tokio", "1.36", "Rust"]);
+    table.add_row(vec!["serde", "1.0", "Rust"]);
+    table.add_row(vec!["clap", "4.5", "Rust"]);
+
+    println!("{}", table);
+}
+```
+
+## 🔗 相关概念
+
+- **[Clone 与 Copy](./07-clone-copy)**：另一对常用标准 Trait
+- **[转换 trait](./09-conversion-traits)**：`ToString` 与 `Display` 的关系
 
 ## 📝 学习检查点
 
-- [ ] 理解Display 与 Debug的核心概念
-- [ ] 能够在实际项目中应用Display 与 Debug
+- [ ] 理解 `Debug` 和 `Display` 的不同用途
+- [ ] 掌握 `#[derive(Debug)]` 自动派生
+- [ ] 能够手动实现 `Display` trait
+- [ ] 理解实现 `Display` 自动获得 `ToString` 的机制
+
+## 🚀 下一步
+
+→ [Clone 与 Copy](./07-clone-copy)

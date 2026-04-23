@@ -5,13 +5,236 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解结构体与枚举中的「关联函数」相关知识。
+关联函数（Associated Function）是定义在 `impl` 块中但**不以 `self` 作为第一个参数**的函数。它通过 `类型名::函数名()` 语法调用，类似于其他语言中的静态方法。最常见的关联函数是 `new`，用于创建类型的新实例。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本用法
+
+### 构造函数
+
+Rust 没有内置的构造函数语法，约定使用 `new` 作为构造函数名称：
+
+```rust
+#[derive(Debug)]
+struct Color {
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+impl Color {
+    // 关联函数：通过 Color::new() 调用
+    fn new(red: u8, green: u8, blue: u8) -> Color {
+        Color { red, green, blue }
+    }
+
+    // 预定义颜色的便捷构造函数
+    fn red() -> Color {
+        Color::new(255, 0, 0)
+    }
+
+    fn green() -> Color {
+        Color::new(0, 255, 0)
+    }
+
+    fn blue() -> Color {
+        Color::new(0, 0, 255)
+    }
+
+    fn white() -> Color {
+        Color::new(255, 255, 255)
+    }
+
+    fn black() -> Color {
+        Color::new(0, 0, 0)
+    }
+}
+
+fn main() {
+    let custom = Color::new(128, 64, 32);
+    let red = Color::red();
+    let white = Color::white();
+
+    println!("自定义: {:?}", custom);
+    println!("红色: {:?}", red);
+    println!("白色: {:?}", white);
+}
+```
+
+### 带验证的构造函数
+
+关联函数可以执行参数验证，返回 `Result` 或 `Option`：
+
+```rust
+#[derive(Debug)]
+struct Port(u16);
+
+impl Port {
+    fn new(value: u16) -> Result<Port, String> {
+        if value == 0 {
+            Err(String::from("端口号不能为 0"))
+        } else if value < 1024 {
+            Err(format!("端口 {} 是保留端口（需要管理员权限）", value))
+        } else {
+            Ok(Port(value))
+        }
+    }
+
+    fn http() -> Port {
+        Port(80)
+    }
+
+    fn https() -> Port {
+        Port(443)
+    }
+
+    fn value(&self) -> u16 {
+        self.0
+    }
+}
+
+fn main() {
+    match Port::new(8080) {
+        Ok(port) => println!("端口: {}", port.value()),
+        Err(error) => println!("错误: {}", error),
+    }
+
+    match Port::new(0) {
+        Ok(port) => println!("端口: {}", port.value()),
+        Err(error) => println!("错误: {}", error),
+    }
+
+    let http_port = Port::http();
+    println!("HTTP 端口: {}", http_port.value());
+}
+```
+
+## 🎯 关联函数与方法的区别
+
+```rust
+struct Counter {
+    count: u32,
+    limit: u32,
+}
+
+impl Counter {
+    // 关联函数：没有 self 参数，通过 Counter::new() 调用
+    fn new(limit: u32) -> Counter {
+        Counter { count: 0, limit }
+    }
+
+    // 关联函数：工厂方法
+    fn unlimited() -> Counter {
+        Counter::new(u32::MAX)
+    }
+
+    // 方法：有 &mut self 参数，通过 counter.increment() 调用
+    fn increment(&mut self) -> bool {
+        if self.count < self.limit {
+            self.count += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    // 方法：有 &self 参数
+    fn value(&self) -> u32 {
+        self.count
+    }
+}
+
+fn main() {
+    // 通过关联函数创建实例
+    let mut counter = Counter::new(3);
+
+    // 通过方法操作实例
+    while counter.increment() {
+        println!("计数: {}", counter.value());
+    }
+    println!("已达到上限，最终值: {}", counter.value());
+}
+```
+
+## 📝 实际应用示例
+
+### 多种构造策略
+
+```rust
+#[derive(Debug)]
+struct DatabaseConfig {
+    host: String,
+    port: u16,
+    database: String,
+    max_connections: u32,
+}
+
+impl DatabaseConfig {
+    fn new(host: &str, port: u16, database: &str) -> DatabaseConfig {
+        DatabaseConfig {
+            host: host.to_string(),
+            port,
+            database: database.to_string(),
+            max_connections: 10,
+        }
+    }
+
+    fn localhost(database: &str) -> DatabaseConfig {
+        DatabaseConfig::new("localhost", 5432, database)
+    }
+
+    fn from_url(url: &str) -> Result<DatabaseConfig, String> {
+        // 简化的 URL 解析：期望格式 host:port/database
+        let parts: Vec<&str> = url.split('/').collect();
+        if parts.len() != 2 {
+            return Err(format!("无效的数据库 URL: {}", url));
+        }
+
+        let host_port: Vec<&str> = parts[0].split(':').collect();
+        if host_port.len() != 2 {
+            return Err(format!("无效的 host:port 格式: {}", parts[0]));
+        }
+
+        let port = host_port[1]
+            .parse::<u16>()
+            .map_err(|e| format!("无效的端口号: {}", e))?;
+
+        Ok(DatabaseConfig::new(host_port[0], port, parts[1]))
+    }
+
+    fn connection_string(&self) -> String {
+        format!(
+            "postgres://{}:{}/{}?max_connections={}",
+            self.host, self.port, self.database, self.max_connections
+        )
+    }
+}
+
+fn main() {
+    let config1 = DatabaseConfig::new("db.example.com", 5432, "myapp");
+    println!("配置1: {}", config1.connection_string());
+
+    let config2 = DatabaseConfig::localhost("test_db");
+    println!("配置2: {}", config2.connection_string());
+
+    match DatabaseConfig::from_url("db.example.com:5432/production") {
+        Ok(config) => println!("配置3: {}", config.connection_string()),
+        Err(error) => println!("解析失败: {}", error),
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[方法定义](./05-impl-blocks-methods)**：带 `self` 参数的 impl 块函数
+- **[Default trait](../02-trait-system/11-default-deref-traits)**：标准库的默认值构造 trait
 
 ## 📝 学习检查点
 
-- [ ] 理解关联函数的核心概念
-- [ ] 能够在实际项目中应用关联函数
+- [ ] 理解关联函数与方法的区别（有无 `self` 参数）
+- [ ] 掌握 `new` 构造函数的编写惯例
+- [ ] 能够编写带验证的工厂方法
+- [ ] 理解 `类型名::函数名()` 的调用语法
+
+## 🚀 下一步
+
+→ [带数据的枚举变体](./07-enum-variants-data)

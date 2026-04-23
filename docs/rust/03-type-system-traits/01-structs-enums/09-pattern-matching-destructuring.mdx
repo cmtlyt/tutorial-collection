@@ -5,13 +5,371 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解结构体与枚举中的「模式匹配与解构」相关知识。
+`match` 是 Rust 中最强大的控制流结构之一。它允许你将一个值与一系列**模式**进行比较，并根据匹配到的模式执行对应的代码。Rust 的模式匹配是**穷尽的**（exhaustive），编译器会确保你处理了所有可能的情况，这使得遗漏分支成为不可能。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 match 基础
+
+### 基本语法
+
+`match` 表达式由一系列分支（arm）组成，每个分支包含一个模式和对应的表达式：
+
+```rust
+#[derive(Debug)]
+enum Coin {
+    Penny,
+    Nickel,
+    Dime,
+    Quarter,
+}
+
+fn coin_value(coin: &Coin) -> u32 {
+    match coin {
+        Coin::Penny => 1,
+        Coin::Nickel => 5,
+        Coin::Dime => 10,
+        Coin::Quarter => 25,
+    }
+}
+
+fn main() {
+    let coins = vec![Coin::Penny, Coin::Quarter, Coin::Dime];
+    let total: u32 = coins.iter().map(coin_value).sum();
+    println!("总价值: {} 美分", total);
+}
+```
+
+### 穷尽性检查
+
+编译器会确保 `match` 覆盖所有可能的值。如果遗漏了某个变体，代码将无法编译：
+
+```rust
+enum TrafficLight {
+    Red,
+    Yellow,
+    Green,
+}
+
+fn action(light: &TrafficLight) -> &str {
+    match light {
+        TrafficLight::Red => "停",
+        TrafficLight::Yellow => "注意",
+        TrafficLight::Green => "行",
+        // 如果去掉任何一个分支，编译器会报错
+    }
+}
+
+fn main() {
+    println!("{}", action(&TrafficLight::Red));
+    println!("{}", action(&TrafficLight::Green));
+}
+```
+
+## 🎯 解构模式
+
+### 解构枚举变体
+
+```rust
+#[derive(Debug)]
+enum Message {
+    Quit,
+    Echo(String),
+    Move { x: i32, y: i32 },
+    Color(u8, u8, u8),
+}
+
+fn process_message(message: &Message) {
+    match message {
+        Message::Quit => {
+            println!("收到退出信号");
+        }
+        Message::Echo(text) => {
+            println!("回显: {}", text);
+        }
+        Message::Move { x, y } => {
+            println!("移动到 ({}, {})", x, y);
+        }
+        Message::Color(r, g, b) => {
+            println!("颜色 RGB({}, {}, {})", r, g, b);
+        }
+    }
+}
+
+fn main() {
+    let messages = vec![
+        Message::Echo(String::from("Hello")),
+        Message::Move { x: 10, y: 20 },
+        Message::Color(255, 128, 0),
+        Message::Quit,
+    ];
+
+    for message in &messages {
+        process_message(message);
+    }
+}
+```
+
+### 解构结构体
+
+```rust
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+fn describe_point(point: &Point) -> String {
+    match point {
+        Point { x: 0.0, y: 0.0 } => String::from("原点"),
+        Point { x, y: 0.0 } => format!("在 x 轴上, x={}", x),
+        Point { x: 0.0, y } => format!("在 y 轴上, y={}", y),
+        Point { x, y } => format!("({}, {})", x, y),
+    }
+}
+
+fn main() {
+    let points = vec![
+        Point { x: 0.0, y: 0.0 },
+        Point { x: 3.0, y: 0.0 },
+        Point { x: 0.0, y: 4.0 },
+        Point { x: 3.0, y: 4.0 },
+    ];
+
+    for point in &points {
+        println!("{}", describe_point(point));
+    }
+}
+```
+
+## 🎯 高级模式
+
+### 通配符与 _ 占位
+
+```rust
+fn describe_number(number: i32) -> &'static str {
+    match number {
+        0 => "零",
+        1 => "一",
+        2..=9 => "个位数",
+        10..=99 => "两位数",
+        _ => "更大的数", // _ 匹配所有剩余情况
+    }
+}
+
+fn main() {
+    for number in [0, 1, 5, 42, 100] {
+        println!("{}: {}", number, describe_number(number));
+    }
+}
+```
+
+### 多模式与 | 运算符
+
+```rust
+fn is_vowel(character: char) -> bool {
+    match character {
+        'a' | 'e' | 'i' | 'o' | 'u' |
+        'A' | 'E' | 'I' | 'O' | 'U' => true,
+        _ => false,
+    }
+}
+
+fn main() {
+    let text = "Hello World";
+    let vowel_count = text.chars().filter(|c| is_vowel(*c)).count();
+    println!("\"{}\" 中有 {} 个元音字母", text, vowel_count);
+}
+```
+
+### 匹配守卫（Match Guard）
+
+使用 `if` 条件进一步限制模式：
+
+```rust
+enum Temperature {
+    Celsius(f64),
+    Fahrenheit(f64),
+}
+
+fn describe_temperature(temp: &Temperature) -> String {
+    match temp {
+        Temperature::Celsius(value) if *value < 0.0 => {
+            format!("{:.1}°C - 冰点以下", value)
+        }
+        Temperature::Celsius(value) if *value > 35.0 => {
+            format!("{:.1}°C - 高温", value)
+        }
+        Temperature::Celsius(value) => {
+            format!("{:.1}°C - 正常", value)
+        }
+        Temperature::Fahrenheit(value) if *value < 32.0 => {
+            format!("{:.1}°F - 冰点以下", value)
+        }
+        Temperature::Fahrenheit(value) => {
+            format!("{:.1}°F", value)
+        }
+    }
+}
+
+fn main() {
+    let temps = vec![
+        Temperature::Celsius(-5.0),
+        Temperature::Celsius(22.0),
+        Temperature::Celsius(40.0),
+        Temperature::Fahrenheit(20.0),
+    ];
+
+    for temp in &temps {
+        println!("{}", describe_temperature(temp));
+    }
+}
+```
+
+### @ 绑定
+
+在匹配的同时将值绑定到变量：
+
+```rust
+fn classify_age(age: u32) -> &'static str {
+    match age {
+        child @ 0..=12 => {
+            println!("儿童，年龄: {}", child);
+            "儿童"
+        }
+        teen @ 13..=17 => {
+            println!("青少年，年龄: {}", teen);
+            "青少年"
+        }
+        adult @ 18..=64 => {
+            println!("成人，年龄: {}", adult);
+            "成人"
+        }
+        senior @ 65.. => {
+            println!("老年，年龄: {}", senior);
+            "老年"
+        }
+    }
+}
+
+fn main() {
+    for age in [5, 15, 30, 70] {
+        let category = classify_age(age);
+        println!("分类: {}\n", category);
+    }
+}
+```
+
+## 🎯 let 解构
+
+模式匹配不仅限于 `match`，还可用于 `let` 绑定：
+
+```rust
+struct Dimensions {
+    width: u32,
+    height: u32,
+}
+
+fn main() {
+    // 解构元组
+    let (first, second, third) = (1, "hello", 3.14);
+    println!("{}, {}, {}", first, second, third);
+
+    // 解构结构体
+    let dimensions = Dimensions {
+        width: 1920,
+        height: 1080,
+    };
+    let Dimensions { width, height } = dimensions;
+    println!("{}x{}", width, height);
+
+    // 在函数参数中解构
+    let points = vec![(1, 2), (3, 4), (5, 6)];
+    let sum: i32 = points.iter().map(|(x, y)| x + y).sum();
+    println!("坐标和: {}", sum);
+}
+```
+
+## 📝 实际应用示例
+
+### 命令解析器
+
+```rust
+#[derive(Debug)]
+enum Command {
+    Get { key: String },
+    Set { key: String, value: String },
+    Delete { key: String },
+    List,
+    Help,
+    Quit,
+}
+
+fn parse_command(input: &str) -> Result<Command, String> {
+    let parts: Vec<&str> = input.trim().splitn(3, ' ').collect();
+
+    match parts.as_slice() {
+        ["get", key] => Ok(Command::Get {
+            key: key.to_string(),
+        }),
+        ["set", key, value] => Ok(Command::Set {
+            key: key.to_string(),
+            value: value.to_string(),
+        }),
+        ["del", key] => Ok(Command::Delete {
+            key: key.to_string(),
+        }),
+        ["list"] => Ok(Command::List),
+        ["help"] => Ok(Command::Help),
+        ["quit"] | ["exit"] => Ok(Command::Quit),
+        [cmd, ..] => Err(format!("未知命令: {}", cmd)),
+        [] => Err(String::from("空命令")),
+    }
+}
+
+fn execute_command(command: &Command) {
+    match command {
+        Command::Get { key } => println!("获取键 '{}' 的值", key),
+        Command::Set { key, value } => println!("设置 '{}' = '{}'", key, value),
+        Command::Delete { key } => println!("删除键 '{}'", key),
+        Command::List => println!("列出所有键"),
+        Command::Help => println!("可用命令: get, set, del, list, help, quit"),
+        Command::Quit => println!("退出"),
+    }
+}
+
+fn main() {
+    let inputs = vec![
+        "set name Alice",
+        "get name",
+        "del name",
+        "list",
+        "help",
+        "quit",
+    ];
+
+    for input in inputs {
+        match parse_command(input) {
+            Ok(command) => {
+                print!("> {} → ", input);
+                execute_command(&command);
+            }
+            Err(error) => println!("> {} → 错误: {}", input, error),
+        }
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[if let 与 matches! 宏](./10-if-let-matches-macro)**：简化单分支匹配
+- **[带数据的枚举变体](./07-enum-variants-data)**：模式匹配的主要对象
+- **[Option 与 Result](./08-option-result)**：最常需要匹配的枚举类型
 
 ## 📝 学习检查点
 
-- [ ] 理解模式匹配与解构的核心概念
-- [ ] 能够在实际项目中应用模式匹配与解构
+- [ ] 掌握 `match` 的基本语法和穷尽性检查
+- [ ] 能够解构枚举变体和结构体
+- [ ] 理解通配符 `_`、多模式 `|`、匹配守卫 `if`、绑定 `@` 等高级模式
+- [ ] 能够在 `let` 绑定和函数参数中使用解构
+
+## 🚀 下一步
+
+→ [if let 与 matches! 宏](./10-if-let-matches-macro)

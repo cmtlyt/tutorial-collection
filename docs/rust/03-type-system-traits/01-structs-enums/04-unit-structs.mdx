@@ -5,13 +5,182 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解结构体与枚举中的「单元结构体」相关知识。
+单元结构体（Unit Struct）是没有任何字段的结构体，类似于空元组 `()`。虽然它不携带任何数据，但它是一个独立的类型，可以为其实现 trait。单元结构体常用于作为 **标记类型**（Marker Type）或 **Trait 实现的载体**。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 基本定义与使用
+
+```rust
+struct Marker;
+struct Production;
+struct Development;
+
+fn main() {
+    let _marker = Marker;
+    let _prod = Production;
+    let _dev = Development;
+
+    // 单元结构体的大小为 0 字节
+    println!("Marker 大小: {} 字节", std::mem::size_of::<Marker>());
+}
+```
+
+:::tip 零大小类型
+单元结构体是零大小类型（ZST, Zero-Sized Type），它在运行时**不占用任何内存**，但在编译期提供了类型级别的区分能力。
 :::
+
+## 🎯 作为标记类型
+
+单元结构体最常见的用途是在类型系统中充当"标记"，通过不同类型来区分不同状态或行为：
+
+```rust
+struct Locked;
+struct Unlocked;
+
+struct Door<State> {
+    _state: std::marker::PhantomData<State>,
+}
+
+impl Door<Locked> {
+    fn unlock(self) -> Door<Unlocked> {
+        println!("门已解锁");
+        Door {
+            _state: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Door<Unlocked> {
+    fn lock(self) -> Door<Locked> {
+        println!("门已上锁");
+        Door {
+            _state: std::marker::PhantomData,
+        }
+    }
+
+    fn open(&self) {
+        println!("门已打开");
+    }
+}
+
+fn create_locked_door() -> Door<Locked> {
+    Door {
+        _state: std::marker::PhantomData,
+    }
+}
+
+fn main() {
+    let door = create_locked_door();
+
+    // 编译错误：上锁状态的门不能打开
+    // door.open();
+
+    let door = door.unlock();
+    door.open(); // 解锁后才能打开
+
+    let _door = door.lock();
+}
+```
+
+## 🎯 作为 Trait 实现载体
+
+单元结构体可以实现 trait，用于提供不同的策略或行为：
+
+```rust
+trait Greeting {
+    fn greet(&self, name: &str) -> String;
+}
+
+struct FormalGreeting;
+struct CasualGreeting;
+
+impl Greeting for FormalGreeting {
+    fn greet(&self, name: &str) -> String {
+        format!("尊敬的 {} 先生/女士，您好。", name)
+    }
+}
+
+impl Greeting for CasualGreeting {
+    fn greet(&self, name: &str) -> String {
+        format!("嗨 {}！最近怎么样？", name)
+    }
+}
+
+fn send_greeting(greeter: &impl Greeting, name: &str) {
+    println!("{}", greeter.greet(name));
+}
+
+fn main() {
+    send_greeting(&FormalGreeting, "张三");
+    send_greeting(&CasualGreeting, "李四");
+}
+```
+
+## 📝 实际应用示例
+
+### 策略模式：不同的日志格式化器
+
+```rust
+trait LogFormatter {
+    fn format(&self, level: &str, message: &str) -> String;
+}
+
+struct JsonFormatter;
+struct PlainFormatter;
+
+impl LogFormatter for JsonFormatter {
+    fn format(&self, level: &str, message: &str) -> String {
+        format!(r#"{{"level":"{}","message":"{}"}}"#, level, message)
+    }
+}
+
+impl LogFormatter for PlainFormatter {
+    fn format(&self, level: &str, message: &str) -> String {
+        format!("[{}] {}", level.to_uppercase(), message)
+    }
+}
+
+struct Logger<F: LogFormatter> {
+    formatter: F,
+}
+
+impl<F: LogFormatter> Logger<F> {
+    fn new(formatter: F) -> Self {
+        Logger { formatter }
+    }
+
+    fn info(&self, message: &str) {
+        println!("{}", self.formatter.format("info", message));
+    }
+
+    fn error(&self, message: &str) {
+        println!("{}", self.formatter.format("error", message));
+    }
+}
+
+fn main() {
+    let json_logger = Logger::new(JsonFormatter);
+    json_logger.info("应用启动");
+    json_logger.error("连接失败");
+
+    let plain_logger = Logger::new(PlainFormatter);
+    plain_logger.info("应用启动");
+    plain_logger.error("连接失败");
+}
+```
+
+## 🔗 相关概念
+
+- **[命名字段结构体](./02-named-field-structs)**：最常用的结构体形式
+- **[元组结构体](./03-tuple-structs)**：无字段名的结构体
+- **[PhantomData](../03-generic-programming/09-phantom-data)**：与单元结构体配合使用的幽灵数据
 
 ## 📝 学习检查点
 
-- [ ] 理解单元结构体的核心概念
-- [ ] 能够在实际项目中应用单元结构体
+- [ ] 理解单元结构体是零大小类型
+- [ ] 掌握单元结构体作为标记类型的用法
+- [ ] 能够使用单元结构体实现策略模式
+- [ ] 理解单元结构体在类型状态模式中的作用
+
+## 🚀 下一步
+
+→ [方法定义（impl 块）](./05-impl-blocks-methods)

@@ -5,13 +5,261 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「Trait 定义与实现」相关知识。
+Trait 是 Rust 中定义共享行为的核心机制，类似于其他语言中的接口（Interface）。通过 Trait，你可以声明一组方法签名，然后让不同的类型各自提供具体的实现。这是 Rust 实现**多态**的基础方式。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 定义 Trait
+
+使用 `trait` 关键字定义 Trait，其中包含方法签名：
+
+```rust
+trait Summary {
+    fn summarize(&self) -> String;
+}
+
+struct Article {
+    title: String,
+    author: String,
+    content: String,
+}
+
+struct Tweet {
+    username: String,
+    text: String,
+}
+
+impl Summary for Article {
+    fn summarize(&self) -> String {
+        format!("{} - 作者: {}", self.title, self.author)
+    }
+}
+
+impl Summary for Tweet {
+    fn summarize(&self) -> String {
+        format!("@{}: {}", self.username, self.text)
+    }
+}
+
+fn main() {
+    let article = Article {
+        title: String::from("Rust 入门指南"),
+        author: String::from("Alice"),
+        content: String::from("Rust 是一门系统编程语言..."),
+    };
+
+    let tweet = Tweet {
+        username: String::from("bob"),
+        text: String::from("Rust 真好用！"),
+    };
+
+    println!("{}", article.summarize());
+    println!("{}", tweet.summarize());
+}
+```
+
+## 🎯 Trait 中的多个方法
+
+一个 Trait 可以包含多个方法，实现者必须提供所有没有默认实现的方法：
+
+```rust
+trait Shape {
+    fn area(&self) -> f64;
+    fn perimeter(&self) -> f64;
+    fn name(&self) -> &str;
+}
+
+struct Circle {
+    radius: f64,
+}
+
+struct Rectangle {
+    width: f64,
+    height: f64,
+}
+
+impl Shape for Circle {
+    fn area(&self) -> f64 {
+        std::f64::consts::PI * self.radius * self.radius
+    }
+
+    fn perimeter(&self) -> f64 {
+        2.0 * std::f64::consts::PI * self.radius
+    }
+
+    fn name(&self) -> &str {
+        "圆形"
+    }
+}
+
+impl Shape for Rectangle {
+    fn area(&self) -> f64 {
+        self.width * self.height
+    }
+
+    fn perimeter(&self) -> f64 {
+        2.0 * (self.width + self.height)
+    }
+
+    fn name(&self) -> &str {
+        "矩形"
+    }
+}
+
+fn print_shape_info(shape: &impl Shape) {
+    println!("{}：面积={:.2}, 周长={:.2}", shape.name(), shape.area(), shape.perimeter());
+}
+
+fn main() {
+    let circle = Circle { radius: 5.0 };
+    let rect = Rectangle { width: 4.0, height: 6.0 };
+
+    print_shape_info(&circle);
+    print_shape_info(&rect);
+}
+```
+
+## 🎯 为外部类型实现自定义 Trait
+
+你可以为标准库类型实现自己定义的 Trait（但不能为外部类型实现外部 Trait，即**孤儿规则**）：
+
+```rust
+trait Describable {
+    fn describe(&self) -> String;
+}
+
+impl Describable for Vec<i32> {
+    fn describe(&self) -> String {
+        if self.is_empty() {
+            String::from("空列表")
+        } else {
+            format!("包含 {} 个元素的列表，范围 {}~{}", 
+                self.len(),
+                self.iter().min().unwrap(),
+                self.iter().max().unwrap()
+            )
+        }
+    }
+}
+
+impl Describable for (i32, i32) {
+    fn describe(&self) -> String {
+        format!("坐标点 ({}, {})", self.0, self.1)
+    }
+}
+
+fn main() {
+    let numbers = vec![3, 1, 4, 1, 5, 9];
+    println!("{}", numbers.describe());
+
+    let point = (10, 20);
+    println!("{}", point.describe());
+
+    let empty: Vec<i32> = vec![];
+    println!("{}", empty.describe());
+}
+```
+
+:::warning 孤儿规则
+你只能在满足以下条件之一时为类型实现 Trait：
+- **Trait** 定义在当前 crate 中，或
+- **类型** 定义在当前 crate 中
+
+不能同时为外部 Trait 和外部类型编写实现，这是为了保证 Trait 实现的全局一致性。
 :::
+
+## 📝 实际应用示例
+
+### 多态的动物系统
+
+```rust
+trait Animal {
+    fn name(&self) -> &str;
+    fn sound(&self) -> &str;
+    fn legs(&self) -> u32;
+
+    fn introduce(&self) -> String {
+        format!(
+            "我是{}，我会\"{}\"叫，我有{}条腿",
+            self.name(),
+            self.sound(),
+            self.legs()
+        )
+    }
+}
+
+struct Dog {
+    name: String,
+}
+
+struct Cat {
+    name: String,
+}
+
+struct Snake {
+    name: String,
+}
+
+impl Animal for Dog {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn sound(&self) -> &str {
+        "汪汪"
+    }
+    fn legs(&self) -> u32 {
+        4
+    }
+}
+
+impl Animal for Cat {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn sound(&self) -> &str {
+        "喵喵"
+    }
+    fn legs(&self) -> u32 {
+        4
+    }
+}
+
+impl Animal for Snake {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn sound(&self) -> &str {
+        "嘶嘶"
+    }
+    fn legs(&self) -> u32 {
+        0
+    }
+}
+
+fn main() {
+    let animals: Vec<Box<dyn Animal>> = vec![
+        Box::new(Dog { name: String::from("旺财") }),
+        Box::new(Cat { name: String::from("咪咪") }),
+        Box::new(Snake { name: String::from("小青") }),
+    ];
+
+    for animal in &animals {
+        println!("{}", animal.introduce());
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[默认方法实现](./03-default-methods)**：为 Trait 方法提供默认行为
+- **[Trait 作为参数](./04-impl-trait-syntax)**：在函数中使用 Trait 约束
+- **[动态分发 vs 静态分发](./15-dynamic-vs-static-dispatch)**：`dyn Trait` 与 `impl Trait` 的区别
 
 ## 📝 学习检查点
 
-- [ ] 理解Trait 定义与实现的核心概念
-- [ ] 能够在实际项目中应用Trait 定义与实现
+- [ ] 掌握 `trait` 定义和 `impl Trait for Type` 语法
+- [ ] 理解孤儿规则对 Trait 实现的限制
+- [ ] 能够为不同类型实现同一个 Trait 以实现多态
+- [ ] 理解 Trait 方法签名中 `&self` 的作用
+
+## 🚀 下一步
+
+→ [默认方法实现](./03-default-methods)

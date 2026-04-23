@@ -5,13 +5,270 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解泛型编程中的「多重约束」相关知识。
+实际编程中，一个泛型参数往往需要满足多个 Trait 的约束。Rust 使用 `+` 语法组合多个 Trait bound，并通过 `where` 子句清晰地表达复杂的约束关系。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 使用 + 组合约束
+
+```rust
+use std::fmt::{Debug, Display};
+
+// T 必须同时实现 Display 和 Debug
+fn inspect<T: Display + Debug>(value: &T) {
+    println!("Display: {}", value);
+    println!("Debug:   {:?}", value);
+}
+
+// 多个参数各自有不同的多重约束
+fn process<T: Display + Clone, U: Debug + Default>(item: &T, _context: &U) {
+    let cloned = item.clone();
+    println!("处理: {}", cloned);
+}
+
+fn main() {
+    inspect(&42);
+    inspect(&String::from("hello"));
+
+    process(&"item", &0_i32);
+}
+```
+
+## 🎯 使用 where 子句处理复杂约束
+
+当约束较多时，`where` 子句让代码更清晰：
+
+```rust
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
+
+// 不使用 where：一行太长
+fn store_and_display_inline<K: Display + Eq + Hash + Clone, V: Debug + Clone + Default>(
+    key: K,
+    value: V,
+) -> String {
+    format!("{}: {:?}", key, value)
+}
+
+// 使用 where：清晰分行
+fn store_and_display<K, V>(key: K, value: V) -> String
+where
+    K: Display + Eq + Hash + Clone,
+    V: Debug + Clone + Default,
+{
+    format!("{}: {:?}", key, value)
+}
+
+fn main() {
+    let result = store_and_display(String::from("name"), String::from("Alice"));
+    println!("{}", result);
+}
+```
+
+## 🎯 约束中的生命周期
+
+Trait bound 也可以包含生命周期约束：
+
+```rust
+use std::fmt::Display;
+
+fn longest_displayable<'a, T>(a: &'a T, b: &'a T) -> &'a T
+where
+    T: Display + PartialOrd,
+{
+    let result = if a >= b { a } else { b };
+    println!("较大的值: {}", result);
+    result
+}
+
+fn print_with_label<'a, T>(label: &'a str, value: &T)
+where
+    T: Display + 'a,
+{
+    println!("{}: {}", label, value);
+}
+
+fn main() {
+    let a = String::from("apple");
+    let b = String::from("banana");
+    let larger = longest_displayable(&a, &b);
+    println!("结果: {}", larger);
+
+    print_with_label("数字", &42);
+}
+```
+
+## 🎯 在 impl 块中使用多重约束
+
+```rust
+use std::fmt::{Debug, Display};
+
+#[derive(Debug)]
+struct Registry<K, V> {
+    entries: Vec<(K, V)>,
+}
+
+// 基本方法：最少约束
+impl<K, V> Registry<K, V> {
+    fn new() -> Self {
+        Registry {
+            entries: Vec::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+// 需要比较能力的方法
+impl<K, V> Registry<K, V>
+where
+    K: PartialEq,
+{
+    fn contains_key(&self, key: &K) -> bool {
+        self.entries.iter().any(|(k, _)| k == key)
+    }
+
+    fn get(&self, key: &K) -> Option<&V> {
+        self.entries
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if let Some(entry) = self.entries.iter_mut().find(|(k, _)| k == &key) {
+            entry.1 = value;
+        } else {
+            self.entries.push((key, value));
+        }
+    }
+}
+
+// 需要显示能力的方法
+impl<K, V> Registry<K, V>
+where
+    K: Display,
+    V: Display,
+{
+    fn print_all(&self) {
+        for (key, value) in &self.entries {
+            println!("  {} => {}", key, value);
+        }
+    }
+}
+
+fn main() {
+    let mut registry: Registry<String, i32> = Registry::new();
+
+    registry.insert(String::from("timeout"), 30);
+    registry.insert(String::from("max_retries"), 3);
+    registry.insert(String::from("port"), 8080);
+
+    println!("注册表 ({} 项):", registry.len());
+    registry.print_all();
+
+    println!("包含 timeout: {}", registry.contains_key(&String::from("timeout")));
+    println!("port 值: {:?}", registry.get(&String::from("port")));
+}
+```
+
+## 📝 实际应用示例
+
+### 泛型事件总线
+
+```rust
+use std::fmt::{Debug, Display};
+
+trait Event: Debug + Display + Clone {
+    fn event_name(&self) -> &str;
+    fn priority(&self) -> u32;
+}
+
+#[derive(Debug, Clone)]
+struct UserEvent {
+    user_id: u64,
+    action: String,
+}
+
+impl Display for UserEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "User#{} {}", self.user_id, self.action)
+    }
+}
+
+impl Event for UserEvent {
+    fn event_name(&self) -> &str {
+        "user_event"
+    }
+    fn priority(&self) -> u32 {
+        1
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SystemEvent {
+    message: String,
+    level: String,
+}
+
+impl Display for SystemEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {}", self.level, self.message)
+    }
+}
+
+impl Event for SystemEvent {
+    fn event_name(&self) -> &str {
+        "system_event"
+    }
+    fn priority(&self) -> u32 {
+        10
+    }
+}
+
+fn process_events<E>(events: &[E])
+where
+    E: Event,
+{
+    let mut sorted: Vec<&E> = events.iter().collect();
+    sorted.sort_by(|a, b| b.priority().cmp(&a.priority()));
+
+    println!("处理 {} 个事件（按优先级排序）:", sorted.len());
+    for event in sorted {
+        println!("  [{}] {}", event.event_name(), event);
+    }
+}
+
+fn main() {
+    let user_events = vec![
+        UserEvent { user_id: 1, action: String::from("登录") },
+        UserEvent { user_id: 2, action: String::from("注册") },
+    ];
+    process_events(&user_events);
+
+    println!();
+
+    let system_events = vec![
+        SystemEvent { message: String::from("启动完成"), level: String::from("INFO") },
+        SystemEvent { message: String::from("磁盘空间不足"), level: String::from("WARN") },
+    ];
+    process_events(&system_events);
+}
+```
+
+## 🔗 相关概念
+
+- **[Trait bound](./06-trait-bounds)**：单个 Trait bound 的基础
+- **[条件实现](./08-blanket-implementations)**：基于约束的自动实现
+- **[Trait bound 与 where 子句](../02-trait-system/05-trait-bounds-where-clause)**：Trait 系统中的详细说明
 
 ## 📝 学习检查点
 
-- [ ] 理解多重约束的核心概念
-- [ ] 能够在实际项目中应用多重约束
+- [ ] 掌握 `+` 语法组合多个 Trait bound
+- [ ] 理解 `where` 子句在复杂约束下的优势
+- [ ] 能够在 impl 块中根据不同约束提供不同方法
+- [ ] 理解生命周期约束与 Trait bound 的结合
+
+## 🚀 下一步
+
+→ [条件实现（blanket implementations）](./08-blanket-implementations)

@@ -5,13 +5,240 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解结构体与枚举中的「带数据的枚举变体」相关知识。
+Rust 的枚举不仅仅是简单的整数标签。每个枚举变体都可以携带不同类型和数量的数据，这使得 Rust 的枚举成为一种强大的**代数数据类型**（Algebraic Data Type, ADT）。通过枚举，你可以精确地表达"某个值是这几种情况之一"的语义。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 三种变体形式
+
+### 类单元变体（无数据）
+
+```rust
+#[derive(Debug)]
+enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+fn describe_direction(direction: &Direction) -> &str {
+    match direction {
+        Direction::North => "向北",
+        Direction::South => "向南",
+        Direction::East => "向东",
+        Direction::West => "向西",
+    }
+}
+
+fn main() {
+    let heading = Direction::North;
+    println!("方向: {}", describe_direction(&heading));
+}
+```
+
+### 元组变体（匿名数据）
+
+```rust
+#[derive(Debug)]
+enum Shape {
+    Circle(f64),                // 半径
+    Rectangle(f64, f64),        // 宽、高
+    Triangle(f64, f64, f64),    // 三条边
+}
+
+impl Shape {
+    fn area(&self) -> f64 {
+        match self {
+            Shape::Circle(radius) => {
+                std::f64::consts::PI * radius * radius
+            }
+            Shape::Rectangle(width, height) => {
+                width * height
+            }
+            Shape::Triangle(side_a, side_b, side_c) => {
+                // 海伦公式
+                let semi = (side_a + side_b + side_c) / 2.0;
+                (semi * (semi - side_a) * (semi - side_b) * (semi - side_c)).sqrt()
+            }
+        }
+    }
+}
+
+fn main() {
+    let shapes = vec![
+        Shape::Circle(5.0),
+        Shape::Rectangle(4.0, 6.0),
+        Shape::Triangle(3.0, 4.0, 5.0),
+    ];
+
+    for shape in &shapes {
+        println!("{:?} 的面积: {:.2}", shape, shape.area());
+    }
+}
+```
+
+### 结构体变体（命名数据）
+
+```rust
+#[derive(Debug)]
+enum Event {
+    Click { x: i32, y: i32, button: String },
+    KeyPress { key: char, modifiers: Vec<String> },
+    Scroll { delta_x: f64, delta_y: f64 },
+    Resize { width: u32, height: u32 },
+}
+
+fn handle_event(event: &Event) {
+    match event {
+        Event::Click { x, y, button } => {
+            println!("点击 ({}, {})，按钮: {}", x, y, button);
+        }
+        Event::KeyPress { key, modifiers } => {
+            if modifiers.is_empty() {
+                println!("按键: {}", key);
+            } else {
+                println!("按键: {} + {}", modifiers.join("+"), key);
+            }
+        }
+        Event::Scroll { delta_x, delta_y } => {
+            println!("滚动 dx={:.1}, dy={:.1}", delta_x, delta_y);
+        }
+        Event::Resize { width, height } => {
+            println!("窗口大小调整为 {}x{}", width, height);
+        }
+    }
+}
+
+fn main() {
+    let events = vec![
+        Event::Click {
+            x: 100,
+            y: 200,
+            button: String::from("left"),
+        },
+        Event::KeyPress {
+            key: 's',
+            modifiers: vec![String::from("Ctrl")],
+        },
+        Event::Scroll {
+            delta_x: 0.0,
+            delta_y: -3.0,
+        },
+        Event::Resize {
+            width: 1920,
+            height: 1080,
+        },
+    ];
+
+    for event in &events {
+        handle_event(event);
+    }
+}
+```
+
+## 🎯 枚举的内存布局
+
+枚举的大小等于最大变体的大小加上判别标签（discriminant）的大小：
+
+```rust
+use std::mem::size_of;
+
+enum Small {
+    A,
+    B(u8),
+}
+
+enum Medium {
+    A,
+    B(u64),
+}
+
+enum Large {
+    A(u8),
+    B([u8; 100]),
+}
+
+fn main() {
+    println!("Small 大小: {} 字节", size_of::<Small>());
+    println!("Medium 大小: {} 字节", size_of::<Medium>());
+    println!("Large 大小: {} 字节", size_of::<Large>());
+    println!("Option<u8> 大小: {} 字节", size_of::<Option<u8>>());
+    // 编译器对 Option<&T> 做了 niche 优化，和裸指针一样大
+    println!(
+        "Option<&u8> 大小: {} 字节",
+        size_of::<Option<&u8>>()
+    );
+}
+```
+
+:::tip Niche 优化
+编译器会利用类型中"不可能出现的值"来存储判别标签。例如 `Option<&T>` 利用引用不能为 null 的特性，将 `None` 表示为全零，因此 `Option<&T>` 和 `&T` 大小相同。
 :::
+
+## 📝 实际应用示例
+
+### 用枚举建模 JSON 值
+
+```rust
+#[derive(Debug)]
+enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    Str(String),
+    Array(Vec<JsonValue>),
+    Object(Vec<(String, JsonValue)>),
+}
+
+impl JsonValue {
+    fn is_null(&self) -> bool {
+        matches!(self, JsonValue::Null)
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            JsonValue::Str(string) => Some(string),
+            _ => None,
+        }
+    }
+
+    fn as_number(&self) -> Option<f64> {
+        match self {
+            JsonValue::Number(number) => Some(*number),
+            _ => None,
+        }
+    }
+}
+
+fn main() {
+    let user = JsonValue::Object(vec![
+        (String::from("name"), JsonValue::Str(String::from("Alice"))),
+        (String::from("age"), JsonValue::Number(28.0)),
+        (String::from("active"), JsonValue::Bool(true)),
+        (
+            String::from("tags"),
+            JsonValue::Array(vec![
+                JsonValue::Str(String::from("admin")),
+                JsonValue::Str(String::from("user")),
+            ]),
+        ),
+    ]);
+
+    println!("{:#?}", user);
+}
+```
+
+## 🔗 相关概念
+
+- **[Option 与 Result](./08-option-result)**：标准库中最重要的两个枚举
+- **[模式匹配与解构](./09-pattern-matching-destructuring)**：处理枚举变体的利器
 
 ## 📝 学习检查点
 
-- [ ] 理解带数据的枚举变体的核心概念
-- [ ] 能够在实际项目中应用带数据的枚举变体
+- [ ] 掌握三种枚举变体形式（类单元、元组、结构体）
+- [ ] 理解枚举的内存布局和 niche 优化
+- [ ] 能够使用枚举为方法实现分支逻辑
+- [ ] 能够用枚举精确建模业务数据
+
+## 🚀 下一步
+
+→ [Option 与 Result](./08-option-result)

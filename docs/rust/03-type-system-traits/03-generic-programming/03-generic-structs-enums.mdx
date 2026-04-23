@@ -5,13 +5,304 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解泛型编程中的「泛型结构体与枚举」相关知识。
+泛型不仅可以用于函数，还可以用于结构体和枚举的定义。标准库中的 `Vec<T>`、`Option<T>`、`Result<T, E>` 都是泛型类型。通过泛型，你可以定义一次数据结构，让它适用于任意元素类型。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 泛型结构体
+
+### 单个类型参数
+
+```rust
+#[derive(Debug)]
+struct Wrapper<T> {
+    value: T,
+    label: String,
+}
+
+impl<T> Wrapper<T> {
+    fn new(value: T, label: &str) -> Self {
+        Wrapper {
+            value,
+            label: label.to_string(),
+        }
+    }
+
+    fn into_inner(self) -> T {
+        self.value
+    }
+}
+
+impl<T: std::fmt::Display> Wrapper<T> {
+    fn display(&self) {
+        println!("[{}] {}", self.label, self.value);
+    }
+}
+
+fn main() {
+    let int_wrapper = Wrapper::new(42, "整数");
+    let str_wrapper = Wrapper::new(String::from("hello"), "字符串");
+
+    int_wrapper.display();
+    str_wrapper.display();
+
+    let value = int_wrapper.into_inner();
+    println!("取出值: {}", value);
+}
+```
+
+### 多个类型参数
+
+```rust
+#[derive(Debug)]
+struct KeyValue<K, V> {
+    key: K,
+    value: V,
+}
+
+impl<K, V> KeyValue<K, V> {
+    fn new(key: K, value: V) -> Self {
+        KeyValue { key, value }
+    }
+
+    fn key(&self) -> &K {
+        &self.key
+    }
+
+    fn value(&self) -> &V {
+        &self.value
+    }
+}
+
+impl<K: std::fmt::Display, V: std::fmt::Display> KeyValue<K, V> {
+    fn display(&self) {
+        println!("{} => {}", self.key, self.value);
+    }
+}
+
+fn main() {
+    let entry1 = KeyValue::new("name", String::from("Alice"));
+    let entry2 = KeyValue::new(1, 99.9);
+
+    entry1.display();
+    entry2.display();
+
+    println!("键: {}, 值: {}", entry1.key(), entry1.value());
+}
+```
+
+## 🎯 泛型枚举
+
+### 标准库经典示例
+
+`Option<T>` 和 `Result<T, E>` 就是泛型枚举的经典案例：
+
+```rust
+// 标准库中的定义（简化版）
+// enum Option<T> {
+//     Some(T),
+//     None,
+// }
+// enum Result<T, E> {
+//     Ok(T),
+//     Err(E),
+// }
+
+// 自定义泛型枚举
+#[derive(Debug)]
+enum Response<T> {
+    Success(T),
+    Error(String),
+    Loading,
+}
+
+impl<T: std::fmt::Display> Response<T> {
+    fn unwrap_or(self, default: T) -> T {
+        match self {
+            Response::Success(value) => value,
+            Response::Error(msg) => {
+                println!("错误: {}，使用默认值", msg);
+                default
+            }
+            Response::Loading => {
+                println!("仍在加载，使用默认值");
+                default
+            }
+        }
+    }
+
+    fn display_status(&self) {
+        match self {
+            Response::Success(value) => println!("✅ 成功: {}", value),
+            Response::Error(msg) => println!("❌ 错误: {}", msg),
+            Response::Loading => println!("⏳ 加载中..."),
+        }
+    }
+}
+
+fn main() {
+    let responses: Vec<Response<String>> = vec![
+        Response::Success(String::from("数据已加载")),
+        Response::Error(String::from("网络超时")),
+        Response::Loading,
+    ];
+
+    for response in &responses {
+        response.display_status();
+    }
+
+    let value = Response::Success(42).unwrap_or(0);
+    println!("值: {}", value);
+
+    let fallback = Response::<i32>::Error(String::from("失败")).unwrap_or(0);
+    println!("回退值: {}", fallback);
+}
+```
+
+### 带约束的泛型枚举
+
+```rust
+use std::fmt::Display;
+
+#[derive(Debug)]
+enum Tree<T: Display + PartialOrd> {
+    Leaf(T),
+    Node {
+        value: T,
+        left: Box<Tree<T>>,
+        right: Box<Tree<T>>,
+    },
+    Empty,
+}
+
+impl<T: Display + PartialOrd> Tree<T> {
+    fn leaf(value: T) -> Self {
+        Tree::Leaf(value)
+    }
+
+    fn print_inorder(&self, depth: usize) {
+        let indent = "  ".repeat(depth);
+        match self {
+            Tree::Empty => {}
+            Tree::Leaf(value) => println!("{}🍃 {}", indent, value),
+            Tree::Node { value, left, right } => {
+                left.print_inorder(depth + 1);
+                println!("{}🌳 {}", indent, value);
+                right.print_inorder(depth + 1);
+            }
+        }
+    }
+}
+
+fn main() {
+    let tree = Tree::Node {
+        value: 5,
+        left: Box::new(Tree::Node {
+            value: 3,
+            left: Box::new(Tree::leaf(1)),
+            right: Box::new(Tree::leaf(4)),
+        }),
+        right: Box::new(Tree::Node {
+            value: 8,
+            left: Box::new(Tree::leaf(7)),
+            right: Box::new(Tree::Empty),
+        }),
+    };
+
+    println!("中序遍历:");
+    tree.print_inorder(0);
+}
+```
+
+## 📝 实际应用示例
+
+### 泛型分页容器
+
+```rust
+#[derive(Debug)]
+struct Page<T> {
+    items: Vec<T>,
+    page_number: u32,
+    page_size: u32,
+    total_items: u64,
+}
+
+impl<T> Page<T> {
+    fn new(items: Vec<T>, page_number: u32, page_size: u32, total_items: u64) -> Self {
+        Page {
+            items,
+            page_number,
+            page_size,
+            total_items,
+        }
+    }
+
+    fn total_pages(&self) -> u64 {
+        (self.total_items + self.page_size as u64 - 1) / self.page_size as u64
+    }
+
+    fn has_next(&self) -> bool {
+        (self.page_number as u64) < self.total_pages()
+    }
+
+    fn has_previous(&self) -> bool {
+        self.page_number > 1
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    fn map<U, F: Fn(&T) -> U>(&self, transform: F) -> Page<U> {
+        Page {
+            items: self.items.iter().map(transform).collect(),
+            page_number: self.page_number,
+            page_size: self.page_size,
+            total_items: self.total_items,
+        }
+    }
+}
+
+impl<T: std::fmt::Debug> Page<T> {
+    fn display_info(&self) {
+        println!(
+            "第 {}/{} 页（每页 {} 条，共 {} 条）",
+            self.page_number,
+            self.total_pages(),
+            self.page_size,
+            self.total_items
+        );
+        println!("  数据: {:?}", self.items);
+        println!("  上一页: {}, 下一页: {}", self.has_previous(), self.has_next());
+    }
+}
+
+fn main() {
+    let user_page = Page::new(
+        vec!["Alice", "Bob", "Charlie"],
+        1,
+        3,
+        10,
+    );
+    user_page.display_info();
+
+    // 转换为不同类型的 Page
+    let upper_page = user_page.map(|name| name.to_uppercase());
+    upper_page.display_info();
+}
+```
+
+## 🔗 相关概念
+
+- **[泛型函数](./02-generic-functions)**：函数层面的泛型
+- **[泛型方法](./04-generic-methods)**：impl 块中的泛型
+- **[单态化](./05-monomorphization)**：泛型的编译期展开
 
 ## 📝 学习检查点
 
-- [ ] 理解泛型结构体与枚举的核心概念
-- [ ] 能够在实际项目中应用泛型结构体与枚举
+- [ ] 掌握泛型结构体的定义语法
+- [ ] 理解多个类型参数的使用场景
+- [ ] 能够定义和使用泛型枚举
+- [ ] 理解标准库 `Option<T>` 和 `Result<T, E>` 的泛型设计
+
+## 🚀 下一步
+
+→ [泛型方法](./04-generic-methods)

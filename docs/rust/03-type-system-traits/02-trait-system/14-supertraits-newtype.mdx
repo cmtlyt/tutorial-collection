@@ -5,13 +5,314 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「Supertraits 与 Newtype 模式」相关知识。
+**Supertraits** 让一个 Trait 依赖于另一个 Trait，即"要实现 Trait A，必须先实现 Trait B"。**Newtype 模式** 通过将已有类型包装在单字段元组结构体中，创建一个新类型。Newtype 可以绕过孤儿规则，为外部类型实现外部 Trait。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Supertraits
+
+### 基本用法
+
+使用 `:` 声明 Supertrait 依赖：
+
+```rust
+use std::fmt;
+
+// PrintableInfo 要求实现者必须先实现 fmt::Display
+trait PrintableInfo: fmt::Display {
+    fn info(&self) -> String;
+
+    fn print_info(&self) {
+        // 可以安全使用 Display（self 保证实现了 Display）
+        println!("[{}] {}", self, self.info());
+    }
+}
+
+struct Server {
+    name: String,
+    port: u16,
+    healthy: bool,
+}
+
+// 必须先实现 Display
+impl fmt::Display for Server {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.name, self.port)
+    }
+}
+
+// 然后才能实现 PrintableInfo
+impl PrintableInfo for Server {
+    fn info(&self) -> String {
+        format!(
+            "状态: {}",
+            if self.healthy { "健康" } else { "异常" }
+        )
+    }
+}
+
+fn main() {
+    let server = Server {
+        name: String::from("web-01"),
+        port: 8080,
+        healthy: true,
+    };
+
+    server.print_info();
+    // 也可以直接使用 Display
+    println!("服务器: {}", server);
+}
+```
+
+### 多重 Supertrait
+
+```rust
+use std::fmt::{Debug, Display};
+
+// 要求同时实现 Display + Debug + Clone
+trait Storable: Display + Debug + Clone {
+    fn storage_key(&self) -> String;
+
+    fn store(&self) {
+        println!("存储 {} (key={})", self, self.storage_key());
+        println!("调试信息: {:?}", self);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Config {
+    name: String,
+    value: String,
+}
+
+impl Display for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}={}", self.name, self.value)
+    }
+}
+
+impl Storable for Config {
+    fn storage_key(&self) -> String {
+        format!("config:{}", self.name)
+    }
+}
+
+fn main() {
+    let config = Config {
+        name: String::from("timeout"),
+        value: String::from("30"),
+    };
+
+    config.store();
+
+    // Clone 也可用
+    let config_backup = config.clone();
+    println!("备份: {}", config_backup);
+}
+```
+
+## 🎯 Newtype 模式
+
+### 绕过孤儿规则
+
+孤儿规则禁止为外部类型实现外部 Trait。Newtype 模式通过包装解决这个问题：
+
+```rust
+use std::fmt;
+
+// 不能直接为 Vec<String> 实现 Display（两者都是外部定义的）
+// 但可以用 Newtype 包装
+
+struct CommaSeparated(Vec<String>);
+
+impl fmt::Display for CommaSeparated {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.join(", "))
+    }
+}
+
+struct BulletList(Vec<String>);
+
+impl fmt::Display for BulletList {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for item in &self.0 {
+            writeln!(f, "• {}", item)?;
+        }
+        Ok(())
+    }
+}
+
+fn main() {
+    let tags = CommaSeparated(vec![
+        String::from("rust"),
+        String::from("programming"),
+        String::from("tutorial"),
+    ]);
+    println!("标签: {}", tags);
+
+    let items = BulletList(vec![
+        String::from("学习 Rust 基础"),
+        String::from("掌握所有权系统"),
+        String::from("理解 Trait 系统"),
+    ]);
+    println!("待办:\n{}", items);
+}
+```
+
+### Newtype 实现 Deref 透明化
+
+通过实现 `Deref`，Newtype 可以透明地访问内部类型的方法：
+
+```rust
+use std::ops::Deref;
+use std::fmt;
+
+struct Username(String);
+
+impl Username {
+    fn new(name: &str) -> Result<Username, String> {
+        if name.len() < 3 {
+            Err(String::from("用户名至少 3 个字符"))
+        } else if name.len() > 20 {
+            Err(String::from("用户名最多 20 个字符"))
+        } else if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            Err(String::from("用户名只能包含字母、数字和下划线"))
+        } else {
+            Ok(Username(name.to_string()))
+        }
+    }
+}
+
+impl Deref for Username {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Username {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "@{}", self.0)
+    }
+}
+
+fn greet(name: &str) {
+    println!("你好, {}!", name);
+}
+
+fn main() {
+    match Username::new("alice_123") {
+        Ok(username) => {
+            println!("用户: {}", username);
+            println!("长度: {}", username.len()); // 通过 Deref 调用 str::len
+            greet(&username); // 自动解引用为 &str
+        }
+        Err(error) => println!("错误: {}", error),
+    }
+
+    match Username::new("ab") {
+        Ok(username) => println!("用户: {}", username),
+        Err(error) => println!("验证失败: {}", error),
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 类型安全的 ID 系统
+
+```rust
+use std::fmt;
+use std::marker::PhantomData;
+
+// 泛型 Newtype：不同实体的 ID 互不兼容
+struct Id<T> {
+    value: u64,
+    _marker: PhantomData<T>,
+}
+
+impl<T> Id<T> {
+    fn new(value: u64) -> Self {
+        Id {
+            value,
+            _marker: PhantomData,
+        }
+    }
+
+    fn value(&self) -> u64 {
+        self.value
+    }
+}
+
+impl<T> fmt::Debug for Id<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Id({})", self.value)
+    }
+}
+
+impl<T> fmt::Display for Id<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.value)
+    }
+}
+
+impl<T> Clone for Id<T> {
+    fn clone(&self) -> Self {
+        Id::new(self.value)
+    }
+}
+
+impl<T> Copy for Id<T> {}
+
+impl<T> PartialEq for Id<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl<T> Eq for Id<T> {}
+
+// 实体类型标记
+struct UserEntity;
+struct OrderEntity;
+
+type UserId = Id<UserEntity>;
+type OrderId = Id<OrderEntity>;
+
+fn find_user_orders(user_id: UserId) -> Vec<OrderId> {
+    println!("查询用户 {} 的订单", user_id);
+    vec![OrderId::new(1001), OrderId::new(1002)]
+}
+
+fn main() {
+    let user_id: UserId = Id::new(42);
+    let order_id: OrderId = Id::new(1001);
+
+    println!("用户 ID: {}", user_id);
+    println!("订单 ID: {}", order_id);
+
+    let orders = find_user_orders(user_id);
+    for order in &orders {
+        println!("  订单: {}", order);
+    }
+
+    // 编译错误：类型不匹配，OrderId 不能传给 UserId 参数
+    // find_user_orders(order_id);
+}
+```
+
+## 🔗 相关概念
+
+- **[元组结构体](../01-structs-enums/03-tuple-structs)**：Newtype 模式的基础
+- **[Default 与 Deref](./11-default-deref-traits)**：Newtype 配合 Deref 实现透明访问
+- **[动态分发 vs 静态分发](./15-dynamic-vs-static-dispatch)**：Trait 对象的使用
 
 ## 📝 学习检查点
 
-- [ ] 理解Supertraits 与 Newtype 模式的核心概念
-- [ ] 能够在实际项目中应用Supertraits 与 Newtype 模式
+- [ ] 理解 Supertrait 的依赖关系和用途
+- [ ] 掌握 Newtype 模式绕过孤儿规则的原理
+- [ ] 能够为 Newtype 实现 `Deref` 进行透明化
+- [ ] 理解泛型 Newtype 实现类型安全 ID 的设计
+
+## 🚀 下一步
+
+→ [动态分发 vs 静态分发](./15-dynamic-vs-static-dispatch)

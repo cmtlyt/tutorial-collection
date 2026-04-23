@@ -5,13 +5,233 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解泛型编程中的「Trait bound」相关知识。
+Trait bound 是泛型编程中约束类型参数的核心机制。它告诉编译器"这个泛型类型必须实现某些 Trait"，从而允许你在泛型代码中调用这些 Trait 定义的方法。没有 Trait bound 的泛型参数几乎什么都做不了。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Trait bound 的三种写法
+
+Rust 提供三种等价的 Trait bound 写法：
+
+```rust
+use std::fmt::Display;
+
+// 写法 1：impl Trait 语法（最简洁）
+fn print_v1(item: &impl Display) {
+    println!("{}", item);
+}
+
+// 写法 2：Trait bound 语法
+fn print_v2<T: Display>(item: &T) {
+    println!("{}", item);
+}
+
+// 写法 3：where 子句语法（最灵活）
+fn print_v3<T>(item: &T)
+where
+    T: Display,
+{
+    println!("{}", item);
+}
+
+fn main() {
+    print_v1(&42);
+    print_v2(&"hello");
+    print_v3(&3.14);
+}
+```
+
+### 何时选择哪种写法
+
+```rust
+use std::fmt::{Debug, Display};
+
+// 简单场景：用 impl Trait
+fn simple(a: &impl Display, b: &impl Debug) {
+    println!("{} {:?}", a, b);
+}
+
+// 需要同一类型参数：用泛型 bound
+fn same_type<T: Display>(a: &T, b: &T) {
+    println!("{} 和 {}", a, b);
+}
+
+// 复杂约束：用 where 子句
+fn complex<T, U>(key: &T, value: &U) -> String
+where
+    T: Display + Clone,
+    U: Debug + Default,
+{
+    format!("{}: {:?}", key, value)
+}
+
+fn main() {
+    simple(&42, &vec![1, 2, 3]);
+    same_type(&1, &2);         // 两个都是 i32
+    // same_type(&1, &"hello"); // 编译错误：类型不一致
+    println!("{}", complex(&"key", &42));
+}
+```
+
+## 🎯 Trait bound 在不同位置
+
+### 函数参数
+
+```rust
+use std::fmt::Display;
+
+fn format_list<T: Display>(items: &[T], separator: &str) -> String {
+    items
+        .iter()
+        .map(|item| item.to_string())
+        .collect::<Vec<String>>()
+        .join(separator)
+}
+
+fn main() {
+    let numbers = vec![1, 2, 3, 4, 5];
+    println!("{}", format_list(&numbers, ", "));
+
+    let words = vec!["hello", "world", "rust"];
+    println!("{}", format_list(&words, " | "));
+}
+```
+
+### 返回值
+
+```rust
+fn make_counter(start: u32, end: u32) -> impl Iterator<Item = u32> {
+    (start..=end).into_iter()
+}
+
+fn make_filter(threshold: i32) -> impl Fn(i32) -> bool {
+    move |value| value > threshold
+}
+
+fn main() {
+    let counter = make_counter(1, 5);
+    let values: Vec<u32> = counter.collect();
+    println!("计数: {:?}", values);
+
+    let is_positive = make_filter(0);
+    let data = vec![-2, -1, 0, 1, 2];
+    let positives: Vec<i32> = data.into_iter().filter(|v| is_positive(*v)).collect();
+    println!("正数: {:?}", positives);
+}
+```
+
+### 结构体定义
+
+```rust
+use std::fmt::Display;
+
+struct Logger<W: std::io::Write> {
+    writer: W,
+    prefix: String,
+}
+
+impl<W: std::io::Write> Logger<W> {
+    fn new(writer: W, prefix: &str) -> Self {
+        Logger {
+            writer,
+            prefix: prefix.to_string(),
+        }
+    }
+
+    fn log(&mut self, message: &str) {
+        writeln!(self.writer, "[{}] {}", self.prefix, message).unwrap();
+    }
+}
+
+fn main() {
+    // 使用 Vec<u8> 作为 writer（实现了 std::io::Write）
+    let buffer: Vec<u8> = Vec::new();
+    let mut logger = Logger::new(buffer, "APP");
+
+    logger.log("应用启动");
+    logger.log("加载配置");
+
+    let output = String::from_utf8(logger.writer).unwrap();
+    println!("日志内容:\n{}", output);
+
+    // 使用 stdout 作为 writer
+    let mut console_logger = Logger::new(std::io::stdout(), "CONSOLE");
+    console_logger.log("直接输出到控制台");
+}
+```
+
+## 📝 实际应用示例
+
+### 泛型排序与过滤
+
+```rust
+use std::fmt::Display;
+
+fn sort_and_display<T>(label: &str, mut items: Vec<T>)
+where
+    T: Ord + Display,
+{
+    items.sort();
+    println!("{}:", label);
+    for (index, item) in items.iter().enumerate() {
+        println!("  {}. {}", index + 1, item);
+    }
+}
+
+fn filter_and_collect<T, F>(items: Vec<T>, predicate: F) -> Vec<T>
+where
+    F: Fn(&T) -> bool,
+{
+    items.into_iter().filter(|item| predicate(item)).collect()
+}
+
+fn deduplicate<T>(items: Vec<T>) -> Vec<T>
+where
+    T: Eq + std::hash::Hash,
+{
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.clone()))
+        .collect()
+}
+
+// 需要 Clone 才能在 HashSet::insert 中使用
+fn deduplicate_clone<T>(items: Vec<T>) -> Vec<T>
+where
+    T: Eq + std::hash::Hash + Clone,
+{
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.clone()))
+        .collect()
+}
+
+fn main() {
+    sort_and_display("水果", vec!["cherry", "apple", "banana", "date"]);
+
+    let numbers = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let evens = filter_and_collect(numbers, |n| n % 2 == 0);
+    println!("偶数: {:?}", evens);
+
+    let with_duplicates = vec![1, 2, 3, 2, 4, 3, 5, 1];
+    let unique = deduplicate_clone(with_duplicates);
+    println!("去重: {:?}", unique);
+}
+```
+
+## 🔗 相关概念
+
+- **[多重约束](./07-multiple-bounds)**：组合多个 Trait bound
+- **[Trait bound 与 where 子句](../02-trait-system/05-trait-bounds-where-clause)**：Trait 系统中的详细说明
+- **[条件实现](./08-blanket-implementations)**：基于 Trait bound 的 blanket impl
 
 ## 📝 学习检查点
 
-- [ ] 理解Trait bound的核心概念
-- [ ] 能够在实际项目中应用Trait bound
+- [ ] 掌握 Trait bound 的三种写法及其适用场景
+- [ ] 理解为什么无约束泛型几乎什么都做不了
+- [ ] 能够在函数参数、返回值和结构体中使用 Trait bound
+- [ ] 理解 Trait bound 与单态化的关系
+
+## 🚀 下一步
+
+→ [多重约束](./07-multiple-bounds)

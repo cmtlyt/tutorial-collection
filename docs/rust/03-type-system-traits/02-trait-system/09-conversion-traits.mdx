@@ -5,13 +5,307 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「转换 trait（From / Into / TryFrom）」相关知识。
+Rust 提供了一组 Trait 用于类型之间的转换：`From` / `Into` 用于不会失败的转换，`TryFrom` / `TryInto` 用于可能失败的转换。实现 `From` 会自动获得 `Into` 的实现，因此通常只需实现 `From`。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 From 与 Into
+
+### From：类型转换的核心
+
+```rust
+#[derive(Debug)]
+struct Email(String);
+
+impl From<String> for Email {
+    fn from(value: String) -> Self {
+        Email(value)
+    }
+}
+
+impl From<&str> for Email {
+    fn from(value: &str) -> Self {
+        Email(value.to_string())
+    }
+}
+
+fn main() {
+    // 使用 From
+    let email1 = Email::from("alice@example.com");
+    let email2 = Email::from(String::from("bob@example.com"));
+
+    // 使用 Into（自动从 From 推导）
+    let email3: Email = "charlie@example.com".into();
+
+    println!("{:?}", email1);
+    println!("{:?}", email2);
+    println!("{:?}", email3);
+}
+```
+
+### 标准库中的 From 转换
+
+```rust
+fn main() {
+    // 数值类型的无损转换
+    let small: u8 = 42;
+    let bigger: u32 = u32::from(small);
+    let float: f64 = f64::from(bigger);
+    println!("{} -> {} -> {}", small, bigger, float);
+
+    // String 与 &str 之间
+    let string = String::from("hello");
+    let borrowed: &str = &string;
+    let owned: String = String::from(borrowed);
+    println!("{}", owned);
+
+    // Vec<u8> 与 String
+    let bytes = vec![72, 101, 108, 108, 111];
+    let text = String::from_utf8(bytes).unwrap();
+    println!("{}", text);
+}
+```
+
+### Into 在函数参数中的妙用
+
+使用 `Into` 约束让函数接受多种类型：
+
+```rust
+#[derive(Debug)]
+struct Message {
+    content: String,
+}
+
+impl Message {
+    fn new(content: impl Into<String>) -> Self {
+        Message {
+            content: content.into(),
+        }
+    }
+}
+
+fn log(message: impl Into<String>) {
+    println!("[LOG] {}", message.into());
+}
+
+fn main() {
+    // 同时接受 &str 和 String
+    let msg1 = Message::new("hello");
+    let msg2 = Message::new(String::from("world"));
+    println!("{:?}", msg1);
+    println!("{:?}", msg2);
+
+    log("简单消息");
+    log(String::from("字符串消息"));
+    log(format!("格式化消息: {}", 42));
+}
+```
+
+## 🎯 TryFrom 与 TryInto
+
+### 可能失败的转换
+
+`TryFrom` 返回 `Result`，用于可能失败的类型转换：
+
+```rust
+use std::convert::TryFrom;
+
+#[derive(Debug)]
+struct Percentage(u8);
+
+impl TryFrom<i32> for Percentage {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        if value < 0 {
+            Err(format!("百分比不能为负数: {}", value))
+        } else if value > 100 {
+            Err(format!("百分比不能超过 100: {}", value))
+        } else {
+            Ok(Percentage(value as u8))
+        }
+    }
+}
+
+fn main() {
+    let valid = Percentage::try_from(85);
+    let too_high = Percentage::try_from(120);
+    let negative = Percentage::try_from(-5);
+
+    println!("85: {:?}", valid);
+    println!("120: {:?}", too_high);
+    println!("-5: {:?}", negative);
+
+    // 使用 TryInto
+    use std::convert::TryInto;
+    let result: Result<Percentage, _> = 42.try_into();
+    println!("42: {:?}", result);
+}
+```
+
+### 从字符串解析
+
+```rust
+use std::convert::TryFrom;
+use std::fmt;
+
+#[derive(Debug)]
+struct IpAddress {
+    octets: [u8; 4],
+}
+
+impl TryFrom<&str> for IpAddress {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let parts: Vec<&str> = value.split('.').collect();
+        if parts.len() != 4 {
+            return Err(format!("IP 地址需要 4 个段，实际 {} 个", parts.len()));
+        }
+
+        let mut octets = [0u8; 4];
+        for (index, part) in parts.iter().enumerate() {
+            octets[index] = part
+                .parse::<u8>()
+                .map_err(|_| format!("无效的 IP 段: '{}'", part))?;
+        }
+
+        Ok(IpAddress { octets })
+    }
+}
+
+impl fmt::Display for IpAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}.{}.{}.{}",
+            self.octets[0], self.octets[1], self.octets[2], self.octets[3]
+        )
+    }
+}
+
+fn main() {
+    let valid = IpAddress::try_from("192.168.1.1");
+    let invalid_format = IpAddress::try_from("192.168.1");
+    let invalid_value = IpAddress::try_from("192.168.1.999");
+
+    match valid {
+        Ok(ip) => println!("有效 IP: {}", ip),
+        Err(e) => println!("错误: {}", e),
+    }
+
+    match invalid_format {
+        Ok(ip) => println!("IP: {}", ip),
+        Err(e) => println!("格式错误: {}", e),
+    }
+
+    match invalid_value {
+        Ok(ip) => println!("IP: {}", ip),
+        Err(e) => println!("值错误: {}", e),
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 多格式数据导入
+
+```rust
+use std::convert::TryFrom;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+struct Temperature {
+    celsius: f64,
+}
+
+impl Temperature {
+    fn new(celsius: f64) -> Self {
+        Temperature { celsius }
+    }
+
+    fn from_fahrenheit(fahrenheit: f64) -> Self {
+        Temperature {
+            celsius: (fahrenheit - 32.0) * 5.0 / 9.0,
+        }
+    }
+}
+
+impl fmt::Display for Temperature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.1}°C", self.celsius)
+    }
+}
+
+impl From<f64> for Temperature {
+    fn from(celsius: f64) -> Self {
+        Temperature::new(celsius)
+    }
+}
+
+impl From<i32> for Temperature {
+    fn from(celsius: i32) -> Self {
+        Temperature::new(celsius as f64)
+    }
+}
+
+impl TryFrom<&str> for Temperature {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let trimmed = value.trim();
+
+        if let Some(celsius_str) = trimmed.strip_suffix('C').or_else(|| trimmed.strip_suffix("°C")) {
+            let celsius: f64 = celsius_str
+                .trim()
+                .parse()
+                .map_err(|_| format!("无效的温度值: '{}'", celsius_str))?;
+            Ok(Temperature::new(celsius))
+        } else if let Some(fahr_str) = trimmed.strip_suffix('F').or_else(|| trimmed.strip_suffix("°F")) {
+            let fahrenheit: f64 = fahr_str
+                .trim()
+                .parse()
+                .map_err(|_| format!("无效的温度值: '{}'", fahr_str))?;
+            Ok(Temperature::from_fahrenheit(fahrenheit))
+        } else {
+            trimmed
+                .parse::<f64>()
+                .map(Temperature::new)
+                .map_err(|_| format!("无法解析温度: '{}'", value))
+        }
+    }
+}
+
+fn main() {
+    // From<f64>
+    let t1: Temperature = 36.6.into();
+    println!("From f64: {}", t1);
+
+    // From<i32>
+    let t2: Temperature = 100.into();
+    println!("From i32: {}", t2);
+
+    // TryFrom<&str>
+    let inputs = vec!["36.6C", "98.6F", "25", "100°C", "invalid"];
+    for input in inputs {
+        match Temperature::try_from(input) {
+            Ok(temp) => println!("'{}' -> {}", input, temp),
+            Err(error) => println!("'{}' -> 错误: {}", input, error),
+        }
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[Display 与 Debug](./06-display-debug)**：Display 实现自动提供 ToString
+- **[Option 与 Result](../01-structs-enums/08-option-result)**：TryFrom 返回 Result
 
 ## 📝 学习检查点
 
-- [ ] 理解转换 trait（From / Into / TryFrom）的核心概念
-- [ ] 能够在实际项目中应用转换 trait（From / Into / TryFrom）
+- [ ] 理解 `From` 和 `Into` 的互逆关系
+- [ ] 掌握实现 `From` 自动获得 `Into` 的机制
+- [ ] 理解 `TryFrom` 和 `TryInto` 用于可能失败的转换
+- [ ] 能够使用 `impl Into<T>` 编写灵活的函数参数
+
+## 🚀 下一步
+
+→ [Iterator 与 IntoIterator](./10-iterator-traits)

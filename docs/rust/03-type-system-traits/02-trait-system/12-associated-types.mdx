@@ -5,13 +5,291 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「关联类型」相关知识。
+关联类型（Associated Type）是 Trait 定义中通过 `type` 声明的占位类型，由实现者决定具体类型。与泛型参数不同，关联类型保证每个实现者只能有**一种**对应的类型，避免了同一类型多次实现同一 Trait 的歧义。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 关联类型基础
+
+### 为什么不用泛型
+
+先看泛型的问题——同一个类型可以多次实现带不同泛型参数的 Trait：
+
+```rust
+// 假设 Iterator 使用泛型定义（实际上不是）
+// trait Iterator<Item> {
+//     fn next(&mut self) -> Option<Item>;
+// }
+// 这样 Counter 可以同时实现 Iterator<u32> 和 Iterator<String>
+// 调用时编译器不知道用哪个
+
+// 实际的 Iterator 使用关联类型，每个类型只能有一个 Item
+struct Counter {
+    current: u32,
+    max: u32,
+}
+
+impl Counter {
+    fn new(max: u32) -> Self {
+        Counter { current: 0, max }
+    }
+}
+
+impl Iterator for Counter {
+    type Item = u32; // 关联类型：Counter 的 Item 只能是 u32
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current < self.max {
+            self.current += 1;
+            Some(self.current)
+        } else {
+            None
+        }
+    }
+}
+
+fn main() {
+    let sum: u32 = Counter::new(5).sum();
+    println!("1 到 5 的和: {}", sum);
+}
+```
+
+### 自定义带关联类型的 Trait
+
+```rust
+trait Container {
+    type Item;
+
+    fn add(&mut self, item: Self::Item);
+    fn get(&self, index: usize) -> Option<&Self::Item>;
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+struct StringStack {
+    items: Vec<String>,
+}
+
+impl StringStack {
+    fn new() -> Self {
+        StringStack { items: Vec::new() }
+    }
+}
+
+impl Container for StringStack {
+    type Item = String;
+
+    fn add(&mut self, item: String) {
+        self.items.push(item);
+    }
+
+    fn get(&self, index: usize) -> Option<&String> {
+        self.items.get(index)
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+}
+
+struct NumberList {
+    items: Vec<i32>,
+}
+
+impl NumberList {
+    fn new() -> Self {
+        NumberList { items: Vec::new() }
+    }
+}
+
+impl Container for NumberList {
+    type Item = i32;
+
+    fn add(&mut self, item: i32) {
+        self.items.push(item);
+    }
+
+    fn get(&self, index: usize) -> Option<&i32> {
+        self.items.get(index)
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+}
+
+fn print_container<C: Container>(container: &C)
+where
+    C::Item: std::fmt::Debug,
+{
+    println!("容器大小: {}", container.len());
+    for index in 0..container.len() {
+        if let Some(item) = container.get(index) {
+            println!("  [{}] {:?}", index, item);
+        }
+    }
+}
+
+fn main() {
+    let mut stack = StringStack::new();
+    stack.add(String::from("hello"));
+    stack.add(String::from("world"));
+    print_container(&stack);
+
+    let mut numbers = NumberList::new();
+    numbers.add(10);
+    numbers.add(20);
+    numbers.add(30);
+    print_container(&numbers);
+}
+```
+
+## 🎯 关联类型与约束
+
+可以在 Trait 中约束关联类型：
+
+```rust
+use std::fmt::Display;
+
+trait Printable {
+    type Output: Display;
+
+    fn produce(&self) -> Self::Output;
+
+    fn print(&self) {
+        println!("{}", self.produce());
+    }
+}
+
+struct Greeter {
+    name: String,
+}
+
+impl Printable for Greeter {
+    type Output = String;
+
+    fn produce(&self) -> String {
+        format!("Hello, {}!", self.name)
+    }
+}
+
+struct NumberDoubler {
+    value: i32,
+}
+
+impl Printable for NumberDoubler {
+    type Output = i32;
+
+    fn produce(&self) -> i32 {
+        self.value * 2
+    }
+}
+
+fn main() {
+    let greeter = Greeter { name: String::from("Alice") };
+    greeter.print();
+
+    let doubler = NumberDoubler { value: 21 };
+    doubler.print();
+}
+```
+
+## 📝 实际应用示例
+
+### 数据源抽象
+
+```rust
+use std::fmt::Debug;
+
+trait DataSource {
+    type Record: Debug;
+    type Error: Debug;
+
+    fn fetch_all(&self) -> Result<Vec<Self::Record>, Self::Error>;
+    fn fetch_by_id(&self, id: u64) -> Result<Option<Self::Record>, Self::Error>;
+}
+
+#[derive(Debug)]
+struct User {
+    id: u64,
+    name: String,
+}
+
+#[derive(Debug)]
+struct MemoryError(String);
+
+struct InMemoryUserStore {
+    users: Vec<User>,
+}
+
+impl InMemoryUserStore {
+    fn new() -> Self {
+        InMemoryUserStore {
+            users: vec![
+                User { id: 1, name: String::from("Alice") },
+                User { id: 2, name: String::from("Bob") },
+                User { id: 3, name: String::from("Charlie") },
+            ],
+        }
+    }
+}
+
+impl DataSource for InMemoryUserStore {
+    type Record = User;
+    type Error = MemoryError;
+
+    fn fetch_all(&self) -> Result<Vec<User>, MemoryError> {
+        Ok(self.users.iter().map(|user| User {
+            id: user.id,
+            name: user.name.clone(),
+        }).collect())
+    }
+
+    fn fetch_by_id(&self, id: u64) -> Result<Option<User>, MemoryError> {
+        let found = self.users.iter().find(|user| user.id == id).map(|user| User {
+            id: user.id,
+            name: user.name.clone(),
+        });
+        Ok(found)
+    }
+}
+
+fn print_all_records<DS: DataSource>(source: &DS) {
+    match source.fetch_all() {
+        Ok(records) => {
+            println!("共 {} 条记录:", records.len());
+            for record in &records {
+                println!("  {:?}", record);
+            }
+        }
+        Err(error) => println!("获取失败: {:?}", error),
+    }
+}
+
+fn main() {
+    let store = InMemoryUserStore::new();
+    print_all_records(&store);
+
+    match store.fetch_by_id(2) {
+        Ok(Some(user)) => println!("\n找到用户: {:?}", user),
+        Ok(None) => println!("\n用户不存在"),
+        Err(error) => println!("\n查询失败: {:?}", error),
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[Iterator 与 IntoIterator](./10-iterator-traits)**：使用关联类型 `Item` 的经典案例
+- **[运算符重载](./13-operator-overloading)**：`Add` 等 Trait 使用关联类型 `Output`
 
 ## 📝 学习检查点
 
-- [ ] 理解关联类型的核心概念
-- [ ] 能够在实际项目中应用关联类型
+- [ ] 理解关联类型与泛型参数的区别
+- [ ] 掌握带关联类型的 Trait 定义与实现
+- [ ] 理解关联类型保证唯一实现的语义
+- [ ] 能够在函数签名中约束关联类型
+
+## 🚀 下一步
+
+→ [运算符重载](./13-operator-overloading)

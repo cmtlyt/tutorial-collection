@@ -5,13 +5,232 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解泛型编程中的「单态化（Monomorphization）」相关知识。
+单态化（Monomorphization）是 Rust 编译器处理泛型的核心策略。编译器会为每个实际使用的具体类型参数组合，生成一份独立的特化代码。这意味着泛型在运行时**零开销**——和手动为每种类型编写代码完全等价。但代价是编译时间增长和二进制体积增大。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 单态化的原理
+
+### 展开过程
+
+```rust
+// 你写的泛型代码
+fn add<T: std::ops::Add<Output = T>>(a: T, b: T) -> T {
+    a + b
+}
+
+fn main() {
+    let int_result = add(1, 2);        // 使用 i32
+    let float_result = add(1.5, 2.5);  // 使用 f64
+
+    println!("整数: {}", int_result);
+    println!("浮点: {}", float_result);
+}
+
+// 编译器在单态化后，大致等价于生成以下代码：
+//
+// fn add_i32(a: i32, b: i32) -> i32 {
+//     a + b
+// }
+//
+// fn add_f64(a: f64, b: f64) -> f64 {
+//     a + b
+// }
+//
+// fn main() {
+//     let int_result = add_i32(1, 2);
+//     let float_result = add_f64(1.5, 2.5);
+// }
+```
+
+### 验证零成本
+
+```rust
+use std::fmt::Display;
+
+fn print_generic<T: Display>(value: &T) {
+    println!("{}", value);
+}
+
+fn print_i32(value: &i32) {
+    println!("{}", value);
+}
+
+fn print_str(value: &&str) {
+    println!("{}", value);
+}
+
+fn main() {
+    // 以下三组调用在编译后生成的机器码几乎完全相同
+    print_generic(&42);
+    print_i32(&42);
+
+    print_generic(&"hello");
+    print_str(&"hello");
+
+    // 可以通过查看编译产物大小来感受单态化
+    println!("i32 大小: {} 字节", std::mem::size_of::<i32>());
+    println!("f64 大小: {} 字节", std::mem::size_of::<f64>());
+    println!("Option<i32> 大小: {} 字节", std::mem::size_of::<Option<i32>>());
+    println!("Option<&i32> 大小: {} 字节", std::mem::size_of::<Option<&i32>>());
+}
+```
+
+## 🎯 单态化的影响
+
+### 优点：性能
+
+```rust
+trait Processor {
+    fn process(&self, value: i32) -> i32;
+}
+
+struct Doubler;
+struct Adder(i32);
+
+impl Processor for Doubler {
+    fn process(&self, value: i32) -> i32 {
+        value * 2
+    }
+}
+
+impl Processor for Adder {
+    fn process(&self, value: i32) -> i32 {
+        value + self.0
+    }
+}
+
+// 静态分发（单态化）：编译器可以内联优化
+fn apply_static(processor: &impl Processor, values: &[i32]) -> Vec<i32> {
+    values.iter().map(|v| processor.process(*v)).collect()
+}
+
+// 动态分发：通过虚表间接调用，无法内联
+fn apply_dynamic(processor: &dyn Processor, values: &[i32]) -> Vec<i32> {
+    values.iter().map(|v| processor.process(*v)).collect()
+}
+
+fn main() {
+    let data = vec![1, 2, 3, 4, 5];
+    let doubler = Doubler;
+    let adder = Adder(10);
+
+    // 静态分发：编译器生成 apply_static::<Doubler> 和 apply_static::<Adder>
+    let doubled = apply_static(&doubler, &data);
+    let added = apply_static(&adder, &data);
+
+    println!("翻倍: {:?}", doubled);
+    println!("加10: {:?}", added);
+
+    // 动态分发：运行时通过虚表查找
+    let doubled_dyn = apply_dynamic(&doubler, &data);
+    println!("翻倍(动态): {:?}", doubled_dyn);
+}
+```
+
+### 代价：代码膨胀
+
+```rust
+use std::fmt::Display;
+
+// 这个函数如果被 10 种不同类型调用，编译器会生成 10 份代码
+fn detailed_print<T: Display + std::fmt::Debug>(
+    label: &str,
+    value: &T,
+    count: usize,
+) {
+    for index in 0..count {
+        println!("[{}/{}] {} = {} ({:?})", index + 1, count, label, value, value);
+    }
+}
+
+fn main() {
+    detailed_print("整数", &42, 1);
+    detailed_print("浮点", &3.14, 1);
+    detailed_print("字符串", &"hello", 1);
+    detailed_print("布尔", &true, 1);
+
+    // 在大型项目中，过度使用泛型可能导致编译时间和二进制大小显著增加
+    // 此时可以考虑使用动态分发（dyn Trait）来减少代码膨胀
+}
+```
+
+## 🎯 单态化 vs 动态分发的取舍
+
+```rust
+use std::fmt::Display;
+
+// 方案1：单态化（每种类型生成一份）
+fn format_static(value: &impl Display) -> String {
+    format!("[Static] {}", value)
+}
+
+// 方案2：动态分发（所有类型共享一份）
+fn format_dynamic(value: &dyn Display) -> String {
+    format!("[Dynamic] {}", value)
+}
+
+fn main() {
+    // 两者功能等价，但编译策略不同
+    println!("{}", format_static(&42));
+    println!("{}", format_static(&"hello"));
+    println!("{}", format_static(&3.14));
+    // 编译器生成了 3 份 format_static 的特化代码
+
+    println!("{}", format_dynamic(&42));
+    println!("{}", format_dynamic(&"hello"));
+    println!("{}", format_dynamic(&3.14));
+    // 只有 1 份 format_dynamic 代码，通过虚表调用 Display::fmt
+}
+```
+
+## 📝 实际应用示例
+
+### 理解编译产物的差异
+
+```rust
+use std::any::type_name;
+
+fn show_type<T>(_: &T) {
+    println!("类型: {}", type_name::<T>());
+}
+
+fn show_size<T>(_: &T) {
+    println!("大小: {} 字节", std::mem::size_of::<T>());
+}
+
+fn main() {
+    // 每次调用都生成一份特化版本
+    show_type(&42_i32);
+    show_type(&42_u8);
+    show_type(&"hello");
+    show_type(&vec![1, 2, 3]);
+    show_type(&Some(42));
+
+    println!();
+
+    show_size(&42_i32);
+    show_size(&42_u8);
+    show_size(&"hello");
+    show_size(&vec![1, 2, 3]);
+    show_size(&Some(42_i32));
+
+    println!("\n单态化保证了每种类型获得最优化的代码");
+    println!("代价是 show_type 和 show_size 各生成了 5 份代码");
+}
+```
+
+## 🔗 相关概念
+
+- **[泛型函数](./02-generic-functions)**：单态化的主要对象
+- **[动态分发 vs 静态分发](../../03-type-system-traits/02-trait-system/15-dynamic-vs-static-dispatch)**：单态化（静态分发）的替代方案
+- **[Trait bound](./06-trait-bounds)**：约束泛型参数
 
 ## 📝 学习检查点
 
-- [ ] 理解单态化（Monomorphization）的核心概念
-- [ ] 能够在实际项目中应用单态化（Monomorphization）
+- [ ] 理解单态化将泛型展开为具体类型的代码
+- [ ] 理解零成本抽象的含义
+- [ ] 了解单态化导致的编译时间和二进制大小问题
+- [ ] 能够根据场景选择单态化或动态分发
+
+## 🚀 下一步
+
+→ [Trait bound](./06-trait-bounds)

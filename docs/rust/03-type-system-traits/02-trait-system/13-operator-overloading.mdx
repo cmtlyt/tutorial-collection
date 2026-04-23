@@ -5,13 +5,339 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「运算符重载」相关知识。
+Rust 通过 `std::ops` 模块中的 Trait 实现运算符重载。每个运算符对应一个 Trait，例如 `+` 对应 `Add`，`-` 对应 `Sub`。通过为自定义类型实现这些 Trait，你可以让自定义类型支持各种运算符。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 算术运算符
+
+### Add（加法 +）
+
+```rust
+use std::ops::Add;
+
+#[derive(Debug, Clone, Copy)]
+struct Vector2D {
+    x: f64,
+    y: f64,
+}
+
+impl Vector2D {
+    fn new(x: f64, y: f64) -> Self {
+        Vector2D { x, y }
+    }
+
+    fn magnitude(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+
+impl Add for Vector2D {
+    type Output = Vector2D;
+
+    fn add(self, other: Vector2D) -> Vector2D {
+        Vector2D {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+}
+
+fn main() {
+    let v1 = Vector2D::new(1.0, 2.0);
+    let v2 = Vector2D::new(3.0, 4.0);
+    let v3 = v1 + v2;
+
+    println!("{:?} + {:?} = {:?}", v1, v2, v3);
+    println!("结果向量长度: {:.2}", v3.magnitude());
+}
+```
+
+### 多种算术运算符
+
+```rust
+use std::ops::{Add, Sub, Mul, Neg};
+use std::fmt;
+
+#[derive(Debug, Clone, Copy)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+impl Point {
+    fn new(x: f64, y: f64) -> Self {
+        Point { x, y }
+    }
+}
+
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({:.1}, {:.1})", self.x, self.y)
+    }
+}
+
+impl Add for Point {
+    type Output = Point;
+    fn add(self, other: Point) -> Point {
+        Point::new(self.x + other.x, self.y + other.y)
+    }
+}
+
+impl Sub for Point {
+    type Output = Point;
+    fn sub(self, other: Point) -> Point {
+        Point::new(self.x - other.x, self.y - other.y)
+    }
+}
+
+// 标量乘法：Point * f64
+impl Mul<f64> for Point {
+    type Output = Point;
+    fn mul(self, scalar: f64) -> Point {
+        Point::new(self.x * scalar, self.y * scalar)
+    }
+}
+
+impl Neg for Point {
+    type Output = Point;
+    fn neg(self) -> Point {
+        Point::new(-self.x, -self.y)
+    }
+}
+
+fn main() {
+    let p1 = Point::new(1.0, 2.0);
+    let p2 = Point::new(3.0, 4.0);
+
+    println!("{} + {} = {}", p1, p2, p1 + p2);
+    println!("{} - {} = {}", p1, p2, p1 - p2);
+    println!("{} * 3 = {}", p1, p1 * 3.0);
+    println!("-{} = {}", p1, -p1);
+}
+```
+
+## 🎯 不同类型的运算
+
+`Add` 的 Trait 定义允许右操作数是不同类型：
+
+```rust
+use std::ops::Add;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+struct Meters(f64);
+
+#[derive(Debug, Clone)]
+struct Centimeters(f64);
+
+impl fmt::Display for Meters {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.2}m", self.0)
+    }
+}
+
+impl fmt::Display for Centimeters {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.1}cm", self.0)
+    }
+}
+
+// Meters + Centimeters = Meters
+impl Add<Centimeters> for Meters {
+    type Output = Meters;
+
+    fn add(self, other: Centimeters) -> Meters {
+        Meters(self.0 + other.0 / 100.0)
+    }
+}
+
+// Centimeters + Meters = Centimeters
+impl Add<Meters> for Centimeters {
+    type Output = Centimeters;
+
+    fn add(self, other: Meters) -> Centimeters {
+        Centimeters(self.0 + other.0 * 100.0)
+    }
+}
+
+fn main() {
+    let distance = Meters(1.5);
+    let extra = Centimeters(75.0);
+
+    let total_m = distance.clone() + extra.clone();
+    let total_cm = extra + distance;
+
+    println!("以米计: {}", total_m);
+    println!("以厘米计: {}", total_cm);
+}
+```
+
+## 🎯 索引运算符
+
+通过实现 `Index` 和 `IndexMut` 支持 `[]` 语法：
+
+```rust
+use std::ops::Index;
+
+struct Matrix {
+    data: Vec<Vec<f64>>,
+    rows: usize,
+    cols: usize,
+}
+
+impl Matrix {
+    fn new(rows: usize, cols: usize) -> Self {
+        Matrix {
+            data: vec![vec![0.0; cols]; rows],
+            rows,
+            cols,
+        }
+    }
+
+    fn from_data(data: Vec<Vec<f64>>) -> Self {
+        let rows = data.len();
+        let cols = if rows > 0 { data[0].len() } else { 0 };
+        Matrix { data, rows, cols }
+    }
+
+    fn set(&mut self, row: usize, col: usize, value: f64) {
+        self.data[row][col] = value;
+    }
+}
+
+// matrix[(row, col)] 语法
+impl Index<(usize, usize)> for Matrix {
+    type Output = f64;
+
+    fn index(&self, index: (usize, usize)) -> &f64 {
+        &self.data[index.0][index.1]
+    }
+}
+
+// matrix[row] 返回整行
+impl Index<usize> for Matrix {
+    type Output = Vec<f64>;
+
+    fn index(&self, row: usize) -> &Vec<f64> {
+        &self.data[row]
+    }
+}
+
+fn main() {
+    let mut matrix = Matrix::new(3, 3);
+    matrix.set(0, 0, 1.0);
+    matrix.set(1, 1, 2.0);
+    matrix.set(2, 2, 3.0);
+
+    println!("matrix[(0,0)] = {}", matrix[(0, 0)]);
+    println!("matrix[(1,1)] = {}", matrix[(1, 1)]);
+    println!("matrix[2] = {:?}", matrix[2]);
+
+    let identity = Matrix::from_data(vec![
+        vec![1.0, 0.0, 0.0],
+        vec![0.0, 1.0, 0.0],
+        vec![0.0, 0.0, 1.0],
+    ]);
+    println!("单位矩阵对角线: {}, {}, {}", identity[(0, 0)], identity[(1, 1)], identity[(2, 2)]);
+}
+```
+
+## 📝 实际应用示例
+
+### 货币类型的安全运算
+
+```rust
+use std::ops::{Add, Sub, Mul};
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Money {
+    /// 以分为单位存储，避免浮点精度问题
+    cents: i64,
+}
+
+impl Money {
+    fn new(yuan: i64, cents: i64) -> Self {
+        Money {
+            cents: yuan * 100 + cents,
+        }
+    }
+
+    fn from_yuan(yuan: f64) -> Self {
+        Money {
+            cents: (yuan * 100.0).round() as i64,
+        }
+    }
+
+    fn yuan(&self) -> f64 {
+        self.cents as f64 / 100.0
+    }
+
+    fn is_negative(&self) -> bool {
+        self.cents < 0
+    }
+}
+
+impl fmt::Display for Money {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.cents < 0 {
+            write!(f, "-¥{:.2}", (-self.cents) as f64 / 100.0)
+        } else {
+            write!(f, "¥{:.2}", self.cents as f64 / 100.0)
+        }
+    }
+}
+
+impl Add for Money {
+    type Output = Money;
+    fn add(self, other: Money) -> Money {
+        Money { cents: self.cents + other.cents }
+    }
+}
+
+impl Sub for Money {
+    type Output = Money;
+    fn sub(self, other: Money) -> Money {
+        Money { cents: self.cents - other.cents }
+    }
+}
+
+// 数量 × 单价
+impl Mul<i64> for Money {
+    type Output = Money;
+    fn mul(self, quantity: i64) -> Money {
+        Money { cents: self.cents * quantity }
+    }
+}
+
+fn main() {
+    let price = Money::from_yuan(29.99);
+    let discount = Money::new(5, 0);
+    let quantity = 3_i64;
+
+    let subtotal = price * quantity;
+    let total = subtotal - discount;
+
+    println!("单价: {}", price);
+    println!("数量: {}", quantity);
+    println!("小计: {}", subtotal);
+    println!("优惠: {}", discount);
+    println!("合计: {}", total);
+    println!("是否欠费: {}", total.is_negative());
+}
+```
+
+## 🔗 相关概念
+
+- **[关联类型](./12-associated-types)**：运算符 Trait 中的 `Output` 关联类型
+- **[Supertraits 与 Newtype](./14-supertraits-newtype)**：Newtype 模式下的运算符实现
 
 ## 📝 学习检查点
 
-- [ ] 理解运算符重载的核心概念
-- [ ] 能够在实际项目中应用运算符重载
+- [ ] 理解运算符与 `std::ops` 中 Trait 的对应关系
+- [ ] 掌握 `Add`、`Sub`、`Mul` 等算术运算符的重载
+- [ ] 理解 `Output` 关联类型的作用
+- [ ] 能够为不同类型之间实现运算符
+
+## 🚀 下一步
+
+→ [Supertraits 与 Newtype 模式](./14-supertraits-newtype)

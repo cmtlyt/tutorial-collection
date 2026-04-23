@@ -5,13 +5,176 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「Trait 作为参数（impl Trait）」相关知识。
+`impl Trait` 语法允许你在函数参数和返回值中使用 Trait 作为类型约束，而无需显式指定泛型参数。它让函数签名更加简洁易读，是 Rust 中编写多态代码的常用方式。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 impl Trait 作为参数
+
+`impl Trait` 在参数位置表示"接受任何实现了该 Trait 的类型"：
+
+```rust
+use std::fmt::Display;
+
+fn print_item(item: &impl Display) {
+    println!("值: {}", item);
+}
+
+fn print_two_items(first: &impl Display, second: &impl Display) {
+    println!("{} 和 {}", first, second);
+}
+
+fn main() {
+    print_item(&42);
+    print_item(&"hello");
+    print_item(&3.14);
+
+    // first 和 second 可以是不同的类型
+    print_two_items(&42, &"hello");
+}
+```
+
+:::tip impl Trait 与泛型的关系
+`fn print_item(item: &impl Display)` 实际上是以下泛型写法的语法糖：
+```rust
+fn print_item<T: Display>(item: &T)
+```
+但当参数有多个 `impl Trait` 时，**每个参数可以是不同类型**；而泛型写法 `<T>` 会要求所有使用 `T` 的参数是同一类型。
 :::
+
+## 🎯 impl Trait 作为返回值
+
+`impl Trait` 在返回值位置表示"返回某个实现了该 Trait 的类型"，具体类型由编译器推断：
+
+```rust
+use std::fmt::Display;
+
+fn make_greeting(formal: bool) -> impl Display {
+    if formal {
+        String::from("尊敬的用户，您好")
+    } else {
+        String::from("嗨！")
+    }
+}
+
+fn create_counter() -> impl Iterator<Item = u32> {
+    (1..=5).into_iter()
+}
+
+fn main() {
+    println!("{}", make_greeting(true));
+    println!("{}", make_greeting(false));
+
+    let sum: u32 = create_counter().sum();
+    println!("1 到 5 的和: {}", sum);
+}
+```
+
+:::warning 返回值中的限制
+返回 `impl Trait` 时，函数中所有 return 路径必须返回**同一个具体类型**。以下代码无法编译：
+```rust
+// 编译错误：两个分支返回不同类型
+fn invalid(flag: bool) -> impl Display {
+    if flag {
+        42          // i32
+    } else {
+        "hello"     // &str
+    }
+}
+```
+如果需要返回不同类型，应使用 `Box<dyn Trait>`。
+:::
+
+## 🎯 impl Trait 与闭包
+
+`impl Trait` 在返回闭包时特别有用，因为闭包的类型无法直接书写：
+
+```rust
+fn make_adder(base: i32) -> impl Fn(i32) -> i32 {
+    move |x| base + x
+}
+
+fn make_multiplier(factor: f64) -> impl Fn(f64) -> f64 {
+    move |x| x * factor
+}
+
+fn apply_twice(value: i32, operation: impl Fn(i32) -> i32) -> i32 {
+    operation(operation(value))
+}
+
+fn main() {
+    let add_five = make_adder(5);
+    println!("10 + 5 = {}", add_five(10));
+
+    let double = make_multiplier(2.0);
+    println!("3.5 × 2 = {}", double(3.5));
+
+    let result = apply_twice(3, make_adder(10));
+    println!("3 +10 +10 = {}", result);
+}
+```
+
+## 📝 实际应用示例
+
+### 可组合的数据处理管道
+
+```rust
+fn filter_positive(data: &[i32]) -> impl Iterator<Item = &i32> {
+    data.iter().filter(|&&x| x > 0)
+}
+
+fn make_string_mapper(prefix: &str) -> impl Fn(i32) -> String + '_ {
+    move |value| format!("{}{}", prefix, value)
+}
+
+trait Processor {
+    fn process(&self, input: &str) -> String;
+}
+
+struct UpperCase;
+struct Trimmer;
+
+impl Processor for UpperCase {
+    fn process(&self, input: &str) -> String {
+        input.to_uppercase()
+    }
+}
+
+impl Processor for Trimmer {
+    fn process(&self, input: &str) -> String {
+        input.trim().to_string()
+    }
+}
+
+fn apply_processor(input: &str, processor: &impl Processor) -> String {
+    processor.process(input)
+}
+
+fn main() {
+    let data = vec![-3, -1, 0, 2, 5, -4, 8];
+    let positives: Vec<&i32> = filter_positive(&data).collect();
+    println!("正数: {:?}", positives);
+
+    let mapper = make_string_mapper("Item #");
+    let labels: Vec<String> = vec![1, 2, 3].into_iter().map(mapper).collect();
+    println!("标签: {:?}", labels);
+
+    let text = "  Hello, Rust!  ";
+    println!("大写: {}", apply_processor(text, &UpperCase));
+    println!("去空格: {}", apply_processor(text, &Trimmer));
+}
+```
+
+## 🔗 相关概念
+
+- **[Trait bound 与 where 子句](./05-trait-bounds-where-clause)**：更灵活的泛型约束语法
+- **[动态分发 vs 静态分发](./15-dynamic-vs-static-dispatch)**：`impl Trait` 与 `dyn Trait` 的区别
 
 ## 📝 学习检查点
 
-- [ ] 理解Trait 作为参数（impl Trait）的核心概念
-- [ ] 能够在实际项目中应用Trait 作为参数（impl Trait）
+- [ ] 理解 `impl Trait` 在参数位置和返回值位置的含义
+- [ ] 掌握 `impl Trait` 与泛型写法的等价关系
+- [ ] 理解返回 `impl Trait` 的限制（同一具体类型）
+- [ ] 能够使用 `impl Trait` 返回闭包
+
+## 🚀 下一步
+
+→ [Trait bound 与 where 子句](./05-trait-bounds-where-clause)

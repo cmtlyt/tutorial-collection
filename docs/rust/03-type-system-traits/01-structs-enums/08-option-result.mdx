@@ -5,13 +5,251 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解结构体与枚举中的「Option 与 Result」相关知识。
+`Option<T>` 和 `Result<T, E>` 是 Rust 标准库中最重要的两个枚举类型。Rust 没有 `null`、`nil` 或 `undefined`，取而代之的是用 `Option` 表示"值可能存在或不存在"，用 `Result` 表示"操作可能成功或失败"。它们在类型层面**强制**开发者处理所有可能的情况，从根本上消灭了空指针异常。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Option\<T\>
+
+### 基本用法
+
+`Option<T>` 只有两个变体：`Some(T)` 和 `None`。
+
+```rust
+fn find_user(id: u64) -> Option<String> {
+    match id {
+        1 => Some(String::from("Alice")),
+        2 => Some(String::from("Bob")),
+        _ => None,
+    }
+}
+
+fn main() {
+    // 使用 match 处理
+    match find_user(1) {
+        Some(name) => println!("找到用户: {}", name),
+        None => println!("用户不存在"),
+    }
+
+    // 使用 if let 处理
+    if let Some(name) = find_user(2) {
+        println!("找到用户: {}", name);
+    }
+
+    // 使用 unwrap_or 提供默认值
+    let name = find_user(99).unwrap_or(String::from("未知用户"));
+    println!("用户: {}", name);
+}
+```
+
+### 常用方法
+
+```rust
+fn main() {
+    let some_value: Option<i32> = Some(42);
+    let no_value: Option<i32> = None;
+
+    // is_some / is_none：检查是否有值
+    println!("has value: {}", some_value.is_some());  // true
+    println!("is empty: {}", no_value.is_none());      // true
+
+    // unwrap_or：无值时使用默认值
+    println!("value: {}", no_value.unwrap_or(0));       // 0
+
+    // unwrap_or_else：无值时使用闭包计算默认值
+    let value = no_value.unwrap_or_else(|| {
+        println!("计算默认值...");
+        100
+    });
+    println!("value: {}", value);
+
+    // map：对 Some 中的值进行转换
+    let doubled = some_value.map(|v| v * 2);
+    println!("doubled: {:?}", doubled);  // Some(84)
+
+    // and_then（flatmap）：链式操作
+    let result = some_value
+        .and_then(|v| if v > 0 { Some(v.to_string()) } else { None });
+    println!("result: {:?}", result);  // Some("42")
+
+    // filter：条件过滤
+    let filtered = some_value.filter(|v| *v > 100);
+    println!("filtered: {:?}", filtered);  // None
+}
+```
+
+## 🎯 Result\<T, E\>
+
+### 基本用法
+
+`Result<T, E>` 有两个变体：`Ok(T)` 表示成功，`Err(E)` 表示失败。
+
+```rust
+fn parse_age(input: &str) -> Result<u32, String> {
+    let age: u32 = input
+        .parse()
+        .map_err(|_| format!("'{}' 不是有效的数字", input))?;
+
+    if age > 150 {
+        Err(format!("年龄 {} 不合理", age))
+    } else {
+        Ok(age)
+    }
+}
+
+fn main() {
+    match parse_age("28") {
+        Ok(age) => println!("年龄: {}", age),
+        Err(error) => println!("错误: {}", error),
+    }
+
+    match parse_age("abc") {
+        Ok(age) => println!("年龄: {}", age),
+        Err(error) => println!("错误: {}", error),
+    }
+
+    match parse_age("200") {
+        Ok(age) => println!("年龄: {}", age),
+        Err(error) => println!("错误: {}", error),
+    }
+}
+```
+
+### ? 运算符
+
+`?` 运算符可以简化 `Result` 的错误传播，遇到 `Err` 时立即返回：
+
+```rust
+use std::fs;
+use std::num::ParseIntError;
+
+#[derive(Debug)]
+enum AppError {
+    Io(std::io::Error),
+    Parse(ParseIntError),
+}
+
+impl From<std::io::Error> for AppError {
+    fn from(error: std::io::Error) -> Self {
+        AppError::Io(error)
+    }
+}
+
+impl From<ParseIntError> for AppError {
+    fn from(error: ParseIntError) -> Self {
+        AppError::Parse(error)
+    }
+}
+
+fn read_number_from_file(path: &str) -> Result<i32, AppError> {
+    let content = fs::read_to_string(path)?;   // IoError -> AppError
+    let number = content.trim().parse::<i32>()?; // ParseIntError -> AppError
+    Ok(number)
+}
+
+fn main() {
+    match read_number_from_file("number.txt") {
+        Ok(number) => println!("读取到数字: {}", number),
+        Err(AppError::Io(error)) => println!("IO 错误: {}", error),
+        Err(AppError::Parse(error)) => println!("解析错误: {}", error),
+    }
+}
+```
+
+## 🎯 Option 与 Result 的互相转换
+
+```rust
+fn main() {
+    // Option -> Result：ok_or / ok_or_else
+    let option_value: Option<i32> = Some(42);
+    let result_value: Result<i32, &str> = option_value.ok_or("值不存在");
+    println!("Option -> Result: {:?}", result_value);
+
+    let none_value: Option<i32> = None;
+    let result_err: Result<i32, &str> = none_value.ok_or("值不存在");
+    println!("None -> Err: {:?}", result_err);
+
+    // Result -> Option：ok / err
+    let result: Result<i32, &str> = Ok(42);
+    let option: Option<i32> = result.ok();
+    println!("Result -> Option: {:?}", option);
+
+    let error_result: Result<i32, &str> = Err("错误");
+    let error_option: Option<&str> = error_result.err();
+    println!("Err -> Option: {:?}", error_option);
+}
+```
+
+## 📝 实际应用示例
+
+### 配置文件解析
+
+```rust
+use std::collections::HashMap;
+
+struct Config {
+    values: HashMap<String, String>,
+}
+
+impl Config {
+    fn from_pairs(pairs: Vec<(&str, &str)>) -> Config {
+        let values = pairs
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        Config { values }
+    }
+
+    fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(|value| value.as_str())
+    }
+
+    fn get_port(&self) -> Result<u16, String> {
+        self.get("port")
+            .ok_or_else(|| String::from("缺少 port 配置项"))?
+            .parse::<u16>()
+            .map_err(|e| format!("port 格式错误: {}", e))
+    }
+
+    fn get_host(&self) -> &str {
+        self.get("host").unwrap_or("localhost")
+    }
+}
+
+fn main() {
+    let config = Config::from_pairs(vec![
+        ("host", "example.com"),
+        ("port", "8080"),
+        ("debug", "true"),
+    ]);
+
+    println!("host: {}", config.get_host());
+
+    match config.get_port() {
+        Ok(port) => println!("port: {}", port),
+        Err(error) => println!("错误: {}", error),
+    }
+
+    // 使用 unwrap_or 提供调试模式的默认值
+    let debug = config
+        .get("debug")
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(false);
+    println!("debug: {}", debug);
+}
+```
+
+## 🔗 相关概念
+
+- **[模式匹配与解构](./09-pattern-matching-destructuring)**：处理 Option/Result 的核心方式
+- **[if let 与 matches! 宏](./10-if-let-matches-macro)**：简化的模式匹配语法
+- **[转换 trait](../02-trait-system/09-conversion-traits)**：From / Into 在错误转换中的应用
 
 ## 📝 学习检查点
 
-- [ ] 理解Option 与 Result的核心概念
-- [ ] 能够在实际项目中应用Option 与 Result
+- [ ] 理解 `Option<T>` 的 `Some` 和 `None` 语义
+- [ ] 理解 `Result<T, E>` 的 `Ok` 和 `Err` 语义
+- [ ] 掌握 `?` 运算符的错误传播机制
+- [ ] 能够灵活使用 `map`、`and_then`、`unwrap_or` 等组合方法
+
+## 🚀 下一步
+
+→ [模式匹配与解构](./09-pattern-matching-destructuring)

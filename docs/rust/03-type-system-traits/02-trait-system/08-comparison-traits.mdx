@@ -5,13 +5,266 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「比较 trait（PartialEq / Eq / Ord）」相关知识。
+Rust 提供了四个 Trait 来定义类型之间的比较行为：`PartialEq`（部分相等）、`Eq`（完全相等）、`PartialOrd`（部分排序）和 `Ord`（全序）。理解"Partial"前缀的含义是关键——它表示存在某些值无法互相比较的情况（如浮点数的 `NaN`）。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 PartialEq 与 Eq
+
+### PartialEq：部分相等
+
+`PartialEq` 提供 `==` 和 `!=` 运算符：
+
+```rust
+#[derive(Debug, PartialEq)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+fn main() {
+    let p1 = Point { x: 1.0, y: 2.0 };
+    let p2 = Point { x: 1.0, y: 2.0 };
+    let p3 = Point { x: 3.0, y: 4.0 };
+
+    println!("p1 == p2: {}", p1 == p2); // true
+    println!("p1 != p3: {}", p1 != p3); // true
+
+    // f64 是 PartialEq 但不是 Eq，因为 NaN != NaN
+    let nan = f64::NAN;
+    println!("NaN == NaN: {}", nan == nan); // false
+}
+```
+
+### 手动实现 PartialEq
+
+```rust
+#[derive(Debug)]
+struct CaseInsensitiveString {
+    value: String,
+}
+
+impl CaseInsensitiveString {
+    fn new(value: &str) -> Self {
+        CaseInsensitiveString {
+            value: value.to_string(),
+        }
+    }
+}
+
+impl PartialEq for CaseInsensitiveString {
+    fn eq(&self, other: &Self) -> bool {
+        self.value.to_lowercase() == other.value.to_lowercase()
+    }
+}
+
+// Eq 是标记 trait，表示相等关系满足自反性
+impl Eq for CaseInsensitiveString {}
+
+fn main() {
+    let a = CaseInsensitiveString::new("Hello");
+    let b = CaseInsensitiveString::new("hello");
+    let c = CaseInsensitiveString::new("HELLO");
+
+    println!("Hello == hello: {}", a == b); // true
+    println!("hello == HELLO: {}", b == c); // true
+}
+```
+
+### Eq：完全相等
+
+`Eq` 是 `PartialEq` 的子 trait，是一个标记 trait（没有额外方法）。它承诺相等关系满足**自反性**（`a == a` 总是 `true`）：
+
+```rust
+// 整数类型是 Eq 的（任何整数都等于自身）
+// 浮点类型不是 Eq 的（NaN != NaN）
+
+// 只有实现了 Eq 的类型才能作为 HashMap 的键
+use std::collections::HashMap;
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct UserId(u64);
+
+fn main() {
+    let mut user_names: HashMap<UserId, String> = HashMap::new();
+    user_names.insert(UserId(1), String::from("Alice"));
+    user_names.insert(UserId(2), String::from("Bob"));
+
+    if let Some(name) = user_names.get(&UserId(1)) {
+        println!("用户1: {}", name);
+    }
+
+    // 以下代码无法编译，因为 f64 没有实现 Eq
+    // let mut map: HashMap<f64, String> = HashMap::new();
+}
+```
+
+## 🎯 PartialOrd 与 Ord
+
+### PartialOrd：部分排序
+
+`PartialOrd` 提供 `<`、`>`、`<=`、`>=` 运算符，返回 `Option<Ordering>`：
+
+```rust
+use std::cmp::Ordering;
+
+#[derive(Debug, PartialEq)]
+struct Score {
+    value: f64,
+}
+
+impl PartialOrd for Score {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.value.partial_cmp(&other.value)
+    }
+}
+
+fn main() {
+    let a = Score { value: 85.0 };
+    let b = Score { value: 92.0 };
+    let nan_score = Score { value: f64::NAN };
+
+    println!("85 < 92: {}", a < b);               // true
+    println!("85 > 92: {}", a > b);               // false
+    println!("NaN < 85: {}", nan_score < a);       // false
+    println!("NaN > 85: {}", nan_score > a);       // false
+    println!("NaN == NaN: {}", nan_score == nan_score); // false
+
+    // partial_cmp 对 NaN 返回 None
+    println!("比较结果: {:?}", nan_score.partial_cmp(&a)); // None
+    println!("比较结果: {:?}", a.partial_cmp(&b));          // Some(Less)
+}
+```
+
+### Ord：全序
+
+`Ord` 要求所有值之间都可以比较，返回 `Ordering`（不是 `Option`）：
+
+```rust
+use std::cmp::Ordering;
+
+#[derive(Debug, PartialEq, Eq)]
+struct Student {
+    name: String,
+    grade: u32,
+}
+
+impl PartialOrd for Student {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Student {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // 先按成绩降序排列，成绩相同按姓名升序
+        other
+            .grade
+            .cmp(&self.grade)
+            .then(self.name.cmp(&other.name))
+    }
+}
+
+fn main() {
+    let mut students = vec![
+        Student { name: String::from("Alice"), grade: 90 },
+        Student { name: String::from("Bob"), grade: 85 },
+        Student { name: String::from("Charlie"), grade: 90 },
+        Student { name: String::from("Diana"), grade: 92 },
+    ];
+
+    students.sort();
+
+    println!("排名:");
+    for (index, student) in students.iter().enumerate() {
+        println!("  {}. {} ({}分)", index + 1, student.name, student.grade);
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 版本号比较
+
+```rust
+use std::cmp::Ordering;
+use std::fmt;
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct Version {
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
+
+impl Version {
+    fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Version { major, minor, patch }
+    }
+
+    fn parse(input: &str) -> Result<Version, String> {
+        let parts: Vec<&str> = input.split('.').collect();
+        if parts.len() != 3 {
+            return Err(format!("无效的版本格式: {}", input));
+        }
+        let major = parts[0].parse().map_err(|e| format!("major: {}", e))?;
+        let minor = parts[1].parse().map_err(|e| format!("minor: {}", e))?;
+        let patch = parts[2].parse().map_err(|e| format!("patch: {}", e))?;
+        Ok(Version::new(major, minor, patch))
+    }
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.major
+            .cmp(&other.major)
+            .then(self.minor.cmp(&other.minor))
+            .then(self.patch.cmp(&other.patch))
+    }
+}
+
+fn main() {
+    let mut versions = vec![
+        Version::parse("1.2.3").unwrap(),
+        Version::parse("2.0.0").unwrap(),
+        Version::parse("1.2.10").unwrap(),
+        Version::parse("1.10.0").unwrap(),
+        Version::parse("1.2.1").unwrap(),
+    ];
+
+    versions.sort();
+    println!("版本排序:");
+    for version in &versions {
+        println!("  {}", version);
+    }
+
+    let latest = versions.iter().max().unwrap();
+    println!("最新版本: {}", latest);
+}
+```
+
+## 🔗 相关概念
+
+- **[Clone 与 Copy](./07-clone-copy)**：另一对常用的标准 Trait
+- **[转换 trait](./09-conversion-traits)**：From / Into 类型转换
 
 ## 📝 学习检查点
 
-- [ ] 理解比较 trait（PartialEq / Eq / Ord）的核心概念
-- [ ] 能够在实际项目中应用比较 trait（PartialEq / Eq / Ord）
+- [ ] 理解 `PartialEq` 和 `Eq` 的区别（自反性）
+- [ ] 理解 `PartialOrd` 和 `Ord` 的区别（全序 vs 偏序）
+- [ ] 掌握自定义排序规则的实现方式
+- [ ] 理解为什么浮点数只实现了 `PartialEq` 和 `PartialOrd`
+
+## 🚀 下一步
+
+→ [转换 trait（From / Into / TryFrom）](./09-conversion-traits)

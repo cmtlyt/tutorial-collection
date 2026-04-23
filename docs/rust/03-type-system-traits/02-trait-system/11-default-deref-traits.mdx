@@ -5,13 +5,356 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「Default 与 Deref / DerefMut」相关知识。
+`Default` trait 为类型提供默认值构造能力，`Deref` / `DerefMut` trait 控制解引用行为，使智能指针和自定义包装类型可以像普通引用一样使用。这三个 Trait 在 Rust 生态中无处不在。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Default trait
+
+### 自动派生与基本用法
+
+```rust
+#[derive(Debug, Default)]
+struct AppConfig {
+    host: String,
+    port: u16,
+    debug: bool,
+    max_connections: u32,
+}
+
+fn main() {
+    // 使用 Default::default() 创建默认值
+    let config: AppConfig = AppConfig::default();
+    println!("{:#?}", config);
+    // host: ""
+    // port: 0
+    // debug: false
+    // max_connections: 0
+
+    // 结合结构体更新语法：只修改部分字段
+    let custom_config = AppConfig {
+        host: String::from("localhost"),
+        port: 8080,
+        ..AppConfig::default()
+    };
+    println!("{:#?}", custom_config);
+}
+```
+
+### 手动实现 Default
+
+```rust
+#[derive(Debug)]
+struct ServerConfig {
+    host: String,
+    port: u16,
+    workers: usize,
+    timeout_seconds: u64,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            host: String::from("0.0.0.0"),
+            port: 3000,
+            workers: num_cpus(),
+            timeout_seconds: 30,
+        }
+    }
+}
+
+fn num_cpus() -> usize {
+    // 简化实现：实际应使用 num_cpus crate
+    4
+}
+
+fn main() {
+    let config = ServerConfig::default();
+    println!("{:#?}", config);
+
+    let custom = ServerConfig {
+        port: 8080,
+        ..ServerConfig::default()
+    };
+    println!("自定义端口: {}", custom.port);
+    println!("默认 workers: {}", custom.workers);
+}
+```
+
+### Default 与 Option 的配合
+
+```rust
+#[derive(Debug)]
+struct QueryParams {
+    page: u32,
+    per_page: u32,
+    sort_by: String,
+    ascending: bool,
+}
+
+impl Default for QueryParams {
+    fn default() -> Self {
+        QueryParams {
+            page: 1,
+            per_page: 20,
+            sort_by: String::from("created_at"),
+            ascending: false,
+        }
+    }
+}
+
+impl QueryParams {
+    fn with_page(mut self, page: u32) -> Self {
+        self.page = page;
+        self
+    }
+
+    fn with_per_page(mut self, per_page: u32) -> Self {
+        self.per_page = per_page;
+        self
+    }
+
+    fn with_sort(mut self, field: &str, ascending: bool) -> Self {
+        self.sort_by = field.to_string();
+        self.ascending = ascending;
+        self
+    }
+}
+
+fn main() {
+    let default_query = QueryParams::default();
+    println!("默认: {:?}", default_query);
+
+    let custom_query = QueryParams::default()
+        .with_page(3)
+        .with_per_page(50)
+        .with_sort("name", true);
+    println!("自定义: {:?}", custom_query);
+}
+```
+
+## 🎯 Deref 与 DerefMut
+
+### Deref：自动解引用
+
+`Deref` trait 让自定义类型在解引用时表现得像内部类型：
+
+```rust
+use std::ops::Deref;
+
+struct MyString {
+    data: String,
+}
+
+impl MyString {
+    fn new(value: &str) -> Self {
+        MyString {
+            data: value.to_string(),
+        }
+    }
+}
+
+impl Deref for MyString {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+fn print_length(text: &str) {
+    println!("长度: {}", text.len());
+}
+
+fn main() {
+    let my_string = MyString::new("Hello, Rust!");
+
+    // 自动解引用：MyString -> &str
+    println!("内容: {}", *my_string);
+    println!("大写: {}", my_string.to_uppercase());
+
+    // 自动解引用强制转换：&MyString -> &str
+    print_length(&my_string);
+}
+```
+
+### Deref 强制转换链
+
+Rust 会自动进行多层解引用强制转换：
+
+```rust
+use std::ops::Deref;
+
+struct Wrapper<T> {
+    value: T,
+}
+
+impl<T> Wrapper<T> {
+    fn new(value: T) -> Self {
+        Wrapper { value }
+    }
+}
+
+impl<T> Deref for Wrapper<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+fn main() {
+    // Box<String> -> String -> str 的链式解引用
+    let boxed_string = Box::new(String::from("hello"));
+    let string_ref: &str = &boxed_string; // Box -> String -> str
+    println!("{}", string_ref);
+
+    // 自定义包装
+    let wrapped = Wrapper::new(String::from("wrapped value"));
+    println!("长度: {}", wrapped.len()); // Wrapper -> String，调用 String::len
+}
+```
+
+### DerefMut：可变解引用
+
+```rust
+use std::ops::{Deref, DerefMut};
+
+#[derive(Debug)]
+struct TrackedVec<T> {
+    data: Vec<T>,
+    access_count: usize,
+}
+
+impl<T> TrackedVec<T> {
+    fn new() -> Self {
+        TrackedVec {
+            data: Vec::new(),
+            access_count: 0,
+        }
+    }
+
+    fn access_count(&self) -> usize {
+        self.access_count
+    }
+}
+
+impl<T> Deref for TrackedVec<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl<T> DerefMut for TrackedVec<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.access_count += 1;
+        &mut self.data
+    }
+}
+
+fn main() {
+    let mut tracked = TrackedVec::new();
+
+    // DerefMut：push 方法来自 Vec
+    tracked.push(1);
+    tracked.push(2);
+    tracked.push(3);
+
+    // Deref：len 方法来自 Vec
+    println!("长度: {}", tracked.len());
+    println!("修改次数: {}", tracked.access_count());
+
+    // DerefMut
+    tracked.sort();
+    println!("排序后: {:?}", *tracked);
+    println!("修改次数: {}", tracked.access_count());
+}
+```
+
+## 📝 实际应用示例
+
+### 带有默认值的配置系统
+
+```rust
+use std::ops::Deref;
+
+#[derive(Debug, Clone)]
+struct Config {
+    entries: Vec<(String, String)>,
+}
+
+impl Config {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            entries: vec![
+                (String::from("log_level"), String::from("info")),
+                (String::from("timeout"), String::from("30")),
+                (String::from("retry_count"), String::from("3")),
+            ],
+        }
+    }
+}
+
+struct AppConfig {
+    inner: Config,
+}
+
+impl AppConfig {
+    fn with_overrides(overrides: Vec<(&str, &str)>) -> Self {
+        let mut config = Config::default();
+        for (key, value) in overrides {
+            if let Some(entry) = config.entries.iter_mut().find(|(k, _)| k == key) {
+                entry.1 = value.to_string();
+            } else {
+                config.entries.push((key.to_string(), value.to_string()));
+            }
+        }
+        AppConfig { inner: config }
+    }
+}
+
+impl Deref for AppConfig {
+    type Target = Config;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+fn main() {
+    let config = AppConfig::with_overrides(vec![
+        ("log_level", "debug"),
+        ("custom_key", "custom_value"),
+    ]);
+
+    // 通过 Deref 直接调用 Config 的方法
+    println!("log_level: {:?}", config.get("log_level"));
+    println!("timeout: {:?}", config.get("timeout"));
+    println!("custom_key: {:?}", config.get("custom_key"));
+}
+```
+
+## 🔗 相关概念
+
+- **[关联函数](../01-structs-enums/06-associated-functions)**：`Default::default()` 是关联函数
+- **[关联类型](./12-associated-types)**：`Deref` 使用关联类型 `Target`
 
 ## 📝 学习检查点
 
-- [ ] 理解Default 与 Deref / DerefMut的核心概念
-- [ ] 能够在实际项目中应用Default 与 Deref / DerefMut
+- [ ] 掌握 `Default` 的派生与手动实现
+- [ ] 理解 `Deref` 自动解引用强制转换的原理
+- [ ] 理解 `DerefMut` 与可变解引用的关系
+- [ ] 能够为自定义包装类型实现 `Deref`
+
+## 🚀 下一步
+
+→ [关联类型](./12-associated-types)

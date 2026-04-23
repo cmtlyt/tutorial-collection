@@ -5,13 +5,257 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解泛型编程中的「泛型方法」相关知识。
+泛型方法是指在 `impl` 块中定义的带有额外类型参数的方法。它结合了泛型结构体的类型参数和方法自身的类型参数，使方法能够接受或返回与结构体类型参数不同的类型。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 结构体类型参数上的方法
+
+在 `impl<T>` 块中定义的方法可以使用结构体的类型参数 `T`：
+
+```rust
+#[derive(Debug)]
+struct Container<T> {
+    value: T,
+}
+
+impl<T> Container<T> {
+    fn new(value: T) -> Self {
+        Container { value }
+    }
+
+    fn get(&self) -> &T {
+        &self.value
+    }
+
+    fn into_inner(self) -> T {
+        self.value
+    }
+
+    fn replace(&mut self, new_value: T) -> T {
+        std::mem::replace(&mut self.value, new_value)
+    }
+}
+
+fn main() {
+    let mut container = Container::new(42);
+    println!("值: {}", container.get());
+
+    let old = container.replace(100);
+    println!("旧值: {}, 新值: {}", old, container.get());
+
+    let value = container.into_inner();
+    println!("取出: {}", value);
+}
+```
+
+## 🎯 方法自身的类型参数
+
+方法可以引入与结构体不同的额外类型参数：
+
+```rust
+#[derive(Debug)]
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+impl<T> Pair<T> {
+    fn new(first: T, second: T) -> Self {
+        Pair { first, second }
+    }
+
+    // 方法引入额外的类型参数 U
+    fn mix_with<U>(self, other: Pair<U>) -> ((T, U), (T, U)) {
+        (
+            (self.first, other.first),
+            (self.second, other.second),
+        )
+    }
+
+    fn map<U, F: Fn(T) -> U>(self, transform: F) -> Pair<U> {
+        Pair {
+            first: transform(self.first),
+            second: transform(self.second),
+        }
+    }
+}
+
+fn main() {
+    let numbers = Pair::new(1, 2);
+    let words = Pair::new("hello", "world");
+
+    let mixed = numbers.mix_with(words);
+    println!("混合: {:?}", mixed);
+
+    let scores = Pair::new(85, 92);
+    let formatted = scores.map(|score| format!("{}分", score));
+    println!("格式化: {:?}", formatted);
+}
+```
+
+## 🎯 为特定类型参数实现方法
+
+可以只为满足特定约束的泛型类型实现方法：
+
+```rust
+use std::fmt::Display;
+
+#[derive(Debug)]
+struct SmartList<T> {
+    items: Vec<T>,
+}
+
+// 所有 SmartList<T> 都有这些方法
+impl<T> SmartList<T> {
+    fn new() -> Self {
+        SmartList { items: Vec::new() }
+    }
+
+    fn push(&mut self, item: T) {
+        self.items.push(item);
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+// 只有 T: Display 的 SmartList 有 print_all 方法
+impl<T: Display> SmartList<T> {
+    fn print_all(&self) {
+        for (index, item) in self.items.iter().enumerate() {
+            println!("  [{}] {}", index, item);
+        }
+    }
+}
+
+// 只有 T: PartialOrd 的 SmartList 有排序和查找方法
+impl<T: PartialOrd> SmartList<T> {
+    fn max(&self) -> Option<&T> {
+        self.items.iter().reduce(|a, b| if b > a { b } else { a })
+    }
+
+    fn min(&self) -> Option<&T> {
+        self.items.iter().reduce(|a, b| if b < a { b } else { a })
+    }
+}
+
+// 只有 SmartList<f64> 有 average 方法
+impl SmartList<f64> {
+    fn average(&self) -> Option<f64> {
+        if self.items.is_empty() {
+            None
+        } else {
+            Some(self.items.iter().sum::<f64>() / self.items.len() as f64)
+        }
+    }
+}
+
+fn main() {
+    let mut scores = SmartList::new();
+    scores.push(85.0);
+    scores.push(92.0);
+    scores.push(78.0);
+    scores.push(96.0);
+
+    println!("成绩单 ({} 门):", scores.len());
+    scores.print_all();
+    println!("最高分: {:?}", scores.max());
+    println!("最低分: {:?}", scores.min());
+    println!("平均分: {:?}", scores.average()); // 只有 SmartList<f64> 才有
+
+    let mut names: SmartList<String> = SmartList::new();
+    names.push(String::from("Charlie"));
+    names.push(String::from("Alice"));
+    names.push(String::from("Bob"));
+
+    println!("\n名单:");
+    names.print_all();
+    println!("字典序最大: {:?}", names.max());
+    // names.average(); // 编译错误：SmartList<String> 没有 average 方法
+}
+```
+
+## 📝 实际应用示例
+
+### 泛型转换器
+
+```rust
+use std::fmt::Display;
+
+struct Converter<T> {
+    value: T,
+}
+
+impl<T> Converter<T> {
+    fn new(value: T) -> Self {
+        Converter { value }
+    }
+
+    fn transform<U, F: Fn(T) -> U>(self, operation: F) -> Converter<U> {
+        Converter {
+            value: operation(self.value),
+        }
+    }
+
+    fn into_value(self) -> T {
+        self.value
+    }
+}
+
+impl<T: Display> Converter<T> {
+    fn to_string_converter(self) -> Converter<String> {
+        let string_value = format!("{}", self.value);
+        Converter { value: string_value }
+    }
+}
+
+impl<T: Clone> Converter<T> {
+    fn duplicate(&self) -> Converter<(T, T)> {
+        Converter {
+            value: (self.value.clone(), self.value.clone()),
+        }
+    }
+}
+
+fn main() {
+    // 链式转换
+    let result = Converter::new(42)
+        .transform(|n| n as f64)
+        .transform(|f| f * 2.5)
+        .transform(|f| format!("{:.1}", f))
+        .into_value();
+    println!("转换结果: {}", result);
+
+    // 使用条件方法
+    let converter = Converter::new(100);
+    let duplicated = converter.duplicate();
+    println!("复制: {:?}", duplicated.into_value());
+
+    let string_result = Converter::new(3.14)
+        .to_string_converter()
+        .transform(|s| format!("π ≈ {}", s))
+        .into_value();
+    println!("{}", string_result);
+}
+```
+
+## 🔗 相关概念
+
+- **[泛型函数](./02-generic-functions)**：独立的泛型函数
+- **[泛型结构体与枚举](./03-generic-structs-enums)**：泛型数据类型
+- **[Trait bound](./06-trait-bounds)**：约束泛型参数
 
 ## 📝 学习检查点
 
-- [ ] 理解泛型方法的核心概念
-- [ ] 能够在实际项目中应用泛型方法
+- [ ] 区分结构体类型参数和方法类型参数
+- [ ] 掌握 `map` / `transform` 等泛型方法的编写模式
+- [ ] 能够为特定类型参数有条件地实现方法
+- [ ] 理解具体类型 `impl SmartList<f64>` 的专用方法
+
+## 🚀 下一步
+
+→ [单态化（Monomorphization）](./05-monomorphization)

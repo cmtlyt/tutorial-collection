@@ -5,13 +5,287 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「Iterator 与 IntoIterator」相关知识。
+`Iterator` 和 `IntoIterator` 是 Rust 迭代器模式的核心 Trait。`Iterator` 定义了如何逐个产出元素，`IntoIterator` 定义了如何将类型转换为迭代器。Rust 的 `for` 循环本质上就是对 `IntoIterator` 的语法糖。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Iterator trait
+
+### 基本结构
+
+`Iterator` trait 只需要实现一个方法 `next()`：
+
+```rust
+struct Counter {
+    current: u32,
+    max: u32,
+}
+
+impl Counter {
+    fn new(max: u32) -> Self {
+        Counter { current: 0, max }
+    }
+}
+
+impl Iterator for Counter {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current < self.max {
+            self.current += 1;
+            Some(self.current)
+        } else {
+            None
+        }
+    }
+}
+
+fn main() {
+    let counter = Counter::new(5);
+
+    // 手动调用 next
+    let mut manual = Counter::new(3);
+    println!("{:?}", manual.next()); // Some(1)
+    println!("{:?}", manual.next()); // Some(2)
+    println!("{:?}", manual.next()); // Some(3)
+    println!("{:?}", manual.next()); // None
+
+    // 在 for 循环中使用
+    for value in counter {
+        print!("{} ", value);
+    }
+    println!();
+
+    // 使用迭代器适配器
+    let sum: u32 = Counter::new(100).sum();
+    println!("1 到 100 的和: {}", sum);
+}
+```
+
+### 迭代器适配器链
+
+实现了 `Iterator` 后，自动获得大量适配器方法：
+
+```rust
+struct FibonacciIterator {
+    current: u64,
+    next: u64,
+}
+
+impl FibonacciIterator {
+    fn new() -> Self {
+        FibonacciIterator {
+            current: 0,
+            next: 1,
+        }
+    }
+}
+
+impl Iterator for FibonacciIterator {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = self.current;
+        self.current = self.next;
+        self.next = result + self.next;
+        Some(result)
+    }
+}
+
+fn main() {
+    // 取前 10 个斐波那契数
+    let first_ten: Vec<u64> = FibonacciIterator::new().take(10).collect();
+    println!("前 10 个: {:?}", first_ten);
+
+    // 找到第一个超过 1000 的斐波那契数
+    let over_1000 = FibonacciIterator::new().find(|&n| n > 1000);
+    println!("第一个超过 1000 的: {:?}", over_1000);
+
+    // 前 20 个偶数斐波那契数的和
+    let even_sum: u64 = FibonacciIterator::new()
+        .take(20)
+        .filter(|n| n % 2 == 0)
+        .sum();
+    println!("前 20 个中偶数的和: {}", even_sum);
+}
+```
+
+## 🎯 IntoIterator trait
+
+`IntoIterator` 定义了如何将类型转换为迭代器，它是 `for` 循环的核心：
+
+```rust
+struct NumberRange {
+    start: i32,
+    end: i32,
+}
+
+struct NumberRangeIterator {
+    current: i32,
+    end: i32,
+}
+
+impl IntoIterator for NumberRange {
+    type Item = i32;
+    type IntoIter = NumberRangeIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        NumberRangeIterator {
+            current: self.start,
+            end: self.end,
+        }
+    }
+}
+
+impl Iterator for NumberRangeIterator {
+    type Item = i32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current <= self.end {
+            let value = self.current;
+            self.current += 1;
+            Some(value)
+        } else {
+            None
+        }
+    }
+}
+
+fn main() {
+    let range = NumberRange { start: 1, end: 5 };
+
+    // for 循环自动调用 into_iter()
+    for number in range {
+        print!("{} ", number);
+    }
+    println!();
+}
+```
+
+## 🎯 iter、iter_mut 与 into_iter
+
+集合类型通常提供三种迭代方式：
+
+```rust
+fn main() {
+    let names = vec![
+        String::from("Alice"),
+        String::from("Bob"),
+        String::from("Charlie"),
+    ];
+
+    // iter()：借用元素（&T）
+    for name in names.iter() {
+        println!("你好, {}!", name);
+    }
+    println!("names 仍可用: {:?}", names);
+
+    // iter_mut()：可变借用元素（&mut T）
+    let mut scores = vec![80, 90, 75];
+    for score in scores.iter_mut() {
+        *score += 5; // 每个分数加 5
+    }
+    println!("加分后: {:?}", scores);
+
+    // into_iter()：获取所有权（T）
+    let items = vec![String::from("a"), String::from("b")];
+    let uppercased: Vec<String> = items
+        .into_iter()
+        .map(|s| s.to_uppercase())
+        .collect();
+    println!("大写: {:?}", uppercased);
+    // items 已被消耗，不再可用
+}
+```
+
+## 📝 实际应用示例
+
+### 自定义集合的迭代器
+
+```rust
+#[derive(Debug)]
+struct TaskList {
+    tasks: Vec<String>,
+}
+
+struct TaskIterator<'a> {
+    tasks: &'a [String],
+    index: usize,
+}
+
+impl TaskList {
+    fn new() -> Self {
+        TaskList { tasks: Vec::new() }
+    }
+
+    fn add(&mut self, task: &str) {
+        self.tasks.push(task.to_string());
+    }
+
+    fn iter(&self) -> TaskIterator<'_> {
+        TaskIterator {
+            tasks: &self.tasks,
+            index: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for TaskIterator<'a> {
+    type Item = (usize, &'a str);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.tasks.len() {
+            let result = (self.index + 1, self.tasks[self.index].as_str());
+            self.index += 1;
+            Some(result)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a TaskList {
+    type Item = (usize, &'a str);
+    type IntoIter = TaskIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+fn main() {
+    let mut tasks = TaskList::new();
+    tasks.add("编写代码");
+    tasks.add("代码评审");
+    tasks.add("部署上线");
+
+    // 使用 iter()
+    for (number, task) in tasks.iter() {
+        println!("  {}. {}", number, task);
+    }
+
+    // 使用 for 循环（自动调用 into_iter）
+    println!("\n待办事项:");
+    for (number, task) in &tasks {
+        println!("  [{}] {}", number, task);
+    }
+
+    // 迭代器适配器
+    let count = tasks.iter().count();
+    println!("\n共 {} 个任务", count);
+}
+```
+
+## 🔗 相关概念
+
+- **[关联类型](./12-associated-types)**：`Iterator` 使用关联类型 `Item`
+- **[Default 与 Deref](./11-default-deref-traits)**：常用标准 Trait
 
 ## 📝 学习检查点
 
-- [ ] 理解Iterator 与 IntoIterator的核心概念
-- [ ] 能够在实际项目中应用Iterator 与 IntoIterator
+- [ ] 理解 `Iterator` trait 的 `next()` 方法和 `Item` 关联类型
+- [ ] 掌握自定义迭代器的实现方式
+- [ ] 理解 `IntoIterator` 与 `for` 循环的关系
+- [ ] 区分 `iter()`、`iter_mut()` 和 `into_iter()` 的所有权语义
+
+## 🚀 下一步
+
+→ [Default 与 Deref / DerefMut](./11-default-deref-traits)

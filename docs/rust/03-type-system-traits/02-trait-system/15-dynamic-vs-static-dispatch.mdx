@@ -5,13 +5,390 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Trait 系统中的「动态分发 vs 静态分发」相关知识。
+Rust 中通过 Trait 实现多态有两种方式：**静态分发**（`impl Trait` / 泛型）在编译期确定具体类型，生成特化代码，零运行时开销；**动态分发**（`dyn Trait`）在运行期通过虚表（vtable）查找方法，有少量开销但更灵活。理解两者的取舍是编写高效 Rust 代码的关键。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 静态分发
+
+### impl Trait 与泛型
+
+静态分发通过编译期**单态化**（Monomorphization）为每种具体类型生成独立的函数版本：
+
+```rust
+trait Drawable {
+    fn draw(&self);
+    fn name(&self) -> &str;
+}
+
+struct Circle {
+    radius: f64,
+}
+
+struct Square {
+    side: f64,
+}
+
+impl Drawable for Circle {
+    fn draw(&self) {
+        println!("绘制圆形（半径 {}）", self.radius);
+    }
+    fn name(&self) -> &str {
+        "圆形"
+    }
+}
+
+impl Drawable for Square {
+    fn draw(&self) {
+        println!("绘制正方形（边长 {}）", self.side);
+    }
+    fn name(&self) -> &str {
+        "正方形"
+    }
+}
+
+// 静态分发：编译器为每种具体类型生成一份特化代码
+fn render(shape: &impl Drawable) {
+    println!("渲染: {}", shape.name());
+    shape.draw();
+}
+
+// 等价的泛型写法
+fn render_generic<T: Drawable>(shape: &T) {
+    println!("渲染: {}", shape.name());
+    shape.draw();
+}
+
+fn main() {
+    let circle = Circle { radius: 5.0 };
+    let square = Square { side: 3.0 };
+
+    render(&circle);  // 编译器生成 render::<Circle>
+    render(&square);  // 编译器生成 render::<Square>
+
+    render_generic(&circle);
+    render_generic(&square);
+}
+```
+
+:::tip 静态分发的优势
+- **零运行时开销**：编译器内联优化，和手写特化代码一样快
+- **编译期类型检查**：所有类型信息在编译期已知
+- **可以放在栈上**：不需要堆分配
 :::
+
+## 🎯 动态分发
+
+### dyn Trait 与 Trait 对象
+
+动态分发通过 `dyn Trait` 创建 **Trait 对象**，在运行时通过虚表（vtable）查找方法：
+
+```rust
+trait Drawable {
+    fn draw(&self);
+    fn name(&self) -> &str;
+}
+
+struct Circle {
+    radius: f64,
+}
+
+struct Triangle {
+    base: f64,
+    height: f64,
+}
+
+impl Drawable for Circle {
+    fn draw(&self) {
+        println!("○ 圆形（半径 {}）", self.radius);
+    }
+    fn name(&self) -> &str {
+        "圆形"
+    }
+}
+
+impl Drawable for Triangle {
+    fn draw(&self) {
+        println!("△ 三角形（底 {} 高 {}）", self.base, self.height);
+    }
+    fn name(&self) -> &str {
+        "三角形"
+    }
+}
+
+// 动态分发：接受任何实现了 Drawable 的类型
+fn render_dynamic(shape: &dyn Drawable) {
+    println!("渲染: {}", shape.name());
+    shape.draw();
+}
+
+fn main() {
+    let circle = Circle { radius: 5.0 };
+    let triangle = Triangle { base: 4.0, height: 3.0 };
+
+    render_dynamic(&circle);
+    render_dynamic(&triangle);
+
+    // 不同类型可以放在同一个集合中（静态分发做不到）
+    let shapes: Vec<Box<dyn Drawable>> = vec![
+        Box::new(Circle { radius: 2.0 }),
+        Box::new(Triangle { base: 3.0, height: 4.0 }),
+        Box::new(Circle { radius: 7.0 }),
+    ];
+
+    println!("\n画布上的所有图形:");
+    for shape in &shapes {
+        shape.draw();
+    }
+}
+```
+
+## 🎯 对比与选择
+
+### 关键区别
+
+| 特性 | 静态分发（`impl Trait` / 泛型） | 动态分发（`dyn Trait`） |
+|------|------|------|
+| 运行时开销 | 零 | 虚表查找（微小） |
+| 编译产物 | 代码膨胀（每个类型一份） | 代码紧凑（共享一份） |
+| 异构集合 | 不支持 | 支持（`Vec<Box<dyn T>>`） |
+| 返回不同类型 | 不支持 | 支持 |
+| 内联优化 | 支持 | 不支持 |
+| 编译时间 | 较长 | 较短 |
+
+### 选择策略
+
+```rust
+use std::fmt::Display;
+
+trait Plugin {
+    fn name(&self) -> &str;
+    fn execute(&self);
+}
+
+struct LogPlugin;
+struct AuthPlugin;
+struct CachePlugin;
+
+impl Plugin for LogPlugin {
+    fn name(&self) -> &str { "日志" }
+    fn execute(&self) { println!("  [Log] 记录请求"); }
+}
+
+impl Plugin for AuthPlugin {
+    fn name(&self) -> &str { "认证" }
+    fn execute(&self) { println!("  [Auth] 验证身份"); }
+}
+
+impl Plugin for CachePlugin {
+    fn name(&self) -> &str { "缓存" }
+    fn execute(&self) { println!("  [Cache] 检查缓存"); }
+}
+
+// 场景1：类型已知，用静态分发（高性能热路径）
+fn run_plugin(plugin: &impl Plugin) {
+    println!("执行插件: {}", plugin.name());
+    plugin.execute();
+}
+
+// 场景2：需要异构集合，用动态分发（插件管理器）
+struct PluginManager {
+    plugins: Vec<Box<dyn Plugin>>,
+}
+
+impl PluginManager {
+    fn new() -> Self {
+        PluginManager { plugins: Vec::new() }
+    }
+
+    fn register(&mut self, plugin: Box<dyn Plugin>) {
+        println!("注册插件: {}", plugin.name());
+        self.plugins.push(plugin);
+    }
+
+    fn run_all(&self) {
+        println!("执行所有插件 ({} 个):", self.plugins.len());
+        for plugin in &self.plugins {
+            plugin.execute();
+        }
+    }
+}
+
+fn main() {
+    // 静态分发
+    run_plugin(&LogPlugin);
+
+    println!();
+
+    // 动态分发
+    let mut manager = PluginManager::new();
+    manager.register(Box::new(LogPlugin));
+    manager.register(Box::new(AuthPlugin));
+    manager.register(Box::new(CachePlugin));
+    manager.run_all();
+}
+```
+
+## 🎯 对象安全（Object Safety）
+
+不是所有 Trait 都可以作为 `dyn Trait` 使用，它必须满足**对象安全**（Object Safety）规则：
+
+```rust
+// 对象安全的 Trait
+trait ObjectSafe {
+    fn method(&self);
+    fn another(&self, x: i32) -> String;
+}
+
+// 不是对象安全的 Trait（有泛型方法）
+trait NotObjectSafe {
+    fn generic_method<T>(&self, value: T);
+}
+
+// 不是对象安全的 Trait（返回 Self）
+trait AlsoNotObjectSafe {
+    fn clone_self(&self) -> Self;
+}
+
+// 解决方案：用关联类型或 Box<dyn Trait> 替代
+trait Cloneable {
+    fn clone_boxed(&self) -> Box<dyn Cloneable>;
+    fn describe(&self) -> String;
+}
+
+#[derive(Clone)]
+struct Item {
+    name: String,
+}
+
+impl Cloneable for Item {
+    fn clone_boxed(&self) -> Box<dyn Cloneable> {
+        Box::new(self.clone())
+    }
+
+    fn describe(&self) -> String {
+        format!("Item({})", self.name)
+    }
+}
+
+fn main() {
+    let item: Box<dyn Cloneable> = Box::new(Item {
+        name: String::from("原始"),
+    });
+    println!("原始: {}", item.describe());
+
+    let cloned = item.clone_boxed();
+    println!("克隆: {}", cloned.describe());
+}
+```
+
+:::warning 对象安全规则
+Trait 要作为 `dyn Trait` 使用，其方法必须满足：
+1. **不能有泛型参数**（无法在运行时确定类型）
+2. **不能返回 `Self`**（Trait 对象不知道具体类型大小）
+3. **不能有 `Self: Sized` 约束**
+:::
+
+## 📝 实际应用示例
+
+### 事件处理系统
+
+```rust
+use std::fmt;
+
+trait EventHandler {
+    fn event_type(&self) -> &str;
+    fn handle(&self, data: &str);
+}
+
+struct ClickHandler;
+struct KeyHandler {
+    key_filter: String,
+}
+
+impl EventHandler for ClickHandler {
+    fn event_type(&self) -> &str {
+        "click"
+    }
+
+    fn handle(&self, data: &str) {
+        println!("处理点击事件: {}", data);
+    }
+}
+
+impl EventHandler for KeyHandler {
+    fn event_type(&self) -> &str {
+        "keypress"
+    }
+
+    fn handle(&self, data: &str) {
+        if data.contains(&self.key_filter) {
+            println!("匹配按键事件: {}", data);
+        } else {
+            println!("忽略按键事件: {} (过滤: {})", data, self.key_filter);
+        }
+    }
+}
+
+struct EventBus {
+    handlers: Vec<Box<dyn EventHandler>>,
+}
+
+impl EventBus {
+    fn new() -> Self {
+        EventBus {
+            handlers: Vec::new(),
+        }
+    }
+
+    fn subscribe(&mut self, handler: Box<dyn EventHandler>) {
+        self.handlers.push(handler);
+    }
+
+    fn emit(&self, event_type: &str, data: &str) {
+        println!("\n--- 事件: {} ---", event_type);
+        let matched: Vec<_> = self.handlers
+            .iter()
+            .filter(|h| h.event_type() == event_type)
+            .collect();
+
+        if matched.is_empty() {
+            println!("没有注册处理器");
+        } else {
+            for handler in matched {
+                handler.handle(data);
+            }
+        }
+    }
+}
+
+fn main() {
+    let mut bus = EventBus::new();
+    bus.subscribe(Box::new(ClickHandler));
+    bus.subscribe(Box::new(KeyHandler {
+        key_filter: String::from("Enter"),
+    }));
+    bus.subscribe(Box::new(KeyHandler {
+        key_filter: String::from("Escape"),
+    }));
+
+    bus.emit("click", "button#submit (120, 45)");
+    bus.emit("keypress", "Enter");
+    bus.emit("keypress", "Space");
+}
+```
+
+## 🔗 相关概念
+
+- **[Trait 作为参数](./04-impl-trait-syntax)**：`impl Trait` 静态分发语法
+- **[Trait bound 与 where](./05-trait-bounds-where-clause)**：泛型静态分发
+- **[关联类型](./12-associated-types)**：关联类型与对象安全
 
 ## 📝 学习检查点
 
-- [ ] 理解动态分发 vs 静态分发的核心概念
-- [ ] 能够在实际项目中应用动态分发 vs 静态分发
+- [ ] 理解静态分发的单态化原理和零成本抽象
+- [ ] 理解动态分发的虚表机制和运行时开销
+- [ ] 掌握 `Box<dyn Trait>` 和 `&dyn Trait` 的用法
+- [ ] 理解对象安全的规则和限制
+
+## 🚀 下一步
+
+→ [泛型编程总览](../03-generic-programming/01-generic-programming-overview)

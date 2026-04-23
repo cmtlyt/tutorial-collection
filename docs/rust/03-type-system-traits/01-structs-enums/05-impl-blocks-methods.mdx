@@ -5,13 +5,252 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解结构体与枚举中的「方法定义（impl 块）」相关知识。
+`impl` 块（Implementation Block）用于为结构体或枚举定义方法和关联函数。方法是与特定类型实例绑定的函数，通过 `self` 参数访问实例数据。`impl` 块将数据（结构体字段）与行为（方法）关联起来，是 Rust 面向对象编程风格的核心。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 方法的基本定义
+
+方法的第一个参数是 `self`（或其引用形式），表示调用该方法的实例：
+
+```rust
+#[derive(Debug)]
+struct Rectangle {
+    width: f64,
+    height: f64,
+}
+
+impl Rectangle {
+    // &self：不可变借用，只读访问
+    fn area(&self) -> f64 {
+        self.width * self.height
+    }
+
+    // &self：不可变借用
+    fn perimeter(&self) -> f64 {
+        2.0 * (self.width + self.height)
+    }
+
+    // &self：不可变借用
+    fn is_square(&self) -> bool {
+        (self.width - self.height).abs() < f64::EPSILON
+    }
+}
+
+fn main() {
+    let rect = Rectangle {
+        width: 10.0,
+        height: 5.0,
+    };
+
+    println!("面积: {}", rect.area());
+    println!("周长: {}", rect.perimeter());
+    println!("是正方形: {}", rect.is_square());
+}
+```
+
+## 🎯 self 的三种形式
+
+`self` 参数的三种形式对应三种不同的所有权语义：
+
+```rust
+struct TextBuffer {
+    content: String,
+}
+
+impl TextBuffer {
+    // &self - 不可变借用：只读访问，不修改实例
+    fn length(&self) -> usize {
+        self.content.len()
+    }
+
+    // &mut self - 可变借用：可以修改实例
+    fn append(&mut self, text: &str) {
+        self.content.push_str(text);
+    }
+
+    // self - 获取所有权：消耗实例，调用后实例不再可用
+    fn into_string(self) -> String {
+        self.content
+    }
+}
+
+fn main() {
+    let mut buffer = TextBuffer {
+        content: String::from("Hello"),
+    };
+
+    // &self：只读
+    println!("长度: {}", buffer.length());
+
+    // &mut self：修改
+    buffer.append(", World!");
+    println!("内容: {}", buffer.length());
+
+    // self：消耗
+    let result = buffer.into_string();
+    println!("结果: {}", result);
+
+    // 编译错误：buffer 已被消耗
+    // println!("{}", buffer.length());
+}
+```
+
+:::tip self 选择原则
+- **`&self`**：大多数情况的默认选择，只需读取数据
+- **`&mut self`**：需要修改实例内部数据
+- **`self`**：需要转换或消耗实例（如 builder 模式、类型转换）
 :::
+
+## 🎯 多个 impl 块
+
+Rust 允许为同一个类型编写多个 `impl` 块，这在组织代码时非常有用：
+
+```rust
+struct Circle {
+    radius: f64,
+}
+
+// 几何计算相关方法
+impl Circle {
+    fn area(&self) -> f64 {
+        std::f64::consts::PI * self.radius * self.radius
+    }
+
+    fn circumference(&self) -> f64 {
+        2.0 * std::f64::consts::PI * self.radius
+    }
+}
+
+// 比较相关方法
+impl Circle {
+    fn is_larger_than(&self, other: &Circle) -> bool {
+        self.radius > other.radius
+    }
+
+    fn scale(&mut self, factor: f64) {
+        self.radius *= factor;
+    }
+}
+
+fn main() {
+    let mut circle = Circle { radius: 5.0 };
+    println!("面积: {:.2}", circle.area());
+    println!("周长: {:.2}", circle.circumference());
+
+    circle.scale(2.0);
+    println!("缩放后面积: {:.2}", circle.area());
+
+    let small_circle = Circle { radius: 3.0 };
+    println!(
+        "circle 更大: {}",
+        circle.is_larger_than(&small_circle)
+    );
+}
+```
+
+## 🎯 方法调用与自动引用
+
+Rust 在方法调用时会自动添加 `&`、`&mut` 或 `*`，这称为**自动引用与解引用**：
+
+```rust
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+impl Point {
+    fn distance_to(&self, other: &Point) -> f64 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        (dx * dx + dy * dy).sqrt()
+    }
+}
+
+fn main() {
+    let point_a = Point { x: 0.0, y: 0.0 };
+    let point_b = Point { x: 3.0, y: 4.0 };
+
+    // 以下两种写法等价，Rust 自动添加引用
+    let distance = point_a.distance_to(&point_b);
+    let distance_verbose = (&point_a).distance_to(&point_b);
+
+    println!("距离: {}", distance);
+    println!("距离: {}", distance_verbose);
+}
+```
+
+## 📝 实际应用示例
+
+### Builder 模式
+
+```rust
+#[derive(Debug)]
+struct HttpRequest {
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+}
+
+struct HttpRequestBuilder {
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+}
+
+impl HttpRequestBuilder {
+    fn new(method: &str, url: &str) -> Self {
+        HttpRequestBuilder {
+            method: method.to_string(),
+            url: url.to_string(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
+
+    fn header(mut self, key: &str, value: &str) -> Self {
+        self.headers.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    fn body(mut self, body: &str) -> Self {
+        self.body = Some(body.to_string());
+        self
+    }
+
+    fn build(self) -> HttpRequest {
+        HttpRequest {
+            method: self.method,
+            url: self.url,
+            headers: self.headers,
+            body: self.body,
+        }
+    }
+}
+
+fn main() {
+    let request = HttpRequestBuilder::new("POST", "https://api.example.com/users")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "Bearer token123")
+        .body(r#"{"name": "Alice"}"#)
+        .build();
+
+    println!("{:#?}", request);
+}
+```
+
+## 🔗 相关概念
+
+- **[关联函数](./06-associated-functions)**：不需要 `self` 的 impl 块函数
+- **[Trait 定义与实现](../02-trait-system/02-trait-definition-implementation)**：为类型实现 trait
 
 ## 📝 学习检查点
 
-- [ ] 理解方法定义（impl 块）的核心概念
-- [ ] 能够在实际项目中应用方法定义（impl 块）
+- [ ] 理解 `&self`、`&mut self`、`self` 三种形式的区别
+- [ ] 掌握方法的定义与调用语法
+- [ ] 理解自动引用与解引用机制
+- [ ] 能够为结构体编写多个 impl 块组织代码
+
+## 🚀 下一步
+
+→ [关联函数](./06-associated-functions)
