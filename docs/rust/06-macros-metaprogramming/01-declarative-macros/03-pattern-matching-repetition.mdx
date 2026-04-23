@@ -5,13 +5,266 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解声明宏中的「模式匹配与重复」相关知识。
+声明宏最强大的特性之一是**重复**（Repetition）语法，允许宏接受并处理可变数量的参数。重复语法使用 `$(...)*`、`$(...)+` 和 `$(...)?` 来匹配零次或多次、一次或多次、零次或一次的重复模式。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+重复语法格式：`$( 模式 ) 分隔符 重复操作符`
+
+- **`*`**：零次或多次
+- **`+`**：一次或多次
+- **`?`**：零次或一次
+
+## 🎯 基本重复语法
+
+### 零次或多次 `*`
+
+```rust
+macro_rules! print_all {
+    // $(...),* 表示逗号分隔、零次或多次
+    ($($item:expr),*) => {
+        $(
+            println!("{}", $item);
+        )*
+    };
+}
+
+fn main() {
+    print_all!();                        // 零次：什么都不打印
+    print_all!("hello");                 // 一次
+    print_all!("a", "b", "c", "d");     // 多次
+}
+```
+
+### 一次或多次 `+`
+
+```rust
+macro_rules! sum {
+    // $(...),+ 要求至少有一个参数
+    ($($num:expr),+) => {
+        {
+            let mut total = 0;
+            $(
+                total += $num;
+            )+
+            total
+        }
+    };
+}
+
+fn main() {
+    // sum!();  // 编译错误：至少需要一个参数
+    println!("sum(1) = {}", sum!(1));
+    println!("sum(1,2,3) = {}", sum!(1, 2, 3));
+    println!("sum(10,20,30,40) = {}", sum!(10, 20, 30, 40));
+}
+```
+
+### 零次或一次 `?`
+
+```rust
+macro_rules! optional_log {
+    ($msg:expr $(, $detail:expr)?) => {
+        print!("[LOG] {}", $msg);
+        $(
+            print!(" - 详情: {}", $detail);
+        )?
+        println!();
+    };
+}
+
+fn main() {
+    optional_log!("操作完成");
+    optional_log!("错误发生", "文件未找到");
+}
+```
+
+## 🎯 分隔符
+
+重复模式可以指定分隔符，常见的有逗号 `,`、分号 `;` 等：
+
+```rust
+macro_rules! list_items {
+    // 逗号分隔
+    (comma: $($item:expr),*) => {
+        vec![$($item),*]
+    };
+    // 分号分隔
+    (semi: $($item:expr);*) => {
+        vec![$($item),*]
+    };
+    // 无分隔符
+    (bare: $($item:expr)*) => {
+        vec![$($item),*]
+    };
+}
+
+fn main() {
+    let v1 = list_items!(comma: 1, 2, 3);
+    let v2 = list_items!(semi: 4; 5; 6);
+    let v3 = list_items!(bare: 7 8 9);
+
+    println!("逗号: {:?}", v1);
+    println!("分号: {:?}", v2);
+    println!("无分隔符: {:?}", v3);
+}
+```
+
+## 🎯 嵌套重复
+
+重复可以嵌套使用，处理二维数据结构：
+
+```rust
+macro_rules! matrix {
+    // 外层用分号分隔行，内层用逗号分隔列
+    ( $( [ $($col:expr),* ] );* ) => {
+        vec![
+            $(
+                vec![$($col),*]
+            ),*
+        ]
+    };
+}
+
+fn main() {
+    let m = matrix![
+        [1, 2, 3];
+        [4, 5, 6];
+        [7, 8, 9]
+    ];
+
+    for (i, row) in m.iter().enumerate() {
+        println!("行 {}: {:?}", i, row);
+    }
+}
+```
+
+## 🎯 多个重复变量
+
+一个重复块中可以捕获多个变量：
+
+```rust
+macro_rules! make_map {
+    ($($key:expr => $value:expr),* $(,)?) => {
+        {
+            let mut map = std::collections::HashMap::new();
+            $(
+                map.insert($key, $value);
+            )*
+            map
+        }
+    };
+}
+
+fn main() {
+    let scores = make_map! {
+        "Alice" => 95,
+        "Bob" => 87,
+        "Charlie" => 92,
+    };
+
+    for (name, score) in &scores {
+        println!("{}: {}", name, score);
+    }
+}
+```
+
+### 尾随逗号处理
+
+```rust
+macro_rules! flexible_vec {
+    // $(,)? 允许尾随逗号
+    ($($item:expr),* $(,)?) => {
+        vec![$($item),*]
+    };
+}
+
+fn main() {
+    let v1 = flexible_vec![1, 2, 3];    // 无尾随逗号
+    let v2 = flexible_vec![1, 2, 3,];   // 有尾随逗号
+    println!("{:?}", v1);
+    println!("{:?}", v2);
+}
+```
+
+## 📝 实际应用示例
+
+### 实现类似 vec! 的宏
+
+```rust
+macro_rules! my_vec {
+    // 空向量
+    () => {
+        Vec::new()
+    };
+    // 重复元素：my_vec![0; 5] 创建 5 个 0
+    ($elem:expr; $count:expr) => {
+        vec![$elem; $count]
+    };
+    // 元素列表
+    ($($elem:expr),+ $(,)?) => {
+        {
+            let mut v = Vec::new();
+            $(
+                v.push($elem);
+            )+
+            v
+        }
+    };
+}
+
+fn main() {
+    let empty: Vec<i32> = my_vec![];
+    let repeated = my_vec![0; 5];
+    let items = my_vec![1, 2, 3, 4, 5];
+    let trailing = my_vec!["a", "b", "c",];
+
+    println!("空: {:?}", empty);
+    println!("重复: {:?}", repeated);
+    println!("列表: {:?}", items);
+    println!("尾逗号: {:?}", trailing);
+}
+```
+
+### 键值对结构体构造器
+
+```rust
+macro_rules! config {
+    ($($key:ident : $value:expr),* $(,)?) => {
+        {
+            #[derive(Debug)]
+            struct Config {
+                $($key: String,)*
+            }
+            Config {
+                $($key: String::from($value),)*
+            }
+        }
+    };
+}
+
+fn main() {
+    let cfg = config! {
+        host: "localhost",
+        port: "8080",
+        database: "mydb",
+    };
+
+    println!("{:?}", cfg);
+}
+```
+
+## 🔗 相关概念
+
+- **[macro_rules! 语法](./02-macro-rules-syntax)**：声明宏的基础语法
+- **[片段说明符](./04-fragment-specifiers)**：重复中使用的 `$name:specifier` 详解
+- **[递归宏](./06-recursive-macros)**：重复与递归的结合
 
 ## 📝 学习检查点
 
-- [ ] 理解模式匹配与重复的核心概念
-- [ ] 能够在实际项目中应用模式匹配与重复
+- [ ] 掌握 `*`、`+`、`?` 三种重复操作符的区别
+- [ ] 能够使用分隔符和嵌套重复
+- [ ] 理解尾随逗号的处理方式 `$(,)?`
+- [ ] 能够用重复语法实现可变参数宏
+
+## 🚀 下一步
+
+→ [片段说明符](./04-fragment-specifiers)

@@ -5,13 +5,224 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解声明宏中的「macro_rules! 语法」相关知识。
+`macro_rules!` 是 Rust 声明宏的定义关键字，通过**模式匹配**的方式将输入的代码片段转换为新的代码。它的工作原理类似于 `match` 表达式——定义一组模式规则，编译器在宏调用时尝试匹配并展开对应的代码模板。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+基本语法结构：
+
+```
+macro_rules! 宏名称 {
+    (模式1) => { 展开代码1 };
+    (模式2) => { 展开代码2 };
+}
+```
+
+## 🎯 最简单的宏
+
+```rust
+// 定义一个无参数的宏
+macro_rules! say_hello {
+    () => {
+        println!("Hello, macro!");
+    };
+}
+
+fn main() {
+    say_hello!();   // 使用 () 调用
+    say_hello![];   // 使用 [] 调用（效果相同）
+    say_hello! {};  // 使用 {} 调用（效果相同）
+}
+```
+
+## 🎯 带参数的宏
+
+```rust
+// 接受一个表达式参数
+macro_rules! greet {
+    ($name:expr) => {
+        println!("你好, {}!", $name);
+    };
+}
+
+// 接受多个参数
+macro_rules! add {
+    ($a:expr, $b:expr) => {
+        $a + $b
+    };
+}
+
+// 带类型标注的参数
+macro_rules! create_variable {
+    ($name:ident, $value:expr) => {
+        let $name = $value;
+    };
+}
+
+fn main() {
+    greet!("Rust");
+    greet!(String::from("世界"));
+
+    let result = add!(3, 4);
+    println!("3 + 4 = {}", result);
+
+    create_variable!(x, 42);
+    create_variable!(message, "hello");
+    println!("x = {}, message = {}", x, message);
+}
+```
+
+## 🎯 多分支匹配
+
+宏可以定义多个匹配分支，编译器会按顺序尝试匹配：
+
+```rust
+macro_rules! calculate {
+    // 分支1：两个参数做加法
+    (add $a:expr, $b:expr) => {
+        {
+            let result = $a + $b;
+            println!("{} + {} = {}", $a, $b, result);
+            result
+        }
+    };
+    // 分支2：两个参数做乘法
+    (mul $a:expr, $b:expr) => {
+        {
+            let result = $a * $b;
+            println!("{} * {} = {}", $a, $b, result);
+            result
+        }
+    };
+    // 分支3：单个参数取负
+    (neg $a:expr) => {
+        {
+            let result = -$a;
+            println!("-{} = {}", $a, result);
+            result
+        }
+    };
+}
+
+fn main() {
+    calculate!(add 10, 20);
+    calculate!(mul 5, 6);
+    calculate!(neg 42);
+}
+```
+
+## 🎯 宏的定界符
+
+宏体可以使用三种定界符，它们在语法上等价，但有不同的惯例：
+
+```rust
+macro_rules! demo {
+    () => {
+        println!("demo 宏被调用");
+    };
+}
+
+fn main() {
+    // 三种调用方式等价
+    demo!();   // () 最常用，类似函数调用
+    demo![];   // [] 用于类似数组的宏（如 vec![]）
+    demo! {};  // {} 用于代码块风格的宏
+}
+```
+
+## 🎯 宏展开的本质
+
+宏在编译期展开为代码，可以通过 `cargo expand` 查看展开结果：
+
+```rust
+macro_rules! make_getter {
+    ($field:ident, $type:ty) => {
+        fn $field(&self) -> &$type {
+            &self.$field
+        }
+    };
+}
+
+struct User {
+    name: String,
+    age: u32,
+}
+
+impl User {
+    make_getter!(name, String);
+    make_getter!(age, u32);
+}
+
+// 展开后等价于：
+// impl User {
+//     fn name(&self) -> &String { &self.name }
+//     fn age(&self) -> &u32 { &self.age }
+// }
+
+fn main() {
+    let user = User {
+        name: String::from("Alice"),
+        age: 30,
+    };
+
+    println!("名字: {}, 年龄: {}", user.name(), user.age());
+}
+```
+
+## 📝 实际应用示例
+
+### 简化测试代码
+
+```rust
+macro_rules! assert_between {
+    ($value:expr, $min:expr, $max:expr) => {
+        let val = $value;
+        let min = $min;
+        let max = $max;
+        assert!(
+            val >= min && val <= max,
+            "期望 {} 在 [{}, {}] 范围内",
+            val, min, max
+        );
+    };
+}
+
+macro_rules! test_case {
+    ($name:ident, $input:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            assert_eq!($input, $expected);
+        }
+    };
+}
+
+fn double(x: i32) -> i32 {
+    x * 2
+}
+
+// 宏生成测试函数
+test_case!(test_double_positive, double(5), 10);
+test_case!(test_double_zero, double(0), 0);
+test_case!(test_double_negative, double(-3), -6);
+
+fn main() {
+    assert_between!(5, 1, 10);
+    assert_between!(3.14, 3.0, 4.0);
+    println!("所有断言通过！");
+}
+```
+
+## 🔗 相关概念
+
+- **[模式匹配与重复](./03-pattern-matching-repetition)**：宏中的重复语法 `$(...)*`
+- **[片段说明符](./04-fragment-specifiers)**：`expr`、`ident`、`ty` 等的详细说明
+- **[宏导出与导入](./05-macro-export-import)**：跨模块/crate 使用宏
 
 ## 📝 学习检查点
 
-- [ ] 理解macro_rules! 语法的核心概念
-- [ ] 能够在实际项目中应用macro_rules! 语法
+- [ ] 掌握 `macro_rules!` 的基本定义语法
+- [ ] 理解宏的多分支匹配机制
+- [ ] 能够定义带参数的宏
+- [ ] 理解宏展开的编译期行为
+
+## 🚀 下一步
+
+→ [模式匹配与重复](./03-pattern-matching-repetition)

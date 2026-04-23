@@ -5,13 +5,388 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解声明宏中的「常用宏模式」相关知识。
+Rust 标准库和生态中大量使用声明宏来简化代码。本节分析最经典的宏模式，理解它们的设计思路，并学习如何在自己的项目中运用这些模式。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 vec! 模式：集合构造器
+
+标准库 `vec!` 宏的核心设计思路——通过不同分支处理多种调用方式：
+
+```rust
+macro_rules! my_vec {
+    // 空集合
+    () => { Vec::new() };
+
+    // 重复值：my_vec![0; 5]
+    ($elem:expr; $n:expr) => {
+        std::vec::from_elem($elem, $n)
+    };
+
+    // 元素列表：my_vec![1, 2, 3]
+    ($($elem:expr),+ $(,)?) => {{
+        let mut v = Vec::new();
+        $(v.push($elem);)+
+        v
+    }};
+}
+
+// 同样的模式可以用于其他集合
+macro_rules! hashset {
+    ($($elem:expr),* $(,)?) => {{
+        let mut set = std::collections::HashSet::new();
+        $(set.insert($elem);)*
+        set
+    }};
+}
+
+fn main() {
+    let v1 = my_vec![];
+    let v2 = my_vec![0; 3];
+    let v3 = my_vec![1, 2, 3, 4];
+
+    println!("空: {:?}", v1);
+    println!("重复: {:?}", v2);
+    println!("列表: {:?}", v3);
+
+    let s = hashset!{"apple", "banana", "cherry"};
+    println!("集合: {:?}", s);
+}
+```
+
+## 🎯 println! 模式：格式化输出
+
+格式化字符串 + 可变参数的委托模式：
+
+```rust
+macro_rules! log {
+    // 无参数格式
+    ($msg:expr) => {
+        println!("[LOG] {}", $msg);
+    };
+    // 带格式参数
+    ($fmt:expr, $($arg:tt)*) => {
+        println!(concat!("[LOG] ", $fmt), $($arg)*);
+    };
+}
+
+macro_rules! log_level {
+    (info, $($arg:tt)*) => {
+        print!("\x1b[32m[INFO]\x1b[0m ");
+        println!($($arg)*);
+    };
+    (warn, $($arg:tt)*) => {
+        print!("\x1b[33m[WARN]\x1b[0m ");
+        println!($($arg)*);
+    };
+    (error, $($arg:tt)*) => {
+        print!("\x1b[31m[ERROR]\x1b[0m ");
+        println!($($arg)*);
+    };
+}
+
+fn main() {
+    log!("服务器启动");
+    log!("监听端口 {}", 8080);
+
+    log_level!(info, "用户 {} 已登录", "Alice");
+    log_level!(warn, "内存使用率 {}%", 85);
+    log_level!(error, "连接超时: {}ms", 3000);
+}
+```
+
+## 🎯 assert! 模式：条件检查与错误消息
+
+```rust
+macro_rules! ensure {
+    ($cond:expr) => {
+        if !$cond {
+            panic!("断言失败: {}", stringify!($cond));
+        }
+    };
+    ($cond:expr, $($arg:tt)*) => {
+        if !$cond {
+            panic!($($arg)*);
+        }
+    };
+}
+
+macro_rules! assert_in_range {
+    ($val:expr, $min:expr ..= $max:expr) => {{
+        let val = $val;
+        let min = $min;
+        let max = $max;
+        if val < min || val > max {
+            panic!(
+                "{}({}) 不在范围 [{}..={}] 内",
+                stringify!($val), val, min, max
+            );
+        }
+    }};
+}
+
+fn main() {
+    ensure!(1 + 1 == 2);
+    ensure!(true, "自定义错误: {}", "不可能");
+
+    let age = 25;
+    assert_in_range!(age, 0 ..= 150);
+    println!("年龄 {} 在有效范围内", age);
+}
+```
+
+## 🎯 Builder 模式：链式构建
+
+```rust
+macro_rules! builder {
+    (
+        $name:ident {
+            $($field:ident : $type:ty),* $(,)?
+        }
+    ) => {
+        #[derive(Debug)]
+        pub struct $name {
+            $($field: $type,)*
+        }
+
+        paste::paste! {
+            pub struct [<$name Builder>] {
+                $($field: Option<$type>,)*
+            }
+
+            impl [<$name Builder>] {
+                pub fn new() -> Self {
+                    Self {
+                        $($field: None,)*
+                    }
+                }
+
+                $(
+                    pub fn $field(mut self, value: $type) -> Self {
+                        self.$field = Some(value);
+                        self
+                    }
+                )*
+
+                pub fn build(self) -> Result<$name, String> {
+                    Ok($name {
+                        $(
+                            $field: self.$field.ok_or_else(|| {
+                                format!("缺少字段: {}", stringify!($field))
+                            })?,
+                        )*
+                    })
+                }
+            }
+        }
+    };
+}
+
+// 不依赖 paste crate 的简化版本
+macro_rules! simple_builder {
+    ($name:ident { $($field:ident : $type:ty = $default:expr),* $(,)? }) => {
+        #[derive(Debug, Clone)]
+        pub struct $name {
+            $($field: $type,)*
+        }
+
+        impl $name {
+            pub fn new() -> Self {
+                Self {
+                    $($field: $default,)*
+                }
+            }
+
+            $(
+                pub fn $field(mut self, value: $type) -> Self {
+                    self.$field = value;
+                    self
+                }
+            )*
+        }
+    };
+}
+
+simple_builder! {
+    HttpRequest {
+        method: String = String::from("GET"),
+        url: String = String::new(),
+        timeout_ms: u64 = 30000,
+    }
+}
+
+fn main() {
+    let req = HttpRequest::new()
+        .url(String::from("https://api.example.com"))
+        .method(String::from("POST"))
+        .timeout_ms(5000);
+
+    println!("{:?}", req);
+}
+```
+
+## 🎯 Newtype 模式：类型包装
+
+```rust
+macro_rules! newtype {
+    ($vis:vis $name:ident($inner:ty)) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        $vis struct $name($inner);
+
+        impl $name {
+            pub fn new(value: $inner) -> Self {
+                Self(value)
+            }
+
+            pub fn into_inner(self) -> $inner {
+                self.0
+            }
+
+            pub fn as_inner(&self) -> &$inner {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+
+        impl From<$inner> for $name {
+            fn from(value: $inner) -> Self {
+                Self(value)
+            }
+        }
+    };
+}
+
+newtype!(pub UserId(u64));
+newtype!(pub Email(String));
+newtype!(pub Port(u16));
+
+fn send_email(to: &Email, subject: &str) {
+    println!("发送邮件到 {}: {}", to, subject);
+}
+
+fn main() {
+    let user_id = UserId::new(42);
+    let email = Email::from(String::from("alice@example.com"));
+    let port = Port::new(8080);
+
+    println!("用户: {}, 邮箱: {}, 端口: {}", user_id, email, port);
+
+    send_email(&email, "测试邮件");
+
+    // 类型安全：不能把 UserId 当作 Port 使用
+    // let wrong: Port = user_id; // 编译错误
+}
+```
+
+## 🎯 错误枚举模式
+
+```rust
+macro_rules! define_errors {
+    (
+        $vis:vis enum $name:ident {
+            $(
+                $variant:ident $(($($field:ty),*))? => $msg:expr
+            ),* $(,)?
+        }
+    ) => {
+        #[derive(Debug)]
+        $vis enum $name {
+            $($variant $(($($field),*))?,)*
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $(Self::$variant $(($(_),*))? => write!(f, $msg),)*
+                }
+            }
+        }
+
+        impl std::error::Error for $name {}
+    };
+}
+
+define_errors! {
+    pub enum AppError {
+        NotFound => "资源未找到",
+        Unauthorized => "未授权访问",
+        Timeout => "请求超时",
+        Internal => "内部服务器错误",
+    }
+}
+
+fn find_user(id: u64) -> Result<String, AppError> {
+    if id == 0 {
+        Err(AppError::NotFound)
+    } else {
+        Ok(format!("User-{}", id))
+    }
+}
+
+fn main() {
+    match find_user(0) {
+        Ok(name) => println!("找到: {}", name),
+        Err(e) => println!("错误: {}", e),
+    }
+
+    match find_user(42) {
+        Ok(name) => println!("找到: {}", name),
+        Err(e) => println!("错误: {}", e),
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 批量实现 trait
+
+```rust
+trait Summary {
+    fn summary(&self) -> String;
+}
+
+macro_rules! impl_summary_for_numeric {
+    ($($type:ty),*) => {
+        $(
+            impl Summary for $type {
+                fn summary(&self) -> String {
+                    format!("数值 {}（类型 {}）", self, stringify!($type))
+                }
+            }
+        )*
+    };
+}
+
+impl_summary_for_numeric!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+
+fn print_summary(item: &dyn Summary) {
+    println!("{}", item.summary());
+}
+
+fn main() {
+    print_summary(&42i32);
+    print_summary(&3.14f64);
+    print_summary(&255u8);
+}
+```
+
+## 🔗 相关概念
+
+- **[macro_rules! 语法](./02-macro-rules-syntax)**：宏模式的语法基础
+- **[递归宏](./06-recursive-macros)**：复杂模式中的递归技术
+- **[宏的卫生性](./07-macro-hygiene)**：宏模式设计中的安全考虑
+- **[过程宏总览](../02-procedural-macros/01-procedural-macros-overview)**：更强大的代码生成方式
 
 ## 📝 学习检查点
 
-- [ ] 理解常用宏模式的核心概念
-- [ ] 能够在实际项目中应用常用宏模式
+- [ ] 能够识别并运用 vec! 模式构建集合宏
+- [ ] 掌握格式化输出的委托模式
+- [ ] 了解 Builder 模式和 Newtype 模式在宏中的应用
+- [ ] 能够用宏批量实现 trait
+
+## 🚀 下一步
+
+→ [过程宏总览](../02-procedural-macros/01-procedural-macros-overview)

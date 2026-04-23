@@ -5,13 +5,392 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解过程宏中的「syn 与 quote 库」相关知识。
+`syn` 和 `quote` 是编写过程宏的两大核心库：
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+- **syn**：将 `TokenStream` 解析为结构化的 Rust 语法树（AST），让你可以方便地检查和分析输入代码的结构
+- **quote**：将 Rust 代码模板转换回 `TokenStream`，通过 `quote!` 宏以类似编写普通 Rust 代码的方式生成输出
+
+这两个库几乎是所有过程宏项目的标准依赖。
+
+```toml
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+```
+
+## 🎯 syn：解析语法树
+
+### DeriveInput 结构
+
+`DeriveInput` 是派生宏最常用的输入类型：
+
+```rust
+use proc_macro::TokenStream;
+use syn::{parse_macro_input, DeriveInput, Data, Fields, Type};
+use quote::quote;
+
+#[proc_macro_derive(Inspect)]
+pub fn inspect_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    // 类型名称
+    let name = &input.ident;
+    println!("类型名称: {}", name);
+
+    // 泛型信息
+    let generics = &input.generics;
+    println!("泛型参数数量: {}", generics.params.len());
+
+    // 属性信息
+    for attr in &input.attrs {
+        println!("属性: {:?}", attr.path());
+    }
+
+    // 数据结构（结构体 / 枚举 / 联合体）
+    match &input.data {
+        Data::Struct(data) => {
+            match &data.fields {
+                Fields::Named(fields) => {
+                    for field in &fields.named {
+                        let field_name = field.ident.as_ref().unwrap();
+                        let field_type = &field.ty;
+                        println!("字段: {} : {:?}", field_name, quote!(#field_type));
+                    }
+                }
+                Fields::Unnamed(fields) => {
+                    for (i, field) in fields.unnamed.iter().enumerate() {
+                        println!("字段 {}: {:?}", i, quote!(#field.ty));
+                    }
+                }
+                Fields::Unit => {
+                    println!("单元结构体（无字段）");
+                }
+            }
+        }
+        Data::Enum(data) => {
+            for variant in &data.variants {
+                println!("变体: {}", variant.ident);
+            }
+        }
+        Data::Union(_) => {
+            println!("联合体");
+        }
+    }
+
+    // 生成空实现
+    let expanded = quote! {
+        impl #name {
+            pub fn type_name() -> &'static str {
+                stringify!(#name)
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+### 解析自定义语法
+
+```rust
+use syn::parse::{Parse, ParseStream};
+use syn::{Token, Ident, LitStr, Result};
+
+// 定义自定义语法：route GET "/api/users"
+struct RouteArgs {
+    method: Ident,
+    path: LitStr,
+}
+
+impl Parse for RouteArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let method: Ident = input.parse()?;
+        let path: LitStr = input.parse()?;
+        Ok(RouteArgs { method, path })
+    }
+}
+
+// 在过程宏中使用（需要在 proc-macro crate 中定义）
+// #[proc_macro]
+// pub fn route(input: TokenStream) -> TokenStream {
+//     let args = parse_macro_input!(input as RouteArgs);
+//     let method = &args.method;
+//     let path = args.path.value();
+//     let expanded = quote! {
+//         Route { method: stringify!(#method), path: #path }
+//     };
+//     TokenStream::from(expanded)
+// }
+```
+
+### 解析键值对列表
+
+```rust
+use syn::parse::{Parse, ParseStream};
+use syn::{Token, Ident, LitStr, Result};
+use syn::punctuated::Punctuated;
+
+struct KeyValue {
+    key: Ident,
+    value: LitStr,
+}
+
+impl Parse for KeyValue {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let key: Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let value: LitStr = input.parse()?;
+        Ok(KeyValue { key, value })
+    }
+}
+
+struct ConfigInput {
+    items: Punctuated<KeyValue, Token![,]>,
+}
+
+impl Parse for ConfigInput {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let items = Punctuated::parse_terminated(input)?;
+        Ok(ConfigInput { items })
+    }
+}
+```
+
+## 🎯 quote：代码生成
+
+### quote! 基本语法
+
+```rust
+use quote::quote;
+use syn::Ident;
+use proc_macro2::Span;
+
+fn demo_quote() {
+    let name = Ident::new("MyStruct", Span::call_site());
+    let field_name = Ident::new("value", Span::call_site());
+
+    // 使用 # 插值变量
+    let tokens = quote! {
+        struct #name {
+            #field_name: i32,
+        }
+    };
+
+    // 生成的代码：
+    // struct MyStruct {
+    //     value: i32,
+    // }
+    println!("{}", tokens);
+}
+```
+
+### 重复展开
+
+```rust
+use quote::quote;
+use syn::Ident;
+use proc_macro2::Span;
+
+fn demo_repetition() {
+    let field_names = vec!["x", "y", "z"];
+    let field_idents: Vec<Ident> = field_names.iter()
+        .map(|n| Ident::new(n, Span::call_site()))
+        .collect();
+
+    // #( ... )* 对集合中的每个元素展开
+    let tokens = quote! {
+        impl MyStruct {
+            #(
+                pub fn #field_idents(&self) -> f64 {
+                    self.#field_idents
+                }
+            )*
+        }
+    };
+
+    // 生成的代码：
+    // impl MyStruct {
+    //     pub fn x(&self) -> f64 { self.x }
+    //     pub fn y(&self) -> f64 { self.y }
+    //     pub fn z(&self) -> f64 { self.z }
+    // }
+    println!("{}", tokens);
+}
+```
+
+### 多变量同步展开
+
+```rust
+use quote::quote;
+
+fn demo_multi_var() {
+    let names = vec!["width", "height"];
+    let types = vec!["f64", "f64"];
+    let defaults = vec!["0.0", "0.0"];
+
+    let field_names: Vec<syn::Ident> = names.iter()
+        .map(|n| syn::Ident::new(n, proc_macro2::Span::call_site()))
+        .collect();
+    let field_types: Vec<syn::Ident> = types.iter()
+        .map(|t| syn::Ident::new(t, proc_macro2::Span::call_site()))
+        .collect();
+
+    // 多个变量在同一个重复块中同步展开
+    let tokens = quote! {
+        struct Rectangle {
+            #(#field_names: #field_types,)*
+        }
+    };
+
+    println!("{}", tokens);
+}
+```
+
+### format_ident! 拼接标识符
+
+```rust
+use quote::{quote, format_ident};
+
+fn demo_format_ident() {
+    let name = format_ident!("User");
+    let builder_name = format_ident!("{}Builder", name);
+    let getter_name = format_ident!("get_{}", "email");
+
+    let tokens = quote! {
+        struct #builder_name {
+            inner: Option<#name>,
+        }
+
+        impl #name {
+            fn #getter_name(&self) -> &str {
+                &self.email
+            }
+        }
+    };
+
+    // 生成 UserBuilder 和 get_email
+    println!("{}", tokens);
+}
+```
+
+## 🎯 综合示例：完整的派生宏
+
+### 宏 crate（my-derive/src/lib.rs）
+
+```rust
+use proc_macro::TokenStream;
+use quote::{quote, format_ident};
+use syn::{parse_macro_input, DeriveInput, Data, Fields};
+
+/// 自动为结构体生成 Builder 模式
+#[proc_macro_derive(Builder)]
+pub fn builder_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let builder_name = format_ident!("{}Builder", name);
+
+    let fields = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => &fields.named,
+            _ => panic!("Builder 只支持命名字段的结构体"),
+        },
+        _ => panic!("Builder 只能用于结构体"),
+    };
+
+    // 收集字段信息
+    let field_names: Vec<_> = fields.iter()
+        .map(|f| f.ident.as_ref().unwrap())
+        .collect();
+    let field_types: Vec<_> = fields.iter()
+        .map(|f| &f.ty)
+        .collect();
+
+    let expanded = quote! {
+        pub struct #builder_name {
+            #(#field_names: Option<#field_types>,)*
+        }
+
+        impl #builder_name {
+            #(
+                pub fn #field_names(mut self, value: #field_types) -> Self {
+                    self.#field_names = Some(value);
+                    self
+                }
+            )*
+
+            pub fn build(self) -> Result<#name, String> {
+                Ok(#name {
+                    #(
+                        #field_names: self.#field_names
+                            .ok_or_else(|| format!("缺少字段: {}", stringify!(#field_names)))?,
+                    )*
+                })
+            }
+        }
+
+        impl #name {
+            pub fn builder() -> #builder_name {
+                #builder_name {
+                    #(#field_names: None,)*
+                }
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+### 使用示例（my-app/src/main.rs）
+
+```rust
+use my_derive::Builder;
+
+#[derive(Debug, Builder)]
+struct DatabaseConfig {
+    host: String,
+    port: u16,
+    database: String,
+    max_connections: u32,
+}
+
+fn main() {
+    let config = DatabaseConfig::builder()
+        .host(String::from("localhost"))
+        .port(5432)
+        .database(String::from("mydb"))
+        .max_connections(10)
+        .build()
+        .unwrap();
+
+    println!("{:?}", config);
+
+    // 缺少字段时返回错误
+    let result = DatabaseConfig::builder()
+        .host(String::from("localhost"))
+        .build();
+
+    match result {
+        Ok(cfg) => println!("{:?}", cfg),
+        Err(e) => println!("构建失败: {}", e),
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[自定义 derive 宏](./02-custom-derive-macros)**：syn/quote 在派生宏中的实际使用
+- **[TokenStream](./04-token-stream)**：syn 解析的输入和 quote 输出的底层类型
+- **[属性宏](./05-attribute-macros)**：syn 解析属性参数的用法
 
 ## 📝 学习检查点
 
-- [ ] 理解syn 与 quote 库的核心概念
-- [ ] 能够在实际项目中应用syn 与 quote 库
+- [ ] 理解 `syn` 将 TokenStream 解析为 AST 的过程
+- [ ] 掌握 `DeriveInput` 的结构和字段提取
+- [ ] 能够使用 `quote!` 和 `#` 插值生成代码
+- [ ] 掌握 `#(...)* ` 重复展开和 `format_ident!` 的用法
+
+## 🚀 下一步
+
+→ [TokenStream 解析与生成](./04-token-stream)

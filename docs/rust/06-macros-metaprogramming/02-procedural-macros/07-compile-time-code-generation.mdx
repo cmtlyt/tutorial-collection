@@ -5,13 +5,375 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解过程宏中的「编译期代码生成」相关知识。
+编译期代码生成是 Rust 元编程的核心价值——在编译时自动生成代码，减少手写样板代码，同时保持零运行时开销。除了过程宏外，Rust 还提供了 `build.rs` 构建脚本等机制来实现编译期代码生成。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+本节总结各种编译期代码生成的策略、模式和最佳实践。
+
+## 🎯 build.rs 构建脚本
+
+`build.rs` 在编译主 crate 之前执行，可以生成代码文件供主代码引用。
+
+### Cargo.toml
+
+```toml
+[package]
+name = "my-app"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+```
+
+### build.rs
+
+```rust
+use std::env;
+use std::fs;
+use std::path::Path;
+
+fn main() {
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let dest_path = Path::new(&out_dir).join("generated.rs");
+
+    // 生成编译时间信息
+    let now = chrono_like_timestamp();
+
+    // 生成版本信息常量
+    let code = format!(
+        r#"
+/// 自动生成的构建信息
+pub mod build_info {{
+    pub const BUILD_TIMESTAMP: &str = "{}";
+    pub const RUST_VERSION: &str = "{}";
+    pub const TARGET: &str = "{}";
+    pub const PROFILE: &str = "{}";
+}}
+"#,
+        now,
+        env::var("RUSTC_WRAPPER").unwrap_or_else(|_| String::from("rustc")),
+        env::var("TARGET").unwrap_or_else(|_| String::from("unknown")),
+        env::var("PROFILE").unwrap_or_else(|_| String::from("unknown")),
+    );
+
+    fs::write(&dest_path, code).unwrap();
+
+    // 告诉 Cargo 在这些条件下重新运行 build.rs
+    println!("cargo:rerun-if-changed=build.rs");
+}
+
+fn chrono_like_timestamp() -> String {
+    // 简单的时间戳生成（不依赖外部库）
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    format!("{}", secs)
+}
+```
+
+### src/main.rs
+
+```rust
+// 引入 build.rs 生成的代码
+include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+
+fn main() {
+    println!("构建时间戳: {}", build_info::BUILD_TIMESTAMP);
+    println!("目标平台: {}", build_info::TARGET);
+    println!("构建配置: {}", build_info::PROFILE);
+}
+```
+
+## 🎯 从外部数据生成代码
+
+### 从 CSV 生成枚举
+
+```rust
+// build.rs
+use std::env;
+use std::fs;
+use std::path::Path;
+
+fn main() {
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let dest_path = Path::new(&out_dir).join("countries.rs");
+
+    // 假设有一个 CSV 数据（这里直接内嵌）
+    let countries = vec![
+        ("CN", "China", "中国"),
+        ("US", "UnitedStates", "美国"),
+        ("JP", "Japan", "日本"),
+        ("KR", "SouthKorea", "韩国"),
+        ("GB", "UnitedKingdom", "英国"),
+    ];
+
+    let mut variants = String::new();
+    let mut code_arms = String::new();
+    let mut name_arms = String::new();
+    let mut local_name_arms = String::new();
+
+    for (code, variant, local_name) in &countries {
+        variants.push_str(&format!("    {},\n", variant));
+        code_arms.push_str(&format!(
+            "            Country::{} => \"{}\",\n", variant, code
+        ));
+        name_arms.push_str(&format!(
+            "            Country::{} => \"{}\",\n", variant, variant
+        ));
+        local_name_arms.push_str(&format!(
+            "            Country::{} => \"{}\",\n", variant, local_name
+        ));
+    }
+
+    let code = format!(
+        r#"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Country {{
+{variants}}}
+
+impl Country {{
+    pub fn code(&self) -> &'static str {{
+        match self {{
+{code_arms}        }}
+    }}
+
+    pub fn name(&self) -> &'static str {{
+        match self {{
+{name_arms}        }}
+    }}
+
+    pub fn local_name(&self) -> &'static str {{
+        match self {{
+{local_name_arms}        }}
+    }}
+
+    pub fn all() -> &'static [Country] {{
+        &[
+{}        ]
+    }}
+}}
+
+impl std::fmt::Display for Country {{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{
+        write!(f, "{{}} ({{}})", self.local_name(), self.code())
+    }}
+}}
+"#,
+        variants = variants,
+        code_arms = code_arms,
+        name_arms = name_arms,
+        local_name_arms = local_name_arms,
+        countries.iter()
+            .map(|(_, v, _)| format!("            Country::{},\n", v))
+            .collect::<String>(),
+    );
+
+    fs::write(&dest_path, code).unwrap();
+    println!("cargo:rerun-if-changed=build.rs");
+}
+```
+
+```rust
+// src/main.rs
+include!(concat!(env!("OUT_DIR"), "/countries.rs"));
+
+fn main() {
+    println!("所有国家:");
+    for country in Country::all() {
+        println!("  {} - {} ({})", country.code(), country.name(), country.local_name());
+    }
+
+    let china = Country::China;
+    println!("\n选中: {}", china);
+}
+```
+
+## 🎯 过程宏的编译期计算
+
+### 编译期正则验证
+
+```rust
+// my-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, LitStr};
+
+/// 编译期验证正则表达式是否合法
+#[proc_macro]
+pub fn checked_regex(input: TokenStream) -> TokenStream {
+    let pattern = parse_macro_input!(input as LitStr);
+    let pattern_str = pattern.value();
+
+    // 编译期检查正则是否有效（简单的括号检查）
+    let mut paren_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let chars: Vec<char> = pattern_str.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => { i += 1; } // 跳过转义字符
+            '(' => paren_depth += 1,
+            ')' => {
+                paren_depth -= 1;
+                if paren_depth < 0 {
+                    return TokenStream::from(
+                        syn::Error::new(pattern.span(), "正则表达式错误：多余的 ')'")
+                            .to_compile_error()
+                    );
+                }
+            }
+            '[' => bracket_depth += 1,
+            ']' => {
+                bracket_depth -= 1;
+                if bracket_depth < 0 {
+                    return TokenStream::from(
+                        syn::Error::new(pattern.span(), "正则表达式错误：多余的 ']'")
+                            .to_compile_error()
+                    );
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if paren_depth != 0 {
+        return TokenStream::from(
+            syn::Error::new(pattern.span(), "正则表达式错误：未闭合的 '('")
+                .to_compile_error()
+        );
+    }
+
+    let expanded = quote! {
+        regex::Regex::new(#pattern_str).unwrap()
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+## 🎯 编译期代码生成的模式总结
+
+| 方式 | 适用场景 | 优点 | 缺点 |
+|------|----------|------|------|
+| **声明宏** | 简单的代码模板、集合构造 | 无外部依赖，编写简单 | 表达能力有限 |
+| **派生宏** | 自动实现 trait | 语法简洁 `#[derive(...)]` | 只能添加实现 |
+| **属性宏** | 装饰器、路由注解 | 可以修改原始代码 | 需要独立 crate |
+| **函数式宏** | 自定义 DSL、编译期验证 | 最灵活 | 需要独立 crate |
+| **build.rs** | 从外部数据生成代码 | 可访问文件系统和网络 | 代码以字符串形式生成 |
+| **include!** | 引入生成的代码文件 | 简单直接 | 需配合 build.rs |
+
+## 📝 实际应用示例
+
+### 编译期嵌入文件内容
+
+```rust
+fn main() {
+    // 标准库的 include_str! 和 include_bytes!
+    // 在编译期读取文件并嵌入到二进制中
+
+    // 嵌入 SQL 文件
+    let create_table_sql = include_str!("../sql/create_table.sql");
+    println!("SQL:\n{}", create_table_sql);
+
+    // 嵌入配置模板
+    let default_config = include_str!("../config/default.toml");
+    println!("默认配置:\n{}", default_config);
+
+    // 嵌入二进制资源
+    let icon_data: &[u8] = include_bytes!("../assets/icon.png");
+    println!("图标大小: {} bytes", icon_data.len());
+}
+```
+
+### concat! 与 stringify! 编译期字符串
+
+```rust
+macro_rules! define_api {
+    ($version:expr, $($path:expr),*) => {
+        $(
+            const _: () = {
+                // 编译期拼接 API 路径
+                const PATH: &str = concat!("/api/v", $version, $path);
+                // 这里只是验证路径格式，实际使用中可生成路由注册代码
+            };
+        )*
+    };
+}
+
+fn main() {
+    // concat! 在编译期拼接字符串
+    const APP_NAME: &str = concat!("my-app", "-", "v1.0");
+    println!("应用: {}", APP_NAME);
+
+    // stringify! 将表达式转为字符串
+    let code = stringify!(1 + 2 * 3);
+    println!("代码: {}", code);
+
+    // env! 在编译期读取环境变量
+    let pkg_version = env!("CARGO_PKG_VERSION");
+    let pkg_name = env!("CARGO_PKG_NAME");
+    println!("包名: {} v{}", pkg_name, pkg_version);
+
+    // option_env! 可选地读取环境变量
+    let custom = option_env!("MY_CUSTOM_VAR").unwrap_or("未设置");
+    println!("自定义变量: {}", custom);
+}
+```
+
+### cfg! 条件编译
+
+```rust
+fn main() {
+    // cfg! 宏在编译期求值
+    if cfg!(target_os = "linux") {
+        println!("运行在 Linux 上");
+    } else if cfg!(target_os = "macos") {
+        println!("运行在 macOS 上");
+    } else if cfg!(target_os = "windows") {
+        println!("运行在 Windows 上");
+    }
+
+    if cfg!(debug_assertions) {
+        println!("调试模式");
+    } else {
+        println!("发布模式");
+    }
+
+    // #[cfg] 属性条件编译
+    platform_specific_init();
+}
+
+#[cfg(target_os = "macos")]
+fn platform_specific_init() {
+    println!("macOS 专属初始化");
+}
+
+#[cfg(target_os = "linux")]
+fn platform_specific_init() {
+    println!("Linux 专属初始化");
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn platform_specific_init() {
+    println!("其他平台初始化");
+}
+```
+
+## 🔗 相关概念
+
+- **[函数式宏](./06-function-like-macros)**：实现编译期计算和验证的过程宏
+- **[自定义 derive 宏](./02-custom-derive-macros)**：自动生成 trait 实现
+- **[常用宏模式](../01-declarative-macros/08-common-macro-patterns)**：声明宏中的代码生成模式
 
 ## 📝 学习检查点
 
-- [ ] 理解编译期代码生成的核心概念
-- [ ] 能够在实际项目中应用编译期代码生成
+- [ ] 理解 `build.rs` 构建脚本的工作流程
+- [ ] 掌握 `include!`、`concat!`、`stringify!` 等编译期宏
+- [ ] 能够从外部数据（CSV、JSON 等）生成 Rust 代码
+- [ ] 了解各种编译期代码生成方式的适用场景
+
+## 🚀 下一步
+
+→ [命令行工具开发](../../07-project-practice-ecosystem/01-cli-development/01-cli-development-overview)

@@ -5,13 +5,239 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解声明宏中的「宏导出与导入」相关知识。
+Rust 中声明宏的作用域和导入规则与普通函数不同。宏的可见性取决于它在源文件中的**定义位置**和是否使用了 `#[macro_export]` 属性。理解宏的作用域规则对于在多模块、多 crate 的项目中正确使用宏至关重要。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 模块内宏的作用域
+
+声明宏遵循**文本顺序**规则：宏必须在使用前定义。
+
+```rust
+// 编译错误：宏在定义前被使用
+// say_hi!();
+
+macro_rules! say_hi {
+    () => {
+        println!("Hi!");
+    };
+}
+
+// 正确：宏已在此行之前定义
+fn main() {
+    say_hi!();
+}
+```
+
+## 🎯 跨模块使用宏
+
+### #[macro_use] 属性
+
+在模块上标记 `#[macro_use]`，使模块内定义的宏在父模块中可用：
+
+```rust
+// 在模块上标记 #[macro_use]，导出内部宏
+#[macro_use]
+mod helpers {
+    macro_rules! log_info {
+        ($($arg:tt)*) => {
+            println!("[INFO] {}", format!($($arg)*));
+        };
+    }
+
+    macro_rules! log_error {
+        ($($arg:tt)*) => {
+            eprintln!("[ERROR] {}", format!($($arg)*));
+        };
+    }
+}
+
+// helpers 模块中的宏在这里可用
+fn main() {
+    log_info!("应用启动");
+    log_info!("端口: {}", 8080);
+    log_error!("连接失败: {}", "timeout");
+}
+```
+
+## 🎯 跨 crate 导出宏
+
+### #[macro_export] 属性
+
+使用 `#[macro_export]` 将宏导出为 crate 级别的公开宏：
+
+```rust
+// 在库 crate 中定义（如 my_utils 库）
+#[macro_export]
+macro_rules! hashmap {
+    ($($key:expr => $value:expr),* $(,)?) => {
+        {
+            let mut map = std::collections::HashMap::new();
+            $(
+                map.insert($key, $value);
+            )*
+            map
+        }
+    };
+}
+
+// 注意：#[macro_export] 会将宏提升到 crate 根作用域
+// 即使宏定义在子模块中，使用时也是 crate_name::macro_name
+
+fn main() {
+    // 在同一 crate 中直接使用
+    let scores = hashmap! {
+        "Alice" => 95,
+        "Bob" => 87,
+    };
+    println!("{:?}", scores);
+}
+```
+
+### 在其他 crate 中使用
+
+```rust
+// 方式1：use 导入（Rust 2018+推荐）
+// use my_utils::hashmap;
+
+// 方式2：#[macro_use] extern crate（旧风格）
+// #[macro_use]
+// extern crate my_utils;
+
+// 方式3：完整路径调用
+// my_utils::hashmap!{ ... }
+```
+
+## 🎯 $crate 元变量
+
+`$crate` 在 `#[macro_export]` 宏中引用定义宏的 crate，确保跨 crate 使用时路径正确：
+
+```rust
+// 假设这是在 my_lib crate 中
+pub fn internal_helper(msg: &str) {
+    println!("[my_lib] {}", msg);
+}
+
+#[macro_export]
+macro_rules! safe_log {
+    ($msg:expr) => {
+        // 使用 $crate 确保路径正确
+        // 无论从哪个 crate 调用，都能找到 internal_helper
+        $crate::internal_helper($msg);
+    };
+}
+
+fn main() {
+    // 在同一 crate 中，$crate 指向自身
+    safe_log!("测试消息");
+}
+```
+
+## 🎯 宏的命名空间
+
+```rust
+// 宏和函数/类型处于不同的命名空间，不会冲突
+macro_rules! foo {
+    () => { println!("我是宏 foo!") };
+}
+
+fn foo() {
+    println!("我是函数 foo");
+}
+
+fn main() {
+    foo!(); // 调用宏
+    foo();  // 调用函数
+}
+```
+
+## 📝 实际应用示例
+
+### 工具宏库
+
+```rust
+// 模拟一个工具宏模块的组织方式
+
+#[macro_use]
+mod macros {
+    /// 创建一个带默认值的结构体
+    macro_rules! with_defaults {
+        (
+            struct $name:ident {
+                $($field:ident : $type:ty = $default:expr),* $(,)?
+            }
+        ) => {
+            #[derive(Debug)]
+            struct $name {
+                $($field: $type,)*
+            }
+
+            impl Default for $name {
+                fn default() -> Self {
+                    Self {
+                        $($field: $default,)*
+                    }
+                }
+            }
+        };
+    }
+
+    /// 快速创建枚举并实现 Display
+    macro_rules! display_enum {
+        ($name:ident { $($variant:ident => $display:expr),* $(,)? }) => {
+            #[derive(Debug, Clone, Copy)]
+            enum $name {
+                $($variant,)*
+            }
+
+            impl std::fmt::Display for $name {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    match self {
+                        $(Self::$variant => write!(f, $display),)*
+                    }
+                }
+            }
+        };
+    }
+}
+
+with_defaults! {
+    struct ServerConfig {
+        host: String = String::from("0.0.0.0"),
+        port: u16 = 3000,
+        workers: usize = 4,
+    }
+}
+
+display_enum! {
+    LogLevel {
+        Debug => "DEBUG",
+        Info => "INFO",
+        Warn => "WARN",
+        Error => "ERROR",
+    }
+}
+
+fn main() {
+    let config = ServerConfig::default();
+    println!("配置: {:?}", config);
+
+    let level = LogLevel::Info;
+    println!("日志级别: {}", level);
+}
+```
+
+## 🔗 相关概念
+
+- **[macro_rules! 语法](./02-macro-rules-syntax)**：宏的定义基础
+- **[宏的卫生性](./07-macro-hygiene)**：宏作用域与卫生性的关系
+- **[常用宏模式](./08-common-macro-patterns)**：实际项目中宏的组织方式
 
 ## 📝 学习检查点
 
-- [ ] 理解宏导出与导入的核心概念
-- [ ] 能够在实际项目中应用宏导出与导入
+- [ ] 理解宏的文本顺序作用域规则
+- [ ] 掌握 `#[macro_use]` 和 `#[macro_export]` 的用法
+- [ ] 理解 `$crate` 元变量的作用
+- [ ] 能够在多模块项目中正确组织和导入宏
+
+## 🚀 下一步
+
+→ [递归宏](./06-recursive-macros)

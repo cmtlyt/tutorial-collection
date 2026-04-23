@@ -5,13 +5,257 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解声明宏中的「递归宏」相关知识。
+声明宏可以在展开的代码中调用自身，形成**递归展开**。递归宏的核心思路与递归函数相同——定义基础情况（终止条件）和递归步骤，编译器会反复展开直到匹配到终止分支。递归宏是处理变长参数列表、构建复杂数据结构、实现编译期计算的重要技术。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+:::warning 递归深度限制
+Rust 编译器默认的宏递归深度为 128 层。可以通过 `#![recursion_limit = "256"]` 在 crate 根部提升限制。
 :::
+
+## 🎯 基本递归模式
+
+### 逐个消费参数
+
+```rust
+macro_rules! count_args {
+    // 基础情况：没有参数，计数为 0
+    () => { 0usize };
+    // 递归步骤：取出第一个参数，对剩余参数递归
+    ($first:tt $($rest:tt)*) => {
+        1usize + count_args!($($rest)*)
+    };
+}
+
+fn main() {
+    println!("0 个参数: {}", count_args!());
+    println!("1 个参数: {}", count_args!(a));
+    println!("3 个参数: {}", count_args!(a b c));
+    println!("5 个参数: {}", count_args!(a b c d e));
+}
+```
+
+### 递归打印
+
+```rust
+macro_rules! print_each {
+    // 基础情况
+    () => {};
+    // 递归步骤：处理第一个，递归处理其余
+    ($first:expr $(, $rest:expr)*) => {
+        println!("→ {}", $first);
+        print_each!($($rest),*);
+    };
+}
+
+fn main() {
+    print_each!("Alice", "Bob", "Charlie", "Diana");
+}
+```
+
+## 🎯 TT Muncher 模式
+
+TT Muncher（Token Tree 啃食器）是最常见的递归宏模式，每次从输入中"啃掉"一部分进行处理：
+
+```rust
+macro_rules! parse_commands {
+    // 基础情况：输入为空
+    () => {};
+
+    // 匹配 "print <expr>;" 命令
+    (print $e:expr; $($rest:tt)*) => {
+        println!("{}", $e);
+        parse_commands!($($rest)*);
+    };
+
+    // 匹配 "double <expr>;" 命令
+    (double $e:expr; $($rest:tt)*) => {
+        println!("{}", $e * 2);
+        parse_commands!($($rest)*);
+    };
+
+    // 匹配 "repeat <n> <expr>;" 命令
+    (repeat $n:expr, $e:expr; $($rest:tt)*) => {
+        for _ in 0..$n {
+            println!("{}", $e);
+        }
+        parse_commands!($($rest)*);
+    };
+}
+
+fn main() {
+    parse_commands! {
+        print "hello";
+        double 21;
+        repeat 3, "重复我";
+        print "done";
+    }
+}
+```
+
+## 🎯 递归累加器模式
+
+使用一个"累加器"参数在递归过程中收集中间结果：
+
+```rust
+macro_rules! reverse {
+    // 入口点：启动递归，空累加器
+    ($($all:tt)*) => {
+        reverse!(@internal [] $($all)*)
+    };
+
+    // 基础情况：所有元素已处理，输出累加器
+    (@internal [$($reversed:expr),*]) => {
+        vec![$($reversed),*]
+    };
+
+    // 递归步骤：取最后一个？不，取第一个放到累加器前面
+    // 实际上是将第一个元素插到累加器最前面
+    (@internal [$($reversed:expr),*] $first:expr $(, $rest:expr)*) => {
+        reverse!(@internal [$first $(, $reversed)*] $($rest),*)
+    };
+}
+
+fn main() {
+    let v = reverse!(1, 2, 3, 4, 5);
+    println!("反转: {:?}", v);
+    // 输出: 反转: [5, 4, 3, 2, 1]
+}
+```
+
+## 🎯 内部规则模式
+
+使用 `@internal` 或类似前缀区分宏的公开接口和内部递归规则：
+
+```rust
+macro_rules! sorted_insert {
+    // 公开入口：构建一个排序的数组
+    ($($val:expr),* $(,)?) => {{
+        let mut v = vec![$($val),*];
+        v.sort();
+        v
+    }};
+}
+
+macro_rules! max {
+    // 公开接口：单个值
+    ($a:expr) => { $a };
+
+    // 公开接口：两个值
+    ($a:expr, $b:expr) => {
+        if $a > $b { $a } else { $b }
+    };
+
+    // 递归：三个及以上
+    ($a:expr, $b:expr, $($rest:expr),+) => {
+        max!(max!($a, $b), $($rest),+)
+    };
+}
+
+macro_rules! min {
+    ($a:expr) => { $a };
+    ($a:expr, $b:expr) => {
+        if $a < $b { $a } else { $b }
+    };
+    ($a:expr, $b:expr, $($rest:expr),+) => {
+        min!(min!($a, $b), $($rest),+)
+    };
+}
+
+fn main() {
+    let sorted = sorted_insert!(5, 2, 8, 1, 9, 3);
+    println!("排序: {:?}", sorted);
+
+    println!("max(3,7,2,9,4) = {}", max!(3, 7, 2, 9, 4));
+    println!("min(3,7,2,9,4) = {}", min!(3, 7, 2, 9, 4));
+}
+```
+
+## 📝 实际应用示例
+
+### 递归实现 HTML DSL
+
+```rust
+macro_rules! html {
+    // 文本节点
+    ($text:expr) => {
+        String::from($text)
+    };
+
+    // 带子节点的标签
+    ($tag:ident { $($children:tt)* }) => {{
+        let mut result = format!("<{}>", stringify!($tag));
+        result.push_str(&html!(@children $($children)*));
+        result.push_str(&format!("</{}>", stringify!($tag)));
+        result
+    }};
+
+    // 内部规则：处理多个子节点
+    (@children) => {
+        String::new()
+    };
+    (@children $first:tt $($rest:tt)*) => {{
+        let mut s = html!($first);
+        s.push_str(&html!(@children $($rest)*));
+        s
+    }};
+}
+
+fn main() {
+    let page = html! {
+        html {
+            head {
+                "My Page"
+            }
+            body {
+                h1 { "Hello" }
+                p { "Paragraph content" }
+            }
+        }
+    };
+    println!("{}", page);
+}
+```
+
+### 编译期类型级列表
+
+```rust
+macro_rules! count_exprs {
+    () => { 0 };
+    ($head:expr) => { 1 };
+    ($head:expr, $($tail:expr),+) => {
+        1 + count_exprs!($($tail),+)
+    };
+}
+
+macro_rules! fixed_array {
+    ($($elem:expr),+ $(,)?) => {{
+        const SIZE: usize = count_exprs!($($elem),+);
+        let arr: [_; SIZE] = [$($elem),+];
+        arr
+    }};
+}
+
+fn main() {
+    let arr = fixed_array![10, 20, 30, 40, 50];
+    println!("数组: {:?}（长度 {}）", arr, arr.len());
+
+    let words = fixed_array!["hello", "world"];
+    println!("单词: {:?}（长度 {}）", words, words.len());
+}
+```
+
+## 🔗 相关概念
+
+- **[模式匹配与重复](./03-pattern-matching-repetition)**：非递归的重复处理方式
+- **[片段说明符](./04-fragment-specifiers)**：`tt` 在递归宏中的核心作用
+- **[常用宏模式](./08-common-macro-patterns)**：递归在实际宏模式中的应用
 
 ## 📝 学习检查点
 
-- [ ] 理解递归宏的核心概念
-- [ ] 能够在实际项目中应用递归宏
+- [ ] 理解递归宏的基础情况与递归步骤
+- [ ] 掌握 TT Muncher 模式
+- [ ] 能够使用内部规则（`@internal`）组织复杂宏
+- [ ] 了解递归深度限制及如何调整
+
+## 🚀 下一步
+
+→ [宏的卫生性](./07-macro-hygiene)

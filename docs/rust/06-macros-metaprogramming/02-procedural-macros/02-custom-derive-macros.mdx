@@ -5,13 +5,321 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解过程宏中的「自定义 derive 宏」相关知识。
+派生宏（Derive Macros）是最常用的过程宏类型，通过 `#[derive(MyTrait)]` 语法自动为结构体或枚举生成 trait 实现。标准库中的 `Debug`、`Clone`、`PartialEq` 等都是通过派生宏实现的。自定义派生宏让你可以为自己的 trait 提供同样的自动实现能力。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+:::info 项目结构要求
+过程宏必须定义在一个独立的 crate 中，该 crate 的 `Cargo.toml` 需要设置 `proc-macro = true`。典型的项目结构如下：
+```
+my-project/
+├── Cargo.toml              # workspace
+├── my-derive/
+│   ├── Cargo.toml           # proc-macro = true
+│   └── src/lib.rs           # 派生宏定义
+└── my-app/
+    ├── Cargo.toml           # 依赖 my-derive
+    └── src/main.rs          # 使用派生宏
+```
 :::
+
+## 🎯 第一个派生宏
+
+### 宏 crate（my-derive/Cargo.toml）
+
+```toml
+[package]
+name = "my-derive"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+```
+
+### 宏定义（my-derive/src/lib.rs）
+
+```rust
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, DeriveInput};
+
+/// 自动实现 Describe trait
+#[proc_macro_derive(Describe)]
+pub fn describe_derive(input: TokenStream) -> TokenStream {
+    // 将输入解析为语法树
+    let input = parse_macro_input!(input as DeriveInput);
+
+    // 获取类型名称
+    let name = &input.ident;
+
+    // 生成 trait 实现
+    let expanded = quote! {
+        impl Describe for #name {
+            fn describe(&self) -> String {
+                format!("这是一个 {} 类型的实例", stringify!(#name))
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+### 使用宏（my-app/src/main.rs）
+
+```rust
+use my_derive::Describe;
+
+trait Describe {
+    fn describe(&self) -> String;
+}
+
+#[derive(Describe)]
+struct User {
+    name: String,
+    age: u32,
+}
+
+#[derive(Describe)]
+struct Product {
+    title: String,
+    price: f64,
+}
+
+fn main() {
+    let user = User { name: String::from("Alice"), age: 30 };
+    let product = Product { title: String::from("Rust 书"), price: 59.99 };
+
+    println!("{}", user.describe());
+    // 输出: 这是一个 User 类型的实例
+    println!("{}", product.describe());
+    // 输出: 这是一个 Product 类型的实例
+}
+```
+
+## 🎯 读取结构体字段
+
+```rust
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, DeriveInput, Data, Fields};
+
+/// 生成打印所有字段名称的方法
+#[proc_macro_derive(FieldNames)]
+pub fn field_names_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    // 提取结构体字段名
+    let field_names = match &input.data {
+        Data::Struct(data_struct) => {
+            match &data_struct.fields {
+                Fields::Named(fields) => {
+                    fields.named.iter()
+                        .map(|f| f.ident.as_ref().unwrap().to_string())
+                        .collect::<Vec<_>>()
+                }
+                _ => vec![],
+            }
+        }
+        _ => panic!("FieldNames 只能用于结构体"),
+    };
+
+    let expanded = quote! {
+        impl #name {
+            pub fn field_names() -> &'static [&'static str] {
+                &[#(#field_names),*]
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_derive::FieldNames;
+
+#[derive(FieldNames)]
+struct Config {
+    host: String,
+    port: u16,
+    debug: bool,
+}
+
+fn main() {
+    println!("Config 的字段: {:?}", Config::field_names());
+    // 输出: Config 的字段: ["host", "port", "debug"]
+}
+```
+
+## 🎯 带辅助属性的派生宏
+
+使用 `attributes(...)` 声明辅助属性，在字段上添加元数据：
+
+```rust
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, DeriveInput, Data, Fields, Lit, Meta};
+
+#[proc_macro_derive(Validate, attributes(validate))]
+pub fn validate_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    let validations = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => {
+                fields.named.iter().filter_map(|field| {
+                    let field_name = field.ident.as_ref().unwrap();
+
+                    // 查找 #[validate(min_length = N)] 属性
+                    for attr in &field.attrs {
+                        if attr.path().is_ident("validate") {
+                            if let Ok(Meta::NameValue(nv)) = attr.parse_args() {
+                                if nv.path.is_ident("min_length") {
+                                    if let syn::Expr::Lit(expr_lit) = &nv.value {
+                                        if let Lit::Int(lit_int) = &expr_lit.lit {
+                                            let min_len: usize = lit_int
+                                                .base10_parse()
+                                                .unwrap();
+                                            return Some(quote! {
+                                                if self.#field_name.len() < #min_len {
+                                                    errors.push(format!(
+                                                        "{} 长度至少为 {}",
+                                                        stringify!(#field_name),
+                                                        #min_len
+                                                    ));
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None
+                }).collect::<Vec<_>>()
+            }
+            _ => vec![],
+        },
+        _ => panic!("Validate 只能用于结构体"),
+    };
+
+    let expanded = quote! {
+        impl #name {
+            pub fn validate(&self) -> Result<(), Vec<String>> {
+                let mut errors = Vec::new();
+                #(#validations)*
+                if errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errors)
+                }
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_derive::Validate;
+
+#[derive(Validate)]
+struct Registration {
+    #[validate(min_length = 3)]
+    username: String,
+    #[validate(min_length = 8)]
+    password: String,
+}
+
+fn main() {
+    let reg = Registration {
+        username: String::from("ab"),
+        password: String::from("12345"),
+    };
+
+    match reg.validate() {
+        Ok(()) => println!("验证通过"),
+        Err(errors) => {
+            for err in &errors {
+                println!("验证失败: {}", err);
+            }
+        }
+    }
+    // 输出:
+    // 验证失败: username 长度至少为 3
+    // 验证失败: password 长度至少为 8
+}
+```
+
+## 🎯 处理泛型
+
+```rust
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, DeriveInput};
+
+#[proc_macro_derive(MyDebug)]
+pub fn my_debug_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    // 获取泛型参数
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    let expanded = quote! {
+        impl #impl_generics std::fmt::Display for #name #ty_generics #where_clause {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}{{ ... }}", stringify!(#name))
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_derive::MyDebug;
+
+#[derive(MyDebug)]
+struct Wrapper<T> {
+    inner: T,
+}
+
+fn main() {
+    let w = Wrapper { inner: 42 };
+    println!("{}", w);
+    // 输出: Wrapper{ ... }
+}
+```
+
+## 🔗 相关概念
+
+- **[syn 与 quote 库](./03-syn-quote-libraries)**：派生宏底层使用的解析和代码生成工具
+- **[TokenStream](./04-token-stream)**：宏输入输出的底层表示
+- **[属性宏](./05-attribute-macros)**：另一种过程宏形式
 
 ## 📝 学习检查点
 
-- [ ] 理解自定义 derive 宏的核心概念
-- [ ] 能够在实际项目中应用自定义 derive 宏
+- [ ] 理解派生宏的项目结构要求（独立 crate + `proc-macro = true`）
+- [ ] 能够使用 `syn` 解析 `DeriveInput` 获取类型信息
+- [ ] 掌握带辅助属性的派生宏写法
+- [ ] 了解处理泛型类型的方法
+
+## 🚀 下一步
+
+→ [syn 与 quote 库](./03-syn-quote-libraries)

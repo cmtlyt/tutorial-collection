@@ -5,13 +5,343 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解过程宏中的「属性宏」相关知识。
+属性宏（Attribute Macros）通过 `#[my_attribute]` 的形式附加在函数、结构体、枚举等条目上，可以**完全替换**被修饰的条目。与派生宏只能添加新实现不同，属性宏可以修改、增强甚至完全重写输入代码。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+属性宏函数签名接收两个 `TokenStream`：
+1. **属性参数**：`#[my_attr(arg1, arg2)]` 中括号内的部分
+2. **被修饰的条目**：属性所附加的函数/结构体等完整代码
+
+```rust
+#[proc_macro_attribute]
+pub fn my_attribute(args: TokenStream, input: TokenStream) -> TokenStream {
+    // args: 属性参数
+    // input: 被修饰的条目
+    // 返回: 替换后的代码
+}
+```
+
+:::info 项目结构
+属性宏同样需要定义在独立的 `proc-macro` crate 中：
+```toml
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+```
 :::
+
+## 🎯 基本属性宏
+
+### 函数计时器
+
+```rust
+// my-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, ItemFn};
+
+/// 自动为函数添加执行时间测量
+#[proc_macro_attribute]
+pub fn timed(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let input_fn = parse_macro_input!(input as ItemFn);
+
+    let fn_name = &input_fn.sig.ident;
+    let fn_block = &input_fn.block;
+    let fn_vis = &input_fn.vis;
+    let fn_sig = &input_fn.sig;
+
+    let expanded = quote! {
+        #fn_vis #fn_sig {
+            let _start = std::time::Instant::now();
+            let _result = (|| #fn_block)();
+            println!(
+                "[timed] {} 执行耗时: {:?}",
+                stringify!(#fn_name),
+                _start.elapsed()
+            );
+            _result
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_macros::timed;
+
+#[timed]
+fn heavy_computation() -> u64 {
+    (0..1_000_000u64).sum()
+}
+
+#[timed]
+fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
+fn main() {
+    let sum = heavy_computation();
+    println!("结果: {}", sum);
+
+    let msg = greet("Rust");
+    println!("{}", msg);
+}
+```
+
+## 🎯 带参数的属性宏
+
+### 重试装饰器
+
+```rust
+// my-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, ItemFn, LitInt};
+
+/// #[retry(3)] 自动重试函数指定次数
+#[proc_macro_attribute]
+pub fn retry(args: TokenStream, input: TokenStream) -> TokenStream {
+    let max_retries = parse_macro_input!(args as LitInt);
+    let max_retries_value: usize = max_retries.base10_parse().unwrap();
+    let input_fn = parse_macro_input!(input as ItemFn);
+
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_sig = &input_fn.sig;
+    let fn_block = &input_fn.block;
+
+    let expanded = quote! {
+        #fn_vis #fn_sig {
+            let mut _attempts = 0usize;
+            loop {
+                _attempts += 1;
+                let _result = (|| #fn_block)();
+                match _result {
+                    Ok(val) => return Ok(val),
+                    Err(e) => {
+                        if _attempts >= #max_retries_value {
+                            eprintln!(
+                                "[retry] {} 在 {} 次尝试后仍然失败",
+                                stringify!(#fn_name),
+                                #max_retries_value
+                            );
+                            return Err(e);
+                        }
+                        eprintln!(
+                            "[retry] {} 第 {} 次失败，重试中...",
+                            stringify!(#fn_name),
+                            _attempts
+                        );
+                    }
+                }
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_macros::retry;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[retry(3)]
+fn unreliable_operation() -> Result<String, String> {
+    let count = CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+    if count < 2 {
+        Err(format!("第 {} 次调用失败", count + 1))
+    } else {
+        Ok(String::from("成功！"))
+    }
+}
+
+fn main() {
+    match unreliable_operation() {
+        Ok(msg) => println!("结果: {}", msg),
+        Err(e) => println!("最终失败: {}", e),
+    }
+}
+```
+
+## 🎯 修饰结构体
+
+### 自动注册模式
+
+```rust
+// my-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, ItemStruct};
+
+/// 为结构体添加注册和工厂方法
+#[proc_macro_attribute]
+pub fn component(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let input_struct = parse_macro_input!(input as ItemStruct);
+
+    let name = &input_struct.ident;
+    let vis = &input_struct.vis;
+    let attrs = &input_struct.attrs;
+    let fields = &input_struct.fields;
+
+    let expanded = quote! {
+        #(#attrs)*
+        #[derive(Debug)]
+        #vis struct #name #fields
+
+        impl #name {
+            pub fn component_name() -> &'static str {
+                stringify!(#name)
+            }
+
+            pub fn component_id() -> u64 {
+                // 简单的编译期哈希
+                let name = stringify!(#name);
+                let mut hash = 0u64;
+                let bytes = name.as_bytes();
+                let mut i = 0;
+                while i < bytes.len() {
+                    hash = hash.wrapping_mul(31).wrapping_add(bytes[i] as u64);
+                    i += 1;
+                }
+                hash
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_macros::component;
+
+#[component]
+struct AudioPlayer {
+    volume: f32,
+    is_playing: bool,
+}
+
+#[component]
+struct Transform {
+    x: f64,
+    y: f64,
+    rotation: f64,
+}
+
+fn main() {
+    println!("{} (ID: {})", AudioPlayer::component_name(), AudioPlayer::component_id());
+    println!("{} (ID: {})", Transform::component_name(), Transform::component_id());
+
+    let player = AudioPlayer { volume: 0.8, is_playing: true };
+    println!("{:?}", player);
+}
+```
+
+## 🎯 属性宏 vs 派生宏
+
+| 特性 | 属性宏 | 派生宏 |
+|------|--------|--------|
+| **语法** | `#[my_attr]` | `#[derive(MyTrait)]` |
+| **输入修改** | 可以修改/替换原始代码 | 只能添加新实现 |
+| **应用目标** | 函数、结构体、枚举、模块等 | 只能用于结构体和枚举 |
+| **参数** | 接收属性参数和条目两个输入 | 只接收条目一个输入 |
+| **典型用途** | 装饰器、路由注解、条件编译 | 自动 trait 实现 |
+
+## 📝 实际应用示例
+
+### 路由注册（Web 框架风格）
+
+```rust
+// my-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, ItemFn, LitStr};
+
+/// #[get("/api/users")] 风格的路由宏
+#[proc_macro_attribute]
+pub fn get(args: TokenStream, input: TokenStream) -> TokenStream {
+    let path = parse_macro_input!(args as LitStr);
+    let input_fn = parse_macro_input!(input as ItemFn);
+
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_sig = &input_fn.sig;
+    let fn_block = &input_fn.block;
+    let path_value = path.value();
+
+    let expanded = quote! {
+        #fn_vis #fn_sig #fn_block
+
+        // 生成路由注册信息
+        impl RouteInfo for fn() {
+            const PATH: &'static str = #path_value;
+            const METHOD: &'static str = "GET";
+            const HANDLER_NAME: &'static str = stringify!(#fn_name);
+        }
+    };
+
+    // 简化示例：实际 Web 框架会生成更复杂的注册代码
+    // 这里只保留原始函数并打印路由信息
+    let simple_expanded = quote! {
+        #fn_vis #fn_sig {
+            println!("[GET {}] -> {}", #path_value, stringify!(#fn_name));
+            #fn_block
+        }
+    };
+
+    TokenStream::from(simple_expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_macros::get;
+
+#[get("/api/users")]
+fn list_users() -> String {
+    String::from(r#"[{"name":"Alice"},{"name":"Bob"}]"#)
+}
+
+#[get("/api/health")]
+fn health_check() -> String {
+    String::from(r#"{"status":"ok"}"#)
+}
+
+fn main() {
+    let users = list_users();
+    println!("响应: {}", users);
+
+    let health = health_check();
+    println!("响应: {}", health);
+}
+```
+
+## 🔗 相关概念
+
+- **[自定义 derive 宏](./02-custom-derive-macros)**：只能添加实现、不能修改原始代码的派生宏
+- **[syn 与 quote 库](./03-syn-quote-libraries)**：属性宏中解析和生成代码的工具
+- **[函数式宏](./06-function-like-macros)**：另一种过程宏形式
 
 ## 📝 学习检查点
 
-- [ ] 理解属性宏的核心概念
-- [ ] 能够在实际项目中应用属性宏
+- [ ] 理解属性宏接收两个 TokenStream 的签名
+- [ ] 能够编写修饰函数的属性宏
+- [ ] 掌握带参数的属性宏写法
+- [ ] 区分属性宏和派生宏的适用场景
+
+## 🚀 下一步
+
+→ [函数式宏](./06-function-like-macros)

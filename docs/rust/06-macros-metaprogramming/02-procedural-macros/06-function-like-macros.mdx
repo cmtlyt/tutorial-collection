@@ -5,13 +5,462 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解过程宏中的「函数式宏」相关知识。
+函数式过程宏（Function-like Procedural Macros）以 `my_macro!(...)` 的形式调用，看起来像声明宏，但内部实现是过程宏——可以执行任意 Rust 代码来解析输入和生成输出。与声明宏相比，函数式过程宏没有模式匹配的限制，可以实现**任意复杂的自定义语法**。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+```rust
+#[proc_macro]
+pub fn my_macro(input: TokenStream) -> TokenStream {
+    // input: 括号内的所有 token
+    // 返回: 展开后的代码
+}
+```
+
+:::info 与声明宏的对比
+| 特性 | 声明宏 (`macro_rules!`) | 函数式过程宏 |
+|------|------------------------|-------------|
+| **定义方式** | 模式匹配 | Rust 代码 |
+| **解析能力** | 片段说明符 | 任意解析逻辑 |
+| **错误提示** | 受限 | 自定义精确错误 |
+| **依赖** | 无 | 需要独立 crate |
+| **性能** | 编译器内部处理 | 编译期执行 Rust 代码 |
 :::
+
+## 🎯 基本函数式宏
+
+### SQL 查询构建器
+
+```rust
+// my-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, LitStr, Token};
+use syn::parse::{Parse, ParseStream};
+
+struct SqlSelect {
+    table: LitStr,
+    columns: Vec<LitStr>,
+}
+
+impl Parse for SqlSelect {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        // 解析 "table" => ["col1", "col2"]
+        let table: LitStr = input.parse()?;
+        input.parse::<Token![=>]>()?;
+
+        // 解析方括号内的列名列表
+        let content;
+        syn::bracketed!(content in input);
+        let columns = content
+            .parse_terminated(LitStr::parse, Token![,])?
+            .into_iter()
+            .collect();
+
+        Ok(SqlSelect { table, columns })
+    }
+}
+
+#[proc_macro]
+pub fn sql_select(input: TokenStream) -> TokenStream {
+    let SqlSelect { table, columns } = parse_macro_input!(input as SqlSelect);
+
+    let table_name = table.value();
+    let column_names: Vec<String> = columns.iter().map(|c| c.value()).collect();
+    let columns_str = column_names.join(", ");
+    let sql = format!("SELECT {} FROM {}", columns_str, table_name);
+
+    let expanded = quote! {
+        #sql
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_macros::sql_select;
+
+fn main() {
+    let query = sql_select!("users" => ["id", "name", "email"]);
+    println!("生成的 SQL: {}", query);
+    // 输出: 生成的 SQL: SELECT id, name, email FROM users
+}
+```
+
+## 🎯 自定义 DSL
+
+### 状态机定义
+
+```rust
+// my-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, Ident, Token};
+use syn::parse::{Parse, ParseStream};
+use syn::punctuated::Punctuated;
+
+struct Transition {
+    from: Ident,
+    to: Ident,
+    event: Ident,
+}
+
+impl Parse for Transition {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let from: Ident = input.parse()?;
+        input.parse::<Token![=>]>()?;
+        let to: Ident = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let event: Ident = input.parse()?;
+        Ok(Transition { from, to, event })
+    }
+}
+
+struct StateMachine {
+    name: Ident,
+    initial: Ident,
+    transitions: Vec<Transition>,
+}
+
+impl Parse for StateMachine {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
+
+        // 解析 initial: StateName
+        let _initial_kw: Ident = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let initial: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
+
+        // 解析转换列表
+        let transitions: Punctuated<Transition, Token![,]> =
+            Punctuated::parse_terminated(input)?;
+
+        Ok(StateMachine {
+            name,
+            initial,
+            transitions: transitions.into_iter().collect(),
+        })
+    }
+}
+
+#[proc_macro]
+pub fn state_machine(input: TokenStream) -> TokenStream {
+    let sm = parse_macro_input!(input as StateMachine);
+
+    let name = &sm.name;
+    let initial = &sm.initial;
+
+    // 收集所有状态
+    let mut states = std::collections::HashSet::new();
+    let mut events = std::collections::HashSet::new();
+    for t in &sm.transitions {
+        states.insert(t.from.to_string());
+        states.insert(t.to.to_string());
+        events.insert(t.event.to_string());
+    }
+
+    let state_variants: Vec<Ident> = states.iter()
+        .map(|s| Ident::new(s, proc_macro2::Span::call_site()))
+        .collect();
+    let event_variants: Vec<Ident> = events.iter()
+        .map(|e| Ident::new(e, proc_macro2::Span::call_site()))
+        .collect();
+
+    let state_enum = quote::format_ident!("{}State", name);
+    let event_enum = quote::format_ident!("{}Event", name);
+
+    let transition_arms: Vec<_> = sm.transitions.iter().map(|t| {
+        let from = &t.from;
+        let to = &t.to;
+        let event = &t.event;
+        quote! {
+            (#state_enum::#from, #event_enum::#event) => {
+                self.state = #state_enum::#to;
+                true
+            }
+        }
+    }).collect();
+
+    let expanded = quote! {
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum #state_enum {
+            #(#state_variants,)*
+        }
+
+        #[derive(Debug, Clone)]
+        pub enum #event_enum {
+            #(#event_variants,)*
+        }
+
+        #[derive(Debug)]
+        pub struct #name {
+            pub state: #state_enum,
+        }
+
+        impl #name {
+            pub fn new() -> Self {
+                Self { state: #state_enum::#initial }
+            }
+
+            pub fn handle(&mut self, event: #event_enum) -> bool {
+                match (&self.state, &event) {
+                    #(#transition_arms)*
+                    _ => false,
+                }
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_macros::state_machine;
+
+state_machine!(
+    Door, initial: Closed,
+    Closed => Open: OpenEvent,
+    Open => Closed: CloseEvent,
+    Closed => Locked: LockEvent,
+    Locked => Closed: UnlockEvent
+);
+
+fn main() {
+    let mut door = Door::new();
+    println!("初始状态: {:?}", door.state);
+
+    door.handle(DoorEvent::OpenEvent);
+    println!("打开后: {:?}", door.state);
+
+    door.handle(DoorEvent::CloseEvent);
+    println!("关闭后: {:?}", door.state);
+
+    door.handle(DoorEvent::LockEvent);
+    println!("锁定后: {:?}", door.state);
+
+    // 无效转换
+    let success = door.handle(DoorEvent::OpenEvent);
+    println!("锁定时打开: {} -> {:?}", success, door.state);
+}
+```
+
+## 🎯 编译期验证
+
+函数式过程宏可以在编译期执行验证逻辑：
+
+```rust
+// my-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, LitStr};
+
+/// 编译期验证 JSON 字符串格式
+#[proc_macro]
+pub fn validated_json(input: TokenStream) -> TokenStream {
+    let json_str = parse_macro_input!(input as LitStr);
+    let json_value = json_str.value();
+
+    // 编译期验证 JSON 格式（简单验证括号匹配）
+    let mut brace_count = 0i32;
+    let mut bracket_count = 0i32;
+    for ch in json_value.chars() {
+        match ch {
+            '{' => brace_count += 1,
+            '}' => brace_count -= 1,
+            '[' => bracket_count += 1,
+            ']' => bracket_count -= 1,
+            _ => {}
+        }
+        if brace_count < 0 || bracket_count < 0 {
+            return TokenStream::from(
+                syn::Error::new(json_str.span(), "JSON 格式错误：括号不匹配")
+                    .to_compile_error()
+            );
+        }
+    }
+
+    if brace_count != 0 || bracket_count != 0 {
+        return TokenStream::from(
+            syn::Error::new(json_str.span(), "JSON 格式错误：括号未闭合")
+                .to_compile_error()
+        );
+    }
+
+    let expanded = quote! {
+        #json_value
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_macros::validated_json;
+
+fn main() {
+    // 编译期验证通过
+    let data = validated_json!(r#"{"name": "Alice", "age": 30}"#);
+    println!("有效 JSON: {}", data);
+
+    // 编译期验证失败（取消注释会导致编译错误）
+    // let bad = validated_json!(r#"{"name": "Alice""#);
+}
+```
+
+## 📝 实际应用示例
+
+### 环境变量检查宏
+
+```rust
+// my-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, LitStr, Token};
+use syn::parse::{Parse, ParseStream};
+
+struct EnvCheck {
+    vars: Vec<(LitStr, Option<LitStr>)>,
+}
+
+impl Parse for EnvCheck {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut vars = Vec::new();
+        while !input.is_empty() {
+            let name: LitStr = input.parse()?;
+            let default = if input.peek(Token![=]) {
+                input.parse::<Token![=]>()?;
+                Some(input.parse::<LitStr>()?)
+            } else {
+                None
+            };
+            vars.push((name, default));
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+        Ok(EnvCheck { vars })
+    }
+}
+
+#[proc_macro]
+pub fn env_config(input: TokenStream) -> TokenStream {
+    let config = parse_macro_input!(input as EnvCheck);
+
+    let field_defs: Vec<_> = config.vars.iter().map(|(name, default)| {
+        let var_name = name.value();
+        let field_ident = syn::Ident::new(
+            &var_name.to_lowercase().replace('-', "_"),
+            name.span(),
+        );
+        match default {
+            Some(def) => {
+                let def_val = def.value();
+                quote! {
+                    pub #field_ident: String = std::env::var(#var_name)
+                        .unwrap_or_else(|_| String::from(#def_val)),
+                }
+            }
+            None => {
+                quote! {
+                    pub #field_ident: String = std::env::var(#var_name)
+                        .expect(&format!("环境变量 {} 未设置", #var_name)),
+                }
+            }
+        }
+    }).collect();
+
+    let init_fields: Vec<_> = config.vars.iter().map(|(name, default)| {
+        let var_name = name.value();
+        let field_ident = syn::Ident::new(
+            &var_name.to_lowercase().replace('-', "_"),
+            name.span(),
+        );
+        match default {
+            Some(def) => {
+                let def_val = def.value();
+                quote! {
+                    #field_ident: std::env::var(#var_name)
+                        .unwrap_or_else(|_| String::from(#def_val))
+                }
+            }
+            None => {
+                quote! {
+                    #field_ident: std::env::var(#var_name)
+                        .expect(&format!("环境变量 {} 未设置", #var_name))
+                }
+            }
+        }
+    }).collect();
+
+    let struct_fields: Vec<_> = config.vars.iter().map(|(name, _)| {
+        let var_name = name.value();
+        let field_ident = syn::Ident::new(
+            &var_name.to_lowercase().replace('-', "_"),
+            name.span(),
+        );
+        quote! { pub #field_ident: String }
+    }).collect();
+
+    let expanded = quote! {
+        {
+            #[derive(Debug)]
+            struct EnvConfig {
+                #(#struct_fields,)*
+            }
+            EnvConfig {
+                #(#init_fields,)*
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+```
+
+使用示例：
+
+```rust
+use my_macros::env_config;
+
+fn main() {
+    // 设置环境变量用于演示
+    std::env::set_var("APP_HOST", "localhost");
+    std::env::set_var("APP_PORT", "8080");
+
+    let config = env_config!(
+        "APP_HOST" = "0.0.0.0",
+        "APP_PORT" = "3000",
+        "APP_ENV" = "development"
+    );
+
+    println!("配置: {:?}", config);
+    println!("Host: {}", config.app_host);
+    println!("Port: {}", config.app_port);
+    println!("Env: {}", config.app_env);
+}
+```
+
+## 🔗 相关概念
+
+- **[属性宏](./05-attribute-macros)**：另一种可以修改输入代码的过程宏
+- **[TokenStream](./04-token-stream)**：函数式宏直接操作的底层类型
+- **[编译期代码生成](./07-compile-time-code-generation)**：函数式宏实现编译期计算的进阶用法
 
 ## 📝 学习检查点
 
-- [ ] 理解函数式宏的核心概念
-- [ ] 能够在实际项目中应用函数式宏
+- [ ] 理解函数式过程宏与声明宏的区别
+- [ ] 能够使用 `syn::parse` 实现自定义语法解析
+- [ ] 掌握编译期验证的实现方式
+- [ ] 了解函数式宏的典型应用场景（DSL、代码生成、验证）
+
+## 🚀 下一步
+
+→ [编译期代码生成](./07-compile-time-code-generation)

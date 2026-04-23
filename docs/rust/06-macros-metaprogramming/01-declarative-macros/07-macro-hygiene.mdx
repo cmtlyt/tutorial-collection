@@ -5,13 +5,247 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解声明宏中的「宏的卫生性」相关知识。
+宏的**卫生性**（Hygiene）是指宏展开后的代码不会意外地与调用环境中的变量名发生冲突。Rust 的声明宏是**部分卫生**的——宏内部定义的局部变量不会与外部同名变量冲突，但宏可以引用外部的类型、trait 和函数。这种设计在安全性和实用性之间取得了平衡。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 卫生性基本行为
+
+### 宏内变量不会泄漏
+
+```rust
+macro_rules! create_temp {
+    ($value:expr) => {
+        let temp = $value;
+        println!("宏内部 temp = {}", temp);
+    };
+}
+
+fn main() {
+    let temp = 100;
+    create_temp!(42);
+    // 宏内的 temp 和外部的 temp 是不同的变量
+    println!("外部 temp = {}", temp); // 输出 100，不受影响
+}
+```
+
+### 宏参数捕获的是调用者上下文
+
+```rust
+macro_rules! use_value {
+    ($name:ident) => {
+        println!("值是: {}", $name);
+    };
+}
+
+fn main() {
+    let message = "hello from main";
+    use_value!(message); // $name 绑定到调用者的 message
+}
+```
+
+## 🎯 卫生性与变量遮蔽
+
+```rust
+macro_rules! shadow_demo {
+    () => {
+        // 宏内部的 x 和外部的 x 在不同的卫生上下文中
+        let x = "宏内部的 x";
+        println!("{}", x);
+    };
+}
+
+fn main() {
+    let x = "外部的 x";
+    println!("{}", x);    // "外部的 x"
+    shadow_demo!();        // "宏内部的 x"
+    println!("{}", x);    // "外部的 x"（未被遮蔽）
+}
+```
+
+## 🎯 非卫生的部分：类型和路径
+
+宏对类型、路径和 trait 的引用是**非卫生的**，它们在调用者的作用域中解析：
+
+```rust
+macro_rules! create_vector {
+    ($($elem:expr),*) => {
+        // Vec 在调用者的作用域中解析
+        {
+            let mut v = Vec::new();
+            $(v.push($elem);)*
+            v
+        }
+    };
+}
+
+macro_rules! print_type {
+    ($val:expr) => {
+        // std::any::type_name 在调用者的作用域中解析
+        println!("类型: {}", std::any::type_name_of_val(&$val));
+    };
+}
+
+fn main() {
+    let v = create_vector!(1, 2, 3);
+    println!("{:?}", v);
+
+    print_type!(42i32);
+    print_type!("hello");
+}
+```
+
+## 🎯 使用 $crate 确保跨 crate 卫生
+
+`$crate` 元变量确保宏引用的路径始终指向定义宏的 crate：
+
+```rust
+pub fn helper_function() -> &'static str {
+    "来自 helper_function"
+}
+
+#[macro_export]
+macro_rules! safe_call {
+    () => {
+        // 使用 $crate 而不是硬编码路径
+        // 确保无论在哪个 crate 调用都能正确解析
+        $crate::helper_function()
+    };
+}
+
+fn main() {
+    let result = safe_call!();
+    println!("{}", result);
+}
+```
+
+## 🎯 突破卫生性：ident 参数
+
+通过 `$name:ident` 参数，调用者可以控制宏内部创建的变量名，这是有意突破卫生性的方式：
+
+```rust
+macro_rules! declare {
+    ($name:ident = $value:expr) => {
+        let $name = $value;
+    };
+}
+
+macro_rules! declare_mut {
+    ($name:ident = $value:expr) => {
+        let mut $name = $value;
+    };
+}
+
+fn main() {
+    // 通过 ident 参数让调用者指定变量名
+    declare!(answer = 42);
+    println!("answer = {}", answer);
+
+    declare_mut!(counter = 0);
+    counter += 1;
+    println!("counter = {}", counter);
+}
+```
+
+### 利用 ident 创建函数和类型
+
+```rust
+macro_rules! make_adder {
+    ($name:ident, $amount:expr) => {
+        fn $name(x: i32) -> i32 {
+            x + $amount
+        }
+    };
+}
+
+macro_rules! newtype {
+    ($name:ident wrapping $inner:ty) => {
+        #[derive(Debug, Clone)]
+        struct $name($inner);
+
+        impl $name {
+            fn new(value: $inner) -> Self {
+                $name(value)
+            }
+
+            fn into_inner(self) -> $inner {
+                self.0
+            }
+        }
+    };
+}
+
+make_adder!(add_five, 5);
+make_adder!(add_ten, 10);
+newtype!(UserId wrapping u64);
+newtype!(Email wrapping String);
+
+fn main() {
+    println!("add_five(3) = {}", add_five(3));
+    println!("add_ten(3) = {}", add_ten(3));
+
+    let uid = UserId::new(12345);
+    let email = Email::new(String::from("test@example.com"));
+    println!("用户ID: {:?}", uid);
+    println!("邮箱: {:?}", email);
+}
+```
+
+## 📝 实际应用示例
+
+### 安全的临时变量命名
+
+```rust
+macro_rules! swap {
+    ($a:expr, $b:expr) => {
+        // 卫生性保证 _tmp 不会和外部变量冲突
+        {
+            let _tmp = $a;
+            $a = $b;
+            $b = _tmp;
+        }
+    };
+}
+
+macro_rules! timed {
+    ($label:expr, $body:block) => {
+        {
+            let _start = std::time::Instant::now();
+            let _result = $body;
+            println!("{}: {:?}", $label, _start.elapsed());
+            _result
+        }
+    };
+}
+
+fn main() {
+    let mut x = 1;
+    let mut y = 2;
+    println!("交换前: x={}, y={}", x, y);
+    swap!(x, y);
+    println!("交换后: x={}, y={}", x, y);
+
+    // 即使外部也有 _start 变量，也不会冲突
+    let _start = "外部变量";
+    let result = timed!("计算", {
+        (0..1000).sum::<i32>()
+    });
+    println!("结果: {}", result);
+    println!("外部 _start 未受影响: {}", _start);
+}
+```
+
+## 🔗 相关概念
+
+- **[macro_rules! 语法](./02-macro-rules-syntax)**：卫生性在宏定义中的体现
+- **[宏导出与导入](./05-macro-export-import)**：`$crate` 与跨 crate 卫生
+- **[常用宏模式](./08-common-macro-patterns)**：利用卫生性设计安全的宏
 
 ## 📝 学习检查点
 
-- [ ] 理解宏的卫生性的核心概念
-- [ ] 能够在实际项目中应用宏的卫生性
+- [ ] 理解 Rust 声明宏的"部分卫生"特性
+- [ ] 掌握宏内变量不会泄漏到调用环境的行为
+- [ ] 理解通过 `ident` 参数有意突破卫生性的方式
+- [ ] 了解 `$crate` 在跨 crate 卫生中的作用
+
+## 🚀 下一步
+
+→ [常用宏模式](./08-common-macro-patterns)

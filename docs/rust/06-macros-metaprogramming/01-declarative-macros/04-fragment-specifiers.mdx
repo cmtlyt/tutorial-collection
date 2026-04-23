@@ -5,13 +5,299 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解声明宏中的「片段说明符」相关知识。
+片段说明符（Fragment Specifier）定义了宏参数应该匹配的**语法类别**。在 `$name:specifier` 中，`specifier` 告诉编译器期望匹配什么类型的语法片段。不同的说明符有不同的匹配规则和后续使用限制。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 所有片段说明符一览
+
+| 说明符 | 匹配内容 | 示例 |
+|--------|----------|------|
+| `expr` | 表达式 | `1 + 2`、`foo()`、`if x { 1 } else { 2 }` |
+| `ident` | 标识符 | `foo`、`x`、`MyStruct` |
+| `ty` | 类型 | `i32`、`Vec<String>`、`&str` |
+| `pat` | 模式 | `_`、`Some(x)`、`1..=5` |
+| `path` | 路径 | `std::collections::HashMap` |
+| `stmt` | 语句 | `let x = 1`、`x += 1` |
+| `block` | 代码块 | `{ println!("hi"); }` |
+| `item` | 条目 | `fn foo() {}`、`struct Bar;` |
+| `meta` | 属性内容 | `derive(Debug)`、`allow(unused)` |
+| `tt` | 单个 token 树 | 任何单个 token 或匹配的括号组 |
+| `literal` | 字面量 | `42`、`"hello"`、`true` |
+| `lifetime` | 生命周期 | `'a`、`'static` |
+| `vis` | 可见性标记 | `pub`、`pub(crate)`、空 |
+
+## 🎯 常用说明符详解
+
+### expr：表达式
+
+```rust
+macro_rules! double {
+    ($e:expr) => {
+        $e * 2
+    };
+}
+
+macro_rules! log_value {
+    ($label:expr, $value:expr) => {
+        println!("[{}] = {:?}", $label, $value);
+    };
+}
+
+fn main() {
+    println!("{}", double!(5));
+    println!("{}", double!(3 + 4));      // 展开为 (3 + 4) * 2 = 14
+    println!("{}", double!({ 10 - 3 })); // 代码块也是表达式
+
+    log_value!("数字", 42);
+    log_value!("向量", vec![1, 2, 3]);
+}
+```
+
+### ident：标识符
+
+```rust
+macro_rules! create_function {
+    ($name:ident) => {
+        fn $name() {
+            println!("调用了函数: {}", stringify!($name));
+        }
+    };
+}
+
+macro_rules! create_struct {
+    ($name:ident { $($field:ident : $type:ty),* $(,)? }) => {
+        #[derive(Debug)]
+        struct $name {
+            $($field: $type,)*
+        }
+    };
+}
+
+create_function!(hello);
+create_function!(world);
+
+create_struct!(Point { x: f64, y: f64 });
+
+fn main() {
+    hello();
+    world();
+
+    let p = Point { x: 1.0, y: 2.0 };
+    println!("{:?}", p);
+}
+```
+
+### ty：类型
+
+```rust
+macro_rules! type_name {
+    ($t:ty) => {
+        std::any::type_name::<$t>()
+    };
+}
+
+macro_rules! default_value {
+    ($t:ty) => {
+        <$t as Default>::default()
+    };
+}
+
+fn main() {
+    println!("i32 类型名: {}", type_name!(i32));
+    println!("Vec<String> 类型名: {}", type_name!(Vec<String>));
+
+    let n: i32 = default_value!(i32);
+    let s: String = default_value!(String);
+    let v: Vec<i32> = default_value!(Vec<i32>);
+
+    println!("i32 默认值: {}", n);
+    println!("String 默认值: '{}'", s);
+    println!("Vec<i32> 默认值: {:?}", v);
+}
+```
+
+### tt：token 树
+
+`tt` 是最灵活的说明符，可以匹配几乎任何东西：
+
+```rust
+macro_rules! pass_through {
+    ($($tt:tt)*) => {
+        $($tt)*
+    };
+}
+
+macro_rules! debug_wrap {
+    ($name:ident($($arg:tt)*)) => {
+        {
+            println!("调用 {} 前", stringify!($name));
+            let result = $name($($arg)*);
+            println!("调用 {} 后", stringify!($name));
+            result
+        }
+    };
+}
+
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+fn main() {
+    // pass_through 原样传递任何代码
+    pass_through!(println!("通过 tt 传递的代码"));
+
+    let result = debug_wrap!(add(3, 4));
+    println!("结果: {}", result);
+}
+```
+
+### pat 和 path
+
+```rust
+macro_rules! match_value {
+    ($value:expr, $($pattern:pat => $result:expr),+ $(,)?) => {
+        match $value {
+            $($pattern => $result,)+
+        }
+    };
+}
+
+macro_rules! use_path {
+    ($p:path) => {
+        <$p>::default()
+    };
+}
+
+fn main() {
+    let x = 42;
+    let desc = match_value!(x,
+        0 => "零",
+        1..=10 => "小数",
+        11..=100 => "中等数",
+        _ => "大数"
+    );
+    println!("{} 是 {}", x, desc);
+
+    let s: String = use_path!(String);
+    println!("通过 path 创建: '{}'", s);
+}
+```
+
+### vis：可见性
+
+```rust
+macro_rules! make_field_struct {
+    ($vis:vis struct $name:ident { $($field_vis:vis $field:ident : $type:ty),* $(,)? }) => {
+        #[derive(Debug)]
+        $vis struct $name {
+            $($field_vis $field: $type,)*
+        }
+    };
+}
+
+make_field_struct! {
+    pub struct Config {
+        pub host: String,
+        pub port: u16,
+        debug: bool
+    }
+}
+
+fn main() {
+    let config = Config {
+        host: String::from("localhost"),
+        port: 8080,
+        debug: true,
+    };
+    println!("{:?}", config);
+    println!("host: {}, port: {}", config.host, config.port);
+}
+```
+
+## 🎯 说明符的后续 token 限制
+
+捕获某些说明符后，后续能跟的 token 有限制：
+
+```rust
+// expr 和 stmt 后面只能跟 =>, ;, 或 ,
+macro_rules! after_expr {
+    ($e:expr, $f:expr) => { $e + $f };     // 正确：expr 后跟 ,
+    // ($e:expr $f:expr) => { $e + $f };    // 错误：expr 后不能直接跟 expr
+}
+
+// ident 和 ty 没有这种限制
+macro_rules! after_ident {
+    ($a:ident $b:ident) => {
+        println!("{} {}", stringify!($a), stringify!($b));
+    };
+}
+
+fn main() {
+    println!("{}", after_expr!(3, 4));
+    after_ident!(hello world);
+}
+```
+
+## 📝 实际应用示例
+
+### 枚举辅助宏
+
+```rust
+macro_rules! named_enum {
+    ($vis:vis enum $name:ident { $($variant:ident),* $(,)? }) => {
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        $vis enum $name {
+            $($variant,)*
+        }
+
+        impl $name {
+            pub fn name(&self) -> &'static str {
+                match self {
+                    $(Self::$variant => stringify!($variant),)*
+                }
+            }
+
+            pub fn all() -> &'static [Self] {
+                &[$(Self::$variant,)*]
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.name())
+            }
+        }
+    };
+}
+
+named_enum! {
+    pub enum Color {
+        Red,
+        Green,
+        Blue,
+        Yellow,
+    }
+}
+
+fn main() {
+    let c = Color::Green;
+    println!("颜色: {} (Debug: {:?})", c, c);
+    println!("所有颜色: {:?}", Color::all());
+}
+```
+
+## 🔗 相关概念
+
+- **[macro_rules! 语法](./02-macro-rules-syntax)**：片段说明符在宏定义中的使用
+- **[模式匹配与重复](./03-pattern-matching-repetition)**：说明符与重复语法的组合
+- **[递归宏](./06-recursive-macros)**：利用 `tt` 实现递归解析
 
 ## 📝 学习检查点
 
-- [ ] 理解片段说明符的核心概念
-- [ ] 能够在实际项目中应用片段说明符
+- [ ] 熟悉所有片段说明符的匹配内容
+- [ ] 能够根据需求选择合适的说明符
+- [ ] 理解 `tt` 的灵活性和使用场景
+- [ ] 了解说明符的后续 token 限制
+
+## 🚀 下一步
+
+→ [宏导出与导入](./05-macro-export-import)

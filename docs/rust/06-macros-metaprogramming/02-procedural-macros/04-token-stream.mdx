@@ -5,13 +5,239 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解过程宏中的「TokenStream 解析与生成」相关知识。
+`TokenStream` 是过程宏的输入和输出类型，它表示一系列 **token**（词法单元）的序列。每个 token 可以是标识符、字面量、标点符号或由括号/方括号/花括号包围的 token 组。理解 TokenStream 的结构对于编写和调试过程宏至关重要。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+实际上有两个 `TokenStream` 类型：
+- **`proc_macro::TokenStream`**：编译器提供的原始类型，只能在过程宏函数签名中使用
+- **`proc_macro2::TokenStream`**：第三方封装，可以在普通代码和测试中使用，`syn` 和 `quote` 基于此
+
+## 🎯 TokenTree 的四种类型
+
+```rust
+use proc_macro::TokenStream;
+use proc_macro2::TokenTree;
+use quote::quote;
+
+fn inspect_tokens() {
+    let tokens = quote! {
+        let x: i32 = 42 + 1;
+    };
+
+    for tt in tokens.clone() {
+        match &tt {
+            TokenTree::Ident(ident) => {
+                println!("标识符: {}", ident);
+            }
+            TokenTree::Literal(lit) => {
+                println!("字面量: {}", lit);
+            }
+            TokenTree::Punct(punct) => {
+                println!("标点: '{}' (间距: {:?})", punct.as_char(), punct.spacing());
+            }
+            TokenTree::Group(group) => {
+                println!(
+                    "分组({:?}): {}",
+                    group.delimiter(),
+                    group.stream()
+                );
+            }
+        }
+    }
+}
+```
+
+四种 TokenTree：
+- **`Ident`**：标识符（如 `let`、`x`、`i32`）
+- **`Literal`**：字面量（如 `42`、`"hello"`、`true`）
+- **`Punct`**：标点符号（如 `:`、`=`、`+`、`;`）
+- **`Group`**：括号包围的 token 组（`()`、`[]`、`{}`）
+
+## 🎯 手动构建 TokenStream
+
+```rust
+use proc_macro2::{TokenStream, TokenTree, Ident, Literal, Punct, Spacing, Span, Group, Delimiter};
+
+fn build_manually() -> TokenStream {
+    // 手动构建：fn hello() { println!("hello"); }
+    let mut tokens = TokenStream::new();
+
+    // fn
+    tokens.extend(std::iter::once(TokenTree::Ident(
+        Ident::new("fn", Span::call_site())
+    )));
+
+    // hello
+    tokens.extend(std::iter::once(TokenTree::Ident(
+        Ident::new("hello", Span::call_site())
+    )));
+
+    // ()
+    tokens.extend(std::iter::once(TokenTree::Group(
+        Group::new(Delimiter::Parenthesis, TokenStream::new())
+    )));
+
+    // { ... } 函数体
+    let body = quote::quote! {
+        println!("hello from manual token stream");
+    };
+    tokens.extend(std::iter::once(TokenTree::Group(
+        Group::new(Delimiter::Brace, body)
+    )));
+
+    tokens
+}
+
+fn main() {
+    let tokens = build_manually();
+    println!("生成的代码:\n{}", tokens);
+}
+```
+
+## 🎯 proc_macro 与 proc_macro2 的转换
+
+```rust
+use proc_macro::TokenStream;
+use quote::quote;
+
+// 在过程宏函数中
+#[proc_macro_derive(Example)]
+pub fn example_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    // proc_macro::TokenStream -> proc_macro2::TokenStream
+    let input2: proc_macro2::TokenStream = input.into();
+
+    // 使用 syn 解析（syn 使用 proc_macro2）
+    let parsed: syn::DeriveInput = syn::parse2(input2).unwrap();
+
+    // 使用 quote 生成（quote 生成 proc_macro2::TokenStream）
+    let output: proc_macro2::TokenStream = quote! {
+        // 生成的代码
+    };
+
+    // proc_macro2::TokenStream -> proc_macro::TokenStream
+    output.into()
+}
+```
+
+## 🎯 TokenStream 字符串解析
+
+```rust
+fn parse_from_string() {
+    // 从字符串解析 TokenStream
+    let code = "fn greet(name: &str) { println!(\"Hello, {}!\", name); }";
+    let tokens: proc_macro2::TokenStream = code.parse().unwrap();
+
+    println!("解析结果: {}", tokens);
+
+    // 统计 token 数量
+    let count = tokens.clone().into_iter().count();
+    println!("顶级 token 数量: {}", count);
+}
+
+fn main() {
+    parse_from_string();
+}
+```
+
+## 🎯 Span：源码位置信息
+
+`Span` 携带了 token 在源代码中的位置信息，对于错误报告至关重要：
+
+```rust
+use proc_macro::TokenStream;
+use syn::{parse_macro_input, DeriveInput, Data, Error};
+use quote::quote;
+
+#[proc_macro_derive(StructOnly)]
+pub fn struct_only_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    // 如果不是结构体，生成编译错误并指向正确位置
+    match &input.data {
+        Data::Struct(_) => {
+            let name = &input.ident;
+            let expanded = quote! {
+                impl #name {
+                    pub fn is_struct() -> bool { true }
+                }
+            };
+            TokenStream::from(expanded)
+        }
+        Data::Enum(_) | Data::Union(_) => {
+            // 使用 Span 生成准确的错误位置
+            let error = Error::new_spanned(
+                &input.ident,
+                "StructOnly 只能用于结构体，不能用于枚举或联合体"
+            );
+            TokenStream::from(error.to_compile_error())
+        }
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 调试过程宏：打印 TokenStream
+
+在开发过程宏时，打印 TokenStream 是最有效的调试手段：
+
+```rust
+use proc_macro::TokenStream;
+use syn::{parse_macro_input, DeriveInput};
+use quote::quote;
+
+#[proc_macro_derive(DebugTokens)]
+pub fn debug_tokens(input: TokenStream) -> TokenStream {
+    // 打印原始 TokenStream（编译时输出到终端）
+    eprintln!("===== 原始 TokenStream =====");
+    eprintln!("{}", input);
+
+    let input_parsed = parse_macro_input!(input as DeriveInput);
+
+    // 打印解析后的结构
+    eprintln!("===== 解析结果 =====");
+    eprintln!("名称: {}", input_parsed.ident);
+    eprintln!("泛型: {:?}", quote!(#(input_parsed.generics)));
+
+    // 生成空实现
+    let name = &input_parsed.ident;
+    let expanded = quote! {
+        impl #name {
+            pub fn debug_info() -> &'static str {
+                concat!("Debug info for ", stringify!(#name))
+            }
+        }
+    };
+
+    // 打印生成的代码
+    eprintln!("===== 生成的代码 =====");
+    eprintln!("{}", expanded);
+
+    TokenStream::from(expanded)
+}
+```
+
+:::tip cargo expand
+使用 `cargo expand` 可以查看所有宏展开后的完整代码：
+```bash
+cargo install cargo-expand
+cargo expand          # 展开所有宏
+cargo expand main     # 只展开 main 模块
+```
 :::
+
+## 🔗 相关概念
+
+- **[syn 与 quote 库](./03-syn-quote-libraries)**：基于 TokenStream 的高级解析和生成
+- **[自定义 derive 宏](./02-custom-derive-macros)**：TokenStream 在派生宏中的实际流转
+- **[函数式宏](./06-function-like-macros)**：直接操作 TokenStream 的函数式宏
 
 ## 📝 学习检查点
 
-- [ ] 理解TokenStream 解析与生成的核心概念
-- [ ] 能够在实际项目中应用TokenStream 解析与生成
+- [ ] 理解 TokenTree 的四种类型（Ident、Literal、Punct、Group）
+- [ ] 掌握 `proc_macro` 和 `proc_macro2` 之间的转换
+- [ ] 了解 Span 在错误报告中的作用
+- [ ] 能够使用 `eprintln!` 和 `cargo expand` 调试过程宏
+
+## 🚀 下一步
+
+→ [属性宏](./05-attribute-macros)
