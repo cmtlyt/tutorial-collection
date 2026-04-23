@@ -5,13 +5,225 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「unsafe Rust 基础」相关知识。
+unsafe Rust 允许执行编译器无法静态验证安全性的操作。它并不意味着代码一定不安全，而是将安全保证的责任从编译器转移给了开发者。unsafe 有五种"超能力"：解引用裸指针、调用 unsafe 函数、访问可变静态变量、实现 unsafe trait、访问 union 的字段。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 unsafe 的五种能力
+
+### 1. 解引用裸指针
+
+```rust
+fn main() {
+    let mut value = 42;
+
+    // 创建裸指针是安全的
+    let raw_ptr = &value as *const i32;
+    let raw_mut_ptr = &mut value as *mut i32;
+
+    // 解引用裸指针需要 unsafe
+    unsafe {
+        println!("*const: {}", *raw_ptr);
+        *raw_mut_ptr = 100;
+        println!("修改后: {}", *raw_mut_ptr);
+    }
+
+    // 可以创建指向任意地址的裸指针（但解引用是未定义行为）
+    let arbitrary_address = 0x012345usize;
+    let _dangling = arbitrary_address as *const i32;
+    // unsafe { println!("{}", *_dangling); } // 这会崩溃！
+}
+```
+
+### 2. 调用 unsafe 函数
+
+```rust
+unsafe fn dangerous_operation() -> i32 {
+    // 此函数的调用者必须保证满足某些前提条件
+    42
+}
+
+fn main() {
+    // 调用 unsafe 函数需要 unsafe 块
+    let result = unsafe { dangerous_operation() };
+    println!("结果: {}", result);
+}
+```
+
+### 3. 访问可变静态变量
+
+```rust
+static mut REQUEST_COUNT: u64 = 0;
+
+fn increment_count() {
+    unsafe {
+        REQUEST_COUNT += 1;
+    }
+}
+
+fn get_count() -> u64 {
+    unsafe { REQUEST_COUNT }
+}
+
+fn main() {
+    increment_count();
+    increment_count();
+    increment_count();
+    println!("请求计数: {}", get_count());
+}
+```
+
+### 4. 实现 unsafe trait
+
+```rust
+unsafe trait Sendable {
+    fn can_send(&self) -> bool;
+}
+
+struct MyData {
+    value: i32,
+}
+
+// 实现 unsafe trait 需要 unsafe impl
+unsafe impl Sendable for MyData {
+    fn can_send(&self) -> bool {
+        true
+    }
+}
+
+fn main() {
+    let data = MyData { value: 42 };
+    println!("可发送: {}", data.can_send());
+}
+```
+
+### 5. 访问 union 字段
+
+```rust
+#[repr(C)]
+union IntOrFloat {
+    integer: i32,
+    floating: f32,
+}
+
+fn main() {
+    let value = IntOrFloat { integer: 42 };
+
+    // 读取 union 字段需要 unsafe
+    unsafe {
+        println!("整数: {}", value.integer);
+        println!("浮点解释: {}", value.floating);
+    }
+}
+```
+
+## 🔒 安全抽象
+
+unsafe 代码的最佳实践是在 unsafe 之上构建安全的 API：
+
+```rust
+pub struct SafeBuffer {
+    data: Vec<u8>,
+}
+
+impl SafeBuffer {
+    pub fn new(size: usize) -> Self {
+        SafeBuffer {
+            data: vec![0; size],
+        }
+    }
+
+    pub fn write(&mut self, offset: usize, value: u8) -> Result<(), &'static str> {
+        if offset >= self.data.len() {
+            return Err("偏移量超出缓冲区范围");
+        }
+
+        // 边界检查后，unsafe 操作是安全的
+        unsafe {
+            let ptr = self.data.as_mut_ptr().add(offset);
+            *ptr = value;
+        }
+
+        Ok(())
+    }
+
+    pub fn read(&self, offset: usize) -> Result<u8, &'static str> {
+        if offset >= self.data.len() {
+            return Err("偏移量超出缓冲区范围");
+        }
+
+        unsafe {
+            let ptr = self.data.as_ptr().add(offset);
+            Ok(*ptr)
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+}
+
+fn main() {
+    let mut buffer = SafeBuffer::new(16);
+
+    buffer.write(0, 0xAB).unwrap();
+    buffer.write(1, 0xCD).unwrap();
+
+    println!("buffer[0] = 0x{:02X}", buffer.read(0).unwrap());
+    println!("buffer[1] = 0x{:02X}", buffer.read(1).unwrap());
+
+    // 安全的边界检查
+    match buffer.write(100, 0xFF) {
+        Ok(()) => println!("写入成功"),
+        Err(err) => println!("错误: {}", err),
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 手动实现 split_at_mut
+
+标准库中 `split_at_mut` 的简化实现，展示如何在 unsafe 之上构建安全 API：
+
+```rust
+fn my_split_at_mut(slice: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {
+    let len = slice.len();
+    let ptr = slice.as_mut_ptr();
+
+    assert!(mid <= len, "索引 {} 超出范围 {}", mid, len);
+
+    unsafe {
+        (
+            std::slice::from_raw_parts_mut(ptr, mid),
+            std::slice::from_raw_parts_mut(ptr.add(mid), len - mid),
+        )
+    }
+}
+
+fn main() {
+    let mut data = vec![1, 2, 3, 4, 5, 6];
+
+    let (left, right) = my_split_at_mut(&mut data, 3);
+    left[0] = 10;
+    right[0] = 40;
+
+    println!("left:  {:?}", left);
+    println!("right: {:?}", right);
+}
+```
+
+## 🔗 相关概念
+
+- **[FFI](./02-ffi-foreign-function-interface)**：FFI 调用需要 unsafe
+- **[裸指针操作](./04-raw-pointer-operations)**：指针的底层操作
+- **[内联汇编](./05-inline-assembly)**：汇编也是 unsafe 操作
 
 ## 📝 学习检查点
 
-- [ ] 理解unsafe Rust 基础的核心概念
-- [ ] 能够在实际项目中应用unsafe Rust 基础
+- [ ] 理解 unsafe 的五种超能力
+- [ ] 掌握 unsafe 块和 unsafe 函数的区别
+- [ ] 能够在 unsafe 之上构建安全的 API 抽象
+- [ ] 理解 unsafe 的使用原则和最佳实践
+
+## 🚀 下一步
+
+→ [裸指针操作](./04-raw-pointer-operations)

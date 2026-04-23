@@ -5,13 +5,500 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「Axum 框架」相关知识。
+Axum 是由 Tokio 团队开发的现代 Web 框架，充分利用 Rust 的类型系统和 Tower 生态。它的核心设计理念是：路由处理函数就是普通的异步函数，参数通过**提取器（Extractor）**自动从请求中解析，无需手动处理底层 HTTP 细节。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础路由
+
+### Hello World
+
+```rust
+use axum::{routing::get, Router};
+
+async fn hello() -> &'static str {
+    "Hello, Axum!"
+}
+
+async fn health_check() -> &'static str {
+    "OK"
+}
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new()
+        .route("/", get(hello))
+        .route("/health", get(health_check));
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    println!("服务器启动于 http://localhost:3000");
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+### HTTP 方法与路由组织
+
+```rust
+use axum::{
+    routing::{get, post, put, delete},
+    Router,
+};
+
+async fn list_users() -> &'static str {
+    "用户列表"
+}
+
+async fn create_user() -> &'static str {
+    "创建用户"
+}
+
+async fn get_user() -> &'static str {
+    "获取用户"
+}
+
+async fn update_user() -> &'static str {
+    "更新用户"
+}
+
+async fn delete_user() -> &'static str {
+    "删除用户"
+}
+
+fn user_routes() -> Router {
+    Router::new()
+        .route("/", get(list_users).post(create_user))
+        .route("/{id}", get(get_user).put(update_user).delete(delete_user))
+}
+
+fn admin_routes() -> Router {
+    Router::new()
+        .route("/dashboard", get(|| async { "管理后台" }))
+        .route("/settings", get(|| async { "系统设置" }))
+}
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new()
+        .nest("/api/users", user_routes())
+        .nest("/admin", admin_routes())
+        .route("/", get(|| async { "首页" }));
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 📦 提取器（Extractor）
+
+### 路径参数与查询参数
+
+```rust
+use axum::{
+    extract::{Path, Query},
+    routing::get,
+    Router,
+};
+use serde::Deserialize;
+
+async fn get_user(Path(user_id): Path<u64>) -> String {
+    format!("用户 ID: {}", user_id)
+}
+
+async fn get_post(Path((user_id, post_id)): Path<(u64, u64)>) -> String {
+    format!("用户 {} 的文章 {}", user_id, post_id)
+}
+
+#[derive(Deserialize)]
+struct Pagination {
+    page: Option<u32>,
+    per_page: Option<u32>,
+    sort: Option<String>,
+}
+
+async fn list_items(Query(params): Query<Pagination>) -> String {
+    let page = params.page.unwrap_or(1);
+    let per_page = params.per_page.unwrap_or(20);
+    let sort = params.sort.unwrap_or_else(|| "id".to_string());
+    format!("页码: {}, 每页: {}, 排序: {}", page, per_page, sort)
+}
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new()
+        .route("/users/{id}", get(get_user))
+        .route("/users/{user_id}/posts/{post_id}", get(get_post))
+        .route("/items", get(list_items));
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+### JSON 请求与响应
+
+```rust
+use axum::{
+    extract::Json,
+    http::StatusCode,
+    routing::post,
+    Router,
+};
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct CreateUserRequest {
+    username: String,
+    email: String,
+    age: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct UserResponse {
+    id: u64,
+    username: String,
+    email: String,
+    created: bool,
+}
+
+async fn create_user(
+    Json(payload): Json<CreateUserRequest>,
+) -> (StatusCode, Json<UserResponse>) {
+    let response = UserResponse {
+        id: 1,
+        username: payload.username,
+        email: payload.email,
+        created: true,
+    };
+
+    (StatusCode::CREATED, Json(response))
+}
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new()
+        .route("/users", post(create_user));
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+### 请求头与自定义提取器
+
+```rust
+use axum::{
+    async_trait,
+    extract::FromRequestParts,
+    http::{header, request::Parts, StatusCode},
+    routing::get,
+    Router,
+};
+
+struct AuthenticatedUser {
+    user_id: u64,
+    username: String,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for AuthenticatedUser
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, String);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let auth_header = parts
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or((StatusCode::UNAUTHORIZED, "缺少 Authorization 头".to_string()))?;
+
+        if !auth_header.starts_with("Bearer ") {
+            return Err((StatusCode::UNAUTHORIZED, "无效的认证格式".to_string()));
+        }
+
+        let token = &auth_header[7..];
+
+        // 实际项目中应验证 JWT token
+        if token == "valid-token" {
+            Ok(AuthenticatedUser {
+                user_id: 1,
+                username: "alice".to_string(),
+            })
+        } else {
+            Err((StatusCode::UNAUTHORIZED, "无效的 token".to_string()))
+        }
+    }
+}
+
+async fn profile(user: AuthenticatedUser) -> String {
+    format!("你好, {} (ID: {})", user.username, user.user_id)
+}
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new()
+        .route("/profile", get(profile));
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 🗄️ 共享状态
+
+```rust
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+#[derive(Clone, Default)]
+struct AppState {
+    todos: Arc<RwLock<Vec<Todo>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Todo {
+    id: u64,
+    title: String,
+    completed: bool,
+}
+
+#[derive(Deserialize)]
+struct CreateTodoRequest {
+    title: String,
+}
+
+async fn list_todos(State(state): State<AppState>) -> Json<Vec<Todo>> {
+    let todos = state.todos.read().await;
+    Json(todos.clone())
+}
+
+async fn create_todo(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateTodoRequest>,
+) -> Json<Todo> {
+    let mut todos = state.todos.write().await;
+    let todo = Todo {
+        id: todos.len() as u64 + 1,
+        title: payload.title,
+        completed: false,
+    };
+    todos.push(todo.clone());
+    Json(todo)
+}
+
+#[tokio::main]
+async fn main() {
+    let state = AppState::default();
+
+    let app = Router::new()
+        .route("/todos", get(list_todos).post(create_todo))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的 CRUD API
+
+```rust
+use axum::{
+    extract::{Path, State, Json},
+    http::StatusCode,
+    routing::{get, post, put, delete},
+    Router,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Article {
+    id: u64,
+    title: String,
+    content: String,
+    author: String,
+    published: bool,
+}
+
+#[derive(Deserialize)]
+struct CreateArticleRequest {
+    title: String,
+    content: String,
+    author: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateArticleRequest {
+    title: Option<String>,
+    content: Option<String>,
+    published: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct ApiResponse<T: Serialize> {
+    success: bool,
+    data: Option<T>,
+    message: Option<String>,
+}
+
+type ArticleStore = Arc<RwLock<Vec<Article>>>;
+
+async fn list_articles(State(store): State<ArticleStore>) -> Json<ApiResponse<Vec<Article>>> {
+    let articles = store.read().await;
+    Json(ApiResponse {
+        success: true,
+        data: Some(articles.clone()),
+        message: None,
+    })
+}
+
+async fn get_article(
+    Path(article_id): Path<u64>,
+    State(store): State<ArticleStore>,
+) -> Result<Json<ApiResponse<Article>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let articles = store.read().await;
+    let article = articles.iter().find(|article| article.id == article_id);
+
+    match article {
+        Some(found) => Ok(Json(ApiResponse {
+            success: true,
+            data: Some(found.clone()),
+            message: None,
+        })),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse {
+                success: false,
+                data: None,
+                message: Some(format!("文章 {} 不存在", article_id)),
+            }),
+        )),
+    }
+}
+
+async fn create_article(
+    State(store): State<ArticleStore>,
+    Json(payload): Json<CreateArticleRequest>,
+) -> (StatusCode, Json<ApiResponse<Article>>) {
+    let mut articles = store.write().await;
+    let article = Article {
+        id: articles.len() as u64 + 1,
+        title: payload.title,
+        content: payload.content,
+        author: payload.author,
+        published: false,
+    };
+    articles.push(article.clone());
+
+    (StatusCode::CREATED, Json(ApiResponse {
+        success: true,
+        data: Some(article),
+        message: Some("文章创建成功".to_string()),
+    }))
+}
+
+async fn update_article(
+    Path(article_id): Path<u64>,
+    State(store): State<ArticleStore>,
+    Json(payload): Json<UpdateArticleRequest>,
+) -> Result<Json<ApiResponse<Article>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let mut articles = store.write().await;
+    let article = articles.iter_mut().find(|article| article.id == article_id);
+
+    match article {
+        Some(found) => {
+            if let Some(title) = payload.title {
+                found.title = title;
+            }
+            if let Some(content) = payload.content {
+                found.content = content;
+            }
+            if let Some(published) = payload.published {
+                found.published = published;
+            }
+            Ok(Json(ApiResponse {
+                success: true,
+                data: Some(found.clone()),
+                message: Some("文章更新成功".to_string()),
+            }))
+        }
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse {
+                success: false,
+                data: None,
+                message: Some(format!("文章 {} 不存在", article_id)),
+            }),
+        )),
+    }
+}
+
+async fn delete_article(
+    Path(article_id): Path<u64>,
+    State(store): State<ArticleStore>,
+) -> Result<Json<ApiResponse<()>>, (StatusCode, Json<ApiResponse<()>>)> {
+    let mut articles = store.write().await;
+    let original_len = articles.len();
+    articles.retain(|article| article.id != article_id);
+
+    if articles.len() < original_len {
+        Ok(Json(ApiResponse {
+            success: true,
+            data: None,
+            message: Some("文章删除成功".to_string()),
+        }))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse {
+                success: false,
+                data: None,
+                message: Some(format!("文章 {} 不存在", article_id)),
+            }),
+        ))
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let store: ArticleStore = Arc::new(RwLock::new(Vec::new()));
+
+    let app = Router::new()
+        .route("/api/articles", get(list_articles).post(create_article))
+        .route(
+            "/api/articles/{id}",
+            get(get_article).put(update_article).delete(delete_article),
+        )
+        .with_state(store);
+
+    println!("服务器启动于 http://localhost:3000");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 🔗 相关概念
+
+- **[Actix-web 框架](./03-actix-web-framework)**：另一个高性能 Web 框架
+- **[中间件与错误处理](./11-middleware-error-handling)**：Axum 中间件体系
+- **[SQLx 数据库交互](./06-sqlx-database)**：与 Axum 集成数据库
 
 ## 📝 学习检查点
 
-- [ ] 理解Axum 框架的核心概念
-- [ ] 能够在实际项目中应用Axum 框架
+- [ ] 能够创建基本路由并组织路由结构
+- [ ] 掌握提取器的使用（Path、Query、Json、State）
+- [ ] 能够实现自定义提取器进行认证
+- [ ] 掌握共享状态的管理方式
+- [ ] 能够构建完整的 CRUD API
+
+## 🚀 下一步
+
+→ [Actix-web 框架](./03-actix-web-framework)

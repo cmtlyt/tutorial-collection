@@ -5,13 +5,283 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解命令行工具开发中的「regex 正则表达式」相关知识。
+regex 是 Rust 的正则表达式库，基于有限自动机实现，保证线性时间复杂度（不会出现灾难性回溯）。它提供了丰富的模式匹配、捕获组、替换等功能，非常适合文本搜索和数据提取。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础匹配
+
+### 简单匹配与查找
+
+```rust
+use regex::Regex;
+
+fn main() {
+    let email_pattern = Regex::new(r"[\w.+-]+@[\w-]+\.[\w.]+").unwrap();
+
+    // 检查是否匹配
+    let text = "联系邮箱: alice@example.com";
+    println!("包含邮箱: {}", email_pattern.is_match(text));
+
+    // 查找第一个匹配
+    if let Some(matched) = email_pattern.find(text) {
+        println!("找到: {} (位置: {}..{})", matched.as_str(), matched.start(), matched.end());
+    }
+
+    // 查找所有匹配
+    let multi_text = "alice@example.com 和 bob@test.org 以及 charlie@mail.cn";
+    for matched in email_pattern.find_iter(multi_text) {
+        println!("邮箱: {}", matched.as_str());
+    }
+}
+```
+
+### 捕获组
+
+```rust
+use regex::Regex;
+
+fn main() {
+    // 命名捕获组
+    let log_pattern = Regex::new(
+        r"(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(?P<level>\w+)\] (?P<message>.*)"
+    ).unwrap();
+
+    let log_line = "2024-03-15 14:30:22 [ERROR] 数据库连接超时";
+
+    if let Some(captures) = log_pattern.captures(log_line) {
+        println!("时间: {}", &captures["timestamp"]);
+        println!("级别: {}", &captures["level"]);
+        println!("消息: {}", &captures["message"]);
+    }
+
+    // 遍历所有捕获
+    let url_pattern = Regex::new(r"(?P<protocol>https?)://(?P<host>[^/]+)(?P<path>/\S*)?").unwrap();
+    let text = "访问 https://example.com/api 和 http://localhost:8080/health";
+
+    for captures in url_pattern.captures_iter(text) {
+        println!(
+            "协议: {}, 主机: {}, 路径: {}",
+            &captures["protocol"],
+            &captures["host"],
+            captures.name("path").map_or("/", |m| m.as_str())
+        );
+    }
+}
+```
+
+## 🔄 文本替换
+
+```rust
+use regex::Regex;
+
+fn main() {
+    let phone_pattern = Regex::new(r"(\d{3})\d{4}(\d{4})").unwrap();
+
+    // 简单替换 - 手机号脱敏
+    let text = "联系电话: 13812345678";
+    let masked = phone_pattern.replace(text, "$1****$2");
+    println!("{}", masked);
+    // 联系电话: 138****5678
+
+    // 替换所有匹配
+    let multi_text = "号码1: 13812345678, 号码2: 15987654321";
+    let all_masked = phone_pattern.replace_all(multi_text, "$1****$2");
+    println!("{}", all_masked);
+
+    // 使用闭包进行复杂替换
+    let word_pattern = Regex::new(r"\b[a-z]+\b").unwrap();
+    let sentence = "hello world from rust";
+    let capitalized = word_pattern.replace_all(sentence, |caps: &regex::Captures| {
+        let word = caps[0].to_string();
+        let mut chars = word.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(first) => first.to_uppercase().to_string() + chars.as_str(),
+        }
+    });
+    println!("{}", capitalized);
+    // Hello World From Rust
+}
+```
+
+## ⚡ 性能优化
+
+### 编译一次，多次使用
+
+```rust
+use regex::Regex;
+use std::sync::LazyLock;
+
+// 使用 LazyLock 在首次访问时编译正则表达式
+static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[\w.+-]+@[\w-]+\.[\w.]+").unwrap()
+});
+
+static IP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(\d{1,3}\.){3}\d{1,3}\b").unwrap()
+});
+
+fn validate_email(email: &str) -> bool {
+    EMAIL_REGEX.is_match(email)
+}
+
+fn extract_ips(text: &str) -> Vec<&str> {
+    IP_REGEX.find_iter(text).map(|m| m.as_str()).collect()
+}
+
+fn main() {
+    println!("有效邮箱: {}", validate_email("user@example.com"));
+    println!("无效邮箱: {}", validate_email("not-an-email"));
+
+    let server_log = "来自 192.168.1.100 和 10.0.0.1 的请求被 172.16.0.50 转发";
+    let ip_addresses = extract_ips(server_log);
+    println!("IP 地址: {:?}", ip_addresses);
+}
+```
+
+### RegexSet 批量匹配
+
+```rust
+use regex::RegexSet;
+
+fn main() {
+    let patterns = RegexSet::new([
+        r"^\d+$",                            // 纯数字
+        r"^[a-zA-Z]+$",                      // 纯字母
+        r"^[\w.+-]+@[\w-]+\.[\w.]+$",        // 邮箱
+        r"^https?://",                        // URL
+        r"^\d{4}-\d{2}-\d{2}$",             // 日期
+    ]).unwrap();
+
+    let labels = ["纯数字", "纯字母", "邮箱", "URL", "日期"];
+
+    let test_inputs = vec![
+        "12345",
+        "hello",
+        "user@example.com",
+        "https://rust-lang.org",
+        "2024-03-15",
+        "mixed123",
+    ];
+
+    for input in test_inputs {
+        let matches: Vec<&str> = patterns
+            .matches(input)
+            .into_iter()
+            .map(|index| labels[index])
+            .collect();
+
+        if matches.is_empty() {
+            println!("\"{}\" -> 未匹配任何模式", input);
+        } else {
+            println!("\"{}\" -> {}", input, matches.join(", "));
+        }
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 日志分析器
+
+```rust
+use regex::Regex;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+static LOG_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?P<ip>\d+\.\d+\.\d+\.\d+) .* \[(?P<date>[^\]]+)\] ""(?P<method>\w+) (?P<path>[^ ]+) [^"]*"" (?P<status>\d+) (?P<size>\d+)"
+    ).unwrap()
+});
+
+struct LogEntry {
+    ip: String,
+    method: String,
+    path: String,
+    status: u16,
+    size: u64,
+}
+
+struct LogStats {
+    total_requests: usize,
+    status_counts: HashMap<u16, usize>,
+    top_paths: HashMap<String, usize>,
+    total_bytes: u64,
+}
+
+fn parse_log_line(line: &str) -> Option<LogEntry> {
+    LOG_PATTERN.captures(line).map(|caps| LogEntry {
+        ip: caps["ip"].to_string(),
+        method: caps["method"].to_string(),
+        path: caps["path"].to_string(),
+        status: caps["status"].parse().unwrap_or(0),
+        size: caps["size"].parse().unwrap_or(0),
+    })
+}
+
+fn analyze_logs(log_data: &str) -> LogStats {
+    let mut stats = LogStats {
+        total_requests: 0,
+        status_counts: HashMap::new(),
+        top_paths: HashMap::new(),
+        total_bytes: 0,
+    };
+
+    for line in log_data.lines() {
+        if let Some(entry) = parse_log_line(line) {
+            stats.total_requests += 1;
+            *stats.status_counts.entry(entry.status).or_insert(0) += 1;
+            *stats.top_paths.entry(entry.path).or_insert(0) += 1;
+            stats.total_bytes += entry.size;
+        }
+    }
+
+    stats
+}
+
+fn main() {
+    let sample_logs = r#"192.168.1.1 - - [15/Mar/2024:10:00:00 +0800] "GET /api/users HTTP/1.1" 200 1234
+192.168.1.2 - - [15/Mar/2024:10:00:01 +0800] "POST /api/login HTTP/1.1" 200 567
+192.168.1.1 - - [15/Mar/2024:10:00:02 +0800] "GET /api/users HTTP/1.1" 200 1234
+10.0.0.5 - - [15/Mar/2024:10:00:03 +0800] "GET /api/products HTTP/1.1" 404 89
+192.168.1.3 - - [15/Mar/2024:10:00:04 +0800] "DELETE /api/users/5 HTTP/1.1" 403 45"#;
+
+    let stats = analyze_logs(sample_logs);
+
+    println!("📊 日志分析报告");
+    println!("  总请求数: {}", stats.total_requests);
+    println!("  总数据量: {} bytes", stats.total_bytes);
+
+    println!("\n  状态码分布:");
+    let mut sorted_statuses: Vec<_> = stats.status_counts.iter().collect();
+    sorted_statuses.sort_by_key(|(code, _)| *code);
+    for (status, count) in sorted_statuses {
+        println!("    {}: {} 次", status, count);
+    }
+
+    println!("\n  路径访问统计:");
+    let mut sorted_paths: Vec<_> = stats.top_paths.iter().collect();
+    sorted_paths.sort_by(|first, second| second.1.cmp(first.1));
+    for (path, count) in sorted_paths {
+        println!("    {}: {} 次", path, count);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[serde 序列化与反序列化](./06-serde-serialization)**：解析后数据的结构化处理
+- **[walkdir 文件遍历](./09-walkdir-file-traversal)**：配合文件遍历做批量文本处理
+- **[clap 参数解析](./02-clap-argument-parsing)**：接受用户输入的正则模式
 
 ## 📝 学习检查点
 
-- [ ] 理解regex 正则表达式的核心概念
-- [ ] 能够在实际项目中应用regex 正则表达式
+- [ ] 掌握基础匹配、查找和捕获组的使用
+- [ ] 能够使用命名捕获组提取结构化数据
+- [ ] 理解文本替换的多种方式（模板、闭包）
+- [ ] 掌握性能优化技巧（LazyLock、RegexSet）
+- [ ] 能够构建实际的文本分析工具
+
+## 🚀 下一步
+
+→ [walkdir 文件遍历](./09-walkdir-file-traversal)

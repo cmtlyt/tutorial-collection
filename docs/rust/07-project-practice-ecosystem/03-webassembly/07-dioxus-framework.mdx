@@ -5,13 +5,252 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解WebAssembly中的「Dioxus 框架」相关知识。
+Dioxus 是一个**跨平台** Rust UI 框架，使用类 React 的 RSX 语法。一套代码可以编译到 Web（Wasm）、桌面（WebView）、移动端和终端等多个平台。它的 API 设计高度贴近 React，对前端开发者非常友好。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础组件
+
+### Hello World
+
+```rust
+use dioxus::prelude::*;
+
+fn main() {
+    dioxus::launch(App);
+}
+
+fn App() -> Element {
+    rsx! {
+        div {
+            h1 { "Hello, Dioxus!" }
+            p { "跨平台 Rust UI 框架" }
+        }
+    }
+}
+```
+
+### 状态管理
+
+```rust
+use dioxus::prelude::*;
+
+fn Counter() -> Element {
+    let mut count = use_signal(|| 0);
+
+    let doubled = use_memo(move || count() * 2);
+
+    rsx! {
+        div { class: "counter",
+            h2 { "计数器" }
+            p { "当前值: {count}" }
+            p { "双倍值: {doubled}" }
+            div { class: "buttons",
+                button { onclick: move |_| count -= 1, "-" }
+                button { onclick: move |_| count.set(0), "重置" }
+                button { onclick: move |_| count += 1, "+" }
+            }
+        }
+    }
+}
+
+fn main() {
+    dioxus::launch(Counter);
+}
+```
+
+## 📦 Props 与组件
+
+```rust
+use dioxus::prelude::*;
+
+#[derive(Props, Clone, PartialEq)]
+struct AlertProps {
+    /// 提示类型
+    variant: AlertVariant,
+    /// 提示标题
+    title: String,
+    /// 提示内容
+    children: Element,
+}
+
+#[derive(Clone, PartialEq)]
+enum AlertVariant {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+fn Alert(props: AlertProps) -> Element {
+    let (bg_color, icon) = match props.variant {
+        AlertVariant::Info => ("#e3f2fd", "ℹ️"),
+        AlertVariant::Success => ("#e8f5e9", "✅"),
+        AlertVariant::Warning => ("#fff3e0", "⚠️"),
+        AlertVariant::Error => ("#ffebee", "❌"),
+    };
+
+    rsx! {
+        div {
+            style: "background: {bg_color}; padding: 16px; border-radius: 8px; margin: 8px 0;",
+            div { style: "font-weight: bold; margin-bottom: 8px;",
+                "{icon} {props.title}"
+            }
+            div { {props.children} }
+        }
+    }
+}
+
+fn App() -> Element {
+    rsx! {
+        div {
+            Alert {
+                variant: AlertVariant::Success,
+                title: "操作成功".to_string(),
+                p { "文件已保存" }
+            }
+            Alert {
+                variant: AlertVariant::Warning,
+                title: "注意".to_string(),
+                p { "磁盘空间不足" }
+            }
+            Alert {
+                variant: AlertVariant::Error,
+                title: "错误".to_string(),
+                p { "网络连接失败" }
+            }
+        }
+    }
+}
+```
+
+## 🔄 列表与事件
+
+```rust
+use dioxus::prelude::*;
+
+#[derive(Clone, PartialEq)]
+struct Note {
+    id: u64,
+    title: String,
+    content: String,
+}
+
+fn NoteApp() -> Element {
+    let mut notes = use_signal(Vec::<Note>::new);
+    let mut next_id = use_signal(|| 1u64);
+    let mut title_input = use_signal(String::new);
+    let mut content_input = use_signal(String::new);
+
+    let add_note = move |_| {
+        let title = title_input();
+        let content = content_input();
+        if !title.is_empty() {
+            notes.write().push(Note {
+                id: next_id(),
+                title,
+                content,
+            });
+            next_id += 1;
+            title_input.set(String::new());
+            content_input.set(String::new());
+        }
+    };
+
+    rsx! {
+        div { class: "note-app",
+            h2 { "📝 笔记本" }
+
+            div { class: "form",
+                input {
+                    r#type: "text",
+                    placeholder: "标题",
+                    value: "{title_input}",
+                    oninput: move |evt| title_input.set(evt.value()),
+                }
+                textarea {
+                    placeholder: "内容...",
+                    value: "{content_input}",
+                    oninput: move |evt| content_input.set(evt.value()),
+                }
+                button { onclick: add_note, "添加笔记" }
+            }
+
+            if notes().is_empty() {
+                p { class: "empty", "暂无笔记，添加第一条吧！" }
+            }
+
+            div { class: "note-list",
+                for note in notes() {
+                    div { class: "note-card", key: "{note.id}",
+                        h3 { "{note.title}" }
+                        p { "{note.content}" }
+                        button {
+                            onclick: {
+                                let note_id = note.id;
+                                move |_| {
+                                    notes.write().retain(|n| n.id != note_id);
+                                }
+                            },
+                            "删除"
+                        }
+                    }
+                }
+            }
+
+            p { "共 {notes().len()} 条笔记" }
+        }
+    }
+}
+
+fn main() {
+    dioxus::launch(NoteApp);
+}
+```
+
+## 🖥️ 跨平台部署
+
+```bash
+# Web（Wasm）
+dx serve --platform web
+
+# 桌面
+dx serve --platform desktop
+
+# 构建发布版本
+dx build --release --platform web
+dx build --release --platform desktop
+```
+
+### Dioxus.toml 配置
+
+```toml
+[application]
+name = "my-app"
+default_platform = "web"
+
+[web.app]
+title = "My Dioxus App"
+
+[web.watcher]
+watch_path = ["src"]
+
+[web.resource]
+style = ["assets/main.css"]
+```
+
+## 🔗 相关概念
+
+- **[Yew 框架](./05-yew-framework)**：虚拟 DOM 方案
+- **[Leptos 框架](./06-leptos-framework)**：细粒度响应式方案
+- **[Trunk 构建工具](./08-trunk-build-tool)**：另一种构建方式
 
 ## 📝 学习检查点
 
-- [ ] 理解Dioxus 框架的核心概念
-- [ ] 能够在实际项目中应用Dioxus 框架
+- [ ] 理解 RSX 语法和组件定义
+- [ ] 能够使用 Signal 管理状态
+- [ ] 掌握 Props 传递和组件组合
+- [ ] 能够处理列表渲染和用户事件
+- [ ] 了解跨平台部署的方式
+
+## 🚀 下一步
+
+→ [Trunk 构建工具](./08-trunk-build-tool)

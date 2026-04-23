@@ -5,13 +5,413 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「认证与授权（JWT / OAuth）」相关知识。
+认证（Authentication）确认用户身份，授权（Authorization）决定用户权限。在 Rust Web 应用中，JWT（JSON Web Token）是最常用的无状态认证方案，通过 `jsonwebtoken` crate 实现。本节以 Axum 为例，展示完整的认证授权流程。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 JWT 基础
+
+### Token 生成与验证
+
+```rust
+use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
+use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    sub: String,        // 用户 ID
+    username: String,   // 用户名
+    role: String,       // 角色
+    exp: u64,           // 过期时间（Unix 时间戳）
+    iat: u64,           // 签发时间
+}
+
+const JWT_SECRET: &str = "your-secret-key-should-be-long-and-random";
+
+fn create_token(user_id: &str, username: &str, role: &str) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let claims = Claims {
+        sub: user_id.to_string(),
+        username: username.to_string(),
+        role: role.to_string(),
+        exp: now + 3600, // 1 小时后过期
+        iat: now,
+    };
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+    )
+}
+
+fn verify_token(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+    let token_data = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(JWT_SECRET.as_bytes()),
+        &Validation::default(),
+    )?;
+
+    Ok(token_data.claims)
+}
+
+fn main() {
+    let token = create_token("user_1", "alice", "admin").unwrap();
+    println!("JWT Token: {}", token);
+
+    match verify_token(&token) {
+        Ok(claims) => {
+            println!("用户: {} ({})", claims.username, claims.role);
+            println!("过期时间: {}", claims.exp);
+        }
+        Err(err) => println!("验证失败: {}", err),
+    }
+}
+```
+
+## 🔐 登录与注册
+
+### 密码哈希
+
+```rust
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
+
+fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let hash = argon2.hash_password(password.as_bytes(), &salt)?;
+    Ok(hash.to_string())
+}
+
+fn verify_password(password: &str, hash: &str) -> Result<bool, argon2::password_hash::Error> {
+    let parsed_hash = PasswordHash::new(hash)?;
+    Ok(Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok())
+}
+
+fn main() {
+    let password = "my_secure_password";
+
+    let hash = hash_password(password).unwrap();
+    println!("密码哈希: {}", hash);
+
+    let is_valid = verify_password(password, &hash).unwrap();
+    println!("验证结果: {}", is_valid);
+
+    let is_wrong = verify_password("wrong_password", &hash).unwrap();
+    println!("错误密码: {}", is_wrong);
+}
+```
+
+## 🛡️ Axum 认证中间件
+
+### 提取器方式
+
+```rust
+use axum::{
+    async_trait,
+    extract::FromRequestParts,
+    http::{header, request::Parts, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const JWT_SECRET: &str = "your-secret-key-should-be-long-and-random";
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Claims {
+    sub: String,
+    username: String,
+    role: String,
+    exp: u64,
+}
+
+// 认证用户提取器
+struct AuthUser {
+    user_id: String,
+    username: String,
+    role: String,
+}
+
+#[derive(Serialize)]
+struct AuthError {
+    error: String,
+}
+
+impl IntoResponse for AuthError {
+    fn into_response(self) -> Response {
+        (StatusCode::UNAUTHORIZED, Json(self)).into_response()
+    }
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for AuthUser
+where
+    S: Send + Sync,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let auth_header = parts
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or(AuthError { error: "缺少 Authorization 头".to_string() })?;
+
+        if !auth_header.starts_with("Bearer ") {
+            return Err(AuthError { error: "无效的认证格式，需要 Bearer token".to_string() });
+        }
+
+        let token = &auth_header[7..];
+
+        let claims = decode::<Claims>(
+            token,
+            &DecodingKey::from_secret(JWT_SECRET.as_bytes()),
+            &Validation::default(),
+        )
+        .map_err(|err| AuthError { error: format!("Token 验证失败: {}", err) })?
+        .claims;
+
+        Ok(AuthUser {
+            user_id: claims.sub,
+            username: claims.username,
+            role: claims.role,
+        })
+    }
+}
+
+// 角色要求提取器
+struct RequireAdmin(AuthUser);
+
+#[async_trait]
+impl<S> FromRequestParts<S> for RequireAdmin
+where
+    S: Send + Sync,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+
+        if user.role != "admin" {
+            return Err(AuthError { error: "需要管理员权限".to_string() });
+        }
+
+        Ok(RequireAdmin(user))
+    }
+}
+
+// 登录请求
+#[derive(Deserialize)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+struct LoginResponse {
+    token: String,
+    token_type: String,
+    expires_in: u64,
+}
+
+async fn login(Json(input): Json<LoginRequest>) -> Result<Json<LoginResponse>, (StatusCode, Json<AuthError>)> {
+    // 实际应用中应查询数据库并验证密码哈希
+    if input.username == "admin" && input.password == "password" {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let claims = Claims {
+            sub: "user_1".to_string(),
+            username: input.username,
+            role: "admin".to_string(),
+            exp: now + 3600,
+        };
+
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+        )
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(AuthError { error: "Token 生成失败".to_string() })))?;
+
+        Ok(Json(LoginResponse {
+            token,
+            token_type: "Bearer".to_string(),
+            expires_in: 3600,
+        }))
+    } else {
+        Err((StatusCode::UNAUTHORIZED, Json(AuthError { error: "用户名或密码错误".to_string() })))
+    }
+}
+
+async fn profile(user: AuthUser) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "user_id": user.user_id,
+        "username": user.username,
+        "role": user.role,
+    }))
+}
+
+async fn admin_dashboard(RequireAdmin(user): RequireAdmin) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "message": format!("欢迎管理员 {}", user.username),
+        "admin_panel": true,
+    }))
+}
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new()
+        .route("/auth/login", post(login))
+        .route("/api/profile", get(profile))
+        .route("/api/admin", get(admin_dashboard));
+
+    println!("认证服务启动于 http://localhost:3000");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 🔄 Token 刷新
+
+```rust
+use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
+use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const JWT_SECRET: &str = "your-secret-key-should-be-long-and-random";
+const REFRESH_SECRET: &str = "your-refresh-secret-also-long-and-random";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AccessClaims {
+    sub: String,
+    username: String,
+    role: String,
+    exp: u64,
+    token_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RefreshClaims {
+    sub: String,
+    exp: u64,
+    token_type: String,
+}
+
+struct TokenPair {
+    access_token: String,
+    refresh_token: String,
+    access_expires_in: u64,
+    refresh_expires_in: u64,
+}
+
+fn create_token_pair(user_id: &str, username: &str, role: &str) -> Result<TokenPair, jsonwebtoken::errors::Error> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let access_expires_in = 900; // 15 分钟
+    let refresh_expires_in = 604800; // 7 天
+
+    let access_claims = AccessClaims {
+        sub: user_id.to_string(),
+        username: username.to_string(),
+        role: role.to_string(),
+        exp: now + access_expires_in,
+        token_type: "access".to_string(),
+    };
+
+    let refresh_claims = RefreshClaims {
+        sub: user_id.to_string(),
+        exp: now + refresh_expires_in,
+        token_type: "refresh".to_string(),
+    };
+
+    let access_token = encode(
+        &Header::default(),
+        &access_claims,
+        &EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+    )?;
+
+    let refresh_token = encode(
+        &Header::default(),
+        &refresh_claims,
+        &EncodingKey::from_secret(REFRESH_SECRET.as_bytes()),
+    )?;
+
+    Ok(TokenPair {
+        access_token,
+        refresh_token,
+        access_expires_in,
+        refresh_expires_in,
+    })
+}
+
+fn refresh_access_token(refresh_token: &str) -> Result<String, jsonwebtoken::errors::Error> {
+    let claims = decode::<RefreshClaims>(
+        refresh_token,
+        &DecodingKey::from_secret(REFRESH_SECRET.as_bytes()),
+        &Validation::default(),
+    )?.claims;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    // 实际应用中应从数据库重新获取用户信息
+    let new_access = AccessClaims {
+        sub: claims.sub,
+        username: "alice".to_string(),
+        role: "admin".to_string(),
+        exp: now + 900,
+        token_type: "access".to_string(),
+    };
+
+    encode(
+        &Header::default(),
+        &new_access,
+        &EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+    )
+}
+
+fn main() {
+    let pair = create_token_pair("user_1", "alice", "admin").unwrap();
+    println!("Access Token: {}...", &pair.access_token[..50]);
+    println!("Refresh Token: {}...", &pair.refresh_token[..50]);
+
+    let new_access = refresh_access_token(&pair.refresh_token).unwrap();
+    println!("新 Access Token: {}...", &new_access[..50]);
+}
+```
+
+## 🔗 相关概念
+
+- **[中间件与错误处理](./11-middleware-error-handling)**：中间件架构
+- **[RESTful API 设计](./10-restful-api-design)**：API 安全设计
+- **[Redis 集成](./09-redis-integration)**：Token 黑名单与 Session 存储
 
 ## 📝 学习检查点
 
-- [ ] 理解认证与授权（JWT / OAuth）的核心概念
-- [ ] 能够在实际项目中应用认证与授权（JWT / OAuth）
+- [ ] 掌握 JWT Token 的生成和验证
+- [ ] 能够实现密码安全哈希和验证
+- [ ] 理解 Axum 自定义提取器实现认证
+- [ ] 能够实现基于角色的授权控制
+- [ ] 掌握 Token 刷新机制
+
+## 🚀 下一步
+
+→ [OpenAPI 文档生成](./13-openapi-documentation)

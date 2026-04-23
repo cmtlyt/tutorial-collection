@@ -5,13 +5,266 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「网络编程（TCP / UDP）」相关知识。
+Rust 标准库的 `std::net` 模块提供了 TCP 和 UDP 套接字编程能力。`TcpListener`/`TcpStream` 用于可靠的面向连接通信，`UdpSocket` 用于无连接的数据报通信。结合多线程或异步运行时，可以构建高性能的网络服务。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 TCP 编程
+
+### TCP 服务器
+
+```rust
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+
+fn handle_client(mut stream: TcpStream) {
+    let peer_addr = stream.peer_addr().unwrap();
+    println!("客户端连接: {}", peer_addr);
+
+    let reader = BufReader::new(stream.try_clone().unwrap());
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => break,
+        };
+
+        println!("[{}] 收到: {}", peer_addr, line);
+
+        if line.trim().eq_ignore_ascii_case("quit") {
+            let _ = stream.write_all(b"Goodbye!\n");
+            break;
+        }
+
+        // 回显：将消息转大写返回
+        let response = format!("ECHO: {}\n", line.to_uppercase());
+        if stream.write_all(response.as_bytes()).is_err() {
+            break;
+        }
+    }
+
+    println!("客户端断开: {}", peer_addr);
+}
+
+fn main() -> std::io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:7878")?;
+    println!("TCP 服务器监听在 127.0.0.1:7878");
+
+    for stream in listener.incoming() {
+        let stream = stream?;
+        thread::spawn(move || {
+            handle_client(stream);
+        });
+    }
+
+    Ok(())
+}
+```
+
+### TCP 客户端
+
+```rust
+use std::io::{self, BufRead, BufReader, Write};
+use std::net::TcpStream;
+
+fn main() -> io::Result<()> {
+    let mut stream = TcpStream::connect("127.0.0.1:7878")?;
+    println!("已连接到服务器");
+
+    let reader = BufReader::new(stream.try_clone()?);
+    let mut reader_lines = reader.lines();
+
+    let messages = ["Hello, Server!", "Rust is great", "quit"];
+
+    for message in &messages {
+        println!("发送: {}", message);
+        writeln!(stream, "{}", message)?;
+        stream.flush()?;
+
+        if let Some(Ok(response)) = reader_lines.next() {
+            println!("收到: {}", response);
+        }
+    }
+
+    Ok(())
+}
+```
+
+## 📡 UDP 编程
+
+### UDP 服务器
+
+```rust
+use std::net::UdpSocket;
+
+fn main() -> std::io::Result<()> {
+    let socket = UdpSocket::bind("127.0.0.1:8080")?;
+    println!("UDP 服务器监听在 127.0.0.1:8080");
+
+    let mut buffer = [0u8; 1024];
+
+    loop {
+        let (bytes_received, source_addr) = socket.recv_from(&mut buffer)?;
+        let message = String::from_utf8_lossy(&buffer[..bytes_received]);
+
+        println!("[{}] 收到: {}", source_addr, message.trim());
+
+        if message.trim().eq_ignore_ascii_case("quit") {
+            let response = "Server shutting down";
+            socket.send_to(response.as_bytes(), source_addr)?;
+            break;
+        }
+
+        // 回复
+        let response = format!("ACK: {}", message.trim());
+        socket.send_to(response.as_bytes(), source_addr)?;
+    }
+
+    Ok(())
+}
+```
+
+### UDP 客户端
+
+```rust
+use std::net::UdpSocket;
+
+fn main() -> std::io::Result<()> {
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    let server_addr = "127.0.0.1:8080";
+
+    let messages = ["Hello UDP", "Ping", "quit"];
+
+    for message in &messages {
+        println!("发送: {}", message);
+        socket.send_to(message.as_bytes(), server_addr)?;
+
+        let mut buffer = [0u8; 1024];
+        let (bytes_received, _) = socket.recv_from(&mut buffer)?;
+        let response = String::from_utf8_lossy(&buffer[..bytes_received]);
+        println!("收到: {}", response);
+    }
+
+    Ok(())
+}
+```
+
+## 📝 实际应用示例
+
+### 简易 HTTP 服务器
+
+```rust
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+
+fn parse_request(reader: &mut BufReader<&TcpStream>) -> Option<(String, String, HashMap<String, String>)> {
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).ok()?;
+
+    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let method = parts[0].to_string();
+    let path = parts[1].to_string();
+
+    // 解析请求头
+    let mut headers = HashMap::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).ok()?;
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            break;
+        }
+        if let Some((key, value)) = line.split_once(": ") {
+            headers.insert(key.to_lowercase(), value.to_string());
+        }
+    }
+
+    Some((method, path, headers))
+}
+
+fn handle_request(stream: TcpStream) {
+    let mut reader = BufReader::new(&stream);
+
+    let (method, path, headers) = match parse_request(&mut reader) {
+        Some(req) => req,
+        None => return,
+    };
+
+    println!("{} {} - Host: {}", method, path, headers.get("host").unwrap_or(&"unknown".to_string()));
+
+    let (status, content_type, body) = match (method.as_str(), path.as_str()) {
+        ("GET", "/") => (
+            "200 OK",
+            "text/html",
+            "<html><body><h1>Hello from Rust!</h1><p>简易 HTTP 服务器</p></body></html>".to_string(),
+        ),
+        ("GET", "/api/time") => {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (
+                "200 OK",
+                "application/json",
+                format!("{{\"timestamp\":{}}}", timestamp),
+            )
+        }
+        ("GET", "/api/health") => (
+            "200 OK",
+            "application/json",
+            "{\"status\":\"ok\"}".to_string(),
+        ),
+        _ => (
+            "404 Not Found",
+            "text/html",
+            "<html><body><h1>404 Not Found</h1></body></html>".to_string(),
+        ),
+    };
+
+    let response = format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        content_type,
+        body.len(),
+        body
+    );
+
+    let mut writer = stream;
+    let _ = writer.write_all(response.as_bytes());
+}
+
+fn main() -> std::io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8000")?;
+    println!("HTTP 服务器运行在 http://127.0.0.1:8000");
+
+    for stream in listener.incoming() {
+        let stream = stream?;
+        thread::spawn(move || handle_request(stream));
+    }
+
+    Ok(())
+}
+```
+
+## 🔗 相关概念
+
+- **[文件系统操作](./09-filesystem-operations)**：文件传输场景
+- **[进程与信号处理](./11-process-signal-handling)**：服务器进程管理
+- **[内存映射](./12-memory-mapping)**：高效数据传输
 
 ## 📝 学习检查点
 
-- [ ] 理解网络编程（TCP / UDP）的核心概念
-- [ ] 能够在实际项目中应用网络编程（TCP / UDP）
+- [ ] 能够创建 TCP 服务器和客户端
+- [ ] 能够使用 UDP 进行无连接通信
+- [ ] 理解多线程并发处理连接
+- [ ] 能够解析 HTTP 请求和构造响应
+- [ ] 掌握套接字的基本配置和错误处理
+
+## 🚀 下一步
+
+→ [进程与信号处理](./11-process-signal-handling)

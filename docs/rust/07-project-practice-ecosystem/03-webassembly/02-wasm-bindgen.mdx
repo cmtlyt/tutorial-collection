@@ -5,13 +5,353 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解WebAssembly中的「wasm-bindgen」相关知识。
+wasm-bindgen 是 Rust 与 JavaScript 之间的桥梁库，它自动生成 Rust 和 JavaScript 之间的绑定代码，处理类型转换和内存管理。通过 `#[wasm_bindgen]` 属性宏，可以将 Rust 函数导出给 JS 调用，也可以在 Rust 中调用 JS 函数和 Web API。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 导出 Rust 函数
+
+### 基本导出
+
+```rust
+use wasm_bindgen::prelude::*;
+
+// 导出简单函数
+#[wasm_bindgen]
+pub fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
+// 导出数值计算函数
+#[wasm_bindgen]
+pub fn fibonacci(n: u32) -> u64 {
+    if n <= 1 {
+        return n as u64;
+    }
+    let mut previous = 0u64;
+    let mut current = 1u64;
+    for _ in 2..=n {
+        let next = previous + current;
+        previous = current;
+        current = next;
+    }
+    current
+}
+
+// 导出带有多个参数的函数
+#[wasm_bindgen]
+pub fn add(left: f64, right: f64) -> f64 {
+    left + right
+}
+```
+
+在 JavaScript 中调用：
+
+```js
+import init, { greet, fibonacci, add } from './pkg/my_wasm.js'
+
+await init()
+
+console.log(greet('World')) // "Hello, World!"
+console.log(fibonacci(10)) // 55n
+console.log(add(1.5, 2.3)) // 3.8
+```
+
+### 导出结构体
+
+```rust
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub struct Counter {
+    value: i32,
+    step: i32,
+}
+
+#[wasm_bindgen]
+impl Counter {
+    #[wasm_bindgen(constructor)]
+    pub fn new(initial: i32, step: i32) -> Counter {
+        Counter { value: initial, step }
+    }
+
+    pub fn increment(&mut self) {
+        self.value += self.step;
+    }
+
+    pub fn decrement(&mut self) {
+        self.value -= self.step;
+    }
+
+    pub fn reset(&mut self) {
+        self.value = 0;
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn value(&self) -> i32 {
+        self.value
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_value(&mut self, value: i32) {
+        self.value = value;
+    }
+}
+```
+
+在 JavaScript 中使用：
+
+```js
+import { Counter } from './pkg/my_wasm.js'
+
+const counter = new Counter(0, 1)
+counter.increment()
+counter.increment()
+console.log(counter.value) // 2
+counter.value = 10
+console.log(counter.value) // 10
+counter.free() // 释放 Wasm 内存
+```
+
+## 📥 调用 JavaScript
+
+### 导入 JS 函数
+
+```rust
+use wasm_bindgen::prelude::*;
+
+// 导入 JavaScript 全局函数
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn console_log_value(value: &JsValue);
+
+    fn alert(s: &str);
+
+    #[wasm_bindgen(js_namespace = Math)]
+    fn random() -> f64;
+
+    #[wasm_bindgen(js_namespace = Date, js_name = now)]
+    fn date_now() -> f64;
+}
+
+#[wasm_bindgen]
+pub fn demo_js_calls() {
+    log("从 Rust 调用 console.log");
+
+    let random_value = random();
+    log(&format!("随机数: {}", random_value));
+
+    let timestamp = date_now();
+    log(&format!("时间戳: {}", timestamp));
+}
+```
+
+### 导入 JS 类
+
+```rust
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    type HTMLDocument;
+
+    #[wasm_bindgen(method, js_name = createElement)]
+    fn create_element(this: &HTMLDocument, tag: &str) -> Element;
+
+    #[wasm_bindgen(method, js_name = getElementById)]
+    fn get_element_by_id(this: &HTMLDocument, id: &str) -> Option<Element>;
+
+    type Element;
+
+    #[wasm_bindgen(method, setter, js_name = innerHTML)]
+    fn set_inner_html(this: &Element, html: &str);
+
+    #[wasm_bindgen(method, js_name = appendChild)]
+    fn append_child(this: &Element, child: &Element);
+
+    #[wasm_bindgen(method, js_name = setAttribute)]
+    fn set_attribute(this: &Element, name: &str, value: &str);
+}
+```
+
+## 🔄 类型转换
+
+### JsValue 与 Rust 类型
+
+```rust
+use wasm_bindgen::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct UserData {
+    pub name: String,
+    pub age: u32,
+    pub hobbies: Vec<String>,
+}
+
+// 使用 serde_wasm_bindgen 进行复杂类型转换
+#[wasm_bindgen]
+pub fn process_user_data(js_data: JsValue) -> Result<JsValue, JsValue> {
+    let user: UserData = serde_wasm_bindgen::from_value(js_data)
+        .map_err(|err| JsValue::from_str(&format!("解析错误: {}", err)))?;
+
+    let greeting = format!(
+        "你好 {}，你 {} 岁了，爱好有: {}",
+        user.name,
+        user.age,
+        user.hobbies.join("、")
+    );
+
+    let result = serde_json::json!({
+        "greeting": greeting,
+        "hobby_count": user.hobbies.len(),
+    });
+
+    serde_wasm_bindgen::to_value(&result)
+        .map_err(|err| JsValue::from_str(&format!("序列化错误: {}", err)))
+}
+
+// 返回 Uint8Array
+#[wasm_bindgen]
+pub fn generate_bytes(length: usize) -> Vec<u8> {
+    (0..length).map(|index| (index % 256) as u8).collect()
+}
+```
+
+## ⚠️ 错误处理
+
+```rust
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn divide(numerator: f64, denominator: f64) -> Result<f64, JsValue> {
+    if denominator == 0.0 {
+        return Err(JsValue::from_str("除数不能为零"));
+    }
+    Ok(numerator / denominator)
+}
+
+#[wasm_bindgen]
+pub fn parse_json(json_str: &str) -> Result<JsValue, JsValue> {
+    let parsed: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|err| JsValue::from_str(&format!("JSON 解析错误: {}", err)))?;
+
+    serde_wasm_bindgen::to_value(&parsed)
+        .map_err(|err| JsValue::from_str(&format!("转换错误: {}", err)))
+}
+```
+
+在 JavaScript 中捕获错误：
+
+```js
+import { divide, parse_json } from './pkg/my_wasm.js'
+
+try {
+  const result = divide(10, 0)
+} catch (error) {
+  console.error(error) // "除数不能为零"
+}
+```
+
+## 📝 实际应用示例
+
+### 图像处理模块
+
+```rust
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub struct ImageProcessor {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl ImageProcessor {
+    #[wasm_bindgen(constructor)]
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> ImageProcessor {
+        ImageProcessor { width, height, pixels }
+    }
+
+    pub fn grayscale(&mut self) {
+        for chunk in self.pixels.chunks_exact_mut(4) {
+            let red = chunk[0] as f32;
+            let green = chunk[1] as f32;
+            let blue = chunk[2] as f32;
+            let gray = (0.299 * red + 0.587 * green + 0.114 * blue) as u8;
+            chunk[0] = gray;
+            chunk[1] = gray;
+            chunk[2] = gray;
+            // alpha 通道保持不变
+        }
+    }
+
+    pub fn invert(&mut self) {
+        for chunk in self.pixels.chunks_exact_mut(4) {
+            chunk[0] = 255 - chunk[0];
+            chunk[1] = 255 - chunk[1];
+            chunk[2] = 255 - chunk[2];
+        }
+    }
+
+    pub fn adjust_brightness(&mut self, factor: f32) {
+        for chunk in self.pixels.chunks_exact_mut(4) {
+            chunk[0] = (chunk[0] as f32 * factor).min(255.0) as u8;
+            chunk[1] = (chunk[1] as f32 * factor).min(255.0) as u8;
+            chunk[2] = (chunk[2] as f32 * factor).min(255.0) as u8;
+        }
+    }
+
+    pub fn pixels(&self) -> Vec<u8> {
+        self.pixels.clone()
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+}
+```
+
+在 JavaScript 中使用：
+
+```js
+import { ImageProcessor } from './pkg/my_wasm.js'
+
+const canvas = document.getElementById('canvas')
+const ctx = canvas.getContext('2d')
+const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+
+const processor = new ImageProcessor(canvas.width, canvas.height, imageData.data)
+processor.grayscale()
+
+const processedPixels = processor.pixels()
+const newImageData = new ImageData(new Uint8ClampedArray(processedPixels), canvas.width, canvas.height)
+ctx.putImageData(newImageData, 0, 0)
+
+processor.free()
+```
+
+## 🔗 相关概念
+
+- **[wasm-pack](./03-wasm-pack)**：打包和发布 Wasm 模块
+- **[JavaScript 互操作](./04-javascript-interop)**：深入 JS 交互
+- **[WebAssembly 总览](./01-webassembly-overview)**：Wasm 概述
 
 ## 📝 学习检查点
 
-- [ ] 理解wasm-bindgen的核心概念
-- [ ] 能够在实际项目中应用wasm-bindgen
+- [ ] 能够使用 `#[wasm_bindgen]` 导出 Rust 函数和结构体
+- [ ] 掌握从 Rust 调用 JavaScript 函数的方式
+- [ ] 理解 JsValue 与 Rust 类型之间的转换
+- [ ] 能够处理 Wasm 中的错误并传递给 JS
+- [ ] 能够构建实际的 Wasm 处理模块
+
+## 🚀 下一步
+
+→ [wasm-pack](./03-wasm-pack)

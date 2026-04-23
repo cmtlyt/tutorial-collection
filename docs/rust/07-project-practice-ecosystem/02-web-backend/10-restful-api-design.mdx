@@ -5,13 +5,487 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「RESTful API 设计」相关知识。
+RESTful API 是一种基于 HTTP 协议的 API 设计风格，通过资源（Resource）、HTTP 方法（GET/POST/PUT/DELETE）和统一的响应格式来构建可预测、易维护的 Web 接口。本节以 Axum 框架为例，展示 Rust 中 RESTful API 的设计最佳实践。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 资源与路由设计
+
+### 资源命名规范
+
+| 操作 | HTTP 方法 | 路由 | 说明 |
+|------|----------|------|------|
+| 列表 | GET | `/api/articles` | 获取资源集合 |
+| 详情 | GET | `/api/articles/{id}` | 获取单个资源 |
+| 创建 | POST | `/api/articles` | 创建新资源 |
+| 全量更新 | PUT | `/api/articles/{id}` | 替换整个资源 |
+| 部分更新 | PATCH | `/api/articles/{id}` | 修改部分字段 |
+| 删除 | DELETE | `/api/articles/{id}` | 删除资源 |
+| 子资源 | GET | `/api/articles/{id}/comments` | 嵌套资源 |
+
+### 路由组织
+
+```rust
+use axum::{
+    routing::{get, post, put, patch, delete},
+    Router,
+};
+
+fn article_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list_articles).post(create_article))
+        .route("/{id}", get(get_article).put(update_article).patch(patch_article).delete(delete_article))
+        .route("/{id}/comments", get(list_comments).post(create_comment))
+}
+
+fn user_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list_users).post(create_user))
+        .route("/{id}", get(get_user).put(update_user).delete(delete_user))
+        .route("/me", get(get_current_user))
+}
+
+fn build_router(state: AppState) -> Router {
+    Router::new()
+        .nest("/api/articles", article_routes())
+        .nest("/api/users", user_routes())
+        .route("/api/health", get(health_check))
+        .with_state(state)
+}
+```
+
+## 📦 统一响应格式
+
+```rust
+use axum::{http::StatusCode, response::IntoResponse, Json};
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct ApiResponse<T: Serialize> {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pagination: Option<PaginationMeta>,
+}
+
+#[derive(Serialize)]
+struct PaginationMeta {
+    page: u64,
+    per_page: u64,
+    total: u64,
+    total_pages: u64,
+}
+
+#[derive(Serialize)]
+struct ErrorDetail {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    field: Option<String>,
+}
+
+impl<T: Serialize> ApiResponse<T> {
+    fn success(data: T) -> (StatusCode, Json<Self>) {
+        (StatusCode::OK, Json(Self {
+            success: true,
+            data: Some(data),
+            message: None,
+            pagination: None,
+        }))
+    }
+
+    fn created(data: T) -> (StatusCode, Json<Self>) {
+        (StatusCode::CREATED, Json(Self {
+            success: true,
+            data: Some(data),
+            message: Some("资源创建成功".to_string()),
+            pagination: None,
+        }))
+    }
+
+    fn paginated(data: T, pagination: PaginationMeta) -> (StatusCode, Json<Self>) {
+        (StatusCode::OK, Json(Self {
+            success: true,
+            data: Some(data),
+            message: None,
+            pagination: Some(pagination),
+        }))
+    }
+}
+
+impl ApiResponse<()> {
+    fn deleted() -> (StatusCode, Json<Self>) {
+        (StatusCode::OK, Json(Self {
+            success: true,
+            data: None,
+            message: Some("资源已删除".to_string()),
+            pagination: None,
+        }))
+    }
+
+    fn error(status: StatusCode, code: &str, message: &str) -> (StatusCode, Json<Self>) {
+        (status, Json(Self {
+            success: false,
+            data: None,
+            message: Some(format!("{}:{}", code, message)),
+            pagination: None,
+        }))
+    }
+}
+```
+
+## 🔍 查询参数与分页
+
+```rust
+use axum::extract::Query;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct ListParams {
+    // 分页
+    page: Option<u64>,
+    per_page: Option<u64>,
+
+    // 排序
+    sort_by: Option<String>,
+    order: Option<SortOrder>,
+
+    // 过滤
+    status: Option<String>,
+    search: Option<String>,
+    created_after: Option<String>,
+    created_before: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SortOrder {
+    Asc,
+    Desc,
+}
+
+impl Default for SortOrder {
+    fn default() -> Self {
+        SortOrder::Desc
+    }
+}
+
+async fn list_articles(
+    Query(params): Query<ListParams>,
+) -> impl IntoResponse {
+    let page = params.page.unwrap_or(1);
+    let per_page = params.per_page.unwrap_or(20).min(100); // 最大 100 条
+
+    // 模拟数据查询
+    let articles: Vec<Article> = vec![];
+    let total = 0u64;
+    let total_pages = if total == 0 { 0 } else { (total + per_page - 1) / per_page };
+
+    ApiResponse::paginated(
+        articles,
+        PaginationMeta { page, per_page, total, total_pages },
+    )
+}
+```
+
+## ✅ 请求验证
+
+```rust
+use axum::{extract::Json, http::StatusCode};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct CreateArticleRequest {
+    title: String,
+    content: String,
+    tags: Option<Vec<String>>,
+}
+
+struct ValidationError {
+    field: String,
+    message: String,
+}
+
+fn validate_create_article(input: &CreateArticleRequest) -> Result<(), Vec<ValidationError>> {
+    let mut errors = Vec::new();
+
+    if input.title.trim().is_empty() {
+        errors.push(ValidationError {
+            field: "title".to_string(),
+            message: "标题不能为空".to_string(),
+        });
+    } else if input.title.len() > 200 {
+        errors.push(ValidationError {
+            field: "title".to_string(),
+            message: "标题不能超过 200 个字符".to_string(),
+        });
+    }
+
+    if input.content.trim().is_empty() {
+        errors.push(ValidationError {
+            field: "content".to_string(),
+            message: "内容不能为空".to_string(),
+        });
+    }
+
+    if let Some(ref tags) = input.tags {
+        if tags.len() > 10 {
+            errors.push(ValidationError {
+                field: "tags".to_string(),
+                message: "标签不能超过 10 个".to_string(),
+            });
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+async fn create_article(
+    Json(input): Json<CreateArticleRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if let Err(errors) = validate_create_article(&input) {
+        let error_details: Vec<serde_json::Value> = errors
+            .iter()
+            .map(|err| serde_json::json!({
+                "field": err.field,
+                "message": err.message,
+            }))
+            .collect();
+
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "success": false,
+                "message": "请求参数验证失败",
+                "errors": error_details,
+            })),
+        ));
+    }
+
+    let article = Article {
+        id: 1,
+        title: input.title,
+        content: input.content,
+        tags: input.tags.unwrap_or_default(),
+    };
+
+    Ok(ApiResponse::created(article))
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的博客 API
+
+```rust
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post, put, delete},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+// 数据模型
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Article {
+    id: u64,
+    title: String,
+    content: String,
+    tags: Vec<String>,
+    published: bool,
+    created_at: String,
+}
+
+// 请求模型
+#[derive(Deserialize)]
+struct CreateArticleInput {
+    title: String,
+    content: String,
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct UpdateArticleInput {
+    title: Option<String>,
+    content: Option<String>,
+    tags: Option<Vec<String>>,
+    published: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct ArticleListParams {
+    page: Option<u64>,
+    per_page: Option<u64>,
+    tag: Option<String>,
+    published: Option<bool>,
+    search: Option<String>,
+}
+
+// 响应模型
+#[derive(Serialize)]
+struct ListResponse<T: Serialize> {
+    items: Vec<T>,
+    page: u64,
+    per_page: u64,
+    total: u64,
+}
+
+// 状态
+#[derive(Clone, Default)]
+struct AppState {
+    articles: Arc<RwLock<Vec<Article>>>,
+    next_id: Arc<RwLock<u64>>,
+}
+
+// GET /api/articles
+async fn list_articles(
+    State(state): State<AppState>,
+    Query(params): Query<ArticleListParams>,
+) -> Json<ListResponse<Article>> {
+    let articles = state.articles.read().await;
+    let page = params.page.unwrap_or(1);
+    let per_page = params.per_page.unwrap_or(10).min(100);
+
+    let filtered: Vec<&Article> = articles
+        .iter()
+        .filter(|article| {
+            let tag_match = params.tag.as_ref().map_or(true, |tag| article.tags.contains(tag));
+            let pub_match = params.published.map_or(true, |p| article.published == p);
+            let search_match = params.search.as_ref().map_or(true, |query| {
+                article.title.contains(query.as_str()) || article.content.contains(query.as_str())
+            });
+            tag_match && pub_match && search_match
+        })
+        .collect();
+
+    let total = filtered.len() as u64;
+    let start = ((page - 1) * per_page) as usize;
+    let items: Vec<Article> = filtered
+        .into_iter()
+        .skip(start)
+        .take(per_page as usize)
+        .cloned()
+        .collect();
+
+    Json(ListResponse { items, page, per_page, total })
+}
+
+// GET /api/articles/:id
+async fn get_article(
+    State(state): State<AppState>,
+    Path(article_id): Path<u64>,
+) -> Result<Json<Article>, StatusCode> {
+    let articles = state.articles.read().await;
+    articles
+        .iter()
+        .find(|a| a.id == article_id)
+        .cloned()
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+// POST /api/articles
+async fn create_article(
+    State(state): State<AppState>,
+    Json(input): Json<CreateArticleInput>,
+) -> (StatusCode, Json<Article>) {
+    let mut next_id = state.next_id.write().await;
+    *next_id += 1;
+
+    let article = Article {
+        id: *next_id,
+        title: input.title,
+        content: input.content,
+        tags: input.tags.unwrap_or_default(),
+        published: false,
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+    };
+
+    state.articles.write().await.push(article.clone());
+    (StatusCode::CREATED, Json(article))
+}
+
+// PUT /api/articles/:id
+async fn update_article(
+    State(state): State<AppState>,
+    Path(article_id): Path<u64>,
+    Json(input): Json<UpdateArticleInput>,
+) -> Result<Json<Article>, StatusCode> {
+    let mut articles = state.articles.write().await;
+    let article = articles
+        .iter_mut()
+        .find(|a| a.id == article_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if let Some(title) = input.title { article.title = title; }
+    if let Some(content) = input.content { article.content = content; }
+    if let Some(tags) = input.tags { article.tags = tags; }
+    if let Some(published) = input.published { article.published = published; }
+
+    Ok(Json(article.clone()))
+}
+
+// DELETE /api/articles/:id
+async fn delete_article(
+    State(state): State<AppState>,
+    Path(article_id): Path<u64>,
+) -> Result<StatusCode, StatusCode> {
+    let mut articles = state.articles.write().await;
+    let len_before = articles.len();
+    articles.retain(|a| a.id != article_id);
+
+    if articles.len() < len_before {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+// GET /api/health
+async fn health_check() -> Json<serde_json::Value> {
+    Json(serde_json::json!({"status": "ok"}))
+}
+
+#[tokio::main]
+async fn main() {
+    let state = AppState::default();
+
+    let app = Router::new()
+        .route("/api/articles", get(list_articles).post(create_article))
+        .route("/api/articles/{id}", get(get_article).put(update_article).delete(delete_article))
+        .route("/api/health", get(health_check))
+        .with_state(state);
+
+    println!("博客 API 启动于 http://localhost:3000");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 🔗 相关概念
+
+- **[Axum 框架](./02-axum-framework)**：API 实现框架
+- **[中间件与错误处理](./11-middleware-error-handling)**：全局错误处理
+- **[认证与授权](./12-authentication-authorization)**：API 安全保护
+- **[OpenAPI 文档生成](./13-openapi-documentation)**：API 文档自动化
 
 ## 📝 学习检查点
 
-- [ ] 理解RESTful API 设计的核心概念
-- [ ] 能够在实际项目中应用RESTful API 设计
+- [ ] 理解 RESTful 资源命名和路由设计规范
+- [ ] 能够设计统一的 API 响应格式
+- [ ] 掌握分页、排序、过滤等查询参数处理
+- [ ] 能够实现请求验证和错误响应
+- [ ] 能够构建完整的 RESTful CRUD API
+
+## 🚀 下一步
+
+→ [中间件与错误处理](./11-middleware-error-handling)

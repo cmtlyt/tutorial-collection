@@ -5,13 +5,436 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「Actix-web 框架」相关知识。
+Actix-web 是 Rust 生态中性能最高的 Web 框架之一，在 TechEmpower 基准测试中持续名列前茅。它基于 Actor 模型设计，提供了强大的并发处理能力、灵活的中间件系统和丰富的提取器。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础路由
+
+### Hello World
+
+```rust
+use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+
+async fn hello() -> impl Responder {
+    HttpResponse::Ok().body("Hello, Actix-web!")
+}
+
+async fn health() -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({
+        "status": "healthy"
+    }))
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    println!("服务器启动于 http://localhost:8080");
+
+    HttpServer::new(|| {
+        App::new()
+            .route("/", web::get().to(hello))
+            .route("/health", web::get().to(health))
+    })
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await
+}
+```
+
+### 路由组织与 Scope
+
+```rust
+use actix_web::{web, App, HttpResponse, HttpServer};
+
+async fn list_users() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!([
+        {"id": 1, "name": "Alice"},
+        {"id": 2, "name": "Bob"}
+    ]))
+}
+
+async fn get_user(path: web::Path<u64>) -> HttpResponse {
+    let user_id = path.into_inner();
+    HttpResponse::Ok().json(serde_json::json!({
+        "id": user_id,
+        "name": "Alice"
+    }))
+}
+
+async fn create_user() -> HttpResponse {
+    HttpResponse::Created().json(serde_json::json!({
+        "message": "用户已创建"
+    }))
+}
+
+fn configure_user_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/users")
+            .route("", web::get().to(list_users))
+            .route("", web::post().to(create_user))
+            .route("/{id}", web::get().to(get_user)),
+    );
+}
+
+fn configure_admin_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/admin")
+            .route("/dashboard", web::get().to(|| async {
+                HttpResponse::Ok().body("管理后台")
+            })),
+    );
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        App::new()
+            .service(
+                web::scope("/api")
+                    .configure(configure_user_routes)
+                    .configure(configure_admin_routes),
+            )
+    })
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await
+}
+```
+
+## 📦 提取器
+
+### JSON、Path 与 Query
+
+```rust
+use actix_web::{web, App, HttpResponse, HttpServer};
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct CreateTodoRequest {
+    title: String,
+    description: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TodoResponse {
+    id: u64,
+    title: String,
+    description: Option<String>,
+    completed: bool,
+}
+
+#[derive(Deserialize)]
+struct ListQuery {
+    page: Option<u32>,
+    limit: Option<u32>,
+    completed: Option<bool>,
+}
+
+async fn create_todo(body: web::Json<CreateTodoRequest>) -> HttpResponse {
+    let todo = TodoResponse {
+        id: 1,
+        title: body.title.clone(),
+        description: body.description.clone(),
+        completed: false,
+    };
+    HttpResponse::Created().json(todo)
+}
+
+async fn get_todo(path: web::Path<u64>) -> HttpResponse {
+    let todo_id = path.into_inner();
+    HttpResponse::Ok().json(TodoResponse {
+        id: todo_id,
+        title: "示例待办".to_string(),
+        description: Some("这是一个示例".to_string()),
+        completed: false,
+    })
+}
+
+async fn list_todos(query: web::Query<ListQuery>) -> HttpResponse {
+    let page = query.page.unwrap_or(1);
+    let limit = query.limit.unwrap_or(10);
+    HttpResponse::Ok().json(serde_json::json!({
+        "page": page,
+        "limit": limit,
+        "completed_filter": query.completed,
+        "items": []
+    }))
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        App::new()
+            .route("/todos", web::get().to(list_todos))
+            .route("/todos", web::post().to(create_todo))
+            .route("/todos/{id}", web::get().to(get_todo))
+    })
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await
+}
+```
+
+## 🗄️ 共享状态
+
+```rust
+use actix_web::{web, App, HttpResponse, HttpServer};
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Note {
+    id: u64,
+    title: String,
+    body: String,
+}
+
+struct AppState {
+    notes: Mutex<Vec<Note>>,
+    app_name: String,
+}
+
+#[derive(Deserialize)]
+struct CreateNoteRequest {
+    title: String,
+    body: String,
+}
+
+async fn list_notes(data: web::Data<AppState>) -> HttpResponse {
+    let notes = data.notes.lock().unwrap();
+    HttpResponse::Ok().json(serde_json::json!({
+        "app": data.app_name,
+        "notes": *notes
+    }))
+}
+
+async fn create_note(
+    data: web::Data<AppState>,
+    body: web::Json<CreateNoteRequest>,
+) -> HttpResponse {
+    let mut notes = data.notes.lock().unwrap();
+    let note = Note {
+        id: notes.len() as u64 + 1,
+        title: body.title.clone(),
+        body: body.body.clone(),
+    };
+    notes.push(note.clone());
+    HttpResponse::Created().json(note)
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let state = web::Data::new(AppState {
+        notes: Mutex::new(Vec::new()),
+        app_name: "NoteApp".to_string(),
+    });
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(state.clone())
+            .route("/notes", web::get().to(list_notes))
+            .route("/notes", web::post().to(create_note))
+    })
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await
+}
+```
+
+## 🔌 中间件
+
+```rust
+use actix_web::{dev::ServiceRequest, web, App, Error, HttpServer, HttpResponse, middleware};
+use actix_web_httpauth::extractors::bearer::BearerAuth;
+use actix_web_httpauth::middleware::HttpAuthentication;
+
+async fn validator(
+    req: ServiceRequest,
+    credentials: BearerAuth,
+) -> Result<ServiceRequest, (Error, ServiceRequest)> {
+    if credentials.token() == "valid-token" {
+        Ok(req)
+    } else {
+        let error = actix_web::error::ErrorUnauthorized("无效的 token");
+        Err((error, req))
+    }
+}
+
+async fn protected() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({
+        "message": "受保护的资源"
+    }))
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        let auth = HttpAuthentication::bearer(validator);
+
+        App::new()
+            .wrap(middleware::Logger::default())
+            .service(
+                web::scope("/api")
+                    .wrap(auth)
+                    .route("/protected", web::get().to(protected)),
+            )
+    })
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await
+}
+```
+
+## 📝 实际应用示例
+
+### 带分页的书签管理 API
+
+```rust
+use actix_web::{web, App, HttpResponse, HttpServer};
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Bookmark {
+    id: u64,
+    url: String,
+    title: String,
+    tags: Vec<String>,
+}
+
+struct BookmarkStore {
+    items: Mutex<Vec<Bookmark>>,
+}
+
+#[derive(Deserialize)]
+struct CreateBookmarkRequest {
+    url: String,
+    title: String,
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    keyword: Option<String>,
+    tag: Option<String>,
+    page: Option<usize>,
+    per_page: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct PaginatedResponse {
+    items: Vec<Bookmark>,
+    total: usize,
+    page: usize,
+    per_page: usize,
+    total_pages: usize,
+}
+
+async fn search_bookmarks(
+    store: web::Data<BookmarkStore>,
+    query: web::Query<SearchQuery>,
+) -> HttpResponse {
+    let bookmarks = store.items.lock().unwrap();
+    let page = query.page.unwrap_or(1);
+    let per_page = query.per_page.unwrap_or(10);
+
+    let filtered: Vec<&Bookmark> = bookmarks
+        .iter()
+        .filter(|bookmark| {
+            let keyword_match = query.keyword.as_ref().map_or(true, |keyword| {
+                bookmark.title.contains(keyword.as_str()) || bookmark.url.contains(keyword.as_str())
+            });
+            let tag_match = query.tag.as_ref().map_or(true, |tag| {
+                bookmark.tags.contains(tag)
+            });
+            keyword_match && tag_match
+        })
+        .collect();
+
+    let total = filtered.len();
+    let total_pages = (total + per_page - 1) / per_page;
+    let start = (page - 1) * per_page;
+    let items: Vec<Bookmark> = filtered
+        .into_iter()
+        .skip(start)
+        .take(per_page)
+        .cloned()
+        .collect();
+
+    HttpResponse::Ok().json(PaginatedResponse {
+        items,
+        total,
+        page,
+        per_page,
+        total_pages,
+    })
+}
+
+async fn create_bookmark(
+    store: web::Data<BookmarkStore>,
+    body: web::Json<CreateBookmarkRequest>,
+) -> HttpResponse {
+    let mut bookmarks = store.items.lock().unwrap();
+    let bookmark = Bookmark {
+        id: bookmarks.len() as u64 + 1,
+        url: body.url.clone(),
+        title: body.title.clone(),
+        tags: body.tags.clone().unwrap_or_default(),
+    };
+    bookmarks.push(bookmark.clone());
+    HttpResponse::Created().json(bookmark)
+}
+
+async fn delete_bookmark(
+    store: web::Data<BookmarkStore>,
+    path: web::Path<u64>,
+) -> HttpResponse {
+    let bookmark_id = path.into_inner();
+    let mut bookmarks = store.items.lock().unwrap();
+    let original_len = bookmarks.len();
+    bookmarks.retain(|bookmark| bookmark.id != bookmark_id);
+
+    if bookmarks.len() < original_len {
+        HttpResponse::Ok().json(serde_json::json!({"message": "已删除"}))
+    } else {
+        HttpResponse::NotFound().json(serde_json::json!({"error": "书签不存在"}))
+    }
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let store = web::Data::new(BookmarkStore {
+        items: Mutex::new(Vec::new()),
+    });
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(store.clone())
+            .service(
+                web::scope("/api/bookmarks")
+                    .route("", web::get().to(search_bookmarks))
+                    .route("", web::post().to(create_bookmark))
+                    .route("/{id}", web::delete().to(delete_bookmark)),
+            )
+    })
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await
+}
+```
+
+## 🔗 相关概念
+
+- **[Axum 框架](./02-axum-framework)**：Tokio 生态的 Web 框架
+- **[Rocket 框架](./04-rocket-framework)**：注重易用性的框架
+- **[中间件与错误处理](./11-middleware-error-handling)**：中间件设计模式
 
 ## 📝 学习检查点
 
-- [ ] 理解Actix-web 框架的核心概念
-- [ ] 能够在实际项目中应用Actix-web 框架
+- [ ] 能够使用 Actix-web 创建路由和 Scope
+- [ ] 掌握提取器的使用（Json、Path、Query、Data）
+- [ ] 能够使用 `web::Data` 管理共享状态
+- [ ] 了解 Actix-web 的中间件系统
+- [ ] 能够构建带分页和搜索功能的 API
+
+## 🚀 下一步
+
+→ [Rocket 框架](./04-rocket-framework)

@@ -5,13 +5,420 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「中间件与错误处理」相关知识。
+中间件是 Web 应用中处理横切关注点（如日志、认证、CORS、限流）的核心机制。Axum 基于 Tower 生态，将中间件抽象为 `Layer` 和 `Service`，支持灵活的组合。错误处理则通过统一的错误类型和 `IntoResponse` 实现，确保 API 返回一致的错误格式。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Axum 内置中间件
+
+### 常用中间件
+
+```rust
+use axum::{
+    routing::get,
+    Router,
+};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    compression::CompressionLayer,
+    limit::RequestBodyLimitLayer,
+    timeout::TimeoutLayer,
+    trace::TraceLayer,
+};
+use std::time::Duration;
+
+async fn hello() -> &'static str {
+    "Hello!"
+}
+
+#[tokio::main]
+async fn main() {
+    // CORS 配置
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any)
+        .max_age(Duration::from_secs(3600));
+
+    let app = Router::new()
+        .route("/", get(hello))
+        // 请求追踪日志
+        .layer(TraceLayer::new_for_http())
+        // CORS
+        .layer(cors)
+        // 响应压缩
+        .layer(CompressionLayer::new())
+        // 请求体大小限制（1MB）
+        .layer(RequestBodyLimitLayer::new(1024 * 1024))
+        // 请求超时
+        .layer(TimeoutLayer::new(Duration::from_secs(30)));
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 🔧 自定义中间件
+
+### 使用 from_fn 创建中间件
+
+```rust
+use axum::{
+    extract::Request,
+    http::StatusCode,
+    middleware::{self, Next},
+    response::Response,
+    routing::get,
+    Router,
+};
+use std::time::Instant;
+
+// 请求计时中间件
+async fn timing_middleware(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let start = Instant::now();
+
+    let response = next.run(request).await;
+
+    let duration = start.elapsed();
+    println!(
+        "{} {} -> {} ({}ms)",
+        method,
+        uri,
+        response.status(),
+        duration.as_millis()
+    );
+
+    response
+}
+
+// 请求 ID 中间件
+async fn request_id_middleware(mut request: Request, next: Next) -> Response {
+    let request_id = uuid_v4_simple();
+    request.headers_mut().insert(
+        "x-request-id",
+        request_id.parse().unwrap(),
+    );
+
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        "x-request-id",
+        request_id.parse().unwrap(),
+    );
+
+    response
+}
+
+fn uuid_v4_simple() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("{:032x}", nanos)
+}
+
+// API Key 验证中间件
+async fn api_key_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
+    let api_key = request
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok());
+
+    match api_key {
+        Some(key) if key.starts_with("sk-") => Ok(next.run(request).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+
+async fn public_endpoint() -> &'static str {
+    "公开接口"
+}
+
+async fn protected_endpoint() -> &'static str {
+    "受保护接口"
+}
+
+#[tokio::main]
+async fn main() {
+    let public_routes = Router::new()
+        .route("/public", get(public_endpoint));
+
+    let protected_routes = Router::new()
+        .route("/secret", get(protected_endpoint))
+        .layer(middleware::from_fn(api_key_middleware));
+
+    let app = Router::new()
+        .merge(public_routes)
+        .merge(protected_routes)
+        .layer(middleware::from_fn(timing_middleware))
+        .layer(middleware::from_fn(request_id_middleware));
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## ⚠️ 统一错误处理
+
+### 自定义错误类型
+
+```rust
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::Serialize;
+
+#[derive(Debug)]
+enum AppError {
+    NotFound(String),
+    BadRequest(String),
+    Unauthorized(String),
+    Forbidden(String),
+    Conflict(String),
+    Internal(String),
+    Database(String),
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    success: bool,
+    error: ErrorDetail,
+}
+
+#[derive(Serialize)]
+struct ErrorDetail {
+    code: String,
+    message: String,
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, code, message) = match self {
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
+            AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", msg),
+            AppError::Database(msg) => {
+                eprintln!("数据库错误: {}", msg);
+                (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR", "数据库操作失败".to_string())
+            }
+        };
+
+        let body = ErrorResponse {
+            success: false,
+            error: ErrorDetail {
+                code: code.to_string(),
+                message,
+            },
+        };
+
+        (status, Json(body)).into_response()
+    }
+}
+
+// 从其他错误类型转换
+impl From<std::io::Error> for AppError {
+    fn from(err: std::io::Error) -> Self {
+        AppError::Internal(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for AppError {
+    fn from(err: serde_json::Error) -> Self {
+        AppError::BadRequest(format!("JSON 解析错误: {}", err))
+    }
+}
+```
+
+### 在处理函数中使用错误类型
+
+```rust
+use axum::{
+    extract::{Path, State, Json},
+    routing::{get, post},
+    Router,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+#[derive(Clone, Serialize)]
+struct User {
+    id: u64,
+    name: String,
+    email: String,
+}
+
+#[derive(Deserialize)]
+struct CreateUserInput {
+    name: String,
+    email: String,
+}
+
+type UserStore = Arc<RwLock<Vec<User>>>;
+
+async fn get_user(
+    State(store): State<UserStore>,
+    Path(user_id): Path<u64>,
+) -> Result<Json<User>, AppError> {
+    let users = store.read().await;
+    let user = users
+        .iter()
+        .find(|u| u.id == user_id)
+        .ok_or_else(|| AppError::NotFound(format!("用户 {} 不存在", user_id)))?;
+
+    Ok(Json(user.clone()))
+}
+
+async fn create_user(
+    State(store): State<UserStore>,
+    Json(input): Json<CreateUserInput>,
+) -> Result<(StatusCode, Json<User>), AppError> {
+    if input.name.trim().is_empty() {
+        return Err(AppError::BadRequest("用户名不能为空".to_string()));
+    }
+
+    let mut users = store.write().await;
+
+    // 检查邮箱是否重复
+    if users.iter().any(|u| u.email == input.email) {
+        return Err(AppError::Conflict(format!("邮箱 {} 已被注册", input.email)));
+    }
+
+    let user = User {
+        id: users.len() as u64 + 1,
+        name: input.name,
+        email: input.email,
+    };
+    users.push(user.clone());
+
+    Ok((StatusCode::CREATED, Json(user)))
+}
+
+#[tokio::main]
+async fn main() {
+    let store: UserStore = Arc::new(RwLock::new(Vec::new()));
+
+    let app = Router::new()
+        .route("/users", post(create_user))
+        .route("/users/{id}", get(get_user))
+        .with_state(store);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 📝 实际应用示例
+
+### 带限流的 API 中间件栈
+
+```rust
+use axum::{
+    extract::Request,
+    http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::get,
+    Json, Router,
+};
+use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+
+// 简易限流器
+struct RateLimiter {
+    requests: HashMap<String, Vec<Instant>>,
+    max_requests: usize,
+    window: Duration,
+}
+
+impl RateLimiter {
+    fn new(max_requests: usize, window: Duration) -> Self {
+        Self {
+            requests: HashMap::new(),
+            max_requests,
+            window,
+        }
+    }
+
+    fn check(&mut self, client_ip: &str) -> bool {
+        let now = Instant::now();
+        let timestamps = self.requests.entry(client_ip.to_string()).or_default();
+
+        // 清除过期记录
+        timestamps.retain(|ts| now.duration_since(*ts) < self.window);
+
+        if timestamps.len() >= self.max_requests {
+            false
+        } else {
+            timestamps.push(now);
+            true
+        }
+    }
+}
+
+type SharedLimiter = Arc<Mutex<RateLimiter>>;
+
+async fn rate_limit_middleware(
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // 实际项目中应从 Extension 获取 limiter 和真实 IP
+    // 此处简化处理
+    Ok(next.run(request).await)
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: String,
+    uptime_seconds: u64,
+}
+
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "healthy".to_string(),
+        uptime_seconds: 0,
+    })
+}
+
+async fn api_handler() -> &'static str {
+    "API 响应"
+}
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new()
+        .route("/api/data", get(api_handler))
+        .route("/health", get(health))
+        .layer(middleware::from_fn(rate_limit_middleware));
+
+    println!("服务启动于 http://localhost:3000");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 🔗 相关概念
+
+- **[Axum 框架](./02-axum-framework)**：中间件的宿主框架
+- **[认证与授权](./12-authentication-authorization)**：认证中间件实现
+- **[RESTful API 设计](./10-restful-api-design)**：统一错误响应格式
 
 ## 📝 学习检查点
 
-- [ ] 理解中间件与错误处理的核心概念
-- [ ] 能够在实际项目中应用中间件与错误处理
+- [ ] 掌握 tower-http 提供的常用中间件
+- [ ] 能够使用 `from_fn` 创建自定义中间件
+- [ ] 理解自定义错误类型和 `IntoResponse` trait
+- [ ] 能够实现统一的错误响应格式
+- [ ] 能够组合多个中间件构建中间件栈
+
+## 🚀 下一步
+
+→ [认证与授权](./12-authentication-authorization)

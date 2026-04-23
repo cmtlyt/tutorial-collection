@@ -5,13 +5,217 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「裸指针操作」相关知识。
+裸指针（`*const T` 和 `*mut T`）是 Rust 中最底层的指针类型，不受借用检查器约束。与引用不同，裸指针允许为空、可以悬垂、可以同时存在多个可变指针。它们在 FFI、自定义数据结构和高性能底层操作中不可或缺。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 创建裸指针
+
+```rust
+fn main() {
+    // 从引用创建
+    let value = 42;
+    let const_ptr: *const i32 = &value;
+    let mut mutable = 100;
+    let mut_ptr: *mut i32 = &mut mutable;
+
+    // 从 Box 创建
+    let boxed = Box::new(99);
+    let box_ptr: *const i32 = &*boxed;
+
+    // 从地址创建
+    let address = 0x1000usize;
+    let _addr_ptr = address as *const i32;
+
+    // 空指针
+    let null_ptr: *const i32 = std::ptr::null();
+    let null_mut: *mut i32 = std::ptr::null_mut();
+
+    println!("const_ptr: {:?}", const_ptr);
+    println!("mut_ptr: {:?}", mut_ptr);
+    println!("box_ptr: {:?}", box_ptr);
+    println!("null_ptr 为空: {}", null_ptr.is_null());
+    println!("null_mut 为空: {}", null_mut.is_null());
+}
+```
+
+## 🔧 指针算术
+
+```rust
+fn main() {
+    let data = [10, 20, 30, 40, 50];
+    let base_ptr = data.as_ptr();
+
+    unsafe {
+        // offset 方法：按元素偏移
+        for index in 0..data.len() {
+            let element = *base_ptr.add(index);
+            println!("data[{}] = {}", index, element);
+        }
+
+        // 指针差值
+        let first = base_ptr;
+        let last = base_ptr.add(4);
+        let distance = last.offset_from(first);
+        println!("首尾距离: {} 个元素", distance);
+    }
+}
+```
+
+## 📦 指针与内存操作
+
+```rust
+use std::alloc::{alloc, dealloc, Layout};
+
+fn main() {
+    unsafe {
+        // 手动内存分配
+        let layout = Layout::array::<i32>(5).unwrap();
+        let ptr = alloc(layout) as *mut i32;
+
+        if ptr.is_null() {
+            panic!("内存分配失败");
+        }
+
+        // 写入数据
+        for index in 0..5 {
+            ptr.add(index).write(index as i32 * 10);
+        }
+
+        // 读取数据
+        for index in 0..5 {
+            println!("element[{}] = {}", index, ptr.add(index).read());
+        }
+
+        // 内存复制
+        let dest_ptr = alloc(layout) as *mut i32;
+        std::ptr::copy_nonoverlapping(ptr, dest_ptr, 5);
+
+        println!("复制后:");
+        for index in 0..5 {
+            println!("  dest[{}] = {}", index, dest_ptr.add(index).read());
+        }
+
+        // 内存置零
+        std::ptr::write_bytes(ptr, 0, 5);
+        println!("置零后 ptr[0] = {}", ptr.read());
+
+        // 释放内存
+        dealloc(ptr as *mut u8, layout);
+        dealloc(dest_ptr as *mut u8, layout);
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 简易链表
+
+```rust
+use std::fmt;
+
+struct Node<T> {
+    value: T,
+    next: *mut Node<T>,
+}
+
+struct LinkedList<T> {
+    head: *mut Node<T>,
+    length: usize,
+}
+
+impl<T: fmt::Display> LinkedList<T> {
+    fn new() -> Self {
+        LinkedList {
+            head: std::ptr::null_mut(),
+            length: 0,
+        }
+    }
+
+    fn push_front(&mut self, value: T) {
+        let new_node = Box::into_raw(Box::new(Node {
+            value,
+            next: self.head,
+        }));
+        self.head = new_node;
+        self.length += 1;
+    }
+
+    fn pop_front(&mut self) -> Option<T> {
+        if self.head.is_null() {
+            return None;
+        }
+
+        unsafe {
+            let old_head = Box::from_raw(self.head);
+            self.head = old_head.next;
+            self.length -= 1;
+            Some(old_head.value)
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.length
+    }
+
+    fn print(&self) {
+        let mut current = self.head;
+        print!("[");
+        while !current.is_null() {
+            unsafe {
+                print!("{}", (*current).value);
+                current = (*current).next;
+                if !current.is_null() {
+                    print!(", ");
+                }
+            }
+        }
+        println!("]");
+    }
+}
+
+impl<T> Drop for LinkedList<T> {
+    fn drop(&mut self) {
+        while !self.head.is_null() {
+            unsafe {
+                let node = Box::from_raw(self.head);
+                self.head = node.next;
+            }
+        }
+    }
+}
+
+fn main() {
+    let mut list = LinkedList::new();
+    list.push_front(3);
+    list.push_front(2);
+    list.push_front(1);
+
+    print!("链表: ");
+    list.print();
+    println!("长度: {}", list.len());
+
+    if let Some(value) = list.pop_front() {
+        println!("弹出: {}", value);
+    }
+
+    print!("弹出后: ");
+    list.print();
+}
+```
+
+## 🔗 相关概念
+
+- **[unsafe Rust 基础](./03-unsafe-rust-basics)**：裸指针操作的前提
+- **[FFI](./02-ffi-foreign-function-interface)**：FFI 中的指针传递
+- **[内存映射](./12-memory-mapping)**：底层内存操作
 
 ## 📝 学习检查点
 
-- [ ] 理解裸指针操作的核心概念
-- [ ] 能够在实际项目中应用裸指针操作
+- [ ] 理解 `*const T` 和 `*mut T` 的区别
+- [ ] 掌握指针算术（offset、add、sub）
+- [ ] 能够使用 alloc/dealloc 手动管理内存
+- [ ] 理解 `Box::into_raw` 和 `Box::from_raw` 的用法
+- [ ] 能够使用裸指针构建自定义数据结构
+
+## 🚀 下一步
+
+→ [内联汇编](./05-inline-assembly)

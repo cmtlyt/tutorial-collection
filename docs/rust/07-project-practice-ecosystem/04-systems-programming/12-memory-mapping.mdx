@@ -5,13 +5,299 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「内存映射（mmap）」相关知识。
+内存映射（Memory-Mapped I/O）是一种将文件内容直接映射到进程地址空间的技术，通过操作系统的虚拟内存机制实现。映射后，读写文件就像读写内存一样，由操作系统负责页面调度和缓存管理。Rust 社区的 `memmap2` crate 提供了安全易用的跨平台 mmap 封装。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本用法
+
+### 依赖配置
+
+```toml
+# Cargo.toml
+[dependencies]
+memmap2 = "0.9"
+```
+
+### 只读映射
+
+```rust
+use memmap2::Mmap;
+use std::fs::File;
+use std::io;
+
+fn main() -> io::Result<()> {
+    // 创建测试文件
+    std::fs::write("test_mmap.txt", "Hello, Memory-Mapped World!\nLine 2\nLine 3\n")?;
+
+    let file = File::open("test_mmap.txt")?;
+    let mmap = unsafe { Mmap::map(&file)? };
+
+    // 像操作字节切片一样操作文件
+    println!("文件大小: {} 字节", mmap.len());
+    println!("前 5 字节: {:?}", &mmap[..5]);
+
+    // 转为字符串
+    let content = std::str::from_utf8(&mmap).expect("非 UTF-8 内容");
+    println!("内容:\n{}", content);
+
+    // 搜索字节模式
+    let pattern = b"Memory";
+    if let Some(position) = mmap.windows(pattern.len()).position(|window| window == pattern) {
+        println!("找到 \"Memory\" 在偏移 {} 处", position);
+    }
+
+    std::fs::remove_file("test_mmap.txt")?;
+    Ok(())
+}
+```
+
+### 可写映射
+
+```rust
+use memmap2::MmapMut;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
+
+fn main() -> io::Result<()> {
+    let file_path = "mutable_mmap.bin";
+
+    // 创建固定大小的文件
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(file_path)?;
+
+    let file_size = 1024;
+    file.set_len(file_size)?;
+
+    let mut mmap = unsafe { MmapMut::map_mut(&file)? };
+
+    // 直接写入数据
+    mmap[0..5].copy_from_slice(b"HELLO");
+    mmap[5] = b' ';
+    mmap[6..11].copy_from_slice(b"WORLD");
+
+    // 写入结构化数据
+    let header = b"HDR";
+    let version: u32 = 1;
+    let count: u32 = 42;
+
+    mmap[100..103].copy_from_slice(header);
+    mmap[103..107].copy_from_slice(&version.to_le_bytes());
+    mmap[107..111].copy_from_slice(&count.to_le_bytes());
+
+    // 刷新到磁盘
+    mmap.flush()?;
+
+    // 验证写入
+    let read_file = std::fs::File::open(file_path)?;
+    let read_mmap = unsafe { memmap2::Mmap::map(&read_file)? };
+
+    println!("前 11 字节: {}", std::str::from_utf8(&read_mmap[..11]).unwrap());
+
+    let stored_version = u32::from_le_bytes(read_mmap[103..107].try_into().unwrap());
+    let stored_count = u32::from_le_bytes(read_mmap[107..111].try_into().unwrap());
+    println!("版本: {}, 计数: {}", stored_version, stored_count);
+
+    std::fs::remove_file(file_path)?;
+    Ok(())
+}
+```
+
+## 🔍 大文件处理
+
+mmap 的核心优势是处理大文件——操作系统按需加载页面，无需一次性读入内存：
+
+```rust
+use memmap2::Mmap;
+use std::fs::File;
+use std::io;
+use std::time::Instant;
+
+fn count_lines_mmap(file_path: &str) -> io::Result<usize> {
+    let file = File::open(file_path)?;
+    let mmap = unsafe { Mmap::map(&file)? };
+
+    let count = mmap.iter().filter(|&&byte| byte == b'\n').count();
+    Ok(count)
+}
+
+fn count_lines_read(file_path: &str) -> io::Result<usize> {
+    use std::io::{BufRead, BufReader};
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    Ok(reader.lines().count())
+}
+
+fn main() -> io::Result<()> {
+    let test_file = "large_test.txt";
+
+    // 生成测试文件
+    {
+        use std::io::Write;
+        let mut file = File::create(test_file)?;
+        for index in 0..100_000 {
+            writeln!(file, "Line {}: {}", index, "x".repeat(80))?;
+        }
+    }
+
+    let file_size = std::fs::metadata(test_file)?.len();
+    println!("文件大小: {:.2} MB", file_size as f64 / 1_048_576.0);
+
+    // mmap 方式
+    let start = Instant::now();
+    let line_count = count_lines_mmap(test_file)?;
+    let mmap_duration = start.elapsed();
+    println!("mmap 行数: {}, 耗时: {:?}", line_count, mmap_duration);
+
+    // 传统 BufReader 方式
+    let start = Instant::now();
+    let line_count = count_lines_read(test_file)?;
+    let read_duration = start.elapsed();
+    println!("BufReader 行数: {}, 耗时: {:?}", line_count, read_duration);
+
+    std::fs::remove_file(test_file)?;
+    Ok(())
+}
+```
+
+## 📝 实际应用示例
+
+### 二进制文件解析器
+
+```rust
+use memmap2::Mmap;
+use std::fs::File;
+use std::io::{self, Write};
+use std::mem;
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+struct RecordHeader {
+    magic: [u8; 4],
+    version: u16,
+    record_count: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+struct DataRecord {
+    id: u32,
+    value: f64,
+    flags: u8,
+}
+
+struct BinaryFileReader {
+    mmap: Mmap,
+}
+
+impl BinaryFileReader {
+    fn open(path: &str) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let mmap = unsafe { Mmap::map(&file)? };
+        Ok(BinaryFileReader { mmap })
+    }
+
+    fn read_header(&self) -> Option<RecordHeader> {
+        let header_size = mem::size_of::<RecordHeader>();
+        if self.mmap.len() < header_size {
+            return None;
+        }
+
+        let header: RecordHeader = unsafe {
+            std::ptr::read_unaligned(self.mmap.as_ptr() as *const RecordHeader)
+        };
+
+        if &header.magic != b"DATA" {
+            return None;
+        }
+
+        Some(header)
+    }
+
+    fn read_record(&self, index: usize) -> Option<DataRecord> {
+        let header_size = mem::size_of::<RecordHeader>();
+        let record_size = mem::size_of::<DataRecord>();
+        let offset = header_size + index * record_size;
+
+        if offset + record_size > self.mmap.len() {
+            return None;
+        }
+
+        let record: DataRecord = unsafe {
+            std::ptr::read_unaligned(self.mmap.as_ptr().add(offset) as *const DataRecord)
+        };
+
+        Some(record)
+    }
+}
+
+fn create_test_binary_file(path: &str) -> io::Result<()> {
+    let mut file = File::create(path)?;
+
+    let record_count = 5u32;
+
+    // 写入文件头
+    file.write_all(b"DATA")?;
+    file.write_all(&1u16.to_ne_bytes())?;
+    file.write_all(&record_count.to_ne_bytes())?;
+
+    // 写入记录
+    for index in 0..record_count {
+        file.write_all(&index.to_ne_bytes())?;
+        let value: f64 = (index as f64) * 3.14;
+        file.write_all(&value.to_ne_bytes())?;
+        file.write_all(&[if index % 2 == 0 { 1u8 } else { 0u8 }])?;
+    }
+
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    let test_path = "test_records.bin";
+    create_test_binary_file(test_path)?;
+
+    let reader = BinaryFileReader::open(test_path)?;
+
+    if let Some(header) = reader.read_header() {
+        println!("文件头:");
+        println!("  Magic: {:?}", std::str::from_utf8(&header.magic).unwrap());
+        println!("  版本: {}", header.version);
+        println!("  记录数: {}", header.record_count);
+
+        println!("\n记录:");
+        for index in 0..header.record_count as usize {
+            if let Some(record) = reader.read_record(index) {
+                println!(
+                    "  [{}] id={}, value={:.2}, flags=0x{:02X}",
+                    index, record.id, record.value, record.flags
+                );
+            }
+        }
+    } else {
+        println!("无效的文件格式");
+    }
+
+    std::fs::remove_file(test_path)?;
+    Ok(())
+}
+```
+
+## 🔗 相关概念
+
+- **[文件系统操作](./09-filesystem-operations)**：传统文件 IO
+- **[裸指针操作](./04-raw-pointer-operations)**：底层内存操作
+- **[unsafe Rust 基础](./03-unsafe-rust-basics)**：mmap 需要 unsafe
 
 ## 📝 学习检查点
 
-- [ ] 理解内存映射（mmap）的核心概念
-- [ ] 能够在实际项目中应用内存映射（mmap）
+- [ ] 理解内存映射的工作原理和优势
+- [ ] 能够使用 memmap2 进行只读和可写映射
+- [ ] 掌握大文件处理的 mmap 方案
+- [ ] 能够使用 mmap 解析二进制文件格式
+- [ ] 了解 mmap 与传统 IO 的性能差异
+
+## 🚀 下一步
+
+恭喜完成第 7 阶段的所有内容！你已掌握 Rust 项目实战与生态系统的核心知识。

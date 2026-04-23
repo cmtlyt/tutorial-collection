@@ -5,13 +5,358 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「SeaORM 异步 ORM」相关知识。
+SeaORM 是 Rust 生态中的**异步 ORM**，原生支持 async/await，能够与 Tokio、async-std 等异步运行时无缝集成。它支持 PostgreSQL、MySQL 和 SQLite，提供了动态查询构建、关联查询、分页等完整 ORM 功能，是需要异步数据库访问时 Diesel 的理想替代方案。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 实体定义
+
+### 基本实体
+
+```rust
+use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize)]
+#[sea_orm(table_name = "users")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i32,
+    pub username: String,
+    #[sea_orm(unique)]
+    pub email: String,
+    pub active: bool,
+    pub created_at: DateTimeUtc,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(has_many = "super::post::Entity")]
+    Posts,
+}
+
+impl Related<super::post::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Posts.def()
+    }
+}
+
+impl ActiveModelBehavior for ActiveModel {}
+```
+
+### 关联实体
+
+```rust
+use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize)]
+#[sea_orm(table_name = "posts")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i32,
+    pub title: String,
+    pub content: String,
+    pub published: bool,
+    pub user_id: i32,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::user::Entity",
+        from = "Column::UserId",
+        to = "super::user::Column::Id"
+    )]
+    User,
+}
+
+impl Related<super::user::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::User.def()
+    }
+}
+
+impl ActiveModelBehavior for ActiveModel {}
+```
+
+## 📝 CRUD 操作
+
+### 插入
+
+```rust
+use sea_orm::*;
+
+async fn create_user(db: &DatabaseConnection) -> Result<user::Model, DbErr> {
+    let new_user = user::ActiveModel {
+        username: Set("alice".to_string()),
+        email: Set("alice@example.com".to_string()),
+        active: Set(true),
+        created_at: Set(chrono::Utc::now()),
+        ..Default::default()
+    };
+
+    new_user.insert(db).await
+}
+
+async fn create_many_users(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let users = vec![
+        user::ActiveModel {
+            username: Set("bob".to_string()),
+            email: Set("bob@example.com".to_string()),
+            active: Set(true),
+            created_at: Set(chrono::Utc::now()),
+            ..Default::default()
+        },
+        user::ActiveModel {
+            username: Set("charlie".to_string()),
+            email: Set("charlie@example.com".to_string()),
+            active: Set(true),
+            created_at: Set(chrono::Utc::now()),
+            ..Default::default()
+        },
+    ];
+
+    user::Entity::insert_many(users).exec(db).await?;
+    Ok(())
+}
+```
+
+### 查询
+
+```rust
+use sea_orm::*;
+
+async fn find_user_by_id(db: &DatabaseConnection, user_id: i32) -> Result<Option<user::Model>, DbErr> {
+    user::Entity::find_by_id(user_id).one(db).await
+}
+
+async fn find_active_users(db: &DatabaseConnection) -> Result<Vec<user::Model>, DbErr> {
+    user::Entity::find()
+        .filter(user::Column::Active.eq(true))
+        .order_by_asc(user::Column::Username)
+        .all(db)
+        .await
+}
+
+async fn search_users(
+    db: &DatabaseConnection,
+    keyword: &str,
+    page: u64,
+    per_page: u64,
+) -> Result<(Vec<user::Model>, u64), DbErr> {
+    let paginator = user::Entity::find()
+        .filter(
+            Condition::any()
+                .add(user::Column::Username.contains(keyword))
+                .add(user::Column::Email.contains(keyword)),
+        )
+        .order_by_desc(user::Column::Id)
+        .paginate(db, per_page);
+
+    let total_pages = paginator.num_pages().await?;
+    let users = paginator.fetch_page(page - 1).await?;
+
+    Ok((users, total_pages))
+}
+```
+
+### 更新与删除
+
+```rust
+use sea_orm::*;
+
+async fn update_user(
+    db: &DatabaseConnection,
+    user_id: i32,
+    new_username: &str,
+) -> Result<user::Model, DbErr> {
+    let user = user::Entity::find_by_id(user_id)
+        .one(db)
+        .await?
+        .ok_or(DbErr::RecordNotFound("用户不存在".to_string()))?;
+
+    let mut active_user: user::ActiveModel = user.into();
+    active_user.username = Set(new_username.to_string());
+
+    active_user.update(db).await
+}
+
+async fn deactivate_user(db: &DatabaseConnection, user_id: i32) -> Result<(), DbErr> {
+    user::Entity::update_many()
+        .col_expr(user::Column::Active, Expr::value(false))
+        .filter(user::Column::Id.eq(user_id))
+        .exec(db)
+        .await?;
+
+    Ok(())
+}
+
+async fn delete_user(db: &DatabaseConnection, user_id: i32) -> Result<DeleteResult, DbErr> {
+    user::Entity::delete_by_id(user_id).exec(db).await
+}
+```
+
+## 🔍 关联查询
+
+```rust
+use sea_orm::*;
+
+// 查询用户及其所有文章
+async fn find_user_with_posts(
+    db: &DatabaseConnection,
+    user_id: i32,
+) -> Result<Option<(user::Model, Vec<post::Model>)>, DbErr> {
+    let result = user::Entity::find_by_id(user_id)
+        .find_with_related(post::Entity)
+        .all(db)
+        .await?;
+
+    Ok(result.into_iter().next())
+}
+
+// 查询所有已发布文章及其作者
+async fn find_published_posts_with_authors(
+    db: &DatabaseConnection,
+) -> Result<Vec<(post::Model, Option<user::Model>)>, DbErr> {
+    post::Entity::find()
+        .filter(post::Column::Published.eq(true))
+        .find_also_related(user::Entity)
+        .all(db)
+        .await
+}
+```
+
+## 📝 实际应用示例
+
+### 与 Axum 集成的用户服务
+
+```rust
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
+use sea_orm::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone)]
+struct AppState {
+    db: DatabaseConnection,
+}
+
+#[derive(Deserialize)]
+struct CreateUserInput {
+    username: String,
+    email: String,
+}
+
+#[derive(Deserialize)]
+struct PaginationParams {
+    page: Option<u64>,
+    per_page: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct PaginatedUsers {
+    users: Vec<user::Model>,
+    page: u64,
+    total_pages: u64,
+}
+
+async fn create_user_handler(
+    State(state): State<AppState>,
+    Json(input): Json<CreateUserInput>,
+) -> Result<(StatusCode, Json<user::Model>), (StatusCode, String)> {
+    let new_user = user::ActiveModel {
+        username: Set(input.username),
+        email: Set(input.email),
+        active: Set(true),
+        created_at: Set(chrono::Utc::now()),
+        ..Default::default()
+    };
+
+    let created = new_user
+        .insert(&state.db)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn list_users_handler(
+    State(state): State<AppState>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<PaginatedUsers>, (StatusCode, String)> {
+    let page = params.page.unwrap_or(1);
+    let per_page = params.per_page.unwrap_or(10);
+
+    let paginator = user::Entity::find()
+        .filter(user::Column::Active.eq(true))
+        .order_by_desc(user::Column::Id)
+        .paginate(&state.db, per_page);
+
+    let total_pages = paginator
+        .num_pages()
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    let users = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    Ok(Json(PaginatedUsers {
+        users,
+        page,
+        total_pages,
+    }))
+}
+
+async fn get_user_handler(
+    State(state): State<AppState>,
+    Path(user_id): Path<i32>,
+) -> Result<Json<user::Model>, (StatusCode, String)> {
+    let user = user::Entity::find_by_id(user_id)
+        .one(&state.db)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "用户不存在".to_string()))?;
+
+    Ok(Json(user))
+}
+
+#[tokio::main]
+async fn main() {
+    let db = Database::connect("sqlite::memory:")
+        .await
+        .expect("数据库连接失败");
+
+    let state = AppState { db };
+
+    let app = Router::new()
+        .route("/users", get(list_users_handler).post(create_user_handler))
+        .route("/users/{id}", get(get_user_handler))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 🔗 相关概念
+
+- **[SQLx 数据库交互](./06-sqlx-database)**：原生 SQL 异步方案
+- **[Diesel ORM](./07-diesel-orm)**：同步 ORM 方案
+- **[Axum 框架](./02-axum-framework)**：Web 框架集成
 
 ## 📝 学习检查点
 
-- [ ] 理解SeaORM 异步 ORM的核心概念
-- [ ] 能够在实际项目中应用SeaORM 异步 ORM
+- [ ] 能够定义 SeaORM 实体和关联关系
+- [ ] 掌握基本 CRUD 操作（ActiveModel、Entity）
+- [ ] 能够使用条件查询、排序和分页
+- [ ] 理解关联查询的写法
+- [ ] 能够将 SeaORM 集成到 Web 框架中
+
+## 🚀 下一步
+
+→ [Redis 集成](./09-redis-integration)

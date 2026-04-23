@@ -5,13 +5,291 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解命令行工具开发中的「dialoguer 交互式提示」相关知识。
+dialoguer 提供了一套丰富的终端交互式提示组件，包括确认对话框、文本输入、密码输入、单选/多选菜单等，让 CLI 工具能够与用户进行友好的交互。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础输入
+
+### 文本输入
+
+```rust
+use dialoguer::Input;
+
+fn main() {
+    let username: String = Input::new()
+        .with_prompt("请输入用户名")
+        .default("admin".into())
+        .interact_text()
+        .unwrap();
+
+    println!("用户名: {}", username);
+
+    let port: u16 = Input::new()
+        .with_prompt("请输入端口号")
+        .default(8080)
+        .validate_with(|input: &u16| -> Result<(), &str> {
+            if *input > 0 && *input <= 65535 {
+                Ok(())
+            } else {
+                Err("端口号必须在 1-65535 之间")
+            }
+        })
+        .interact_text()
+        .unwrap();
+
+    println!("端口: {}", port);
+}
+```
+
+### 确认对话框
+
+```rust
+use dialoguer::Confirm;
+
+fn main() {
+    let confirmed = Confirm::new()
+        .with_prompt("确定要删除这些文件吗？")
+        .default(false)
+        .interact()
+        .unwrap();
+
+    if confirmed {
+        println!("执行删除操作...");
+    } else {
+        println!("操作已取消");
+    }
+}
+```
+
+### 密码输入
+
+```rust
+use dialoguer::Password;
+
+fn main() {
+    let password = Password::new()
+        .with_prompt("请输入密码")
+        .with_confirmation("请再次确认密码", "两次输入的密码不一致")
+        .interact()
+        .unwrap();
+
+    println!("密码长度: {}", password.len());
+}
+```
+
+## 📋 选择菜单
+
+### 单选菜单
+
+```rust
+use dialoguer::Select;
+
+fn main() {
+    let options = vec!["开发环境", "测试环境", "预发布环境", "生产环境"];
+
+    let selection = Select::new()
+        .with_prompt("请选择部署环境")
+        .items(&options)
+        .default(0)
+        .interact()
+        .unwrap();
+
+    println!("已选择: {}", options[selection]);
+}
+```
+
+### 多选菜单
+
+```rust
+use dialoguer::MultiSelect;
+
+fn main() {
+    let features = vec![
+        "数据库支持",
+        "Redis 缓存",
+        "消息队列",
+        "日志追踪",
+        "健康检查",
+        "API 文档",
+    ];
+
+    let selections = MultiSelect::new()
+        .with_prompt("请选择要启用的功能（空格选择，回车确认）")
+        .items(&features)
+        .defaults(&[true, false, false, true, true, false])
+        .interact()
+        .unwrap();
+
+    println!("已启用的功能:");
+    for index in &selections {
+        println!("  - {}", features[*index]);
+    }
+}
+```
+
+### 模糊搜索选择
+
+```rust
+use dialoguer::FuzzySelect;
+
+fn main() {
+    let frameworks = vec![
+        "Axum",
+        "Actix-web",
+        "Rocket",
+        "Warp",
+        "Tide",
+        "Gotham",
+        "Poem",
+        "Salvo",
+    ];
+
+    let selection = FuzzySelect::new()
+        .with_prompt("搜索并选择 Web 框架")
+        .items(&frameworks)
+        .default(0)
+        .interact()
+        .unwrap();
+
+    println!("已选择: {}", frameworks[selection]);
+}
+```
+
+## 🎨 自定义主题
+
+```rust
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
+
+fn main() {
+    let theme = ColorfulTheme::default();
+
+    let name: String = Input::with_theme(&theme)
+        .with_prompt("项目名称")
+        .interact_text()
+        .unwrap();
+
+    let framework_options = vec!["Axum", "Actix-web", "Rocket"];
+    let framework = Select::with_theme(&theme)
+        .with_prompt("选择框架")
+        .items(&framework_options)
+        .default(0)
+        .interact()
+        .unwrap();
+
+    let use_docker = Confirm::with_theme(&theme)
+        .with_prompt("是否生成 Dockerfile？")
+        .default(true)
+        .interact()
+        .unwrap();
+
+    println!("\n项目配置:");
+    println!("  名称: {}", name);
+    println!("  框架: {}", framework_options[framework]);
+    println!("  Docker: {}", if use_docker { "是" } else { "否" });
+}
+```
+
+## 📝 实际应用示例
+
+### 项目初始化向导
+
+```rust
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
+
+struct ProjectConfig {
+    name: String,
+    framework: String,
+    database: String,
+    features: Vec<String>,
+    use_docker: bool,
+}
+
+fn run_init_wizard() -> ProjectConfig {
+    let theme = ColorfulTheme::default();
+    println!("🚀 项目初始化向导\n");
+
+    let name: String = Input::with_theme(&theme)
+        .with_prompt("项目名称")
+        .validate_with(|input: &String| -> Result<(), &str> {
+            if input.is_empty() {
+                Err("项目名称不能为空")
+            } else if input.contains(' ') {
+                Err("项目名称不能包含空格")
+            } else {
+                Ok(())
+            }
+        })
+        .interact_text()
+        .unwrap();
+
+    let framework_options = vec!["Axum", "Actix-web", "Rocket", "Warp"];
+    let framework_index = Select::with_theme(&theme)
+        .with_prompt("Web 框架")
+        .items(&framework_options)
+        .default(0)
+        .interact()
+        .unwrap();
+
+    let database_options = vec!["PostgreSQL", "MySQL", "SQLite", "无"];
+    let database_index = Select::with_theme(&theme)
+        .with_prompt("数据库")
+        .items(&database_options)
+        .default(0)
+        .interact()
+        .unwrap();
+
+    let feature_options = vec!["JWT 认证", "CORS", "日志", "OpenAPI", "WebSocket", "限流"];
+    let feature_indices = MultiSelect::with_theme(&theme)
+        .with_prompt("额外功能")
+        .items(&feature_options)
+        .defaults(&[false, true, true, false, false, false])
+        .interact()
+        .unwrap();
+
+    let use_docker = Confirm::with_theme(&theme)
+        .with_prompt("生成 Docker 配置？")
+        .default(true)
+        .interact()
+        .unwrap();
+
+    let features = feature_indices
+        .iter()
+        .map(|index| feature_options[*index].to_string())
+        .collect();
+
+    ProjectConfig {
+        name,
+        framework: framework_options[framework_index].to_string(),
+        database: database_options[database_index].to_string(),
+        features,
+        use_docker,
+    }
+}
+
+fn main() {
+    let config = run_init_wizard();
+
+    println!("\n📋 项目配置总结:");
+    println!("  名称:   {}", config.name);
+    println!("  框架:   {}", config.framework);
+    println!("  数据库: {}", config.database);
+    println!("  功能:   {:?}", config.features);
+    println!("  Docker: {}", if config.use_docker { "是" } else { "否" });
+}
+```
+
+## 🔗 相关概念
+
+- **[clap 参数解析](./02-clap-argument-parsing)**：与交互提示互补的参数解析
+- **[console 终端样式](./05-console-terminal-styling)**：终端文本着色
+- **[indicatif 进度条](./03-indicatif-progress-bars)**：操作进度展示
 
 ## 📝 学习检查点
 
-- [ ] 理解dialoguer 交互式提示的核心概念
-- [ ] 能够在实际项目中应用dialoguer 交互式提示
+- [ ] 能够使用各种输入组件（文本、密码、确认）
+- [ ] 掌握单选和多选菜单的使用
+- [ ] 能够使用模糊搜索选择和自定义主题
+- [ ] 能够组合多个组件构建交互式向导
+
+## 🚀 下一步
+
+→ [console 终端样式](./05-console-terminal-styling)

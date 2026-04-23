@@ -5,13 +5,434 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解WebAssembly中的「Trunk 构建工具」相关知识。
+Trunk 是专为 Rust WebAssembly 前端应用设计的构建工具，类似于前端生态中的 Vite 或 Webpack。它通过解析 `index.html` 自动处理 Wasm 编译、资源打包、CSS 处理、代码分割等，并提供带热重载的开发服务器，是 Yew、Leptos 等框架的推荐构建工具。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 安装与项目配置
+
+### 安装 Trunk
+
+```bash
+# 通过 cargo 安装
+cargo install trunk
+
+# 添加 wasm32 编译目标
+rustup target add wasm32-unknown-unknown
+```
+
+### 项目结构
+
+```
+my-wasm-app/
+├── Cargo.toml
+├── Trunk.toml          # Trunk 配置（可选）
+├── index.html          # 入口 HTML
+├── src/
+│   └── main.rs         # 应用入口
+└── assets/
+    ├── styles.css      # 样式文件
+    ├── favicon.ico     # 网站图标
+    └── images/
+```
+
+### index.html 入口
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Wasm App</title>
+    <!-- Trunk 会自动处理 CSS 链接 -->
+    <link data-trunk rel="css" href="assets/styles.css">
+    <!-- 图标 -->
+    <link data-trunk rel="icon" href="assets/favicon.ico">
+</head>
+<body>
+    <!-- Trunk 会自动注入 Wasm 加载脚本 -->
+</body>
+</html>
+```
+
+### Cargo.toml
+
+```toml
+[package]
+name = "my-wasm-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+yew = { version = "0.21", features = ["csr"] }
+```
+
+### 应用入口
+
+```rust
+use yew::prelude::*;
+
+#[function_component(App)]
+fn app() -> Html {
+    html! {
+        <div class="app">
+            <h1>{ "Trunk + Yew 应用" }</h1>
+            <p>{ "使用 Trunk 构建的 Wasm 前端应用" }</p>
+        </div>
+    }
+}
+
+fn main() {
+    yew::Renderer::<App>::new().render();
+}
+```
+
+## 🔨 开发命令
+
+### 常用命令
+
+```bash
+# 启动开发服务器（带热重载）
+trunk serve
+
+# 指定端口和地址
+trunk serve --port 3000 --address 0.0.0.0
+
+# 启用文件监听（自动重新编译）
+trunk watch
+
+# 构建生产版本
+trunk build --release
+
+# 构建到指定目录
+trunk build --release --dist output
+
+# 清理构建产物
+trunk clean
+```
+
+### 开发服务器功能
+
+```bash
+# 开发服务器默认启动在 http://127.0.0.1:8080
+
+# 启用代理（转发 API 请求到后端）
+trunk serve --proxy-backend=http://localhost:3000/api
+```
+
+## ⚙️ Trunk.toml 配置
+
+```toml
+# Trunk.toml
+
+[build]
+# 编译目标
+target = "index.html"
+# 输出目录
+dist = "dist"
+# 资源文件目录前缀
+public_url = "/"
+
+[watch]
+# 监听的文件路径
+watch = ["src", "assets", "index.html"]
+# 忽略的路径
+ignore = ["target"]
+
+[serve]
+# 开发服务器地址
+address = "127.0.0.1"
+# 端口
+port = 8080
+# 是否自动打开浏览器
+open = false
+
+[[proxy]]
+# API 代理配置
+backend = "http://localhost:3000/api"
+```
+
+## 📦 资源处理
+
+### HTML 中声明资源
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <!-- CSS 文件：Trunk 会自动复制并注入 -->
+    <link data-trunk rel="css" href="assets/styles.css">
+
+    <!-- SCSS/SASS 文件：需要安装 sass CLI -->
+    <link data-trunk rel="scss" href="assets/styles.scss">
+
+    <!-- 图标 -->
+    <link data-trunk rel="icon" href="assets/favicon.ico">
+
+    <!-- 内联 CSS -->
+    <link data-trunk rel="inline" type="css" href="assets/critical.css">
+</head>
+<body>
+    <!-- 复制整个目录到 dist -->
+    <link data-trunk rel="copy-dir" href="assets/images">
+
+    <!-- 复制单个文件 -->
+    <link data-trunk rel="copy-file" href="assets/robots.txt">
+</body>
+</html>
+```
+
+### 环境变量
+
+```rust
+// 在 Rust 中读取编译时环境变量
+fn get_api_url() -> &'static str {
+    option_env!("API_URL").unwrap_or("http://localhost:3000")
+}
+
+fn get_app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+```
+
+```bash
+# 构建时设置环境变量
+API_URL=https://api.example.com trunk build --release
+```
+
+## 📝 实际应用示例
+
+### 完整的 Yew + Trunk 项目
+
+`index.html`：
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>任务管理器</title>
+    <link data-trunk rel="css" href="assets/app.css">
+    <link data-trunk rel="icon" href="assets/favicon.ico">
+</head>
+<body></body>
+</html>
+```
+
+`assets/app.css`：
+
+```css
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #f0f2f5;
+    color: #333;
+}
+
+.app {
+    max-width: 600px;
+    margin: 40px auto;
+    padding: 0 20px;
+}
+
+.app h1 { text-align: center; margin-bottom: 24px; }
+
+.input-group {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.input-group input {
+    flex: 1;
+    padding: 10px 14px;
+    border: 1px solid #d9d9d9;
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+.input-group button {
+    padding: 10px 20px;
+    background: #1890ff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.task-item {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    background: white;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.task-item.done span { text-decoration: line-through; color: #999; }
+
+.task-item span { flex: 1; margin-left: 8px; }
+
+.task-item button {
+    background: none;
+    border: none;
+    color: #ff4d4f;
+    cursor: pointer;
+    font-size: 18px;
+}
+
+.stats { text-align: center; margin-top: 16px; color: #888; }
+```
+
+`src/main.rs`：
+
+```rust
+use yew::prelude::*;
+
+#[derive(Clone, PartialEq)]
+struct Task {
+    id: u64,
+    text: String,
+    done: bool,
+}
+
+#[function_component(TaskManager)]
+fn task_manager() -> Html {
+    let tasks = use_state(Vec::<Task>::new);
+    let next_id = use_state(|| 1u64);
+    let input = use_state(String::new);
+
+    let on_input = {
+        let input = input.clone();
+        Callback::from(move |event: InputEvent| {
+            let target: web_sys::HtmlInputElement = event.target_unchecked_into();
+            input.set(target.value());
+        })
+    };
+
+    let on_add = {
+        let tasks = tasks.clone();
+        let next_id = next_id.clone();
+        let input = input.clone();
+        Callback::from(move |_| {
+            let text = (*input).trim().to_string();
+            if !text.is_empty() {
+                let mut new_tasks = (*tasks).clone();
+                new_tasks.push(Task {
+                    id: *next_id,
+                    text,
+                    done: false,
+                });
+                tasks.set(new_tasks);
+                next_id.set(*next_id + 1);
+                input.set(String::new());
+            }
+        })
+    };
+
+    let on_key = {
+        let on_add = on_add.clone();
+        Callback::from(move |event: KeyboardEvent| {
+            if event.key() == "Enter" {
+                on_add.emit(MouseEvent::new("click").unwrap());
+            }
+        })
+    };
+
+    let total = tasks.len();
+    let done_count = tasks.iter().filter(|t| t.done).count();
+
+    html! {
+        <div class="app">
+            <h1>{ "📋 任务管理器" }</h1>
+            <div class="input-group">
+                <input
+                    type="text"
+                    placeholder="添加新任务..."
+                    value={(*input).clone()}
+                    oninput={on_input}
+                    onkeypress={on_key}
+                />
+                <button onclick={on_add}>{ "添加" }</button>
+            </div>
+
+            { for tasks.iter().map(|task| {
+                let task_id = task.id;
+                let tasks_toggle = tasks.clone();
+                let tasks_remove = tasks.clone();
+
+                let toggle = Callback::from(move |_| {
+                    let mut updated = (*tasks_toggle).clone();
+                    if let Some(item) = updated.iter_mut().find(|t| t.id == task_id) {
+                        item.done = !item.done;
+                    }
+                    tasks_toggle.set(updated);
+                });
+
+                let remove = Callback::from(move |_| {
+                    let updated: Vec<Task> = (*tasks_remove)
+                        .iter()
+                        .filter(|t| t.id != task_id)
+                        .cloned()
+                        .collect();
+                    tasks_remove.set(updated);
+                });
+
+                let class = if task.done { "task-item done" } else { "task-item" };
+
+                html! {
+                    <div class={class}>
+                        <input
+                            type="checkbox"
+                            checked={task.done}
+                            onchange={toggle}
+                        />
+                        <span>{ &task.text }</span>
+                        <button onclick={remove}>{ "×" }</button>
+                    </div>
+                }
+            })}
+
+            if total > 0 {
+                <p class="stats">
+                    { format!("已完成 {}/{} 项", done_count, total) }
+                </p>
+            }
+        </div>
+    }
+}
+
+fn main() {
+    yew::Renderer::<TaskManager>::new().render();
+}
+```
+
+```bash
+# 启动开发
+trunk serve
+
+# 构建发布版本
+trunk build --release
+
+# 构建产物在 dist/ 目录，可部署到任何静态文件服务器
+```
+
+## 🔗 相关概念
+
+- **[Yew 框架](./05-yew-framework)**：Trunk 最常搭配的框架
+- **[Leptos 框架](./06-leptos-framework)**：也支持 Trunk 构建
+- **[wasm-pack](./03-wasm-pack)**：另一种 Wasm 构建工具
 
 ## 📝 学习检查点
 
-- [ ] 理解Trunk 构建工具的核心概念
-- [ ] 能够在实际项目中应用Trunk 构建工具
+- [ ] 能够初始化 Trunk 项目并配置 index.html
+- [ ] 掌握开发服务器和构建命令
+- [ ] 理解 Trunk.toml 配置选项
+- [ ] 能够处理 CSS、图片等静态资源
+- [ ] 能够构建并部署一个完整的 Wasm 前端应用
+
+## 🚀 下一步
+
+→ [系统编程](../04-systems-programming/01-systems-programming-overview)

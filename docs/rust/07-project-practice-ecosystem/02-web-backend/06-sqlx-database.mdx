@@ -5,13 +5,362 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「SQLx 数据库交互」相关知识。
+SQLx 是 Rust 生态中纯异步的 SQL 工具库，最大的特色是**编译期 SQL 检查**——通过 `sqlx::query!` 宏在编译时连接数据库验证 SQL 语句的正确性和类型匹配。它支持 PostgreSQL、MySQL、SQLite，既保留了原生 SQL 的灵活性，又提供了类型安全保证。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础连接
+
+### 连接池
+
+```rust
+use sqlx::postgres::PgPoolOptions;
+
+#[tokio::main]
+async fn main() -> Result<(), sqlx::Error> {
+    let database_url = "postgres://user:password@localhost:5432/mydb";
+
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .min_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .idle_timeout(std::time::Duration::from_secs(300))
+        .connect(database_url)
+        .await?;
+
+    // 验证连接
+    sqlx::query("SELECT 1")
+        .execute(&pool)
+        .await?;
+
+    println!("数据库连接成功");
+    Ok(())
+}
+```
+
+### SQLite 连接（无需外部数据库）
+
+```rust
+use sqlx::sqlite::SqlitePoolOptions;
+
+#[tokio::main]
+async fn main() -> Result<(), sqlx::Error> {
+    // 内存数据库，适合测试
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await?;
+
+    // 创建表
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )"
+    )
+    .execute(&pool)
+    .await?;
+
+    println!("表创建成功");
+    Ok(())
+}
+```
+
+## 📝 基本 CRUD
+
+### 使用 query 和 query_as
+
+```rust
+use sqlx::FromRow;
+use sqlx::sqlite::SqlitePoolOptions;
+
+#[derive(Debug, FromRow)]
+struct User {
+    id: i64,
+    name: String,
+    email: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), sqlx::Error> {
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await?;
+
+    sqlx::query(
+        "CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE
+        )"
+    )
+    .execute(&pool)
+    .await?;
+
+    // INSERT
+    let result = sqlx::query("INSERT INTO users (name, email) VALUES (?, ?)")
+        .bind("Alice")
+        .bind("alice@example.com")
+        .execute(&pool)
+        .await?;
+    println!("插入 ID: {}", result.last_insert_rowid());
+
+    sqlx::query("INSERT INTO users (name, email) VALUES (?, ?)")
+        .bind("Bob")
+        .bind("bob@example.com")
+        .execute(&pool)
+        .await?;
+
+    // SELECT 单条 - 映射到结构体
+    let user = sqlx::query_as::<_, User>("SELECT id, name, email FROM users WHERE id = ?")
+        .bind(1)
+        .fetch_one(&pool)
+        .await?;
+    println!("用户: {:?}", user);
+
+    // SELECT 多条
+    let users = sqlx::query_as::<_, User>("SELECT id, name, email FROM users")
+        .fetch_all(&pool)
+        .await?;
+    println!("所有用户: {:?}", users);
+
+    // SELECT 可选结果
+    let maybe_user = sqlx::query_as::<_, User>(
+        "SELECT id, name, email FROM users WHERE email = ?"
+    )
+    .bind("nobody@example.com")
+    .fetch_optional(&pool)
+    .await?;
+    println!("可选用户: {:?}", maybe_user);
+
+    // UPDATE
+    let update_result = sqlx::query("UPDATE users SET name = ? WHERE id = ?")
+        .bind("Alice Updated")
+        .bind(1)
+        .execute(&pool)
+        .await?;
+    println!("更新行数: {}", update_result.rows_affected());
+
+    // DELETE
+    let delete_result = sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(2)
+        .execute(&pool)
+        .await?;
+    println!("删除行数: {}", delete_result.rows_affected());
+
+    Ok(())
+}
+```
+
+## 🔄 事务
+
+```rust
+use sqlx::FromRow;
+use sqlx::sqlite::SqlitePoolOptions;
+
+#[derive(Debug, FromRow)]
+struct Account {
+    id: i64,
+    name: String,
+    balance: f64,
+}
+
+async fn transfer(
+    pool: &sqlx::SqlitePool,
+    from_id: i64,
+    to_id: i64,
+    amount: f64,
+) -> Result<(), sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+
+    // 检查余额
+    let from_account = sqlx::query_as::<_, Account>(
+        "SELECT id, name, balance FROM accounts WHERE id = ?"
+    )
+    .bind(from_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+
+    if from_account.balance < amount {
+        // 回滚事务
+        transaction.rollback().await?;
+        return Err(sqlx::Error::Protocol("余额不足".to_string()));
+    }
+
+    // 扣款
+    sqlx::query("UPDATE accounts SET balance = balance - ? WHERE id = ?")
+        .bind(amount)
+        .bind(from_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    // 加款
+    sqlx::query("UPDATE accounts SET balance = balance + ? WHERE id = ?")
+        .bind(amount)
+        .bind(to_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    // 提交事务
+    transaction.commit().await?;
+
+    println!(
+        "转账成功: {} -> {}, 金额: {}",
+        from_account.name, to_id, amount
+    );
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), sqlx::Error> {
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await?;
+
+    sqlx::query(
+        "CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            balance REAL NOT NULL DEFAULT 0
+        )"
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query("INSERT INTO accounts (id, name, balance) VALUES (1, 'Alice', 1000.0)")
+        .execute(&pool)
+        .await?;
+    sqlx::query("INSERT INTO accounts (id, name, balance) VALUES (2, 'Bob', 500.0)")
+        .execute(&pool)
+        .await?;
+
+    transfer(&pool, 1, 2, 200.0).await?;
+
+    let accounts = sqlx::query_as::<_, Account>("SELECT id, name, balance FROM accounts")
+        .fetch_all(&pool)
+        .await?;
+    for account in accounts {
+        println!("{}: {:.2}", account.name, account.balance);
+    }
+
+    Ok(())
+}
+```
+
+## 📊 动态查询构建
+
+```rust
+use sqlx::FromRow;
+use sqlx::sqlite::SqlitePoolOptions;
+
+#[derive(Debug, FromRow)]
+struct Product {
+    id: i64,
+    name: String,
+    category: String,
+    price: f64,
+}
+
+struct ProductFilter {
+    category: Option<String>,
+    min_price: Option<f64>,
+    max_price: Option<f64>,
+    search: Option<String>,
+    limit: i64,
+    offset: i64,
+}
+
+async fn search_products(
+    pool: &sqlx::SqlitePool,
+    filter: &ProductFilter,
+) -> Result<Vec<Product>, sqlx::Error> {
+    let mut query = String::from("SELECT id, name, category, price FROM products WHERE 1=1");
+    let mut args: Vec<Box<dyn std::fmt::Display>> = Vec::new();
+
+    if let Some(ref category) = filter.category {
+        query.push_str(&format!(" AND category = '{}'", category));
+    }
+    if let Some(min_price) = filter.min_price {
+        query.push_str(&format!(" AND price >= {}", min_price));
+    }
+    if let Some(max_price) = filter.max_price {
+        query.push_str(&format!(" AND price <= {}", max_price));
+    }
+    if let Some(ref search) = filter.search {
+        query.push_str(&format!(" AND name LIKE '%{}%'", search));
+    }
+
+    query.push_str(&format!(" ORDER BY price ASC LIMIT {} OFFSET {}", filter.limit, filter.offset));
+
+    sqlx::query_as::<_, Product>(&query)
+        .fetch_all(pool)
+        .await
+}
+
+#[tokio::main]
+async fn main() -> Result<(), sqlx::Error> {
+    let pool = SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await?;
+
+    sqlx::query(
+        "CREATE TABLE products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            price REAL NOT NULL
+        )"
+    )
+    .execute(&pool)
+    .await?;
+
+    let products = [
+        ("Rust 编程", "books", 59.9),
+        ("Tokio 指南", "books", 39.9),
+        ("机械键盘", "electronics", 299.0),
+        ("显示器", "electronics", 1999.0),
+    ];
+
+    for (name, category, price) in &products {
+        sqlx::query("INSERT INTO products (name, category, price) VALUES (?, ?, ?)")
+            .bind(name)
+            .bind(category)
+            .bind(price)
+            .execute(&pool)
+            .await?;
+    }
+
+    let filter = ProductFilter {
+        category: Some("books".to_string()),
+        min_price: None,
+        max_price: Some(50.0),
+        search: None,
+        limit: 10,
+        offset: 0,
+    };
+
+    let results = search_products(&pool, &filter).await?;
+    for product in results {
+        println!("{}: ¥{:.2} ({})", product.name, product.price, product.category);
+    }
+
+    Ok(())
+}
+```
+
+## 🔗 相关概念
+
+- **[Diesel ORM](./07-diesel-orm)**：同步 ORM 方案
+- **[SeaORM 异步 ORM](./08-seaorm-async-orm)**：异步 ORM 方案
+- **[Axum 框架](./02-axum-framework)**：Web 框架集成
 
 ## 📝 学习检查点
 
-- [ ] 理解SQLx 数据库交互的核心概念
-- [ ] 能够在实际项目中应用SQLx 数据库交互
+- [ ] 能够创建和配置数据库连接池
+- [ ] 掌握基本的 CRUD 操作和结构体映射
+- [ ] 理解事务的使用方式和错误处理
+- [ ] 能够构建动态查询条件
+- [ ] 了解编译期 SQL 检查的优势
+
+## 🚀 下一步
+
+→ [Diesel ORM](./07-diesel-orm)

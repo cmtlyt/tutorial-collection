@@ -5,13 +5,439 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解命令行工具开发中的「clap 参数解析」相关知识。
+clap（Command Line Argument Parser）是 Rust 生态中最流行的命令行参数解析库。它提供了两种主要的参数定义方式：**derive 模式**和 **builder 模式**，能够自动生成帮助文档、支持子命令、参数校验等功能。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Derive 模式
+
+### 基本用法
+
+derive 模式通过在结构体上使用 `#[derive(Parser)]` 宏，自动从结构体定义生成参数解析器：
+
+```rust
+use clap::Parser;
+
+/// 一个简单的文件搜索工具
+#[derive(Parser, Debug)]
+#[command(name = "search", version, about = "在文件中搜索指定模式")]
+struct SearchArgs {
+    /// 要搜索的模式
+    pattern: String,
+
+    /// 要搜索的文件路径
+    file_path: String,
+
+    /// 是否忽略大小写
+    #[arg(short, long, default_value_t = false)]
+    ignore_case: bool,
+
+    /// 显示匹配行的行号
+    #[arg(short = 'n', long)]
+    line_number: bool,
+
+    /// 限制最大匹配数量
+    #[arg(short, long)]
+    max_count: Option<usize>,
+}
+
+fn main() {
+    let args = SearchArgs::parse();
+    println!("搜索模式: {}", args.pattern);
+    println!("文件路径: {}", args.file_path);
+    println!("忽略大小写: {}", args.ignore_case);
+
+    if let Some(max) = args.max_count {
+        println!("最大匹配数: {}", max);
+    }
+}
+```
+
+### 参数类型
+
+clap 支持三种参数类型：
+
+```rust
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+struct Args {
+    /// 位置参数（必需）
+    input: String,
+
+    /// 可选位置参数
+    output: Option<String>,
+
+    /// 短选项和长选项
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// 带默认值的选项
+    #[arg(short, long, default_value = "utf-8")]
+    encoding: String,
+
+    /// 可重复的选项（-v, -vv, -vvv）
+    #[arg(short = 'V', long, action = clap::ArgAction::Count)]
+    verbosity: u8,
+
+    /// 接受多个值
+    #[arg(short, long, num_args = 1..)]
+    files: Vec<String>,
+}
+
+fn main() {
+    let args = Args::parse();
+    println!("输入: {}", args.input);
+    println!("详细级别: {}", args.verbosity);
+    println!("文件列表: {:?}", args.files);
+}
+```
+
+### 枚举参数与值校验
+
+```rust
+use clap::{Parser, ValueEnum};
+
+#[derive(Debug, Clone, ValueEnum)]
+enum OutputFormat {
+    Json,
+    Yaml,
+    Toml,
+    Table,
+}
+
+#[derive(Parser, Debug)]
+struct Args {
+    /// 输出格式
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Json)]
+    format: OutputFormat,
+
+    /// 端口号（限制范围）
+    #[arg(short, long, value_parser = clap::value_parser!(u16).range(1..=65535))]
+    port: u16,
+
+    /// 日志级别
+    #[arg(short, long, value_parser = ["debug", "info", "warn", "error"])]
+    log_level: Option<String>,
+}
+
+fn main() {
+    let args = Args::parse();
+    println!("格式: {:?}", args.format);
+    println!("端口: {}", args.port);
+}
+```
+
+## 🔧 子命令
+
+### 定义子命令
+
+```rust
+use clap::{Parser, Subcommand};
+
+#[derive(Parser, Debug)]
+#[command(name = "cargo-like", version, about = "一个类似 cargo 的工具")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// 初始化新项目
+    Init {
+        /// 项目名称
+        name: String,
+        /// 使用的模板
+        #[arg(short, long, default_value = "default")]
+        template: String,
+    },
+    /// 构建项目
+    Build {
+        /// 是否为发布模式
+        #[arg(short, long)]
+        release: bool,
+        /// 目标平台
+        #[arg(short, long)]
+        target: Option<String>,
+    },
+    /// 运行项目
+    Run {
+        /// 传递给程序的参数
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Init { name, template } => {
+            println!("初始化项目: {} (模板: {})", name, template);
+        }
+        Commands::Build { release, target } => {
+            let mode = if release { "release" } else { "debug" };
+            println!("构建模式: {}", mode);
+            if let Some(target) = target {
+                println!("目标平台: {}", target);
+            }
+        }
+        Commands::Run { args } => {
+            println!("运行参数: {:?}", args);
+        }
+    }
+}
+```
+
+### 嵌套子命令
+
+```rust
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// 配置管理
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// 获取配置值
+    Get {
+        /// 配置键名
+        key: String,
+    },
+    /// 设置配置值
+    Set {
+        /// 配置键名
+        key: String,
+        /// 配置值
+        value: String,
+    },
+    /// 列出所有配置
+    List,
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Config { action } => match action {
+            ConfigAction::Get { key } => println!("获取配置: {}", key),
+            ConfigAction::Set { key, value } => println!("设置 {} = {}", key, value),
+            ConfigAction::List => println!("列出所有配置"),
+        },
+    }
+}
+```
+
+## 🏗️ Builder 模式
+
+当需要更灵活的参数定义时，可以使用 builder 模式：
+
+```rust
+use clap::{Arg, ArgAction, Command};
+
+fn main() {
+    let matches = Command::new("mytool")
+        .version("1.0")
+        .author("开发者")
+        .about("工具描述")
+        .arg(
+            Arg::new("input")
+                .help("输入文件")
+                .required(true)
+                .index(1),
+        )
+        .arg(
+            Arg::new("output")
+                .short('o')
+                .long("output")
+                .help("输出文件")
+                .default_value("output.txt"),
+        )
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("启用详细输出")
+                .action(ArgAction::SetTrue),
+        )
+        .get_matches();
+
+    let input = matches.get_one::<String>("input").unwrap();
+    let output = matches.get_one::<String>("output").unwrap();
+    let verbose = matches.get_flag("verbose");
+
+    println!("输入: {}, 输出: {}, 详细: {}", input, output, verbose);
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的文件处理 CLI 工具
+
+```rust
+use clap::{Parser, Subcommand, ValueEnum};
+use std::fs;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, ValueEnum)]
+enum SortOrder {
+    Name,
+    Size,
+    Modified,
+}
+
+#[derive(Parser)]
+#[command(name = "filetool", version, about = "文件管理工具")]
+struct Cli {
+    /// 全局详细输出
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// 列出目录内容
+    List {
+        /// 目标目录
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// 排序方式
+        #[arg(short, long, value_enum, default_value_t = SortOrder::Name)]
+        sort: SortOrder,
+
+        /// 显示隐藏文件
+        #[arg(short = 'a', long)]
+        all: bool,
+    },
+    /// 统计文件信息
+    Stats {
+        /// 目标路径
+        path: PathBuf,
+
+        /// 递归统计
+        #[arg(short, long)]
+        recursive: bool,
+    },
+}
+
+fn list_directory(path: &PathBuf, sort: &SortOrder, show_all: bool, verbose: bool) {
+    let entries: Vec<_> = fs::read_dir(path)
+        .expect("无法读取目录")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            if show_all {
+                return true;
+            }
+            !entry.file_name().to_string_lossy().starts_with('.')
+        })
+        .collect();
+
+    if verbose {
+        println!("共找到 {} 个条目", entries.len());
+    }
+
+    let mut items: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            let metadata = entry.metadata().unwrap();
+            let file_type = if metadata.is_dir() { "目录" } else { "文件" };
+            let size = metadata.len();
+            (entry.file_name().to_string_lossy().to_string(), file_type, size)
+        })
+        .collect();
+
+    match sort {
+        SortOrder::Name => items.sort_by(|first, second| first.0.cmp(&second.0)),
+        SortOrder::Size => items.sort_by(|first, second| second.2.cmp(&first.2)),
+        SortOrder::Modified => {} // 简化处理
+    }
+
+    for (name, file_type, size) in &items {
+        println!("{:<30} {:<6} {:>10} bytes", name, file_type, size);
+    }
+}
+
+fn show_stats(path: &PathBuf, recursive: bool) {
+    let metadata = fs::metadata(path).expect("无法获取文件信息");
+
+    if metadata.is_file() {
+        println!("文件: {}", path.display());
+        println!("大小: {} bytes", metadata.len());
+        return;
+    }
+
+    let mut file_count = 0u64;
+    let mut dir_count = 0u64;
+    let mut total_size = 0u64;
+
+    fn walk_dir(path: &PathBuf, recursive: bool, file_count: &mut u64, dir_count: &mut u64, total_size: &mut u64) {
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let metadata = entry.metadata().unwrap();
+                if metadata.is_file() {
+                    *file_count += 1;
+                    *total_size += metadata.len();
+                } else if metadata.is_dir() {
+                    *dir_count += 1;
+                    if recursive {
+                        walk_dir(&entry.path().to_path_buf(), recursive, file_count, dir_count, total_size);
+                    }
+                }
+            }
+        }
+    }
+
+    walk_dir(path, recursive, &mut file_count, &mut dir_count, &mut total_size);
+
+    println!("目录: {}", path.display());
+    println!("文件数: {}", file_count);
+    println!("子目录数: {}", dir_count);
+    println!("总大小: {} bytes", total_size);
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    match &cli.command {
+        Commands::List { path, sort, all } => {
+            list_directory(path, sort, *all, cli.verbose);
+        }
+        Commands::Stats { path, recursive } => {
+            show_stats(path, *recursive);
+        }
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[indicatif 进度条](./03-indicatif-progress-bars)**：为 CLI 添加进度指示
+- **[dialoguer 交互式提示](./04-dialoguer-interactive-prompts)**：添加用户交互
+- **[console 终端样式](./05-console-terminal-styling)**：美化终端输出
 
 ## 📝 学习检查点
 
-- [ ] 理解clap 参数解析的核心概念
-- [ ] 能够在实际项目中应用clap 参数解析
+- [ ] 理解 derive 模式与 builder 模式的区别和适用场景
+- [ ] 能够定义位置参数、可选参数和标志参数
+- [ ] 掌握子命令和嵌套子命令的定义方式
+- [ ] 能够使用枚举参数和值校验
+- [ ] 能够构建一个完整的多子命令 CLI 工具
+
+## 🚀 下一步
+
+→ [indicatif 进度条](./03-indicatif-progress-bars)

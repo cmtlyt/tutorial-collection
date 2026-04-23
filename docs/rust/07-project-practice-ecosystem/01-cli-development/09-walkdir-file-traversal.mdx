@@ -5,13 +5,374 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解命令行工具开发中的「walkdir 文件遍历」相关知识。
+walkdir 是 Rust 中高效递归遍历目录的库，提供了简洁的迭代器 API。相比标准库的 `std::fs::read_dir`（只能遍历单层目录），walkdir 支持递归遍历、深度控制、符号链接处理、排序等高级功能，是构建文件处理工具的核心组件。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础遍历
+
+### 简单递归遍历
+
+```rust
+use walkdir::WalkDir;
+
+fn main() {
+    for entry in WalkDir::new(".") {
+        match entry {
+            Ok(dir_entry) => {
+                let path = dir_entry.path();
+                let depth = dir_entry.depth();
+                let indent = "  ".repeat(depth);
+                println!("{}{}", indent, path.display());
+            }
+            Err(err) => {
+                eprintln!("遍历错误: {}", err);
+            }
+        }
+    }
+}
+```
+
+### 深度控制与过滤
+
+```rust
+use walkdir::WalkDir;
+
+fn main() {
+    // 限制遍历深度
+    println!("=== 最大深度 2 ===");
+    for entry in WalkDir::new(".").max_depth(2) {
+        let dir_entry = entry.unwrap();
+        println!("{}", dir_entry.path().display());
+    }
+
+    // 跳过隐藏文件和目录
+    println!("\n=== 跳过隐藏文件 ===");
+    let walker = WalkDir::new(".").into_iter();
+    for entry in walker.filter_entry(|entry| {
+        !entry
+            .file_name()
+            .to_str()
+            .map(|name| name.starts_with('.'))
+            .unwrap_or(false)
+    }) {
+        let dir_entry = entry.unwrap();
+        println!("{}", dir_entry.path().display());
+    }
+}
+```
+
+### 仅筛选文件或目录
+
+```rust
+use walkdir::WalkDir;
+
+fn main() {
+    // 仅文件
+    println!("=== 所有文件 ===");
+    for entry in WalkDir::new("src")
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        println!("  {}", entry.path().display());
+    }
+
+    // 仅目录
+    println!("\n=== 所有目录 ===");
+    for entry in WalkDir::new("src")
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_dir())
+    {
+        println!("  {}", entry.path().display());
+    }
+
+    // 按扩展名筛选
+    println!("\n=== Rust 源文件 ===");
+    for entry in WalkDir::new("src")
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_type().is_file()
+                && e.path()
+                    .extension()
+                    .map(|ext| ext == "rs")
+                    .unwrap_or(false)
+        })
+    {
+        println!("  {}", entry.path().display());
+    }
+}
+```
+
+## ⚙️ 高级配置
+
+### 排序与符号链接
+
+```rust
+use walkdir::WalkDir;
+
+fn main() {
+    // 按文件名排序遍历
+    println!("=== 排序遍历 ===");
+    for entry in WalkDir::new(".")
+        .max_depth(2)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        println!("{}", entry.path().display());
+    }
+
+    // 自定义排序（目录优先，然后按名称）
+    println!("\n=== 目录优先排序 ===");
+    for entry in WalkDir::new(".")
+        .max_depth(1)
+        .sort_by(|first, second| {
+            let first_is_dir = first.file_type().is_dir();
+            let second_is_dir = second.file_type().is_dir();
+            second_is_dir
+                .cmp(&first_is_dir)
+                .then_with(|| first.file_name().cmp(second.file_name()))
+        })
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let marker = if entry.file_type().is_dir() { "📁" } else { "📄" };
+        println!("{} {}", marker, entry.path().display());
+    }
+
+    // 跟随符号链接
+    for entry in WalkDir::new(".")
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.path_is_symlink() {
+            println!("符号链接: {}", entry.path().display());
+        }
+    }
+}
+```
+
+### DirEntry 元数据
+
+```rust
+use walkdir::WalkDir;
+
+fn main() {
+    for entry in WalkDir::new(".")
+        .max_depth(1)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let metadata = entry.metadata().unwrap();
+        let size = metadata.len();
+        let file_name = entry.file_name().to_string_lossy();
+
+        let size_display = if size > 1_000_000 {
+            format!("{:.1} MB", size as f64 / 1_000_000.0)
+        } else if size > 1_000 {
+            format!("{:.1} KB", size as f64 / 1_000.0)
+        } else {
+            format!("{} B", size)
+        };
+
+        println!("{:<30} {:>10}", file_name, size_display);
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 项目代码统计工具
+
+```rust
+use std::collections::HashMap;
+use std::fs;
+use walkdir::WalkDir;
+
+struct FileStats {
+    file_count: usize,
+    total_lines: usize,
+    code_lines: usize,
+    blank_lines: usize,
+    comment_lines: usize,
+    total_bytes: u64,
+}
+
+fn count_lines(path: &std::path::Path) -> (usize, usize, usize, usize) {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return (0, 0, 0, 0),
+    };
+
+    let mut total = 0;
+    let mut code = 0;
+    let mut blank = 0;
+    let mut comments = 0;
+    let mut in_block_comment = false;
+
+    for line in content.lines() {
+        total += 1;
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            blank += 1;
+            continue;
+        }
+
+        if in_block_comment {
+            comments += 1;
+            if trimmed.contains("*/") {
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("/*") {
+            comments += 1;
+            if !trimmed.contains("*/") {
+                in_block_comment = true;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("//") || trimmed.starts_with('#') {
+            comments += 1;
+        } else {
+            code += 1;
+        }
+    }
+
+    (total, code, blank, comments)
+}
+
+fn analyze_project(root: &str) -> HashMap<String, FileStats> {
+    let mut stats_by_extension: HashMap<String, FileStats> = HashMap::new();
+
+    let skip_dirs = ["target", "node_modules", ".git", "dist", "build"];
+
+    let walker = WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            !skip_dirs.contains(&name.as_ref())
+        });
+
+    for entry in walker.filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let path = entry.path();
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("other")
+            .to_string();
+
+        let metadata = entry.metadata().unwrap();
+        let (total, code, blank, comments) = count_lines(path);
+
+        let file_stats = stats_by_extension.entry(extension).or_insert(FileStats {
+            file_count: 0,
+            total_lines: 0,
+            code_lines: 0,
+            blank_lines: 0,
+            comment_lines: 0,
+            total_bytes: 0,
+        });
+
+        file_stats.file_count += 1;
+        file_stats.total_lines += total;
+        file_stats.code_lines += code;
+        file_stats.blank_lines += blank;
+        file_stats.comment_lines += comments;
+        file_stats.total_bytes += metadata.len();
+    }
+
+    stats_by_extension
+}
+
+fn main() {
+    let root = ".";
+    let stats = analyze_project(root);
+
+    println!("📊 代码统计报告\n");
+    println!(
+        "{:<10} {:>6} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "扩展名", "文件数", "总行数", "代码行", "空白行", "注释行", "大小"
+    );
+    println!("{}", "-".repeat(76));
+
+    let mut sorted_entries: Vec<_> = stats.iter().collect();
+    sorted_entries.sort_by(|first, second| second.1.code_lines.cmp(&first.1.code_lines));
+
+    let mut grand_total = FileStats {
+        file_count: 0,
+        total_lines: 0,
+        code_lines: 0,
+        blank_lines: 0,
+        comment_lines: 0,
+        total_bytes: 0,
+    };
+
+    for (ext, file_stats) in &sorted_entries {
+        let size_display = if file_stats.total_bytes > 1_000_000 {
+            format!("{:.1} MB", file_stats.total_bytes as f64 / 1_000_000.0)
+        } else {
+            format!("{:.1} KB", file_stats.total_bytes as f64 / 1_000.0)
+        };
+
+        println!(
+            "{:<10} {:>6} {:>10} {:>10} {:>10} {:>10} {:>10}",
+            ext,
+            file_stats.file_count,
+            file_stats.total_lines,
+            file_stats.code_lines,
+            file_stats.blank_lines,
+            file_stats.comment_lines,
+            size_display
+        );
+
+        grand_total.file_count += file_stats.file_count;
+        grand_total.total_lines += file_stats.total_lines;
+        grand_total.code_lines += file_stats.code_lines;
+        grand_total.blank_lines += file_stats.blank_lines;
+        grand_total.comment_lines += file_stats.comment_lines;
+        grand_total.total_bytes += file_stats.total_bytes;
+    }
+
+    println!("{}", "-".repeat(76));
+    println!(
+        "{:<10} {:>6} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "合计",
+        grand_total.file_count,
+        grand_total.total_lines,
+        grand_total.code_lines,
+        grand_total.blank_lines,
+        grand_total.comment_lines,
+        format!("{:.1} MB", grand_total.total_bytes as f64 / 1_000_000.0)
+    );
+}
+```
+
+## 🔗 相关概念
+
+- **[regex 正则表达式](./08-regex-regular-expressions)**：配合文件遍历做内容搜索
+- **[serde 序列化与反序列化](./06-serde-serialization)**：遍历结果的结构化输出
+- **[indicatif 进度条](./03-indicatif-progress-bars)**：大目录遍历时的进度展示
 
 ## 📝 学习检查点
 
-- [ ] 理解walkdir 文件遍历的核心概念
-- [ ] 能够在实际项目中应用walkdir 文件遍历
+- [ ] 能够使用 WalkDir 递归遍历目录
+- [ ] 掌握深度控制和过滤器的使用
+- [ ] 能够按文件名、扩展名或元数据筛选文件
+- [ ] 理解排序遍历和符号链接处理
+- [ ] 能够构建实际的文件分析工具
+
+## 🚀 下一步
+
+→ [Web 后端开发](../02-web-backend/01-web-backend-overview)

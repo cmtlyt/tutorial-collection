@@ -5,13 +5,626 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「OpenAPI 文档生成」相关知识。
+OpenAPI（原 Swagger）是描述 RESTful API 的标准规范，可以自动生成可交互的 API 文档。在 Rust 生态中，`utoipa` 是最流行的 OpenAPI 文档生成库，通过 derive 宏从代码中自动提取 API 信息，并提供 Swagger UI 和 Redoc 等文档界面。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 utoipa 基础
+
+### 数据模型文档化
+
+```rust
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+/// 用户信息
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct User {
+    /// 用户唯一标识
+    #[schema(example = 1)]
+    pub id: u64,
+
+    /// 用户名
+    #[schema(example = "alice", min_length = 2, max_length = 50)]
+    pub username: String,
+
+    /// 邮箱地址
+    #[schema(example = "alice@example.com", format = "email")]
+    pub email: String,
+
+    /// 用户角色
+    pub role: UserRole,
+
+    /// 账户是否激活
+    #[schema(default = true)]
+    pub active: bool,
+}
+
+/// 用户角色枚举
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum UserRole {
+    /// 普通用户
+    User,
+    /// 管理员
+    Admin,
+    /// 超级管理员
+    SuperAdmin,
+}
+
+/// 创建用户请求
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateUserRequest {
+    /// 用户名（2-50 个字符）
+    #[schema(example = "bob", min_length = 2, max_length = 50)]
+    pub username: String,
+
+    /// 邮箱地址
+    #[schema(example = "bob@example.com", format = "email")]
+    pub email: String,
+
+    /// 密码（至少 8 个字符）
+    #[schema(example = "secure_password", min_length = 8)]
+    pub password: String,
+}
+
+/// 分页响应
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PaginatedResponse<T: ToSchema> {
+    /// 数据列表
+    pub items: Vec<T>,
+    /// 当前页码
+    #[schema(example = 1)]
+    pub page: u64,
+    /// 每页数量
+    #[schema(example = 20)]
+    pub per_page: u64,
+    /// 总数量
+    #[schema(example = 100)]
+    pub total: u64,
+}
+
+/// API 错误响应
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApiError {
+    /// 错误码
+    #[schema(example = "NOT_FOUND")]
+    pub code: String,
+    /// 错误消息
+    #[schema(example = "资源未找到")]
+    pub message: String,
+}
+```
+
+### 路由处理函数文档化
+
+```rust
+use axum::{
+    extract::{Path, Query},
+    http::StatusCode,
+    Json,
+};
+use serde::Deserialize;
+
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ListUsersParams {
+    /// 页码
+    #[param(default = 1, minimum = 1)]
+    pub page: Option<u64>,
+    /// 每页数量
+    #[param(default = 20, minimum = 1, maximum = 100)]
+    pub per_page: Option<u64>,
+    /// 按角色过滤
+    pub role: Option<String>,
+    /// 搜索关键词
+    pub search: Option<String>,
+}
+
+/// 获取用户列表
+///
+/// 支持分页、角色过滤和关键词搜索
+#[utoipa::path(
+    get,
+    path = "/api/users",
+    params(ListUsersParams),
+    responses(
+        (status = 200, description = "成功获取用户列表", body = PaginatedResponse<User>),
+        (status = 401, description = "未认证", body = ApiError),
+    ),
+    tag = "用户管理",
+    security(("bearer_auth" = []))
+)]
+pub async fn list_users(
+    Query(params): Query<ListUsersParams>,
+) -> Json<PaginatedResponse<User>> {
+    let page = params.page.unwrap_or(1);
+    let per_page = params.per_page.unwrap_or(20);
+
+    Json(PaginatedResponse {
+        items: vec![],
+        page,
+        per_page,
+        total: 0,
+    })
+}
+
+/// 获取用户详情
+///
+/// 根据用户 ID 获取单个用户的详细信息
+#[utoipa::path(
+    get,
+    path = "/api/users/{id}",
+    params(
+        ("id" = u64, Path, description = "用户 ID")
+    ),
+    responses(
+        (status = 200, description = "成功获取用户信息", body = User),
+        (status = 404, description = "用户不存在", body = ApiError),
+    ),
+    tag = "用户管理"
+)]
+pub async fn get_user(
+    Path(user_id): Path<u64>,
+) -> Result<Json<User>, (StatusCode, Json<ApiError>)> {
+    if user_id == 0 {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                code: "NOT_FOUND".to_string(),
+                message: "用户不存在".to_string(),
+            }),
+        ));
+    }
+
+    Ok(Json(User {
+        id: user_id,
+        username: "alice".to_string(),
+        email: "alice@example.com".to_string(),
+        role: UserRole::User,
+        active: true,
+    }))
+}
+
+/// 创建用户
+///
+/// 注册新用户账户
+#[utoipa::path(
+    post,
+    path = "/api/users",
+    request_body = CreateUserRequest,
+    responses(
+        (status = 201, description = "用户创建成功", body = User),
+        (status = 409, description = "用户名或邮箱已存在", body = ApiError),
+        (status = 422, description = "请求参数验证失败", body = ApiError),
+    ),
+    tag = "用户管理"
+)]
+pub async fn create_user(
+    Json(input): Json<CreateUserRequest>,
+) -> (StatusCode, Json<User>) {
+    let user = User {
+        id: 1,
+        username: input.username,
+        email: input.email,
+        role: UserRole::User,
+        active: true,
+    };
+
+    (StatusCode::CREATED, Json(user))
+}
+
+/// 删除用户
+///
+/// 根据 ID 删除用户（需要管理员权限）
+#[utoipa::path(
+    delete,
+    path = "/api/users/{id}",
+    params(
+        ("id" = u64, Path, description = "要删除的用户 ID")
+    ),
+    responses(
+        (status = 204, description = "用户已删除"),
+        (status = 404, description = "用户不存在", body = ApiError),
+        (status = 403, description = "权限不足", body = ApiError),
+    ),
+    tag = "用户管理",
+    security(("bearer_auth" = []))
+)]
+pub async fn delete_user(Path(user_id): Path<u64>) -> StatusCode {
+    if user_id == 0 {
+        return StatusCode::NOT_FOUND;
+    }
+    StatusCode::NO_CONTENT
+}
+```
+
+## 🔧 OpenAPI 文档组装
+
+### 创建 OpenAPI 规范
+
+```rust
+use utoipa::OpenApi;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        list_users,
+        get_user,
+        create_user,
+        delete_user,
+    ),
+    components(
+        schemas(
+            User,
+            UserRole,
+            CreateUserRequest,
+            PaginatedResponse<User>,
+            ApiError,
+        )
+    ),
+    modifiers(&SecurityAddon),
+    tags(
+        (name = "用户管理", description = "用户相关的 CRUD 操作"),
+        (name = "认证", description = "登录、注册和 Token 管理"),
+    ),
+    info(
+        title = "示例 API",
+        version = "1.0.0",
+        description = "基于 Axum + utoipa 的 RESTful API 示例",
+        contact(
+            name = "开发团队",
+            email = "dev@example.com"
+        ),
+        license(
+            name = "MIT",
+            url = "https://opensource.org/licenses/MIT"
+        )
+    )
+)]
+struct ApiDoc;
+
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.as_mut().unwrap();
+        components.add_security_scheme(
+            "bearer_auth",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("JWT")
+                    .build(),
+            ),
+        );
+    }
+}
+```
+
+## 🌐 集成 Swagger UI
+
+```rust
+use axum::{routing::{get, post, delete}, Router};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new()
+        // API 路由
+        .route("/api/users", get(list_users).post(create_user))
+        .route("/api/users/{id}", get(get_user).delete(delete_user))
+        // Swagger UI
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
+
+    println!("API 文档: http://localhost:3000/swagger-ui/");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 📝 实际应用示例
+
+### 完整的带文档的 API 服务
+
+```rust
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    routing::{get, post, put, delete},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use utoipa::{OpenApi, ToSchema, IntoParams};
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa_swagger_ui::SwaggerUi;
+
+// === 数据模型 ===
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+struct Book {
+    #[schema(example = 1)]
+    id: u64,
+    #[schema(example = "Rust 编程之道")]
+    title: String,
+    #[schema(example = "张三")]
+    author: String,
+    #[schema(example = "978-7-121-12345-6")]
+    isbn: String,
+    #[schema(example = 59.9)]
+    price: f64,
+    #[schema(example = true)]
+    in_stock: bool,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct CreateBookInput {
+    #[schema(example = "Rust 编程之道")]
+    title: String,
+    #[schema(example = "张三")]
+    author: String,
+    #[schema(example = "978-7-121-12345-6")]
+    isbn: String,
+    #[schema(example = 59.9)]
+    price: f64,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct UpdateBookInput {
+    title: Option<String>,
+    author: Option<String>,
+    price: Option<f64>,
+    in_stock: Option<bool>,
+}
+
+#[derive(Deserialize, IntoParams)]
+struct BookSearchParams {
+    /// 搜索关键词
+    #[param(example = "Rust")]
+    keyword: Option<String>,
+    /// 最低价格
+    #[param(example = 0.0)]
+    min_price: Option<f64>,
+    /// 最高价格
+    #[param(example = 100.0)]
+    max_price: Option<f64>,
+    /// 是否有库存
+    in_stock: Option<bool>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct BookListResponse {
+    books: Vec<Book>,
+    total: usize,
+}
+
+#[derive(Serialize, ToSchema)]
+struct ErrorBody {
+    #[schema(example = "NOT_FOUND")]
+    code: String,
+    #[schema(example = "图书不存在")]
+    message: String,
+}
+
+// === 状态 ===
+
+type BookStore = Arc<RwLock<Vec<Book>>>;
+
+// === 处理函数 ===
+
+/// 搜索图书
+///
+/// 支持按关键词、价格范围和库存状态筛选
+#[utoipa::path(
+    get, path = "/api/books",
+    params(BookSearchParams),
+    responses(
+        (status = 200, description = "图书列表", body = BookListResponse),
+    ),
+    tag = "图书管理"
+)]
+async fn search_books(
+    State(store): State<BookStore>,
+    Query(params): Query<BookSearchParams>,
+) -> Json<BookListResponse> {
+    let books = store.read().await;
+    let filtered: Vec<Book> = books
+        .iter()
+        .filter(|book| {
+            let keyword_match = params.keyword.as_ref().map_or(true, |kw| {
+                book.title.contains(kw.as_str()) || book.author.contains(kw.as_str())
+            });
+            let min_match = params.min_price.map_or(true, |min| book.price >= min);
+            let max_match = params.max_price.map_or(true, |max| book.price <= max);
+            let stock_match = params.in_stock.map_or(true, |stock| book.in_stock == stock);
+            keyword_match && min_match && max_match && stock_match
+        })
+        .cloned()
+        .collect();
+
+    let total = filtered.len();
+    Json(BookListResponse { books: filtered, total })
+}
+
+/// 获取图书详情
+#[utoipa::path(
+    get, path = "/api/books/{id}",
+    params(("id" = u64, Path, description = "图书 ID")),
+    responses(
+        (status = 200, description = "图书详情", body = Book),
+        (status = 404, description = "图书不存在", body = ErrorBody),
+    ),
+    tag = "图书管理"
+)]
+async fn get_book(
+    State(store): State<BookStore>,
+    Path(book_id): Path<u64>,
+) -> Result<Json<Book>, (StatusCode, Json<ErrorBody>)> {
+    let books = store.read().await;
+    books
+        .iter()
+        .find(|b| b.id == book_id)
+        .cloned()
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, Json(ErrorBody {
+            code: "NOT_FOUND".to_string(),
+            message: format!("图书 {} 不存在", book_id),
+        })))
+}
+
+/// 添加图书
+#[utoipa::path(
+    post, path = "/api/books",
+    request_body = CreateBookInput,
+    responses(
+        (status = 201, description = "图书创建成功", body = Book),
+        (status = 409, description = "ISBN 已存在", body = ErrorBody),
+    ),
+    tag = "图书管理"
+)]
+async fn create_book(
+    State(store): State<BookStore>,
+    Json(input): Json<CreateBookInput>,
+) -> Result<(StatusCode, Json<Book>), (StatusCode, Json<ErrorBody>)> {
+    let mut books = store.write().await;
+
+    if books.iter().any(|b| b.isbn == input.isbn) {
+        return Err((StatusCode::CONFLICT, Json(ErrorBody {
+            code: "CONFLICT".to_string(),
+            message: format!("ISBN {} 已存在", input.isbn),
+        })));
+    }
+
+    let book = Book {
+        id: books.len() as u64 + 1,
+        title: input.title,
+        author: input.author,
+        isbn: input.isbn,
+        price: input.price,
+        in_stock: true,
+    };
+    books.push(book.clone());
+    Ok((StatusCode::CREATED, Json(book)))
+}
+
+/// 更新图书信息
+#[utoipa::path(
+    put, path = "/api/books/{id}",
+    params(("id" = u64, Path, description = "图书 ID")),
+    request_body = UpdateBookInput,
+    responses(
+        (status = 200, description = "更新成功", body = Book),
+        (status = 404, description = "图书不存在", body = ErrorBody),
+    ),
+    tag = "图书管理"
+)]
+async fn update_book(
+    State(store): State<BookStore>,
+    Path(book_id): Path<u64>,
+    Json(input): Json<UpdateBookInput>,
+) -> Result<Json<Book>, (StatusCode, Json<ErrorBody>)> {
+    let mut books = store.write().await;
+    let book = books.iter_mut().find(|b| b.id == book_id).ok_or((
+        StatusCode::NOT_FOUND,
+        Json(ErrorBody { code: "NOT_FOUND".to_string(), message: "图书不存在".to_string() }),
+    ))?;
+
+    if let Some(title) = input.title { book.title = title; }
+    if let Some(author) = input.author { book.author = author; }
+    if let Some(price) = input.price { book.price = price; }
+    if let Some(in_stock) = input.in_stock { book.in_stock = in_stock; }
+
+    Ok(Json(book.clone()))
+}
+
+/// 删除图书
+#[utoipa::path(
+    delete, path = "/api/books/{id}",
+    params(("id" = u64, Path, description = "图书 ID")),
+    responses(
+        (status = 204, description = "删除成功"),
+        (status = 404, description = "图书不存在", body = ErrorBody),
+    ),
+    tag = "图书管理"
+)]
+async fn delete_book(
+    State(store): State<BookStore>,
+    Path(book_id): Path<u64>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorBody>)> {
+    let mut books = store.write().await;
+    let len_before = books.len();
+    books.retain(|b| b.id != book_id);
+
+    if books.len() < len_before {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, Json(ErrorBody {
+            code: "NOT_FOUND".to_string(),
+            message: "图书不存在".to_string(),
+        })))
+    }
+}
+
+// === OpenAPI 文档 ===
+
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.as_mut().unwrap();
+        components.add_security_scheme(
+            "bearer_auth",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("JWT")
+                    .build(),
+            ),
+        );
+    }
+}
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(search_books, get_book, create_book, update_book, delete_book),
+    components(schemas(Book, CreateBookInput, UpdateBookInput, BookListResponse, ErrorBody)),
+    modifiers(&SecurityAddon),
+    tags((name = "图书管理", description = "图书 CRUD 操作")),
+    info(title = "图书管理 API", version = "1.0.0", description = "基于 Axum + utoipa 的图书管理系统")
+)]
+struct ApiDoc;
+
+#[tokio::main]
+async fn main() {
+    let store: BookStore = Arc::new(RwLock::new(Vec::new()));
+
+    let app = Router::new()
+        .route("/api/books", get(search_books).post(create_book))
+        .route("/api/books/{id}", get(get_book).put(update_book).delete(delete_book))
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .with_state(store);
+
+    println!("API 文档: http://localhost:3000/swagger-ui/");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+## 🔗 相关概念
+
+- **[Axum 框架](./02-axum-framework)**：API 实现框架
+- **[RESTful API 设计](./10-restful-api-design)**：API 设计规范
+- **[认证与授权](./12-authentication-authorization)**：Security Scheme 配置
 
 ## 📝 学习检查点
 
-- [ ] 理解OpenAPI 文档生成的核心概念
-- [ ] 能够在实际项目中应用OpenAPI 文档生成
+- [ ] 能够使用 `ToSchema` 为数据模型生成文档
+- [ ] 掌握 `#[utoipa::path]` 为路由生成文档
+- [ ] 理解 OpenApi derive 宏的组装方式
+- [ ] 能够集成 Swagger UI 提供可交互文档
+- [ ] 能够配置安全认证 Schema
+
+## 🚀 下一步
+
+→ [WebAssembly](../03-webassembly/01-webassembly-overview)

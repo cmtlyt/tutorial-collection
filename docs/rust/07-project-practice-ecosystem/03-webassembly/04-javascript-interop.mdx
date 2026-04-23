@@ -5,13 +5,397 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解WebAssembly中的「与 JavaScript 互操作」相关知识。
+Rust 编译到 WebAssembly 后，需要与 JavaScript 进行互操作——调用 Web API、操作 DOM、处理异步事件等。`web-sys` 和 `js-sys` 是两个关键 crate：`js-sys` 提供 JavaScript 标准内置对象的绑定，`web-sys` 提供浏览器 Web API 的绑定。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 js-sys：JavaScript 内置对象
+
+### 常用类型
+
+```rust
+use wasm_bindgen::prelude::*;
+use js_sys::{Array, Date, JSON, Map, Object, Reflect};
+
+#[wasm_bindgen]
+pub fn js_sys_demo() -> JsValue {
+    // Date
+    let now = Date::new_0();
+    let year = now.get_full_year();
+    let month = now.get_month() + 1;
+    let day = now.get_date();
+
+    // Array
+    let arr = Array::new();
+    arr.push(&JsValue::from_str("Rust"));
+    arr.push(&JsValue::from_str("Wasm"));
+    arr.push(&JsValue::from_str("JS"));
+
+    let joined = arr.join(", ");
+
+    // Map
+    let map = Map::new();
+    map.set(&JsValue::from_str("language"), &JsValue::from_str("Rust"));
+    map.set(&JsValue::from_str("target"), &JsValue::from_str("wasm32"));
+
+    // Object
+    let result = Object::new();
+    Reflect::set(&result, &JsValue::from_str("date"), &JsValue::from_str(&format!("{}-{:02}-{:02}", year, month, day))).unwrap();
+    Reflect::set(&result, &JsValue::from_str("items"), &arr).unwrap();
+    Reflect::set(&result, &JsValue::from_str("joined"), &JsValue::from_str(&joined)).unwrap();
+
+    result.into()
+}
+
+// 使用 Math 函数
+#[wasm_bindgen]
+pub fn random_in_range(min: f64, max: f64) -> f64 {
+    let random = js_sys::Math::random();
+    min + random * (max - min)
+}
+
+// 使用 JSON
+#[wasm_bindgen]
+pub fn parse_and_stringify(json_str: &str) -> Result<String, JsValue> {
+    let parsed = JSON::parse(json_str)?;
+    let stringified = JSON::stringify(&parsed)
+        .map_err(|_| JsValue::from_str("JSON 序列化失败"))?;
+    Ok(stringified.as_string().unwrap_or_default())
+}
+```
+
+## 🌐 web-sys：浏览器 Web API
+
+### DOM 操作
+
+```rust
+use wasm_bindgen::prelude::*;
+use web_sys::{Document, Element, HtmlElement, Window};
+
+fn get_window() -> Window {
+    web_sys::window().expect("no global window")
+}
+
+fn get_document() -> Document {
+    get_window().document().expect("no document")
+}
+
+#[wasm_bindgen]
+pub fn create_element_demo() -> Result<(), JsValue> {
+    let document = get_document();
+
+    // 创建元素
+    let container = document.create_element("div")?;
+    container.set_id("wasm-container");
+    container.set_class_name("container");
+
+    // 创建标题
+    let heading = document.create_element("h1")?;
+    heading.set_text_content(Some("来自 Rust Wasm 的问候！"));
+
+    // 创建段落
+    let paragraph = document.create_element("p")?;
+    paragraph.set_text_content(Some("这段内容由 Rust 编译的 WebAssembly 生成。"));
+
+    // 创建按钮
+    let button = document.create_element("button")?;
+    button.set_text_content(Some("点击我"));
+    button.set_id("wasm-button");
+
+    // 组装 DOM
+    container.append_child(&heading)?;
+    container.append_child(&paragraph)?;
+    container.append_child(&button)?;
+
+    // 添加到 body
+    let body = document.body().expect("no body");
+    body.append_child(&container)?;
+
+    Ok(())
+}
+
+#[wasm_bindgen]
+pub fn update_element(element_id: &str, content: &str) -> Result<(), JsValue> {
+    let document = get_document();
+    let element = document
+        .get_element_by_id(element_id)
+        .ok_or_else(|| JsValue::from_str(&format!("元素 #{} 不存在", element_id)))?;
+
+    element.set_text_content(Some(content));
+    Ok(())
+}
+```
+
+### 事件处理
+
+```rust
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::{Event, HtmlInputElement, MouseEvent};
+
+#[wasm_bindgen]
+pub fn setup_click_handler(element_id: &str) -> Result<(), JsValue> {
+    let document = web_sys::window().unwrap().document().unwrap();
+    let element = document.get_element_by_id(element_id).unwrap();
+
+    let closure = Closure::wrap(Box::new(move |event: MouseEvent| {
+        let x = event.client_x();
+        let y = event.client_y();
+        web_sys::console::log_1(
+            &format!("点击位置: ({}, {})", x, y).into(),
+        );
+    }) as Box<dyn FnMut(MouseEvent)>);
+
+    element.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref())?;
+    closure.forget(); // 防止闭包被释放
+
+    Ok(())
+}
+
+#[wasm_bindgen]
+pub fn setup_input_handler(input_id: &str, output_id: &str) -> Result<(), JsValue> {
+    let document = web_sys::window().unwrap().document().unwrap();
+    let output_element = document.get_element_by_id(output_id).unwrap();
+
+    let closure = Closure::wrap(Box::new(move |event: Event| {
+        let target = event.target().unwrap();
+        let input = target.dyn_ref::<HtmlInputElement>().unwrap();
+        let value = input.value();
+        let char_count = value.len();
+
+        output_element.set_text_content(Some(&format!("已输入 {} 个字符", char_count)));
+    }) as Box<dyn FnMut(Event)>);
+
+    let input = document.get_element_by_id(input_id).unwrap();
+    input.add_event_listener_with_callback("input", closure.as_ref().unchecked_ref())?;
+    closure.forget();
+
+    Ok(())
+}
+```
+
+### Fetch API
+
+```rust
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{Request, RequestInit, RequestMode, Response};
+
+#[wasm_bindgen]
+pub async fn fetch_data(url: &str) -> Result<JsValue, JsValue> {
+    let mut opts = RequestInit::new();
+    opts.method("GET");
+    opts.mode(RequestMode::Cors);
+
+    let request = Request::new_with_str_and_init(url, &opts)?;
+    request.headers().set("Accept", "application/json")?;
+
+    let window = web_sys::window().unwrap();
+    let response_value = JsFuture::from(window.fetch_with_request(&request)).await?;
+    let response: Response = response_value.dyn_into()?;
+
+    if !response.ok() {
+        return Err(JsValue::from_str(&format!(
+            "HTTP 错误: {}",
+            response.status()
+        )));
+    }
+
+    let json = JsFuture::from(response.json()?).await?;
+    Ok(json)
+}
+
+#[wasm_bindgen]
+pub async fn post_json(url: &str, body: &str) -> Result<JsValue, JsValue> {
+    let mut opts = RequestInit::new();
+    opts.method("POST");
+    opts.mode(RequestMode::Cors);
+    opts.body(Some(&JsValue::from_str(body)));
+
+    let request = Request::new_with_str_and_init(url, &opts)?;
+    request.headers().set("Content-Type", "application/json")?;
+
+    let window = web_sys::window().unwrap();
+    let response_value = JsFuture::from(window.fetch_with_request(&request)).await?;
+    let response: Response = response_value.dyn_into()?;
+
+    let json = JsFuture::from(response.json()?).await?;
+    Ok(json)
+}
+```
+
+### Canvas 绘图
+
+```rust
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+
+#[wasm_bindgen]
+pub fn draw_chart(canvas_id: &str, values: Vec<f64>) -> Result<(), JsValue> {
+    let document = web_sys::window().unwrap().document().unwrap();
+    let canvas = document
+        .get_element_by_id(canvas_id)
+        .unwrap()
+        .dyn_into::<HtmlCanvasElement>()?;
+
+    let ctx = canvas
+        .get_context("2d")?
+        .unwrap()
+        .dyn_into::<CanvasRenderingContext2d>()?;
+
+    let width = canvas.width() as f64;
+    let height = canvas.height() as f64;
+
+    // 清空画布
+    ctx.clear_rect(0.0, 0.0, width, height);
+
+    // 绘制背景
+    ctx.set_fill_style_str("#f5f5f5");
+    ctx.fill_rect(0.0, 0.0, width, height);
+
+    if values.is_empty() {
+        return Ok(());
+    }
+
+    let max_value = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let bar_width = (width - 40.0) / values.len() as f64;
+    let chart_height = height - 40.0;
+
+    // 绘制柱状图
+    for (index, value) in values.iter().enumerate() {
+        let bar_height = (value / max_value) * chart_height;
+        let x_position = 20.0 + index as f64 * bar_width;
+        let y_position = height - 20.0 - bar_height;
+
+        // 柱子颜色
+        let hue = (index as f64 / values.len() as f64 * 360.0) as u32;
+        ctx.set_fill_style_str(&format!("hsl({}, 70%, 50%)", hue));
+        ctx.fill_rect(x_position + 2.0, y_position, bar_width - 4.0, bar_height);
+
+        // 数值标签
+        ctx.set_fill_style_str("#333");
+        ctx.set_font("12px sans-serif");
+        ctx.set_text_align("center");
+        ctx.fill_text(
+            &format!("{:.0}", value),
+            x_position + bar_width / 2.0,
+            y_position - 5.0,
+        )?;
+    }
+
+    Ok(())
+}
+```
+
+## 📝 实际应用示例
+
+### Markdown 渲染器
+
+```rust
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn render_markdown(markdown_text: &str) -> String {
+    let mut html_output = String::new();
+    let mut in_code_block = false;
+
+    for line in markdown_text.lines() {
+        if line.starts_with("```") {
+            if in_code_block {
+                html_output.push_str("</code></pre>\n");
+                in_code_block = false;
+            } else {
+                let lang = line.trim_start_matches("```").trim();
+                html_output.push_str(&format!("<pre><code class=\"language-{}\">", lang));
+                in_code_block = true;
+            }
+            continue;
+        }
+
+        if in_code_block {
+            html_output.push_str(&escape_html(line));
+            html_output.push('\n');
+            continue;
+        }
+
+        let processed = if line.starts_with("### ") {
+            format!("<h3>{}</h3>", &line[4..])
+        } else if line.starts_with("## ") {
+            format!("<h2>{}</h2>", &line[3..])
+        } else if line.starts_with("# ") {
+            format!("<h1>{}</h1>", &line[2..])
+        } else if line.starts_with("- ") {
+            format!("<li>{}</li>", &line[2..])
+        } else if line.is_empty() {
+            "<br>".to_string()
+        } else {
+            format!("<p>{}</p>", process_inline(line))
+        };
+
+        html_output.push_str(&processed);
+        html_output.push('\n');
+    }
+
+    html_output
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn process_inline(text: &str) -> String {
+    let mut result = text.to_string();
+
+    // 粗体：**text**
+    while let Some(start) = result.find("**") {
+        if let Some(end) = result[start + 2..].find("**") {
+            let bold_text = &result[start + 2..start + 2 + end];
+            result = format!(
+                "{}<strong>{}</strong>{}",
+                &result[..start],
+                bold_text,
+                &result[start + 2 + end + 2..]
+            );
+        } else {
+            break;
+        }
+    }
+
+    // 行内代码：`code`
+    while let Some(start) = result.find('`') {
+        if let Some(end) = result[start + 1..].find('`') {
+            let code_text = &result[start + 1..start + 1 + end];
+            result = format!(
+                "{}<code>{}</code>{}",
+                &result[..start],
+                code_text,
+                &result[start + 1 + end + 1..]
+            );
+        } else {
+            break;
+        }
+    }
+
+    result
+}
+```
+
+## 🔗 相关概念
+
+- **[wasm-bindgen](./02-wasm-bindgen)**：底层绑定机制
+- **[wasm-pack](./03-wasm-pack)**：构建和打包
+- **[Yew 框架](./05-yew-framework)**：基于 web-sys 的前端框架
 
 ## 📝 学习检查点
 
-- [ ] 理解与 JavaScript 互操作的核心概念
-- [ ] 能够在实际项目中应用与 JavaScript 互操作
+- [ ] 能够使用 js-sys 操作 JavaScript 内置对象
+- [ ] 掌握 web-sys 进行 DOM 操作和事件处理
+- [ ] 能够使用 Fetch API 发起网络请求
+- [ ] 理解 Closure 和内存管理注意事项
+- [ ] 能够使用 Canvas API 进行绘图
+
+## 🚀 下一步
+
+→ [Yew 框架](./05-yew-framework)

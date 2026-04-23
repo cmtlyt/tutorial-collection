@@ -5,13 +5,276 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「FFI（外部函数接口）」相关知识。
+FFI（Foreign Function Interface）允许 Rust 调用 C 语言编写的库，也允许将 Rust 函数导出供 C 或其他语言调用。Rust 通过 `extern "C"` 声明兼容 C ABI（Application Binary Interface），实现零成本的跨语言互操作。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 调用 C 函数
+
+### 基本声明与调用
+
+```rust
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int, c_double};
+
+// 声明外部 C 函数
+extern "C" {
+    fn abs(input: c_int) -> c_int;
+    fn sqrt(input: c_double) -> c_double;
+    fn strlen(s: *const c_char) -> usize;
+    fn puts(s: *const c_char) -> c_int;
+}
+
+fn main() {
+    unsafe {
+        // 调用 C 标准库函数
+        let result = abs(-42);
+        println!("abs(-42) = {}", result);
+
+        let root = sqrt(144.0);
+        println!("sqrt(144) = {}", root);
+
+        // 传递字符串到 C
+        let c_string = CString::new("Hello from Rust!").unwrap();
+        let length = strlen(c_string.as_ptr());
+        println!("字符串长度: {}", length);
+
+        puts(c_string.as_ptr());
+    }
+}
+```
+
+### C 字符串处理
+
+```rust
+use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
+
+extern "C" {
+    fn getenv(name: *const c_char) -> *const c_char;
+}
+
+fn get_env_var(name: &str) -> Option<String> {
+    let c_name = CString::new(name).ok()?;
+
+    unsafe {
+        let value_ptr = getenv(c_name.as_ptr());
+        if value_ptr.is_null() {
+            None
+        } else {
+            let c_str = CStr::from_ptr(value_ptr);
+            Some(c_str.to_string_lossy().into_owned())
+        }
+    }
+}
+
+fn main() {
+    match get_env_var("HOME") {
+        Some(home) => println!("HOME = {}", home),
+        None => println!("HOME 未设置"),
+    }
+
+    match get_env_var("PATH") {
+        Some(path) => println!("PATH 前 80 字符: {}...", &path[..path.len().min(80)]),
+        None => println!("PATH 未设置"),
+    }
+}
+```
+
+## 📤 导出 Rust 函数给 C
+
+```rust
+use std::ffi::CStr;
+use std::os::raw::c_char;
+
+// 导出函数：使用 no_mangle 防止名称修饰
+#[no_mangle]
+pub extern "C" fn rust_add(left: i32, right: i32) -> i32 {
+    left + right
+}
+
+#[no_mangle]
+pub extern "C" fn rust_multiply(left: f64, right: f64) -> f64 {
+    left * right
+}
+
+#[no_mangle]
+pub extern "C" fn rust_greet(name: *const c_char) {
+    if name.is_null() {
+        println!("Hello, stranger!");
+        return;
+    }
+
+    let c_str = unsafe { CStr::from_ptr(name) };
+    match c_str.to_str() {
+        Ok(name) => println!("Hello, {}!", name),
+        Err(_) => println!("Hello! (invalid UTF-8 name)"),
+    }
+}
+
+// 导出结构体操作
+#[repr(C)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[no_mangle]
+pub extern "C" fn point_distance(point_a: *const Point, point_b: *const Point) -> f64 {
+    if point_a.is_null() || point_b.is_null() {
+        return -1.0;
+    }
+
+    unsafe {
+        let a = &*point_a;
+        let b = &*point_b;
+        ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
+    }
+}
+```
+
+对应的 C 头文件：
+
+```c
+// mylib.h
+#ifndef MYLIB_H
+#define MYLIB_H
+
+#include <stdint.h>
+
+int32_t rust_add(int32_t left, int32_t right);
+double rust_multiply(double left, double right);
+void rust_greet(const char *name);
+
+typedef struct {
+    double x;
+    double y;
+} Point;
+
+double point_distance(const Point *a, const Point *b);
+
+#endif
+```
+
+## 📦 链接外部 C 库
+
+### build.rs 构建脚本
+
+```rust
+// build.rs
+fn main() {
+    // 链接系统库
+    println!("cargo:rustc-link-lib=z");        // zlib
+    println!("cargo:rustc-link-lib=m");        // libm（数学库）
+
+    // 编译 C 源文件
+    cc::Build::new()
+        .file("src/helper.c")
+        .include("include")
+        .compile("helper");
+}
+```
+
+### 使用 cc crate 编译 C 代码
+
+```toml
+# Cargo.toml
+[build-dependencies]
+cc = "1"
+```
+
+C 源文件（`src/helper.c`）：
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+int count_char(const char *text, char target) {
+    int count = 0;
+    while (*text) {
+        if (*text == target) count++;
+        text++;
+    }
+    return count;
+}
+
+void reverse_string(char *str) {
+    int length = strlen(str);
+    for (int i = 0; i < length / 2; i++) {
+        char temp = str[i];
+        str[i] = str[length - 1 - i];
+        str[length - 1 - i] = temp;
+    }
+}
+```
+
+在 Rust 中调用：
+
+```rust
+use std::ffi::CString;
+use std::os::raw::{c_char, c_int};
+
+extern "C" {
+    fn count_char(text: *const c_char, target: c_char) -> c_int;
+    fn reverse_string(str: *mut c_char);
+}
+
+fn main() {
+    let text = CString::new("hello world").unwrap();
+
+    unsafe {
+        let count = count_char(text.as_ptr(), b'l' as c_char);
+        println!("'l' 出现次数: {}", count);
+
+        let mut buffer = CString::new("abcdef").unwrap().into_raw();
+        reverse_string(buffer);
+        let reversed = CString::from_raw(buffer);
+        println!("反转: {}", reversed.to_str().unwrap());
+    }
+}
+```
+
+## 🔒 安全封装
+
+```rust
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
+
+extern "C" {
+    fn count_char(text: *const c_char, target: c_char) -> c_int;
+}
+
+// 安全封装层
+pub fn safe_count_char(text: &str, target: char) -> Result<usize, std::ffi::NulError> {
+    let c_text = CString::new(text)?;
+
+    let count = unsafe {
+        count_char(c_text.as_ptr(), target as c_char)
+    };
+
+    Ok(count as usize)
+}
+
+fn main() {
+    match safe_count_char("hello world", 'l') {
+        Ok(count) => println!("'l' 出现 {} 次", count),
+        Err(err) => eprintln!("错误: {}", err),
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[unsafe Rust 基础](./03-unsafe-rust-basics)**：FFI 操作需要 unsafe
+- **[裸指针操作](./04-raw-pointer-operations)**：FFI 中的指针传递
+- **[交叉编译](./08-cross-compilation)**：跨平台 FFI 构建
 
 ## 📝 学习检查点
 
-- [ ] 理解FFI（外部函数接口）的核心概念
-- [ ] 能够在实际项目中应用FFI（外部函数接口）
+- [ ] 能够声明并调用 C 函数
+- [ ] 掌握 CString/CStr 的字符串转换
+- [ ] 能够将 Rust 函数导出给 C 调用
+- [ ] 理解 `#[repr(C)]` 的作用
+- [ ] 能够使用 build.rs 链接和编译 C 代码
+
+## 🚀 下一步
+
+→ [unsafe Rust 基础](./03-unsafe-rust-basics)

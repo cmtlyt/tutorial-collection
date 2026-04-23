@@ -5,13 +5,352 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解命令行工具开发中的「配置文件解析（TOML / YAML）」相关知识。
+Rust 生态提供了多种配置文件格式的支持。TOML 是 Rust 社区首选的配置格式（Cargo.toml 即使用 TOML），而 YAML 在 DevOps 和 Kubernetes 生态中广泛使用。两种格式都可以通过 serde 无缝地映射到 Rust 结构体。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 TOML 解析
+
+### 基础读写
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::fs;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AppConfig {
+    app: AppInfo,
+    server: ServerConfig,
+    database: DatabaseConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AppInfo {
+    name: String,
+    version: String,
+    authors: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ServerConfig {
+    host: String,
+    port: u16,
+    workers: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DatabaseConfig {
+    url: String,
+    max_connections: u32,
+    timeout_seconds: u64,
+}
+
+fn main() {
+    let toml_content = r#"
+[app]
+name = "my-service"
+version = "1.0.0"
+authors = ["Alice", "Bob"]
+
+[server]
+host = "0.0.0.0"
+port = 8080
+workers = 4
+
+[database]
+url = "postgres://localhost:5432/mydb"
+max_connections = 20
+timeout_seconds = 30
+"#;
+
+    // 从字符串解析
+    let config: AppConfig = toml::from_str(toml_content).unwrap();
+    println!("应用: {} v{}", config.app.name, config.app.version);
+    println!("服务器: {}:{}", config.server.host, config.server.port);
+
+    // 序列化回 TOML
+    let serialized = toml::to_string_pretty(&config).unwrap();
+    println!("\n序列化结果:\n{}", serialized);
+
+    // 写入文件
+    fs::write("config.toml", &serialized).unwrap();
+
+    // 从文件读取
+    let file_content = fs::read_to_string("config.toml").unwrap();
+    let loaded_config: AppConfig = toml::from_str(&file_content).unwrap();
+    println!("从文件加载: {:?}", loaded_config.app.name);
+
+    // 清理示例文件
+    fs::remove_file("config.toml").unwrap();
+}
+```
+
+### TOML 表与数组表
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ProjectConfig {
+    package: Package,
+    dependencies: std::collections::HashMap<String, DependencySpec>,
+
+    #[serde(rename = "bin")]
+    binaries: Option<Vec<Binary>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Package {
+    name: String,
+    version: String,
+    edition: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum DependencySpec {
+    Simple(String),
+    Detailed(DetailedDependency),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DetailedDependency {
+    version: Option<String>,
+    features: Option<Vec<String>>,
+    optional: Option<bool>,
+    path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Binary {
+    name: String,
+    path: String,
+}
+
+fn main() {
+    let toml_content = r#"
+[package]
+name = "my-project"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+clap = "4.0"
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "cli"
+path = "src/bin/cli.rs"
+"#;
+
+    let config: ProjectConfig = toml::from_str(toml_content).unwrap();
+    println!("项目: {} v{}", config.package.name, config.package.version);
+
+    for (name, spec) in &config.dependencies {
+        match spec {
+            DependencySpec::Simple(version) => {
+                println!("  {} = \"{}\"", name, version);
+            }
+            DependencySpec::Detailed(detail) => {
+                println!(
+                    "  {} = {{ version: {:?}, features: {:?} }}",
+                    name, detail.version, detail.features
+                );
+            }
+        }
+    }
+
+    if let Some(bins) = &config.binaries {
+        for binary in bins {
+            println!("  二进制: {} -> {}", binary.name, binary.path);
+        }
+    }
+}
+```
+
+## 📄 YAML 解析
+
+### 基础读写
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DockerCompose {
+    version: String,
+    services: std::collections::HashMap<String, Service>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Service {
+    image: Option<String>,
+    build: Option<String>,
+    ports: Option<Vec<String>>,
+    environment: Option<Vec<String>>,
+    depends_on: Option<Vec<String>>,
+    volumes: Option<Vec<String>>,
+}
+
+fn main() {
+    let yaml_content = r#"
+version: "3.8"
+services:
+  web:
+    build: "."
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgres://db:5432/mydb
+      - REDIS_URL=redis://cache:6379
+    depends_on:
+      - db
+      - cache
+  db:
+    image: "postgres:16"
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=mydb
+      - POSTGRES_PASSWORD=secret
+    volumes:
+      - "pgdata:/var/lib/postgresql/data"
+  cache:
+    image: "redis:7-alpine"
+    ports:
+      - "6379:6379"
+"#;
+
+    let compose: DockerCompose = serde_yaml::from_str(yaml_content).unwrap();
+    println!("Docker Compose v{}", compose.version);
+
+    for (name, service) in &compose.services {
+        println!("\n服务: {}", name);
+        if let Some(image) = &service.image {
+            println!("  镜像: {}", image);
+        }
+        if let Some(ports) = &service.ports {
+            println!("  端口: {:?}", ports);
+        }
+        if let Some(deps) = &service.depends_on {
+            println!("  依赖: {:?}", deps);
+        }
+    }
+
+    // 序列化为 YAML
+    let yaml_output = serde_yaml::to_string(&compose).unwrap();
+    println!("\n序列化输出:\n{}", yaml_output);
+}
+```
+
+## 🔀 多格式统一配置
+
+### 支持多种配置格式的加载器
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AppConfig {
+    name: String,
+    version: String,
+    server: ServerSettings,
+    logging: LoggingSettings,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ServerSettings {
+    host: String,
+    port: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LoggingSettings {
+    level: String,
+    file: Option<String>,
+}
+
+#[derive(Debug)]
+enum ConfigError {
+    Io(std::io::Error),
+    Toml(toml::de::Error),
+    Yaml(serde_yaml::Error),
+    Json(serde_json::Error),
+    UnsupportedFormat(String),
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigError::Io(err) => write!(formatter, "IO 错误: {}", err),
+            ConfigError::Toml(err) => write!(formatter, "TOML 解析错误: {}", err),
+            ConfigError::Yaml(err) => write!(formatter, "YAML 解析错误: {}", err),
+            ConfigError::Json(err) => write!(formatter, "JSON 解析错误: {}", err),
+            ConfigError::UnsupportedFormat(ext) => write!(formatter, "不支持的格式: {}", ext),
+        }
+    }
+}
+
+fn load_config(path: &str) -> Result<AppConfig, ConfigError> {
+    let content = fs::read_to_string(path).map_err(ConfigError::Io)?;
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("");
+
+    match extension {
+        "toml" => toml::from_str(&content).map_err(ConfigError::Toml),
+        "yaml" | "yml" => serde_yaml::from_str(&content).map_err(ConfigError::Yaml),
+        "json" => serde_json::from_str(&content).map_err(ConfigError::Json),
+        other => Err(ConfigError::UnsupportedFormat(other.to_string())),
+    }
+}
+
+fn main() {
+    // 演示 TOML 配置解析
+    let toml_content = r#"
+name = "my-app"
+version = "1.0.0"
+
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[logging]
+level = "info"
+file = "app.log"
+"#;
+
+    let config: AppConfig = toml::from_str(toml_content).unwrap();
+    println!("配置: {} v{}", config.name, config.version);
+    println!("服务器: {}:{}", config.server.host, config.server.port);
+    println!("日志级别: {}", config.logging.level);
+
+    // 演示如何调用加载器（假设文件存在时）
+    match load_config("config.toml") {
+        Ok(loaded) => println!("加载成功: {}", loaded.name),
+        Err(err) => println!("加载失败: {}", err),
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[serde 序列化与反序列化](./06-serde-serialization)**：serde 核心框架
+- **[clap 参数解析](./02-clap-argument-parsing)**：CLI 参数与配置结合
+- **[walkdir 文件遍历](./09-walkdir-file-traversal)**：文件系统操作
 
 ## 📝 学习检查点
 
-- [ ] 理解配置文件解析（TOML / YAML）的核心概念
-- [ ] 能够在实际项目中应用配置文件解析（TOML / YAML）
+- [ ] 能够读写 TOML 配置文件
+- [ ] 能够读写 YAML 配置文件
+- [ ] 理解 TOML 的表与数组表语法
+- [ ] 能够构建支持多种格式的统一配置加载器
+
+## 🚀 下一步
+
+→ [regex 正则表达式](./08-regex-regular-expressions)

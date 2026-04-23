@@ -5,13 +5,211 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「内联汇编」相关知识。
+Rust 从 1.59 版本开始稳定支持 `asm!` 宏，允许在 Rust 代码中嵌入内联汇编。内联汇编用于性能关键路径、访问特殊 CPU 指令、操作系统级操作等场景。Rust 的 `asm!` 语法比 C 的内联汇编更安全，通过命名操作数和显式约束避免常见错误。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础语法
+
+### 简单指令
+
+```rust
+use std::arch::asm;
+
+fn main() {
+    // 无操作（NOP）
+    unsafe {
+        asm!("nop");
+    }
+
+    // 带输出的汇编
+    let result: u64;
+    unsafe {
+        asm!(
+            "mov {}, 42",
+            out(reg) result,
+        );
+    }
+    println!("结果: {}", result);
+
+    // 带输入和输出
+    let input: u64 = 10;
+    let output: u64;
+    unsafe {
+        asm!(
+            "add {0}, {1}",
+            inout(reg) input => output,
+            in(reg) 32u64,
+        );
+    }
+    println!("{} + 32 = {}", input, output);
+}
+```
+
+### 算术运算
+
+```rust
+use std::arch::asm;
+
+fn asm_add(left: u64, right: u64) -> u64 {
+    let result: u64;
+    unsafe {
+        asm!(
+            "add {0}, {1}",
+            inout(reg) left => result,
+            in(reg) right,
+        );
+    }
+    result
+}
+
+fn asm_multiply(left: u64, right: u64) -> u64 {
+    let result: u64;
+    unsafe {
+        asm!(
+            "imul {0}, {1}",
+            inout(reg) left => result,
+            in(reg) right,
+        );
+    }
+    result
+}
+
+fn main() {
+    println!("5 + 3 = {}", asm_add(5, 3));
+    println!("6 * 7 = {}", asm_multiply(6, 7));
+}
+```
+
+## 🔧 命名操作数
+
+```rust
+use std::arch::asm;
+
+fn swap_values(first: &mut u64, second: &mut u64) {
+    unsafe {
+        asm!(
+            "xchg [{first}], {temp}",
+            "xchg [{second}], {temp}",
+            "xchg [{first}], {temp}",
+            first = in(reg) first,
+            second = in(reg) second,
+            temp = inout(reg) 0u64 => _,
+        );
+    }
+}
+
+fn main() {
+    let mut first = 100u64;
+    let mut second = 200u64;
+    println!("交换前: a={}, b={}", first, second);
+
+    swap_values(&mut first, &mut second);
+    println!("交换后: a={}, b={}", first, second);
+}
+```
+
+## ⚡ 特殊 CPU 指令
+
+### CPUID 指令
+
+```rust
+use std::arch::asm;
+
+#[cfg(target_arch = "x86_64")]
+fn get_cpu_vendor() -> String {
+    let mut ebx: u32;
+    let mut ecx: u32;
+    let mut edx: u32;
+
+    unsafe {
+        asm!(
+            "cpuid",
+            inout("eax") 0u32 => _,
+            out("ebx") ebx,
+            out("ecx") ecx,
+            out("edx") edx,
+        );
+    }
+
+    let vendor_bytes: Vec<u8> = ebx.to_le_bytes().iter()
+        .chain(edx.to_le_bytes().iter())
+        .chain(ecx.to_le_bytes().iter())
+        .copied()
+        .collect();
+
+    String::from_utf8_lossy(&vendor_bytes).to_string()
+}
+
+fn main() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let vendor = get_cpu_vendor();
+        println!("CPU 厂商: {}", vendor);
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        println!("CPUID 仅支持 x86_64 架构");
+    }
+}
+```
+
+### 时间戳计数器（RDTSC）
+
+```rust
+use std::arch::asm;
+
+#[cfg(target_arch = "x86_64")]
+fn read_timestamp_counter() -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe {
+        asm!(
+            "rdtsc",
+            out("eax") low,
+            out("edx") high,
+            options(nostack, nomem),
+        );
+    }
+    ((high as u64) << 32) | (low as u64)
+}
+
+fn main() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let start = read_timestamp_counter();
+
+        // 模拟一些工作
+        let mut sum = 0u64;
+        for index in 0..1_000_000 {
+            sum += index;
+        }
+
+        let end = read_timestamp_counter();
+        println!("循环结果: {}", sum);
+        println!("CPU 周期数: {}", end - start);
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        println!("RDTSC 仅支持 x86_64 架构");
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[unsafe Rust 基础](./03-unsafe-rust-basics)**：内联汇编需要 unsafe
+- **[裸指针操作](./04-raw-pointer-operations)**：底层内存操作
+- **[交叉编译](./08-cross-compilation)**：不同架构的汇编指令
 
 ## 📝 学习检查点
 
-- [ ] 理解内联汇编的核心概念
-- [ ] 能够在实际项目中应用内联汇编
+- [ ] 理解 `asm!` 宏的基本语法
+- [ ] 掌握输入/输出操作数和约束
+- [ ] 能够使用命名操作数提高可读性
+- [ ] 了解常用特殊 CPU 指令（CPUID、RDTSC）
+- [ ] 理解内联汇编的平台限制和安全约束
+
+## 🚀 下一步
+
+→ [no_std 编程](./06-no-std-programming)

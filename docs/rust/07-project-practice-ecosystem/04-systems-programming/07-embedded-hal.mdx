@@ -5,13 +5,247 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「embedded-hal」相关知识。
+`embedded-hal` 是 Rust 嵌入式生态的硬件抽象层（HAL），定义了一组标准 trait 用于描述常见外设接口（GPIO、SPI、I2C、UART 等）。驱动库只需基于这些 trait 编程，就能在不同硬件平台上复用，实现"编写一次，到处运行"的嵌入式开发体验。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 核心 Trait
+
+### GPIO 数字输入输出
+
+```rust
+use embedded_hal::digital::{InputPin, OutputPin, StatefulOutputPin};
+
+/// 通用 LED 控制器，适用于任何实现了 OutputPin 的引脚
+struct Led<PIN> {
+    pin: PIN,
+    is_on: bool,
+}
+
+impl<PIN: OutputPin> Led<PIN> {
+    fn new(pin: PIN) -> Self {
+        Led { pin, is_on: false }
+    }
+
+    fn on(&mut self) -> Result<(), PIN::Error> {
+        self.pin.set_high()?;
+        self.is_on = true;
+        Ok(())
+    }
+
+    fn off(&mut self) -> Result<(), PIN::Error> {
+        self.pin.set_low()?;
+        self.is_on = false;
+        Ok(())
+    }
+
+    fn toggle(&mut self) -> Result<(), PIN::Error> {
+        if self.is_on {
+            self.off()
+        } else {
+            self.on()
+        }
+    }
+}
+
+/// 按钮读取器
+struct Button<PIN> {
+    pin: PIN,
+}
+
+impl<PIN: InputPin> Button<PIN> {
+    fn new(pin: PIN) -> Self {
+        Button { pin }
+    }
+
+    fn is_pressed(&mut self) -> Result<bool, PIN::Error> {
+        self.pin.is_low()
+    }
+}
+```
+
+### I2C 通信
+
+```rust
+use embedded_hal::i2c::I2c;
+
+const SENSOR_ADDRESS: u8 = 0x48;
+const TEMP_REGISTER: u8 = 0x00;
+const CONFIG_REGISTER: u8 = 0x01;
+
+/// 温度传感器驱动（如 TMP102）
+struct TemperatureSensor<I2C> {
+    i2c: I2C,
+    address: u8,
+}
+
+impl<I2C: I2c> TemperatureSensor<I2C> {
+    fn new(i2c: I2C) -> Self {
+        TemperatureSensor {
+            i2c,
+            address: SENSOR_ADDRESS,
+        }
+    }
+
+    fn init(&mut self) -> Result<(), I2C::Error> {
+        // 配置传感器：12 位精度，连续转换模式
+        let config: [u8; 3] = [CONFIG_REGISTER, 0x60, 0xA0];
+        self.i2c.write(self.address, &config)?;
+        Ok(())
+    }
+
+    fn read_temperature(&mut self) -> Result<f32, I2C::Error> {
+        let mut buffer = [0u8; 2];
+        self.i2c.write_read(self.address, &[TEMP_REGISTER], &mut buffer)?;
+
+        // 将原始数据转换为温度值
+        let raw = ((buffer[0] as i16) << 4) | ((buffer[1] as i16) >> 4);
+        let temperature = raw as f32 * 0.0625;
+        Ok(temperature)
+    }
+}
+```
+
+### SPI 通信
+
+```rust
+use embedded_hal::spi::SpiDevice;
+use embedded_hal::digital::OutputPin;
+
+/// SPI Flash 存储驱动
+struct SpiFlash<SPI> {
+    spi: SPI,
+}
+
+const CMD_READ_ID: u8 = 0x9F;
+const CMD_READ_DATA: u8 = 0x03;
+const CMD_WRITE_ENABLE: u8 = 0x06;
+const CMD_PAGE_PROGRAM: u8 = 0x02;
+const CMD_READ_STATUS: u8 = 0x05;
+
+impl<SPI: SpiDevice> SpiFlash<SPI> {
+    fn new(spi: SPI) -> Self {
+        SpiFlash { spi }
+    }
+
+    fn read_id(&mut self) -> Result<[u8; 3], SPI::Error> {
+        let mut id = [0u8; 3];
+        let mut tx = [CMD_READ_ID, 0, 0, 0];
+        let mut rx = [0u8; 4];
+        self.spi.transfer(&mut rx, &tx)?;
+        id.copy_from_slice(&rx[1..4]);
+        Ok(id)
+    }
+
+    fn read_data(&mut self, address: u32, buffer: &mut [u8]) -> Result<(), SPI::Error> {
+        let addr_bytes = address.to_be_bytes();
+        let command = [CMD_READ_DATA, addr_bytes[1], addr_bytes[2], addr_bytes[3]];
+
+        self.spi.transaction(&mut [
+            embedded_hal::spi::Operation::Write(&command),
+            embedded_hal::spi::Operation::Read(buffer),
+        ])?;
+
+        Ok(())
+    }
+
+    fn write_enable(&mut self) -> Result<(), SPI::Error> {
+        self.spi.write(&[CMD_WRITE_ENABLE])?;
+        Ok(())
+    }
+
+    fn is_busy(&mut self) -> Result<bool, SPI::Error> {
+        let mut status = [0u8; 1];
+        self.spi.transaction(&mut [
+            embedded_hal::spi::Operation::Write(&[CMD_READ_STATUS]),
+            embedded_hal::spi::Operation::Read(&mut status),
+        ])?;
+        Ok(status[0] & 0x01 != 0)
+    }
+}
+```
+
+### 延时
+
+```rust
+use embedded_hal::delay::DelayNs;
+
+/// 闪烁控制器
+struct Blinker<PIN, DELAY> {
+    led: Led<PIN>,
+    delay: DELAY,
+}
+
+impl<PIN: OutputPin, DELAY: DelayNs> Blinker<PIN, DELAY> {
+    fn new(pin: PIN, delay: DELAY) -> Self {
+        Blinker {
+            led: Led::new(pin),
+            delay,
+        }
+    }
+
+    fn blink(&mut self, times: u32, interval_ms: u32) -> Result<(), PIN::Error> {
+        for _ in 0..times {
+            self.led.on()?;
+            self.delay.delay_ms(interval_ms);
+            self.led.off()?;
+            self.delay.delay_ms(interval_ms);
+        }
+        Ok(())
+    }
+
+    fn sos(&mut self) -> Result<(), PIN::Error> {
+        // 短闪 3 次
+        self.blink(3, 200)?;
+        self.delay.delay_ms(400);
+        // 长闪 3 次
+        self.blink(3, 600)?;
+        self.delay.delay_ms(400);
+        // 短闪 3 次
+        self.blink(3, 200)?;
+        Ok(())
+    }
+}
+```
+
+## 📦 项目配置
+
+典型的嵌入式项目 `Cargo.toml`：
+
+```toml
+[package]
+name = "my-embedded-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-hal = "1.0"
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+panic-halt = "1.0"
+
+# 具体硬件 HAL 实现（以 STM32F4 为例）
+stm32f4xx-hal = { version = "0.21", features = ["stm32f411"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+debug = false
+```
+
+## 🔗 相关概念
+
+- **[no_std 编程](./06-no-std-programming)**：嵌入式必需的 no_std 环境
+- **[交叉编译](./08-cross-compilation)**：编译到嵌入式目标平台
+- **[unsafe Rust 基础](./03-unsafe-rust-basics)**：底层硬件操作
 
 ## 📝 学习检查点
 
-- [ ] 理解embedded-hal的核心概念
-- [ ] 能够在实际项目中应用embedded-hal
+- [ ] 理解 embedded-hal 的 trait 抽象设计
+- [ ] 能够编写基于 trait 的平台无关驱动
+- [ ] 掌握 GPIO、I2C、SPI 等外设接口的使用
+- [ ] 理解延时和中断的处理方式
+- [ ] 了解嵌入式项目的配置和依赖管理
+
+## 🚀 下一步
+
+→ [交叉编译](./08-cross-compilation)

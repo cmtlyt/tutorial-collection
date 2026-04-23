@@ -5,13 +5,245 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解WebAssembly中的「wasm-pack」相关知识。
+wasm-pack 是 Rust WebAssembly 的一站式构建工具，负责编译 Rust 代码为 Wasm、生成 JavaScript 绑定代码、创建 npm 包、运行测试。它将复杂的编译流程简化为简单的命令行操作，是 Rust Wasm 开发的标准工具链。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 项目初始化
+
+### 创建项目
+
+```bash
+# 安装 wasm-pack
+cargo install wasm-pack
+
+# 使用模板创建项目
+cargo generate --git https://github.com/nickel-org/rust-wasm-template --name my-wasm-lib
+
+# 或者手动创建
+cargo new my-wasm-lib --lib
+```
+
+### Cargo.toml 配置
+
+```toml
+[package]
+name = "my-wasm-lib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = "z"     # 优化包体积
+lto = true          # 链接时优化
+codegen-units = 1   # 单代码生成单元，更好的优化
+strip = true        # 移除调试信息
+```
+
+### 项目结构
+
+```
+my-wasm-lib/
+├── Cargo.toml
+├── src/
+│   └── lib.rs          # Wasm 库入口
+├── tests/
+│   └── web.rs          # 浏览器测试
+└── pkg/                # 构建输出（自动生成）
+    ├── my_wasm_lib_bg.wasm
+    ├── my_wasm_lib.js
+    ├── my_wasm_lib.d.ts
+    └── package.json
+```
+
+## 🔨 构建命令
+
+### 基本构建
+
+```bash
+# 构建为 npm 包（bundler 目标，适配 Webpack/Vite）
+wasm-pack build
+
+# 构建为浏览器直接加载的包
+wasm-pack build --target web
+
+# 构建为 Node.js 包
+wasm-pack build --target nodejs
+
+# 无打包器模式（原始 ESM）
+wasm-pack build --target no-modules
+
+# 发布模式构建
+wasm-pack build --release
+
+# 开发模式构建（保留调试信息）
+wasm-pack build --dev
+```
+
+### 构建目标对比
+
+| 目标 | 用途 | 模块系统 | 初始化方式 |
+|------|------|----------|------------|
+| `bundler` | Webpack/Vite | ESM | 打包器处理 |
+| `web` | 浏览器直接加载 | ESM | `await init()` |
+| `nodejs` | Node.js | CommonJS | `require()` |
+| `no-modules` | 传统 `<script>` | 全局变量 | `wasm_bindgen()` |
+
+## 📦 输出内容
+
+构建完成后 `pkg/` 目录包含：
+
+```bash
+# 查看构建输出
+ls -la pkg/
+
+# 典型文件：
+# my_wasm_lib_bg.wasm    - 编译后的 Wasm 二进制
+# my_wasm_lib.js         - JavaScript 绑定（胶水代码）
+# my_wasm_lib.d.ts       - TypeScript 类型定义
+# package.json           - npm 包描述
+# my_wasm_lib_bg.wasm.d.ts - Wasm 模块类型
+```
+
+### 在 Web 项目中使用
+
+```js
+// 方式 1: bundler 目标（Webpack/Vite）
+import { greet, Counter } from 'my-wasm-lib'
+
+console.log(greet('World'))
+
+// 方式 2: web 目标
+import init, { greet, Counter } from './pkg/my_wasm_lib.js'
+
+async function main() {
+  await init() // 必须先初始化
+  console.log(greet('World'))
+}
+
+main()
+```
+
+```html
+<!-- 方式 3: 在 HTML 中直接使用（web 目标） -->
+<script type="module">
+  import init, { greet } from './pkg/my_wasm_lib.js'
+  
+  async function run() {
+    await init()
+    document.getElementById('output').textContent = greet('World')
+  }
+  
+  run()
+</script>
+```
+
+## 🧪 测试
+
+### 浏览器测试
+
+```rust
+// tests/web.rs
+use wasm_bindgen_test::*;
+
+wasm_bindgen_test_configure!(run_in_browser);
+
+#[wasm_bindgen_test]
+fn test_greet() {
+    let result = my_wasm_lib::greet("Test");
+    assert_eq!(result, "Hello, Test!");
+}
+
+#[wasm_bindgen_test]
+fn test_fibonacci() {
+    assert_eq!(my_wasm_lib::fibonacci(0), 0);
+    assert_eq!(my_wasm_lib::fibonacci(1), 1);
+    assert_eq!(my_wasm_lib::fibonacci(10), 55);
+}
+
+#[wasm_bindgen_test]
+async fn test_async_operation() {
+    let result = my_wasm_lib::async_compute(42).await;
+    assert!(result > 0);
+}
+```
+
+```bash
+# 使用 Chrome 运行测试
+wasm-pack test --chrome
+
+# 使用 Firefox
+wasm-pack test --firefox
+
+# 无头模式（CI 环境）
+wasm-pack test --headless --chrome
+
+# Node.js 测试
+wasm-pack test --node
+```
+
+## 📤 发布到 npm
+
+```bash
+# 登录 npm
+wasm-pack login
+
+# 构建并发布
+wasm-pack build --release --scope my-org
+wasm-pack publish
+
+# 或手动发布
+cd pkg
+npm publish --access public
+```
+
+## ⚡ 体积优化
+
+```bash
+# 安装 wasm-opt（通过 binaryen）
+# macOS
+brew install binaryen
+
+# 使用 wasm-opt 进一步优化
+wasm-opt -Oz -o optimized.wasm pkg/my_wasm_lib_bg.wasm
+
+# 查看体积
+ls -lh pkg/*.wasm
+```
+
+在 `Cargo.toml` 中配置优化：
+
+```toml
+[profile.release]
+opt-level = "z"       # 最小体积
+lto = true            # 链接时优化
+codegen-units = 1     # 更好的优化
+strip = true          # 移除符号
+panic = "abort"       # 不需要 unwind
+```
+
+## 🔗 相关概念
+
+- **[wasm-bindgen](./02-wasm-bindgen)**：底层绑定生成
+- **[JavaScript 互操作](./04-javascript-interop)**：JS 交互细节
+- **[Trunk 构建工具](./08-trunk-build-tool)**：前端应用构建工具
 
 ## 📝 学习检查点
 
-- [ ] 理解wasm-pack的核心概念
-- [ ] 能够在实际项目中应用wasm-pack
+- [ ] 能够初始化和配置 Wasm 项目
+- [ ] 掌握不同构建目标的区别和用途
+- [ ] 能够在 Web 项目中集成 Wasm 模块
+- [ ] 能够运行浏览器和 Node.js 测试
+- [ ] 了解体积优化的方法
+
+## 🚀 下一步
+
+→ [与 JavaScript 互操作](./04-javascript-interop)

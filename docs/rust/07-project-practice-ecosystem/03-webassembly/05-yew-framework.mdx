@@ -5,13 +5,280 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解WebAssembly中的「Yew 框架」相关知识。
+Yew 是 Rust 生态中最成熟的 WebAssembly 前端框架，采用类似 React 的组件模型。它使用 `html!` 宏提供声明式 UI，支持函数式组件、Hooks、上下文、路由等现代前端特性，所有逻辑都用 Rust 编写并编译为 Wasm 运行。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础组件
+
+### Hello World
+
+```rust
+use yew::prelude::*;
+
+#[function_component(App)]
+fn app() -> Html {
+    html! {
+        <div>
+            <h1>{ "Hello, Yew!" }</h1>
+            <p>{ "这是一个 Rust WebAssembly 应用" }</p>
+        </div>
+    }
+}
+
+fn main() {
+    yew::Renderer::<App>::new().render();
+}
+```
+
+### 带状态的组件
+
+```rust
+use yew::prelude::*;
+
+#[function_component(Counter)]
+fn counter() -> Html {
+    let count = use_state(|| 0);
+
+    let increment = {
+        let count = count.clone();
+        Callback::from(move |_| count.set(*count + 1))
+    };
+
+    let decrement = {
+        let count = count.clone();
+        Callback::from(move |_| count.set(*count - 1))
+    };
+
+    let reset = {
+        let count = count.clone();
+        Callback::from(move |_| count.set(0))
+    };
+
+    html! {
+        <div class="counter">
+            <h2>{ "计数器" }</h2>
+            <p class="count">{ *count }</p>
+            <div class="buttons">
+                <button onclick={decrement}>{ "-" }</button>
+                <button onclick={reset}>{ "重置" }</button>
+                <button onclick={increment}>{ "+" }</button>
+            </div>
+        </div>
+    }
+}
+
+#[function_component(App)]
+fn app() -> Html {
+    html! {
+        <Counter />
+    }
+}
+
+fn main() {
+    yew::Renderer::<App>::new().render();
+}
+```
+
+## 📦 Props 与子组件
+
+```rust
+use yew::prelude::*;
+
+#[derive(Properties, PartialEq)]
+struct CardProps {
+    title: String,
+    #[prop_or_default]
+    subtitle: Option<String>,
+    children: Html,
+}
+
+#[function_component(Card)]
+fn card(props: &CardProps) -> Html {
+    html! {
+        <div class="card">
+            <div class="card-header">
+                <h3>{ &props.title }</h3>
+                if let Some(subtitle) = &props.subtitle {
+                    <p class="subtitle">{ subtitle }</p>
+                }
+            </div>
+            <div class="card-body">
+                { props.children.clone() }
+            </div>
+        </div>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct ButtonProps {
+    label: String,
+    #[prop_or_default]
+    disabled: bool,
+    onclick: Callback<MouseEvent>,
+}
+
+#[function_component(Button)]
+fn button(props: &ButtonProps) -> Html {
+    html! {
+        <button
+            class="btn"
+            disabled={props.disabled}
+            onclick={props.onclick.clone()}
+        >
+            { &props.label }
+        </button>
+    }
+}
+
+#[function_component(App)]
+fn app() -> Html {
+    let message = use_state(|| "点击按钮".to_string());
+
+    let on_click = {
+        let message = message.clone();
+        Callback::from(move |_| message.set("按钮被点击了！".to_string()))
+    };
+
+    html! {
+        <Card title="示例卡片" subtitle="使用 Props 传递数据">
+            <p>{ &*message }</p>
+            <Button label="点击我" onclick={on_click} />
+        </Card>
+    }
+}
+```
+
+## 🪝 Hooks
+
+```rust
+use yew::prelude::*;
+use gloo_timers::callback::Interval;
+
+// use_effect 示例
+#[function_component(Timer)]
+fn timer() -> Html {
+    let seconds = use_state(|| 0u32);
+
+    {
+        let seconds = seconds.clone();
+        use_effect_with((), move |_| {
+            let interval = Interval::new(1000, move || {
+                seconds.set(*seconds + 1);
+            });
+
+            // 清理函数
+            move || drop(interval)
+        });
+    }
+
+    html! {
+        <div>
+            <p>{ format!("已运行 {} 秒", *seconds) }</p>
+        </div>
+    }
+}
+
+// use_reducer 示例
+#[derive(Clone, PartialEq)]
+struct TodoState {
+    items: Vec<String>,
+}
+
+enum TodoAction {
+    Add(String),
+    Remove(usize),
+    Clear,
+}
+
+impl Reducible for TodoState {
+    type Action = TodoAction;
+
+    fn reduce(self: std::rc::Rc<Self>, action: Self::Action) -> std::rc::Rc<Self> {
+        let mut items = self.items.clone();
+        match action {
+            TodoAction::Add(text) => items.push(text),
+            TodoAction::Remove(index) => { items.remove(index); }
+            TodoAction::Clear => items.clear(),
+        }
+        TodoState { items }.into()
+    }
+}
+
+#[function_component(TodoApp)]
+fn todo_app() -> Html {
+    let state = use_reducer(|| TodoState { items: Vec::new() });
+    let input_value = use_state(|| String::new());
+
+    let on_input = {
+        let input_value = input_value.clone();
+        Callback::from(move |event: InputEvent| {
+            let target: web_sys::HtmlInputElement = event.target_unchecked_into();
+            input_value.set(target.value());
+        })
+    };
+
+    let on_add = {
+        let state = state.clone();
+        let input_value = input_value.clone();
+        Callback::from(move |_| {
+            if !input_value.is_empty() {
+                state.dispatch(TodoAction::Add((*input_value).clone()));
+                input_value.set(String::new());
+            }
+        })
+    };
+
+    let on_clear = {
+        let state = state.clone();
+        Callback::from(move |_| state.dispatch(TodoAction::Clear))
+    };
+
+    html! {
+        <div class="todo-app">
+            <h2>{ "待办事项" }</h2>
+            <div class="input-group">
+                <input
+                    type="text"
+                    value={(*input_value).clone()}
+                    oninput={on_input}
+                    placeholder="输入待办事项..."
+                />
+                <button onclick={on_add}>{ "添加" }</button>
+                <button onclick={on_clear}>{ "清空" }</button>
+            </div>
+            <ul>
+                { for state.items.iter().enumerate().map(|(index, item)| {
+                    let state = state.clone();
+                    let on_remove = Callback::from(move |_| {
+                        state.dispatch(TodoAction::Remove(index));
+                    });
+                    html! {
+                        <li>
+                            { item }
+                            <button onclick={on_remove}>{ "×" }</button>
+                        </li>
+                    }
+                })}
+            </ul>
+            <p>{ format!("共 {} 项", state.items.len()) }</p>
+        </div>
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[Leptos 框架](./06-leptos-framework)**：细粒度响应式框架
+- **[Dioxus 框架](./07-dioxus-framework)**：跨平台框架
+- **[Trunk 构建工具](./08-trunk-build-tool)**：Yew 应用的构建工具
 
 ## 📝 学习检查点
 
-- [ ] 理解Yew 框架的核心概念
-- [ ] 能够在实际项目中应用Yew 框架
+- [ ] 能够创建函数式组件和管理状态
+- [ ] 掌握 Props 传递和子组件通信
+- [ ] 能够使用 Hooks（use_state、use_effect、use_reducer）
+- [ ] 理解事件处理和表单交互
+- [ ] 能够构建一个完整的 Yew 应用
+
+## 🚀 下一步
+
+→ [Leptos 框架](./06-leptos-framework)

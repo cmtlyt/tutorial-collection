@@ -5,13 +5,237 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解WebAssembly中的「Leptos 框架」相关知识。
+Leptos 是一个现代的 Rust 全栈 Web 框架，采用**细粒度响应式**设计。与 Yew 的虚拟 DOM 不同，Leptos 使用 Signal 系统直接追踪依赖并精准更新 DOM，性能非常接近原生 JavaScript 框架。它同时支持客户端渲染（CSR）和服务端渲染（SSR）。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础组件
+
+### Hello World
+
+```rust
+use leptos::*;
+
+#[component]
+fn App() -> impl IntoView {
+    view! {
+        <div>
+            <h1>"Hello, Leptos!"</h1>
+            <p>"细粒度响应式 Rust Web 框架"</p>
+        </div>
+    }
+}
+
+fn main() {
+    mount_to_body(App);
+}
+```
+
+### Signal 响应式状态
+
+```rust
+use leptos::*;
+
+#[component]
+fn Counter() -> impl IntoView {
+    // 创建响应式信号
+    let (count, set_count) = create_signal(0);
+
+    // 派生信号（自动跟踪依赖）
+    let doubled = move || count() * 2;
+    let is_even = move || count() % 2 == 0;
+
+    view! {
+        <div class="counter">
+            <h2>"计数器"</h2>
+            <p>"当前值: " {count}</p>
+            <p>"双倍值: " {doubled}</p>
+            <p>"是偶数: " {move || if is_even() { "是" } else { "否" }}</p>
+            <button on:click=move |_| set_count.update(|n| *n -= 1)>"-"</button>
+            <button on:click=move |_| set_count.set(0)>"重置"</button>
+            <button on:click=move |_| set_count.update(|n| *n += 1)>"+"</button>
+        </div>
+    }
+}
+
+fn main() {
+    mount_to_body(Counter);
+}
+```
+
+## 📦 Props 与组件通信
+
+```rust
+use leptos::*;
+
+#[component]
+fn ProgressBar(
+    /// 当前进度（0-100）
+    #[prop(into)]
+    progress: Signal<u32>,
+    /// 进度条颜色
+    #[prop(default = "blue".to_string())]
+    color: String,
+    /// 是否显示百分比文字
+    #[prop(optional)]
+    show_label: bool,
+) -> impl IntoView {
+    view! {
+        <div class="progress-container" style="background: #eee; height: 20px; border-radius: 10px;">
+            <div
+                class="progress-fill"
+                style:width=move || format!("{}%", progress())
+                style:background=&color
+                style="height: 100%; border-radius: 10px; transition: width 0.3s;"
+            >
+                {move || {
+                    if show_label {
+                        Some(view! { <span>{move || format!("{}%", progress())}</span> })
+                    } else {
+                        None
+                    }
+                }}
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn App() -> impl IntoView {
+    let (progress, set_progress) = create_signal(30u32);
+
+    view! {
+        <div>
+            <h2>"进度展示"</h2>
+            <ProgressBar progress=progress color="green".to_string() show_label=true />
+            <br />
+            <input
+                type="range"
+                min="0"
+                max="100"
+                prop:value=progress
+                on:input=move |ev| {
+                    let value = event_target_value(&ev).parse::<u32>().unwrap_or(0);
+                    set_progress.set(value);
+                }
+            />
+        </div>
+    }
+}
+```
+
+## 🔄 动态列表与条件渲染
+
+```rust
+use leptos::*;
+
+#[derive(Clone, Debug)]
+struct TodoItem {
+    id: u64,
+    text: String,
+    completed: bool,
+}
+
+#[component]
+fn TodoApp() -> impl IntoView {
+    let (todos, set_todos) = create_signal(Vec::<TodoItem>::new());
+    let (next_id, set_next_id) = create_signal(1u64);
+    let (input_text, set_input_text) = create_signal(String::new());
+
+    let add_todo = move |_| {
+        let text = input_text();
+        if !text.is_empty() {
+            set_todos.update(|items| {
+                items.push(TodoItem {
+                    id: next_id(),
+                    text,
+                    completed: false,
+                });
+            });
+            set_next_id.update(|id| *id += 1);
+            set_input_text.set(String::new());
+        }
+    };
+
+    let toggle_todo = move |todo_id: u64| {
+        set_todos.update(|items| {
+            if let Some(item) = items.iter_mut().find(|t| t.id == todo_id) {
+                item.completed = !item.completed;
+            }
+        });
+    };
+
+    let remove_todo = move |todo_id: u64| {
+        set_todos.update(|items| items.retain(|t| t.id != todo_id));
+    };
+
+    let remaining_count = move || todos().iter().filter(|t| !t.completed).count();
+
+    view! {
+        <div class="todo-app">
+            <h2>"Leptos Todo"</h2>
+            <div class="input-row">
+                <input
+                    type="text"
+                    placeholder="添加待办..."
+                    prop:value=input_text
+                    on:input=move |ev| set_input_text.set(event_target_value(&ev))
+                    on:keypress=move |ev| {
+                        if ev.key() == "Enter" {
+                            add_todo(ev);
+                        }
+                    }
+                />
+                <button on:click=add_todo>"添加"</button>
+            </div>
+
+            <Show
+                when=move || !todos().is_empty()
+                fallback=|| view! { <p class="empty">"暂无待办事项"</p> }
+            >
+                <ul>
+                    <For
+                        each=todos
+                        key=|item| item.id
+                        children=move |item| {
+                            let item_id = item.id;
+                            view! {
+                                <li class:completed=item.completed>
+                                    <input
+                                        type="checkbox"
+                                        prop:checked=item.completed
+                                        on:change=move |_| toggle_todo(item_id)
+                                    />
+                                    <span>{item.text.clone()}</span>
+                                    <button on:click=move |_| remove_todo(item_id)>"×"</button>
+                                </li>
+                            }
+                        }
+                    />
+                </ul>
+                <p>{move || format!("剩余 {} 项未完成", remaining_count())}</p>
+            </Show>
+        </div>
+    }
+}
+
+fn main() {
+    mount_to_body(TodoApp);
+}
+```
+
+## 🔗 相关概念
+
+- **[Yew 框架](./05-yew-framework)**：虚拟 DOM 方案对比
+- **[Dioxus 框架](./07-dioxus-framework)**：跨平台框架
+- **[Trunk 构建工具](./08-trunk-build-tool)**：构建和开发服务器
 
 ## 📝 学习检查点
 
-- [ ] 理解Leptos 框架的核心概念
-- [ ] 能够在实际项目中应用Leptos 框架
+- [ ] 理解 Signal 细粒度响应式的核心概念
+- [ ] 能够创建组件并使用 Props 传递数据
+- [ ] 掌握派生信号和条件渲染
+- [ ] 能够使用 `<For>` 渲染动态列表
+- [ ] 能够构建一个完整的 Leptos 应用
+
+## 🚀 下一步
+
+→ [Dioxus 框架](./07-dioxus-framework)

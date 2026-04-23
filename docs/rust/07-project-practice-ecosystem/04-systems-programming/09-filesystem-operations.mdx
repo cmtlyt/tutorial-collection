@@ -5,13 +5,271 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「文件系统操作」相关知识。
+Rust 标准库的 `std::fs` 和 `std::path` 模块提供了完整的文件系统操作能力。`Path` 和 `PathBuf` 类型处理跨平台路径差异，`File` 配合 `Read`/`Write` trait 实现高效 IO，`fs` 模块提供目录创建、文件复制、元数据查询等操作。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 路径操作
+
+```rust
+use std::path::{Path, PathBuf};
+
+fn main() {
+    // 创建路径
+    let path = Path::new("/usr/local/bin/rustc");
+
+    // 路径组件
+    println!("文件名: {:?}", path.file_name());
+    println!("扩展名: {:?}", path.extension());
+    println!("父目录: {:?}", path.parent());
+    println!("文件主名: {:?}", path.file_stem());
+    println!("是绝对路径: {}", path.is_absolute());
+
+    // 路径拼接
+    let mut config_path = PathBuf::from("/home/user");
+    config_path.push(".config");
+    config_path.push("app");
+    config_path.push("settings.toml");
+    println!("配置路径: {}", config_path.display());
+
+    // 使用 join
+    let log_path = Path::new("/var/log").join("app").join("error.log");
+    println!("日志路径: {}", log_path.display());
+
+    // 修改扩展名
+    let mut source = PathBuf::from("main.rs");
+    source.set_extension("o");
+    println!("编译产物: {}", source.display());
+
+    // 路径迭代
+    let deep_path = Path::new("/usr/local/share/doc/rust");
+    for component in deep_path.components() {
+        println!("  组件: {:?}", component);
+    }
+}
+```
+
+## 📄 文件读写
+
+```rust
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+
+fn main() -> io::Result<()> {
+    // === 简便读写 ===
+    // 一次性读取全部内容
+    fs::write("hello.txt", "Hello, Rust!\n你好世界")?;
+    let content = fs::read_to_string("hello.txt")?;
+    println!("内容: {}", content);
+
+    // 读取为字节
+    let bytes = fs::read("hello.txt")?;
+    println!("字节数: {}", bytes.len());
+
+    // === 流式读取（大文件） ===
+    let file = File::open("hello.txt")?;
+    let reader = BufReader::new(file);
+    for (line_number, line) in reader.lines().enumerate() {
+        let line = line?;
+        println!("第 {} 行: {}", line_number + 1, line);
+    }
+
+    // === 流式写入 ===
+    let file = File::create("output.txt")?;
+    let mut writer = BufWriter::new(file);
+    for index in 1..=10 {
+        writeln!(writer, "第 {} 行数据", index)?;
+    }
+    writer.flush()?;
+
+    // === 追加写入 ===
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open("output.txt")?;
+    writeln!(file, "追加的内容")?;
+
+    // 清理
+    fs::remove_file("hello.txt")?;
+    fs::remove_file("output.txt")?;
+
+    Ok(())
+}
+```
+
+## 📁 目录操作
+
+```rust
+use std::fs;
+use std::io;
+use std::path::Path;
+
+fn main() -> io::Result<()> {
+    // 创建目录
+    fs::create_dir_all("test_dir/sub1/deep")?;
+    fs::create_dir_all("test_dir/sub2")?;
+
+    // 创建测试文件
+    fs::write("test_dir/root.txt", "root file")?;
+    fs::write("test_dir/sub1/a.txt", "file a")?;
+    fs::write("test_dir/sub1/deep/b.txt", "file b")?;
+    fs::write("test_dir/sub2/c.rs", "fn main() {}")?;
+
+    // 读取目录
+    println!("test_dir 的内容:");
+    for entry in fs::read_dir("test_dir")? {
+        let entry = entry?;
+        let file_type = if entry.file_type()?.is_dir() { "目录" } else { "文件" };
+        println!("  [{}] {}", file_type, entry.file_name().to_string_lossy());
+    }
+
+    // 递归遍历
+    println!("\n递归遍历:");
+    visit_dirs(Path::new("test_dir"), 0)?;
+
+    // 文件元数据
+    let metadata = fs::metadata("test_dir/root.txt")?;
+    println!("\nroot.txt 元数据:");
+    println!("  大小: {} 字节", metadata.len());
+    println!("  是文件: {}", metadata.is_file());
+    if let Ok(modified) = metadata.modified() {
+        println!("  修改时间: {:?}", modified);
+    }
+
+    // 复制和重命名
+    fs::copy("test_dir/root.txt", "test_dir/root_copy.txt")?;
+    fs::rename("test_dir/root_copy.txt", "test_dir/renamed.txt")?;
+
+    // 检查路径是否存在
+    println!("\nrenamed.txt 存在: {}", Path::new("test_dir/renamed.txt").exists());
+
+    // 清理
+    fs::remove_dir_all("test_dir")?;
+
+    Ok(())
+}
+
+fn visit_dirs(dir: &Path, depth: usize) -> io::Result<()> {
+    let indent = "  ".repeat(depth);
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            println!("{}📁 {}/", indent, entry.file_name().to_string_lossy());
+            visit_dirs(&path, depth + 1)?;
+        } else {
+            println!("{}📄 {}", indent, entry.file_name().to_string_lossy());
+        }
+    }
+    Ok(())
+}
+```
+
+## 📝 实际应用示例
+
+### 文件搜索工具
+
+```rust
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+struct SearchResult {
+    path: PathBuf,
+    size: u64,
+}
+
+fn search_files(
+    root: &Path,
+    extension: &str,
+    min_size: u64,
+) -> io::Result<Vec<SearchResult>> {
+    let mut results = Vec::new();
+    search_recursive(root, extension, min_size, &mut results)?;
+    Ok(results)
+}
+
+fn search_recursive(
+    dir: &Path,
+    extension: &str,
+    min_size: u64,
+    results: &mut Vec<SearchResult>,
+) -> io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            search_recursive(&path, extension, min_size, results)?;
+        } else if path.is_file() {
+            let matches_extension = path
+                .extension()
+                .map(|ext| ext == extension)
+                .unwrap_or(false);
+
+            if matches_extension {
+                let metadata = fs::metadata(&path)?;
+                if metadata.len() >= min_size {
+                    results.push(SearchResult {
+                        path,
+                        size: metadata.len(),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn main() -> io::Result<()> {
+    let search_root = Path::new(".");
+    let results = search_files(search_root, "rs", 0)?;
+
+    println!("找到 {} 个 .rs 文件:", results.len());
+    let mut total_size = 0u64;
+    for result in &results {
+        println!("  {} ({})", result.path.display(), format_size(result.size));
+        total_size += result.size;
+    }
+    println!("总大小: {}", format_size(total_size));
+
+    Ok(())
+}
+```
+
+## 🔗 相关概念
+
+- **[内存映射](./12-memory-mapping)**：高效文件读取方式
+- **[进程与信号处理](./11-process-signal-handling)**：文件锁与进程协作
+- **[网络编程](./10-network-programming)**：文件传输场景
 
 ## 📝 学习检查点
 
-- [ ] 理解文件系统操作的核心概念
-- [ ] 能够在实际项目中应用文件系统操作
+- [ ] 掌握 Path 和 PathBuf 的路径操作
+- [ ] 能够进行文件读写和追加操作
+- [ ] 掌握目录创建、遍历和递归操作
+- [ ] 能够查询文件元数据
+- [ ] 能够构建文件搜索等实际工具
+
+## 🚀 下一步
+
+→ [网络编程](./10-network-programming)

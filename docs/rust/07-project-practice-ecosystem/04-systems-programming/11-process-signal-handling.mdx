@@ -5,13 +5,325 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「进程与信号处理」相关知识。
+Rust 标准库提供了 `std::process` 模块用于创建和管理子进程，包括命令执行、管道连接、环境变量设置等。对于信号处理，标准库提供了基础支持，社区 crate（如 `signal-hook` 和 `ctrlc`）则提供了更完善的跨平台信号处理方案。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 创建子进程
+
+### 基本命令执行
+
+```rust
+use std::process::Command;
+
+fn main() -> std::io::Result<()> {
+    // 简单执行命令
+    let output = Command::new("echo")
+        .arg("Hello from child process")
+        .output()?;
+
+    println!("状态: {}", output.status);
+    println!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+    println!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    // 检查退出状态
+    let status = Command::new("ls")
+        .arg("-la")
+        .status()?;
+
+    if status.success() {
+        println!("命令执行成功");
+    } else {
+        println!("命令失败，退出码: {:?}", status.code());
+    }
+
+    // 设置工作目录和环境变量
+    let output = Command::new("pwd")
+        .current_dir("/tmp")
+        .env("MY_VAR", "hello")
+        .output()?;
+
+    println!("工作目录: {}", String::from_utf8_lossy(&output.stdout).trim());
+
+    Ok(())
+}
+```
+
+### 管道连接
+
+```rust
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+fn main() -> std::io::Result<()> {
+    // 向子进程 stdin 写入数据
+    let mut child = Command::new("sort")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    // 写入数据到 stdin
+    if let Some(ref mut stdin) = child.stdin {
+        writeln!(stdin, "banana")?;
+        writeln!(stdin, "apple")?;
+        writeln!(stdin, "cherry")?;
+        writeln!(stdin, "date")?;
+    }
+
+    // 关闭 stdin 并等待完成
+    let output = child.wait_with_output()?;
+    println!("排序结果:\n{}", String::from_utf8_lossy(&output.stdout));
+
+    // 管道链：ls | grep rs | wc -l
+    let ls_child = Command::new("ls")
+        .arg("-la")
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let grep_child = Command::new("grep")
+        .arg(".rs")
+        .stdin(ls_child.stdout.unwrap().into())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let wc_output = Command::new("wc")
+        .arg("-l")
+        .stdin(grep_child.stdout.unwrap().into())
+        .output()?;
+
+    println!(
+        ".rs 文件数: {}",
+        String::from_utf8_lossy(&wc_output.stdout).trim()
+    );
+
+    Ok(())
+}
+```
+
+## 🔔 信号处理
+
+### 使用 ctrlc 处理中断信号
+
+```toml
+# Cargo.toml
+[dependencies]
+ctrlc = "3"
+```
+
+```rust
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = running.clone();
+
+    ctrlc::set_handler(move || {
+        println!("\n收到 Ctrl+C 信号，准备优雅退出...");
+        running_clone.store(false, Ordering::SeqCst);
+    })
+    .expect("设置 Ctrl+C 处理器失败");
+
+    println!("服务运行中... 按 Ctrl+C 退出");
+
+    let mut tick_count = 0u64;
+    while running.load(Ordering::SeqCst) {
+        tick_count += 1;
+        println!("工作中... tick #{}", tick_count);
+        thread::sleep(Duration::from_secs(1));
+    }
+
+    // 清理工作
+    println!("执行清理操作...");
+    println!("服务已退出，共运行 {} 次循环", tick_count);
+}
+```
+
+### 使用 signal-hook 处理多种信号
+
+```toml
+# Cargo.toml
+[dependencies]
+signal-hook = "0.3"
+```
+
+```rust
+use signal_hook::consts::{SIGINT, SIGTERM, SIGHUP};
+use signal_hook::iterator::Signals;
+use std::thread;
+use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let running = Arc::new(AtomicBool::new(true));
+
+    let mut signals = Signals::new(&[SIGINT, SIGTERM, SIGHUP])?;
+
+    let running_clone = running.clone();
+    thread::spawn(move || {
+        for signal in signals.forever() {
+            match signal {
+                SIGINT => {
+                    println!("\n收到 SIGINT（Ctrl+C），准备退出");
+                    running_clone.store(false, Ordering::SeqCst);
+                    break;
+                }
+                SIGTERM => {
+                    println!("\n收到 SIGTERM，优雅关闭");
+                    running_clone.store(false, Ordering::SeqCst);
+                    break;
+                }
+                SIGHUP => {
+                    println!("\n收到 SIGHUP，重新加载配置");
+                    // 这里可以重新加载配置文件
+                }
+                _ => {}
+            }
+        }
+    });
+
+    println!("进程 PID: {}", std::process::id());
+    println!("等待信号... (Ctrl+C 退出)");
+
+    while running.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    println!("进程正常退出");
+    Ok(())
+}
+```
+
+## 📝 实际应用示例
+
+### 进程管理器
+
+```rust
+use std::collections::HashMap;
+use std::process::{Child, Command, Stdio};
+use std::time::Instant;
+
+struct ProcessInfo {
+    child: Child,
+    name: String,
+    started_at: Instant,
+}
+
+struct ProcessManager {
+    processes: HashMap<u32, ProcessInfo>,
+}
+
+impl ProcessManager {
+    fn new() -> Self {
+        ProcessManager {
+            processes: HashMap::new(),
+        }
+    }
+
+    fn spawn(&mut self, name: &str, program: &str, args: &[&str]) -> std::io::Result<u32> {
+        let child = Command::new(program)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let pid = child.id();
+        self.processes.insert(
+            pid,
+            ProcessInfo {
+                child,
+                name: name.to_string(),
+                started_at: Instant::now(),
+            },
+        );
+
+        println!("启动进程 '{}' (PID: {})", name, pid);
+        Ok(pid)
+    }
+
+    fn status(&mut self) {
+        println!("\n{:<10} {:<6} {:<10} {}", "名称", "PID", "状态", "运行时间");
+        println!("{}", "-".repeat(45));
+
+        let mut completed_pids = Vec::new();
+
+        for (pid, info) in &mut self.processes {
+            let elapsed = info.started_at.elapsed().as_secs();
+            let status = match info.child.try_wait() {
+                Ok(Some(exit_status)) => {
+                    completed_pids.push(*pid);
+                    format!("已退出({})", exit_status.code().unwrap_or(-1))
+                }
+                Ok(None) => "运行中".to_string(),
+                Err(err) => format!("错误: {}", err),
+            };
+
+            println!("{:<10} {:<6} {:<10} {}s", info.name, pid, status, elapsed);
+        }
+    }
+
+    fn kill(&mut self, pid: u32) -> std::io::Result<()> {
+        if let Some(info) = self.processes.get_mut(&pid) {
+            info.child.kill()?;
+            println!("已终止进程 '{}' (PID: {})", info.name, pid);
+        } else {
+            println!("未找到 PID: {}", pid);
+        }
+        Ok(())
+    }
+
+    fn kill_all(&mut self) -> std::io::Result<()> {
+        let pids: Vec<u32> = self.processes.keys().copied().collect();
+        for pid in pids {
+            self.kill(pid)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ProcessManager {
+    fn drop(&mut self) {
+        let _ = self.kill_all();
+    }
+}
+
+fn main() -> std::io::Result<()> {
+    let mut manager = ProcessManager::new();
+
+    // 启动一些后台进程
+    manager.spawn("sleep-5", "sleep", &["5"])?;
+    manager.spawn("sleep-10", "sleep", &["10"])?;
+
+    // 查看状态
+    manager.status();
+
+    // 等待一会儿
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    manager.status();
+
+    // 终止所有进程
+    manager.kill_all()?;
+    println!("\n所有进程已清理");
+
+    Ok(())
+}
+```
+
+## 🔗 相关概念
+
+- **[文件系统操作](./09-filesystem-operations)**：进程输出重定向到文件
+- **[网络编程](./10-network-programming)**：服务器进程管理
+- **[内存映射](./12-memory-mapping)**：进程间共享内存
 
 ## 📝 学习检查点
 
-- [ ] 理解进程与信号处理的核心概念
-- [ ] 能够在实际项目中应用进程与信号处理
+- [ ] 能够创建子进程并获取输出
+- [ ] 掌握管道连接和数据传递
+- [ ] 能够使用 ctrlc 处理中断信号
+- [ ] 了解 signal-hook 的多信号处理
+- [ ] 能够实现优雅退出机制
+
+## 🚀 下一步
+
+→ [内存映射](./12-memory-mapping)

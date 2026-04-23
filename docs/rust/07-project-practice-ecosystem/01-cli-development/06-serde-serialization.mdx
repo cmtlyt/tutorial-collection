@@ -5,13 +5,448 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解命令行工具开发中的「serde 序列化与反序列化」相关知识。
+serde（**ser**ialize / **de**serialize）是 Rust 生态中最核心的序列化框架。通过 derive 宏，serde 能为任意类型自动实现序列化和反序列化，并通过统一的抽象支持 JSON、TOML、YAML、MessagePack、Bincode 等多种数据格式。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础用法
+
+### Derive 宏
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct User {
+    name: String,
+    age: u32,
+    email: String,
+    is_active: bool,
+}
+
+fn main() {
+    let user = User {
+        name: "Alice".to_string(),
+        age: 30,
+        email: "alice@example.com".to_string(),
+        is_active: true,
+    };
+
+    // 序列化为 JSON
+    let json_string = serde_json::to_string_pretty(&user).unwrap();
+    println!("JSON:\n{}", json_string);
+
+    // 从 JSON 反序列化
+    let json_input = r#"{"name":"Bob","age":25,"email":"bob@example.com","is_active":false}"#;
+    let deserialized_user: User = serde_json::from_str(json_input).unwrap();
+    println!("反序列化: {:?}", deserialized_user);
+}
+```
+
+### 常用容器类型
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Config {
+    // Option 类型：字段可能不存在
+    description: Option<String>,
+
+    // Vec 类型：数组
+    tags: Vec<String>,
+
+    // HashMap 类型：键值对
+    metadata: HashMap<String, String>,
+
+    // 嵌套结构体
+    database: DatabaseConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DatabaseConfig {
+    host: String,
+    port: u16,
+    name: String,
+}
+
+fn main() {
+    let json_input = r#"{
+        "description": "示例配置",
+        "tags": ["web", "api", "rust"],
+        "metadata": {
+            "version": "1.0",
+            "author": "dev"
+        },
+        "database": {
+            "host": "localhost",
+            "port": 5432,
+            "name": "mydb"
+        }
+    }"#;
+
+    let config: Config = serde_json::from_str(json_input).unwrap();
+    println!("{:#?}", config);
+}
+```
+
+## 🔧 字段属性
+
+### 重命名与别名
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiResponse {
+    status_code: u16,
+    response_body: String,
+
+    // 序列化时使用不同名称
+    #[serde(rename = "total_count")]
+    count: usize,
+
+    // 反序列化时接受多个名称
+    #[serde(alias = "err_msg", alias = "error")]
+    error_message: Option<String>,
+}
+
+fn main() {
+    let response = ApiResponse {
+        status_code: 200,
+        response_body: "OK".to_string(),
+        count: 42,
+        error_message: None,
+    };
+
+    let json = serde_json::to_string_pretty(&response).unwrap();
+    println!("{}", json);
+    // 输出的字段名为 camelCase: statusCode, responseBody 等
+}
+```
+
+### 默认值与跳过
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ServerConfig {
+    host: String,
+
+    #[serde(default = "default_port")]
+    port: u16,
+
+    #[serde(default)]
+    debug: bool,
+
+    // 序列化时跳过 None 值
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
+
+    // 完全跳过此字段
+    #[serde(skip)]
+    internal_state: u64,
+}
+
+fn default_port() -> u16 {
+    8080
+}
+
+fn main() {
+    // port 和 debug 使用默认值
+    let json_input = r#"{"host": "0.0.0.0"}"#;
+    let config: ServerConfig = serde_json::from_str(json_input).unwrap();
+    println!("{:?}", config);
+    // port = 8080, debug = false
+
+    let output = serde_json::to_string_pretty(&config).unwrap();
+    println!("{}", output);
+    // api_key 为 None 时不会出现在输出中
+}
+```
+
+### 扁平化嵌套
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Request {
+    method: String,
+    url: String,
+
+    // 将嵌套结构体的字段提升到当前层级
+    #[serde(flatten)]
+    auth: AuthInfo,
+
+    // 收集所有未知字段
+    #[serde(flatten)]
+    extra_fields: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AuthInfo {
+    token: Option<String>,
+    api_key: Option<String>,
+}
+
+fn main() {
+    let json_input = r#"{
+        "method": "GET",
+        "url": "/api/users",
+        "token": "abc123",
+        "custom_header": "value"
+    }"#;
+
+    let request: Request = serde_json::from_str(json_input).unwrap();
+    println!("{:#?}", request);
+    // auth.token = Some("abc123")
+    // extra_fields = {"custom_header": "value"}
+}
+```
+
+## 🏷️ 枚举序列化
+
+### 枚举表示方式
+
+```rust
+use serde::{Deserialize, Serialize};
+
+// 默认：外部标签 {"variant_name": data}
+#[derive(Debug, Serialize, Deserialize)]
+enum DefaultEnum {
+    UnitVariant,
+    TupleVariant(u32, String),
+    StructVariant { x: f64, y: f64 },
+}
+
+// 内部标签
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum Event {
+    #[serde(rename = "click")]
+    Click { x: i32, y: i32 },
+    #[serde(rename = "key_press")]
+    KeyPress { key: String },
+    #[serde(rename = "scroll")]
+    Scroll { delta: f64 },
+}
+
+// 相邻标签
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "status", content = "data")]
+enum ApiResult {
+    Success(String),
+    Error { code: u32, message: String },
+}
+
+// 无标签
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum StringOrNumber {
+    Str(String),
+    Num(f64),
+}
+
+fn main() {
+    // 内部标签示例
+    let event = Event::Click { x: 100, y: 200 };
+    let json = serde_json::to_string(&event).unwrap();
+    println!("内部标签: {}", json);
+    // {"type":"click","x":100,"y":200}
+
+    // 相邻标签示例
+    let result = ApiResult::Error {
+        code: 404,
+        message: "Not Found".to_string(),
+    };
+    let json = serde_json::to_string(&result).unwrap();
+    println!("相邻标签: {}", json);
+    // {"status":"Error","data":{"code":404,"message":"Not Found"}}
+
+    // 无标签示例
+    let value: StringOrNumber = serde_json::from_str(r#""hello""#).unwrap();
+    println!("无标签: {:?}", value);
+}
+```
+
+## ✏️ 自定义序列化
+
+```rust
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+#[derive(Debug)]
+struct Timestamp(u64);
+
+impl Serialize for Timestamp {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // 将时间戳序列化为 ISO 格式字符串
+        let datetime = format!("1970-01-01T00:00:{}Z", self.0);
+        serializer.serialize_str(&datetime)
+    }
+}
+
+impl<'de> Deserialize<'de> for Timestamp {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let string_value = String::deserialize(deserializer)?;
+        // 简化的解析：提取秒数部分
+        let seconds = string_value
+            .trim_start_matches("1970-01-01T00:00:")
+            .trim_end_matches('Z')
+            .parse::<u64>()
+            .map_err(serde::de::Error::custom)?;
+        Ok(Timestamp(seconds))
+    }
+}
+
+// 使用 serde 的 with 属性进行字段级自定义
+mod hex_format {
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &u32, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("0x{:08x}", value))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+        let hex_string = String::deserialize(deserializer)?;
+        let stripped = hex_string.trim_start_matches("0x");
+        u32::from_str_radix(stripped, 16).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Color {
+    name: String,
+    #[serde(with = "hex_format")]
+    value: u32,
+}
+
+fn main() {
+    let color = Color {
+        name: "红色".to_string(),
+        value: 0xFF0000,
+    };
+
+    let json = serde_json::to_string_pretty(&color).unwrap();
+    println!("{}", json);
+
+    let parsed: Color = serde_json::from_str(&json).unwrap();
+    println!("{:?}", parsed);
+}
+```
+
+## 📝 实际应用示例
+
+### API 客户端数据模型
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaginatedResponse<T> {
+    total_count: usize,
+    page: usize,
+    page_size: usize,
+    items: Vec<T>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Repository {
+    id: u64,
+    full_name: String,
+    description: Option<String>,
+    star_count: u32,
+    fork_count: u32,
+    language: Option<String>,
+    is_private: bool,
+
+    #[serde(default)]
+    topics: Vec<String>,
+
+    #[serde(flatten)]
+    urls: RepositoryUrls,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepositoryUrls {
+    html_url: String,
+    clone_url: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    homepage: Option<String>,
+}
+
+fn main() {
+    let json_input = r#"{
+        "totalCount": 2,
+        "page": 1,
+        "pageSize": 10,
+        "items": [
+            {
+                "id": 1,
+                "fullName": "rust-lang/rust",
+                "description": "The Rust programming language",
+                "starCount": 95000,
+                "forkCount": 12000,
+                "language": "Rust",
+                "isPrivate": false,
+                "topics": ["compiler", "language"],
+                "htmlUrl": "https://github.com/rust-lang/rust",
+                "cloneUrl": "https://github.com/rust-lang/rust.git",
+                "homepage": "https://www.rust-lang.org"
+            },
+            {
+                "id": 2,
+                "fullName": "tokio-rs/tokio",
+                "description": "A runtime for writing reliable async applications",
+                "starCount": 26000,
+                "forkCount": 2400,
+                "language": "Rust",
+                "isPrivate": false,
+                "htmlUrl": "https://github.com/tokio-rs/tokio",
+                "cloneUrl": "https://github.com/tokio-rs/tokio.git"
+            }
+        ],
+        "nextCursor": "abc123"
+    }"#;
+
+    let response: PaginatedResponse<Repository> = serde_json::from_str(json_input).unwrap();
+
+    println!("总数: {}", response.total_count);
+    for repo in &response.items {
+        println!(
+            "  {} ⭐{} ({})",
+            repo.full_name,
+            repo.star_count,
+            repo.language.as_deref().unwrap_or("Unknown")
+        );
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **[配置文件解析](./07-config-parsing)**：使用 serde 解析 TOML/YAML 配置
+- **[clap 参数解析](./02-clap-argument-parsing)**：CLI 参数处理
+- **[regex 正则表达式](./08-regex-regular-expressions)**：文本模式匹配
 
 ## 📝 学习检查点
 
-- [ ] 理解serde 序列化与反序列化的核心概念
-- [ ] 能够在实际项目中应用serde 序列化与反序列化
+- [ ] 掌握 Serialize 和 Deserialize derive 宏的使用
+- [ ] 理解字段属性（rename、default、skip、flatten）
+- [ ] 能够正确处理枚举的多种序列化表示方式
+- [ ] 能够编写自定义序列化和反序列化逻辑
+- [ ] 能够为 API 数据模型设计合适的 serde 结构
+
+## 🚀 下一步
+
+→ [配置文件解析](./07-config-parsing)

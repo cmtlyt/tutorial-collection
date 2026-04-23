@@ -5,13 +5,233 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「交叉编译」相关知识。
+交叉编译是指在一个平台（宿主机）上编译出运行在另一个平台（目标机）的程序。Rust 内建对交叉编译的良好支持，通过 `rustup target` 管理编译目标，配合链接器和 sysroot 即可构建跨平台二进制。常见场景包括在 macOS/Linux 上为 ARM 设备、Windows 或 WebAssembly 编译。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 目标平台管理
+
+### 查看和安装目标
+
+```bash
+# 查看已安装的目标
+rustup target list --installed
+
+# 查看所有可用目标
+rustup target list
+
+# 安装常用目标
+rustup target add x86_64-unknown-linux-gnu          # Linux x86_64
+rustup target add x86_64-unknown-linux-musl         # Linux musl（静态链接）
+rustup target add aarch64-unknown-linux-gnu         # Linux ARM64
+rustup target add x86_64-pc-windows-gnu             # Windows x86_64
+rustup target add x86_64-apple-darwin               # macOS x86_64
+rustup target add aarch64-apple-darwin              # macOS ARM64（Apple Silicon）
+rustup target add wasm32-unknown-unknown            # WebAssembly
+rustup target add thumbv7em-none-eabihf             # ARM Cortex-M（嵌入式）
+```
+
+### 目标三元组格式
+
+```
+<arch>-<vendor>-<os>-<env>
+
+示例：
+aarch64-unknown-linux-gnu
+│       │       │     │
+│       │       │     └── 环境/ABI：gnu, musl, msvc
+│       │       └── 操作系统：linux, windows, darwin
+│       └── 供应商：unknown, apple, pc
+└── 架构：x86_64, aarch64, arm, riscv64
+```
+
+## 🔧 基本交叉编译
+
+### 编译到不同目标
+
+```bash
+# 为 Linux musl 编译静态链接二进制
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+
+# 编译产物位置
+ls target/x86_64-unknown-linux-musl/release/
+
+# 为 WebAssembly 编译
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown
+```
+
+### .cargo/config.toml 配置
+
+```toml
+# .cargo/config.toml
+
+# Linux ARM64 交叉编译
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+
+# Linux musl 静态链接
+[target.x86_64-unknown-linux-musl]
+linker = "musl-gcc"
+
+# Windows 交叉编译（从 Linux/macOS）
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+
+# 嵌入式 ARM
+[target.thumbv7em-none-eabihf]
+runner = "probe-run --chip STM32F411CEUx"
+rustflags = ["-C", "link-arg=-Tlink.x"]
+```
+
+## 📦 使用 cross 工具
+
+`cross` 是基于 Docker 的交叉编译工具，自动处理工具链和 sysroot：
+
+```bash
+# 安装 cross
+cargo install cross
+
+# 使用 cross 替代 cargo（用法完全一致）
+cross build --release --target aarch64-unknown-linux-gnu
+cross build --release --target x86_64-unknown-linux-musl
+cross build --release --target x86_64-pc-windows-gnu
+
+# 交叉测试
+cross test --target aarch64-unknown-linux-gnu
+```
+
+### Cross.toml 配置
+
+```toml
+# Cross.toml
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:main"
+```
+
+## 📝 实际应用示例
+
+### 多平台构建脚本
+
+```bash
+#!/bin/bash
+# build-all.sh - 多平台构建脚本
+
+set -e
+
+PROJECT_NAME="my-tool"
+VERSION=$(cargo metadata --no-deps --format-version 1 | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
+
+echo "构建 ${PROJECT_NAME} v${VERSION}"
+
+TARGETS=(
+    "x86_64-unknown-linux-gnu"
+    "x86_64-unknown-linux-musl"
+    "aarch64-unknown-linux-gnu"
+    "x86_64-apple-darwin"
+    "aarch64-apple-darwin"
+    "x86_64-pc-windows-gnu"
+)
+
+mkdir -p dist
+
+for target in "${TARGETS[@]}"; do
+    echo "=== 构建 ${target} ==="
+    cross build --release --target "${target}" 2>/dev/null || \
+        cargo build --release --target "${target}"
+
+    # 确定二进制名称
+    if [[ "${target}" == *"windows"* ]]; then
+        binary="target/${target}/release/${PROJECT_NAME}.exe"
+    else
+        binary="target/${target}/release/${PROJECT_NAME}"
+    fi
+
+    if [ -f "${binary}" ]; then
+        cp "${binary}" "dist/${PROJECT_NAME}-${VERSION}-${target}$([ -f "${binary}.exe" ] && echo '.exe')"
+        echo "  ✅ ${target} 构建成功"
+    else
+        echo "  ❌ ${target} 构建失败"
+    fi
+done
+
+echo "构建完成，输出在 dist/ 目录"
+ls -lh dist/
+```
+
+### CI 中的交叉编译（GitHub Actions）
+
+```yaml
+# .github/workflows/release.yml
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: runner.os == 'Linux'
+        run: cargo install cross
+
+      - name: Build
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/my-tool
+```
+
+## 🔗 相关概念
+
+- **[no_std 编程](./06-no-std-programming)**：嵌入式目标需要 no_std
+- **[embedded-hal](./07-embedded-hal)**：嵌入式硬件抽象
+- **[FFI](./02-ffi-foreign-function-interface)**：跨平台 FFI 构建
 
 ## 📝 学习检查点
 
-- [ ] 理解交叉编译的核心概念
-- [ ] 能够在实际项目中应用交叉编译
+- [ ] 理解目标三元组的含义
+- [ ] 能够安装和管理编译目标
+- [ ] 掌握 .cargo/config.toml 的链接器配置
+- [ ] 能够使用 cross 工具进行交叉编译
+- [ ] 了解 CI 中的多平台构建配置
+
+## 🚀 下一步
+
+→ [文件系统操作](./09-filesystem-operations)

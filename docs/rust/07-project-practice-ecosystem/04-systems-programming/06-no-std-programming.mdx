@@ -5,13 +5,214 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解系统编程中的「no_std 编程」相关知识。
+`#![no_std]` 告诉编译器不链接标准库（std），仅使用核心库（core）。这在嵌入式系统、操作系统内核、Bootloader 等没有操作系统的裸机环境中必不可少。通过可选的 `alloc` crate，no_std 环境也可以使用堆内存分配。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Rust 库层级
+
+### 三层库结构
+
+| 库 | 依赖 | 提供功能 |
+|-----|------|---------|
+| `core` | 无 | 基本类型、trait、迭代器、Option/Result |
+| `alloc` | core + 全局分配器 | Vec、String、Box、Arc、BTreeMap |
+| `std` | core + alloc + OS | 文件系统、网络、线程、IO |
+
+### 基本 no_std 项目
+
+```rust
+#![no_std]
+
+use core::fmt;
+
+pub struct Temperature {
+    celsius: f32,
+}
+
+impl Temperature {
+    pub fn new(celsius: f32) -> Self {
+        Temperature { celsius }
+    }
+
+    pub fn to_fahrenheit(&self) -> f32 {
+        self.celsius * 9.0 / 5.0 + 32.0
+    }
+
+    pub fn to_kelvin(&self) -> f32 {
+        self.celsius + 273.15
+    }
+}
+
+impl fmt::Display for Temperature {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:.1}°C", self.celsius)
+    }
+}
+```
+
+## 📦 使用 alloc
+
+```rust
+#![no_std]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use alloc::format;
+use core::fmt;
+
+pub struct SensorLog {
+    readings: Vec<f32>,
+    name: String,
+}
+
+impl SensorLog {
+    pub fn new(name: &str) -> Self {
+        SensorLog {
+            readings: Vec::new(),
+            name: String::from(name),
+        }
+    }
+
+    pub fn add_reading(&mut self, value: f32) {
+        self.readings.push(value);
+    }
+
+    pub fn average(&self) -> Option<f32> {
+        if self.readings.is_empty() {
+            return None;
+        }
+        let sum: f32 = self.readings.iter().sum();
+        Some(sum / self.readings.len() as f32)
+    }
+
+    pub fn min_max(&self) -> Option<(f32, f32)> {
+        if self.readings.is_empty() {
+            return None;
+        }
+        let min = self.readings.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = self.readings.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        Some((min, max))
+    }
+}
+
+impl fmt::Display for SensorLog {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "Sensor[{}]: {} readings", self.name, self.readings.len())
+    }
+}
+```
+
+## 🔧 Panic 处理
+
+no_std 环境需要自定义 panic 处理器：
+
+```rust
+#![no_std]
+#![no_main]
+
+use core::panic::PanicInfo;
+
+// 必须定义 panic 处理器
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    // 在嵌入式环境中，通常选择死循环
+    loop {}
+}
+
+// 如果需要打印 panic 信息（需要串口或其他输出方式）
+// #[panic_handler]
+// fn panic(info: &PanicInfo) -> ! {
+//     if let Some(location) = info.location() {
+//         // 通过硬件接口输出错误信息
+//         // serial_println!("Panic at {}:{}", location.file(), location.line());
+//     }
+//     loop {}
+// }
+```
+
+## 📊 no_std 兼容库示例
+
+编写同时支持 std 和 no_std 的库：
+
+```rust
+// lib.rs
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
+
+// 纯 core 功能：始终可用
+pub fn checksum(data: &[u8]) -> u32 {
+    let mut sum: u32 = 0;
+    for &byte in data {
+        sum = sum.wrapping_add(byte as u32);
+    }
+    sum
+}
+
+// CRC-32 简化实现
+pub fn crc32_simple(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFFFFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
+// 需要 alloc 的功能
+#[cfg(feature = "alloc")]
+pub fn encode_hex(data: &[u8]) -> alloc::string::String {
+    let mut result = alloc::string::String::with_capacity(data.len() * 2);
+    for &byte in data {
+        use core::fmt::Write;
+        write!(result, "{:02x}", byte).unwrap();
+    }
+    result
+}
+
+// 需要 std 的功能
+#[cfg(feature = "std")]
+pub fn read_file_checksum(path: &str) -> std::io::Result<u32> {
+    let data = std::fs::read(path)?;
+    Ok(checksum(&data))
+}
+```
+
+Cargo.toml 配置：
+
+```toml
+[features]
+default = ["std"]
+std = ["alloc"]
+alloc = []
+```
+
+## 🔗 相关概念
+
+- **[embedded-hal](./07-embedded-hal)**：嵌入式硬件抽象层
+- **[交叉编译](./08-cross-compilation)**：编译到嵌入式目标
+- **[unsafe Rust 基础](./03-unsafe-rust-basics)**：底层操作基础
 
 ## 📝 学习检查点
 
-- [ ] 理解no_std 编程的核心概念
-- [ ] 能够在实际项目中应用no_std 编程
+- [ ] 理解 core、alloc、std 三层库结构
+- [ ] 能够编写 no_std 库代码
+- [ ] 掌握 panic 处理器的定义
+- [ ] 能够编写同时支持 std 和 no_std 的库
+- [ ] 理解 no_std 环境的限制和适用场景
+
+## 🚀 下一步
+
+→ [embedded-hal](./07-embedded-hal)

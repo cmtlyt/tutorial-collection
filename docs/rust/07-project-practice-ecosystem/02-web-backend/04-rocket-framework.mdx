@@ -5,13 +5,392 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「Rocket 框架」相关知识。
+Rocket 是一个注重**易用性**和**开发体验**的 Rust Web 框架。它通过宏属性（`#[get]`、`#[post]` 等）提供声明式路由，自动处理请求解析和响应序列化，同时保持类型安全。Rocket v0.5+ 已全面支持异步。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础路由
+
+### Hello World
+
+```rust
+#[macro_use]
+extern crate rocket;
+
+#[get("/")]
+fn index() -> &'static str {
+    "Hello, Rocket!"
+}
+
+#[get("/health")]
+fn health() -> rocket::serde::json::Json<serde_json::Value> {
+    rocket::serde::json::Json(serde_json::json!({
+        "status": "healthy"
+    }))
+}
+
+#[launch]
+fn rocket() -> _ {
+    rocket::build()
+        .mount("/", routes![index, health])
+}
+```
+
+### 路径参数与类型守卫
+
+```rust
+#[macro_use]
+extern crate rocket;
+
+use rocket::serde::json::Json;
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct User {
+    id: u64,
+    name: String,
+}
+
+#[get("/users/<user_id>")]
+fn get_user(user_id: u64) -> Json<User> {
+    Json(User {
+        id: user_id,
+        name: format!("User_{}", user_id),
+    })
+}
+
+#[get("/users/<user_id>/posts/<post_id>")]
+fn get_user_post(user_id: u64, post_id: u64) -> String {
+    format!("用户 {} 的文章 {}", user_id, post_id)
+}
+
+// 可选参数
+#[get("/search?<keyword>&<page>&<limit>")]
+fn search(keyword: String, page: Option<u32>, limit: Option<u32>) -> String {
+    let page = page.unwrap_or(1);
+    let limit = limit.unwrap_or(20);
+    format!("搜索: {}, 页码: {}, 每页: {}", keyword, page, limit)
+}
+
+// 多段路径
+#[get("/files/<path..>")]
+fn get_file(path: std::path::PathBuf) -> String {
+    format!("请求文件: {}", path.display())
+}
+
+#[launch]
+fn rocket() -> _ {
+    rocket::build()
+        .mount("/api", routes![get_user, get_user_post, search])
+        .mount("/", routes![get_file])
+}
+```
+
+## 📦 请求与响应
+
+### JSON 数据处理
+
+```rust
+#[macro_use]
+extern crate rocket;
+
+use rocket::serde::json::Json;
+use rocket::http::Status;
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct CreateTaskRequest {
+    title: String,
+    priority: Option<u8>,
+}
+
+#[derive(Serialize)]
+struct TaskResponse {
+    id: u64,
+    title: String,
+    priority: u8,
+    status: String,
+}
+
+#[derive(Serialize)]
+struct ApiError {
+    error: String,
+    code: u16,
+}
+
+#[post("/tasks", data = "<task>")]
+fn create_task(task: Json<CreateTaskRequest>) -> (Status, Json<TaskResponse>) {
+    let response = TaskResponse {
+        id: 1,
+        title: task.title.clone(),
+        priority: task.priority.unwrap_or(3),
+        status: "pending".to_string(),
+    };
+    (Status::Created, Json(response))
+}
+
+#[get("/tasks/<task_id>")]
+fn get_task(task_id: u64) -> Result<Json<TaskResponse>, (Status, Json<ApiError>)> {
+    if task_id == 0 {
+        return Err((
+            Status::NotFound,
+            Json(ApiError {
+                error: "任务不存在".to_string(),
+                code: 404,
+            }),
+        ));
+    }
+
+    Ok(Json(TaskResponse {
+        id: task_id,
+        title: "示例任务".to_string(),
+        priority: 1,
+        status: "in_progress".to_string(),
+    }))
+}
+
+#[launch]
+fn rocket() -> _ {
+    rocket::build()
+        .mount("/api", routes![create_task, get_task])
+}
+```
+
+## 🗄️ 状态管理
+
+```rust
+#[macro_use]
+extern crate rocket;
+
+use rocket::serde::json::Json;
+use rocket::State;
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Message {
+    id: u64,
+    sender: String,
+    content: String,
+}
+
+struct MessageBoard {
+    messages: Mutex<Vec<Message>>,
+}
+
+#[derive(Deserialize)]
+struct PostMessageRequest {
+    sender: String,
+    content: String,
+}
+
+#[get("/messages")]
+fn list_messages(board: &State<MessageBoard>) -> Json<Vec<Message>> {
+    let messages = board.messages.lock().unwrap();
+    Json(messages.clone())
+}
+
+#[post("/messages", data = "<msg>")]
+fn post_message(
+    board: &State<MessageBoard>,
+    msg: Json<PostMessageRequest>,
+) -> Json<Message> {
+    let mut messages = board.messages.lock().unwrap();
+    let message = Message {
+        id: messages.len() as u64 + 1,
+        sender: msg.sender.clone(),
+        content: msg.content.clone(),
+    };
+    messages.push(message.clone());
+    Json(message)
+}
+
+#[launch]
+fn rocket() -> _ {
+    rocket::build()
+        .manage(MessageBoard {
+            messages: Mutex::new(Vec::new()),
+        })
+        .mount("/api", routes![list_messages, post_message])
+}
+```
+
+## 🛡️ 请求守卫（Request Guard）
+
+```rust
+#[macro_use]
+extern crate rocket;
+
+use rocket::http::Status;
+use rocket::request::{FromRequest, Outcome, Request};
+use rocket::serde::json::Json;
+use serde::Serialize;
+
+struct ApiKey(String);
+
+#[derive(Debug)]
+enum ApiKeyError {
+    Missing,
+    Invalid,
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for ApiKey {
+    type Error = ApiKeyError;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        match request.headers().get_one("X-API-Key") {
+            None => Outcome::Error((Status::Unauthorized, ApiKeyError::Missing)),
+            Some(key) if key.starts_with("sk-") => Outcome::Success(ApiKey(key.to_string())),
+            Some(_) => Outcome::Error((Status::Unauthorized, ApiKeyError::Invalid)),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ProtectedData {
+    message: String,
+    api_key_prefix: String,
+}
+
+#[get("/secret")]
+fn secret(api_key: ApiKey) -> Json<ProtectedData> {
+    Json(ProtectedData {
+        message: "这是受保护的数据".to_string(),
+        api_key_prefix: api_key.0[..5].to_string(),
+    })
+}
+
+#[launch]
+fn rocket() -> _ {
+    rocket::build()
+        .mount("/api", routes![secret])
+}
+```
+
+## 📝 实际应用示例
+
+### 短链接服务
+
+```rust
+#[macro_use]
+extern crate rocket;
+
+use rocket::http::Status;
+use rocket::response::Redirect;
+use rocket::serde::json::Json;
+use rocket::State;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+struct UrlStore {
+    urls: Mutex<HashMap<String, UrlEntry>>,
+    counter: Mutex<u64>,
+}
+
+#[derive(Clone, Serialize)]
+struct UrlEntry {
+    short_code: String,
+    original_url: String,
+    clicks: u64,
+}
+
+#[derive(Deserialize)]
+struct ShortenRequest {
+    url: String,
+}
+
+#[derive(Serialize)]
+struct ShortenResponse {
+    short_code: String,
+    short_url: String,
+    original_url: String,
+}
+
+fn encode_base62(mut number: u64) -> String {
+    const CHARSET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    if number == 0 {
+        return "0".to_string();
+    }
+    let mut result = Vec::new();
+    while number > 0 {
+        result.push(CHARSET[(number % 62) as usize]);
+        number /= 62;
+    }
+    result.reverse();
+    String::from_utf8(result).unwrap()
+}
+
+#[post("/shorten", data = "<request>")]
+fn shorten_url(
+    store: &State<UrlStore>,
+    request: Json<ShortenRequest>,
+) -> (Status, Json<ShortenResponse>) {
+    let mut counter = store.counter.lock().unwrap();
+    *counter += 1;
+    let short_code = encode_base62(*counter);
+
+    let entry = UrlEntry {
+        short_code: short_code.clone(),
+        original_url: request.url.clone(),
+        clicks: 0,
+    };
+
+    store.urls.lock().unwrap().insert(short_code.clone(), entry);
+
+    (Status::Created, Json(ShortenResponse {
+        short_url: format!("http://localhost:8000/s/{}", short_code),
+        short_code,
+        original_url: request.url.clone(),
+    }))
+}
+
+#[get("/s/<code>")]
+fn redirect(store: &State<UrlStore>, code: String) -> Result<Redirect, Status> {
+    let mut urls = store.urls.lock().unwrap();
+    match urls.get_mut(&code) {
+        Some(entry) => {
+            entry.clicks += 1;
+            Ok(Redirect::temporary(entry.original_url.clone()))
+        }
+        None => Err(Status::NotFound),
+    }
+}
+
+#[get("/stats/<code>")]
+fn stats(store: &State<UrlStore>, code: String) -> Result<Json<UrlEntry>, Status> {
+    let urls = store.urls.lock().unwrap();
+    match urls.get(&code) {
+        Some(entry) => Ok(Json(entry.clone())),
+        None => Err(Status::NotFound),
+    }
+}
+
+#[launch]
+fn rocket() -> _ {
+    rocket::build()
+        .manage(UrlStore {
+            urls: Mutex::new(HashMap::new()),
+            counter: Mutex::new(0),
+        })
+        .mount("/api", routes![shorten_url, stats])
+        .mount("/", routes![redirect])
+}
+```
+
+## 🔗 相关概念
+
+- **[Axum 框架](./02-axum-framework)**：Tokio 生态的 Web 框架
+- **[Warp 框架](./05-warp-framework)**：组合式过滤器风格
+- **[RESTful API 设计](./10-restful-api-design)**：API 设计最佳实践
 
 ## 📝 学习检查点
 
-- [ ] 理解Rocket 框架的核心概念
-- [ ] 能够在实际项目中应用Rocket 框架
+- [ ] 能够使用 Rocket 宏定义路由
+- [ ] 掌握路径参数、查询参数和 JSON 数据处理
+- [ ] 能够使用 State 管理共享状态
+- [ ] 理解请求守卫（Request Guard）机制
+- [ ] 能够构建一个完整的 Rocket 应用
+
+## 🚀 下一步
+
+→ [Warp 框架](./05-warp-framework)

@@ -5,13 +5,331 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解命令行工具开发中的「console 终端样式」相关知识。
+console 是一个功能丰富的终端工具库，提供文本着色、样式化、终端属性检测、文本截断与对齐等能力。它是 indicatif 和 dialoguer 的底层依赖，也可以独立使用来美化 CLI 输出。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎨 文本着色与样式
+
+### 基础着色
+
+```rust
+use console::style;
+
+fn main() {
+    println!("{}", style("成功：操作已完成").green());
+    println!("{}", style("警告：磁盘空间不足").yellow());
+    println!("{}", style("错误：文件未找到").red().bold());
+    println!("{}", style("信息：正在处理中...").cyan());
+    println!("{}", style("调试信息").dim());
+}
+```
+
+### 组合样式
+
+```rust
+use console::style;
+
+fn main() {
+    println!("{}", style("粗体文本").bold());
+    println!("{}", style("下划线文本").underlined());
+    println!("{}", style("斜体文本").italic());
+    println!("{}", style("删除线文本").strikethrough());
+    println!("{}", style("闪烁文本").blink());
+
+    // 组合多种样式
+    println!("{}", style("重要警告").red().bold().underlined());
+    println!("{}", style("成功").green().on_black().bold());
+
+    // 背景色
+    println!("{}", style(" 高亮 ").black().on_yellow());
+    println!("{}", style(" 错误 ").white().on_red());
+}
+```
+
+### 使用 256 色和 RGB 色
+
+```rust
+use console::style;
+
+fn main() {
+    // 256 色
+    println!("{}", style("256色文本").color256(208));
+
+    // 自定义格式化输出
+    let status_code = 200;
+    let colored_status = match status_code {
+        200..=299 => style(status_code).green(),
+        300..=399 => style(status_code).yellow(),
+        400..=499 => style(status_code).red(),
+        500..=599 => style(status_code).red().bold(),
+        _ => style(status_code).white(),
+    };
+    println!("HTTP {}", colored_status);
+}
+```
+
+## 📏 文本处理
+
+### 文本截断与填充
+
+```rust
+use console::{pad_str, truncate_str, Alignment};
+
+fn main() {
+    let long_text = "这是一段非常长的文本内容，需要被截断显示";
+
+    // 截断到指定宽度
+    let truncated = truncate_str(long_text, 20, "...");
+    println!("截断: {}", truncated);
+
+    // 文本填充对齐
+    let left_aligned = pad_str("左对齐", 20, Alignment::Left, Some("."));
+    let center_aligned = pad_str("居中", 20, Alignment::Center, Some("."));
+    let right_aligned = pad_str("右对齐", 20, Alignment::Right, Some("."));
+
+    println!("{}", left_aligned);
+    println!("{}", center_aligned);
+    println!("{}", right_aligned);
+}
+```
+
+### 文本测量
+
+```rust
+use console::measure_text_width;
+
+fn main() {
+    let ascii_text = "Hello, World!";
+    let cjk_text = "你好世界";
+    let emoji_text = "Hello 🌍";
+
+    println!("ASCII 宽度: {}", measure_text_width(ascii_text));
+    println!("CJK 宽度: {}", measure_text_width(cjk_text));
+    println!("Emoji 宽度: {}", measure_text_width(emoji_text));
+}
+```
+
+## 🖥️ 终端属性检测
+
+```rust
+use console::Term;
+
+fn main() {
+    let term = Term::stdout();
+
+    // 终端尺寸
+    if let Some((height, width)) = term.size_checked() {
+        println!("终端大小: {}x{}", width, height);
+    }
+
+    // 终端特性
+    println!("是否为终端: {}", term.is_term());
+    println!("终端特征: {:?}", term.features());
+}
+```
+
+## 🧹 终端控制
+
+```rust
+use console::Term;
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let term = Term::stdout();
+
+    // 清屏
+    term.clear_screen().unwrap();
+
+    // 逐行写入并清除
+    for step in 1..=5 {
+        term.write_line(&format!("步骤 {}/5: 处理中...", step)).unwrap();
+        thread::sleep(Duration::from_millis(500));
+        term.clear_last_lines(1).unwrap();
+    }
+
+    term.write_line("全部完成！").unwrap();
+
+    // 隐藏光标
+    term.hide_cursor().unwrap();
+    thread::sleep(Duration::from_secs(1));
+    term.show_cursor().unwrap();
+
+    // 移动光标
+    term.move_cursor_up(2).unwrap();
+    term.write_line("插入的文本").unwrap();
+}
+```
+
+## 📝 实际应用示例
+
+### 格式化日志输出器
+
+```rust
+use console::{style, Term};
+use std::fmt;
+
+enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LogLevel::Debug => write!(formatter, "{}", style("DEBUG").dim()),
+            LogLevel::Info => write!(formatter, "{}", style(" INFO").cyan().bold()),
+            LogLevel::Warn => write!(formatter, "{}", style(" WARN").yellow().bold()),
+            LogLevel::Error => write!(formatter, "{}", style("ERROR").red().bold()),
+        }
+    }
+}
+
+struct Logger {
+    term: Term,
+}
+
+impl Logger {
+    fn new() -> Self {
+        Self { term: Term::stderr() }
+    }
+
+    fn log(&self, level: LogLevel, target: &str, message: &str) {
+        let timestamp = chrono_like_timestamp();
+        let formatted = format!(
+            "{} {} {} > {}",
+            style(timestamp).dim(),
+            level,
+            style(target).magenta(),
+            message
+        );
+        self.term.write_line(&formatted).unwrap();
+    }
+
+    fn debug(&self, target: &str, message: &str) {
+        self.log(LogLevel::Debug, target, message);
+    }
+
+    fn info(&self, target: &str, message: &str) {
+        self.log(LogLevel::Info, target, message);
+    }
+
+    fn warn(&self, target: &str, message: &str) {
+        self.log(LogLevel::Warn, target, message);
+    }
+
+    fn error(&self, target: &str, message: &str) {
+        self.log(LogLevel::Error, target, message);
+    }
+}
+
+fn chrono_like_timestamp() -> String {
+    // 使用标准库获取简单时间戳
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let secs = duration.as_secs();
+    let hours = (secs / 3600) % 24;
+    let minutes = (secs / 60) % 60;
+    let seconds = secs % 60;
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
+
+fn main() {
+    let logger = Logger::new();
+
+    logger.info("server", "服务器启动中...");
+    logger.debug("config", "加载配置文件 config.toml");
+    logger.info("server", "监听 0.0.0.0:8080");
+    logger.warn("database", "连接池即将耗尽 (95%)");
+    logger.error("auth", "JWT 密钥未配置");
+}
+```
+
+### 表格输出
+
+```rust
+use console::{pad_str, style, Alignment};
+
+struct TableRow {
+    name: String,
+    version: String,
+    status: String,
+    size: String,
+}
+
+fn print_table(rows: &[TableRow]) {
+    let header_style = |text: &str| style(text).bold().underlined();
+
+    // 表头
+    println!(
+        "  {:<25} {:<12} {:<12} {:>10}",
+        header_style("Package"),
+        header_style("Version"),
+        header_style("Status"),
+        header_style("Size"),
+    );
+    println!();
+
+    // 数据行
+    for row in rows {
+        let status_styled = match row.status.as_str() {
+            "installed" => style(&row.status).green(),
+            "outdated" => style(&row.status).yellow(),
+            "missing" => style(&row.status).red(),
+            _ => style(&row.status).white(),
+        };
+
+        let name_display = pad_str(&row.name, 25, Alignment::Left, Some(""));
+        println!(
+            "  {} {:<12} {:<12} {:>10}",
+            name_display, row.version, status_styled, row.size
+        );
+    }
+}
+
+fn main() {
+    let rows = vec![
+        TableRow {
+            name: "serde".into(),
+            version: "1.0.210".into(),
+            status: "installed".into(),
+            size: "245 KB".into(),
+        },
+        TableRow {
+            name: "tokio".into(),
+            version: "1.40.0".into(),
+            status: "outdated".into(),
+            size: "1.2 MB".into(),
+        },
+        TableRow {
+            name: "reqwest".into(),
+            version: "0.12.8".into(),
+            status: "missing".into(),
+            size: "890 KB".into(),
+        },
+    ];
+
+    println!("\n📦 依赖状态\n");
+    print_table(&rows);
+    println!();
+}
+```
+
+## 🔗 相关概念
+
+- **[indicatif 进度条](./03-indicatif-progress-bars)**：基于 console 的进度条库
+- **[dialoguer 交互式提示](./04-dialoguer-interactive-prompts)**：基于 console 的交互组件
+- **[clap 参数解析](./02-clap-argument-parsing)**：CLI 参数处理
 
 ## 📝 学习检查点
 
-- [ ] 理解console 终端样式的核心概念
-- [ ] 能够在实际项目中应用console 终端样式
+- [ ] 能够使用 style 函数为文本添加颜色和样式
+- [ ] 掌握文本截断、填充和对齐操作
+- [ ] 能够检测终端属性并进行终端控制
+- [ ] 能够构建格式化的日志和表格输出
+
+## 🚀 下一步
+
+→ [serde 序列化与反序列化](./06-serde-serialization)

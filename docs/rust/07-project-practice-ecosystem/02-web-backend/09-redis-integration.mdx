@@ -5,13 +5,350 @@
 
 ## 📚 概念介绍
 
-本节将深入讲解Web 后端开发中的「Redis 集成」相关知识。
+Redis 是最流行的内存数据存储，广泛用于缓存、会话管理、消息队列等场景。Rust 生态中主要通过 `redis` crate 进行集成，它支持同步和异步两种模式，并提供了连接池、管道（Pipeline）、发布/订阅等完整功能。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基础连接与操作
+
+### 连接与基本命令
+
+```rust
+use redis::Commands;
+
+fn main() -> redis::RedisResult<()> {
+    let client = redis::Client::open("redis://127.0.0.1:6379/")?;
+    let mut conn = client.get_connection()?;
+
+    // SET / GET
+    conn.set("greeting", "Hello, Redis!")?;
+    let value: String = conn.get("greeting")?;
+    println!("greeting = {}", value);
+
+    // 带过期时间的 SET
+    conn.set_ex("session:abc123", "user_data", 3600)?;
+
+    // INCR / DECR
+    conn.set("counter", 0)?;
+    conn.incr("counter", 1)?;
+    conn.incr("counter", 5)?;
+    let count: i64 = conn.get("counter")?;
+    println!("counter = {}", count);
+
+    // DEL
+    conn.del("greeting")?;
+
+    // EXISTS
+    let exists: bool = conn.exists("greeting")?;
+    println!("greeting exists: {}", exists);
+
+    // TTL
+    let ttl: i64 = conn.ttl("session:abc123")?;
+    println!("session TTL: {}s", ttl);
+
+    Ok(())
+}
+```
+
+### 异步操作
+
+```rust
+use redis::AsyncCommands;
+
+#[tokio::main]
+async fn main() -> redis::RedisResult<()> {
+    let client = redis::Client::open("redis://127.0.0.1:6379/")?;
+    let mut conn = client.get_multiplexed_async_connection().await?;
+
+    // 异步 SET / GET
+    conn.set("async_key", "async_value").await?;
+    let value: String = conn.get("async_key").await?;
+    println!("异步获取: {}", value);
+
+    // 批量操作
+    let keys = vec!["key1", "key2", "key3"];
+    for (index, key) in keys.iter().enumerate() {
+        let _: () = conn.set(*key, format!("value_{}", index)).await?;
+    }
+
+    let values: Vec<String> = conn.get(&keys[..]).await?;
+    println!("批量获取: {:?}", values);
+
+    Ok(())
+}
+```
+
+## 📊 数据结构操作
+
+### Hash（哈希表）
+
+```rust
+use redis::Commands;
+use std::collections::HashMap;
+
+fn hash_operations() -> redis::RedisResult<()> {
+    let client = redis::Client::open("redis://127.0.0.1:6379/")?;
+    let mut conn = client.get_connection()?;
+
+    // HSET 单个字段
+    conn.hset("user:1", "name", "Alice")?;
+    conn.hset("user:1", "email", "alice@example.com")?;
+    conn.hset("user:1", "age", 30)?;
+
+    // HGET 单个字段
+    let name: String = conn.hget("user:1", "name")?;
+    println!("name = {}", name);
+
+    // HGETALL 所有字段
+    let user: HashMap<String, String> = conn.hgetall("user:1")?;
+    println!("user = {:?}", user);
+
+    // HMSET 批量设置
+    let fields = [("city", "Shanghai"), ("role", "admin")];
+    conn.hset_multiple("user:1", &fields)?;
+
+    // HDEL 删除字段
+    conn.hdel("user:1", "age")?;
+
+    // HEXISTS 检查字段
+    let has_email: bool = conn.hexists("user:1", "email")?;
+    println!("has email: {}", has_email);
+
+    Ok(())
+}
+
+fn main() {
+    hash_operations().unwrap();
+}
+```
+
+### List（列表）与 Set（集合）
+
+```rust
+use redis::Commands;
+
+fn list_and_set_operations() -> redis::RedisResult<()> {
+    let client = redis::Client::open("redis://127.0.0.1:6379/")?;
+    let mut conn = client.get_connection()?;
+
+    // List 操作
+    conn.del("task_queue")?;
+    conn.rpush("task_queue", "task_1")?;
+    conn.rpush("task_queue", "task_2")?;
+    conn.rpush("task_queue", "task_3")?;
+
+    let queue_len: i64 = conn.llen("task_queue")?;
+    println!("队列长度: {}", queue_len);
+
+    let task: String = conn.lpop("task_queue", None)?;
+    println!("取出任务: {}", task);
+
+    let remaining: Vec<String> = conn.lrange("task_queue", 0, -1)?;
+    println!("剩余任务: {:?}", remaining);
+
+    // Set 操作
+    conn.del("tags:article:1")?;
+    conn.sadd("tags:article:1", "rust")?;
+    conn.sadd("tags:article:1", "web")?;
+    conn.sadd("tags:article:1", "async")?;
+
+    let tags: Vec<String> = conn.smembers("tags:article:1")?;
+    println!("标签: {:?}", tags);
+
+    let is_member: bool = conn.sismember("tags:article:1", "rust")?;
+    println!("包含 rust: {}", is_member);
+
+    Ok(())
+}
+
+fn main() {
+    list_and_set_operations().unwrap();
+}
+```
+
+### Sorted Set（有序集合）
+
+```rust
+use redis::Commands;
+
+fn sorted_set_operations() -> redis::RedisResult<()> {
+    let client = redis::Client::open("redis://127.0.0.1:6379/")?;
+    let mut conn = client.get_connection()?;
+
+    conn.del("leaderboard")?;
+
+    // ZADD
+    conn.zadd("leaderboard", "alice", 950)?;
+    conn.zadd("leaderboard", "bob", 870)?;
+    conn.zadd("leaderboard", "charlie", 1020)?;
+    conn.zadd("leaderboard", "diana", 890)?;
+
+    // 排行榜（分数从高到低）
+    let top_players: Vec<(String, f64)> = conn.zrevrange_withscores("leaderboard", 0, 2)?;
+    println!("前三名:");
+    for (rank, (name, score)) in top_players.iter().enumerate() {
+        println!("  {}. {} - {} 分", rank + 1, name, score);
+    }
+
+    // 获取排名
+    let rank: Option<i64> = conn.zrevrank("leaderboard", "bob")?;
+    println!("Bob 排名: {}", rank.map_or("未上榜".to_string(), |r| (r + 1).to_string()));
+
+    // 增加分数
+    conn.zincr("leaderboard", "bob", 200)?;
+
+    Ok(())
+}
+
+fn main() {
+    sorted_set_operations().unwrap();
+}
+```
+
+## ⚡ Pipeline 批量操作
+
+```rust
+use redis::{Commands, pipe};
+
+fn pipeline_demo() -> redis::RedisResult<()> {
+    let client = redis::Client::open("redis://127.0.0.1:6379/")?;
+    let mut conn = client.get_connection()?;
+
+    // Pipeline：一次发送多个命令，减少网络往返
+    let (count1, count2, count3): (i64, i64, i64) = pipe()
+        .cmd("INCR").arg("visits:page1")
+        .cmd("INCR").arg("visits:page2")
+        .cmd("INCR").arg("visits:page3")
+        .query(&mut conn)?;
+
+    println!("访问计数: {}, {}, {}", count1, count2, count3);
+
+    // 原子 Pipeline（事务）
+    let results: Vec<i64> = pipe()
+        .atomic()
+        .cmd("SET").arg("tx_key1").arg(100).ignore()
+        .cmd("SET").arg("tx_key2").arg(200).ignore()
+        .cmd("GET").arg("tx_key1")
+        .cmd("GET").arg("tx_key2")
+        .query(&mut conn)?;
+
+    println!("事务结果: {:?}", results);
+
+    Ok(())
+}
+
+fn main() {
+    pipeline_demo().unwrap();
+}
+```
+
+## 📝 实际应用示例
+
+### 缓存层封装
+
+```rust
+use redis::AsyncCommands;
+use serde::{de::DeserializeOwned, Serialize};
+use std::time::Duration;
+
+struct CacheService {
+    conn: redis::aio::MultiplexedConnection,
+    default_ttl: Duration,
+}
+
+impl CacheService {
+    async fn new(redis_url: &str, default_ttl: Duration) -> redis::RedisResult<Self> {
+        let client = redis::Client::open(redis_url)?;
+        let conn = client.get_multiplexed_async_connection().await?;
+        Ok(Self { conn, default_ttl })
+    }
+
+    async fn get<T: DeserializeOwned>(&mut self, key: &str) -> Option<T> {
+        let data: Option<String> = self.conn.get(key).await.ok()?;
+        data.and_then(|json_str| serde_json::from_str(&json_str).ok())
+    }
+
+    async fn set<T: Serialize>(&mut self, key: &str, value: &T) -> redis::RedisResult<()> {
+        let json_str = serde_json::to_string(value).map_err(|err| {
+            redis::RedisError::from((redis::ErrorKind::TypeError, "序列化失败", err.to_string()))
+        })?;
+        self.conn.set_ex(key, json_str, self.default_ttl.as_secs()).await
+    }
+
+    async fn delete(&mut self, key: &str) -> redis::RedisResult<()> {
+        self.conn.del(key).await
+    }
+
+    async fn get_or_fetch<T, F, Fut>(
+        &mut self,
+        key: &str,
+        fetch_fn: F,
+    ) -> Result<T, Box<dyn std::error::Error>>
+    where
+        T: Serialize + DeserializeOwned,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, Box<dyn std::error::Error>>>,
+    {
+        // 先尝试从缓存获取
+        if let Some(cached) = self.get::<T>(key).await {
+            return Ok(cached);
+        }
+
+        // 缓存未命中，调用原始函数
+        let value = fetch_fn().await?;
+
+        // 写入缓存
+        self.set(key, &value).await?;
+
+        Ok(value)
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+struct UserProfile {
+    id: u64,
+    name: String,
+    bio: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cache = CacheService::new(
+        "redis://127.0.0.1:6379/",
+        Duration::from_secs(300),
+    ).await?;
+
+    let user_id = 42;
+    let cache_key = format!("user:profile:{}", user_id);
+
+    let profile = cache.get_or_fetch(&cache_key, || async {
+        // 模拟从数据库获取
+        println!("从数据库加载...");
+        Ok(UserProfile {
+            id: user_id,
+            name: "Alice".to_string(),
+            bio: "Rust 开发者".to_string(),
+        })
+    }).await?;
+
+    println!("用户资料: {:?}", profile);
+
+    Ok(())
+}
+```
+
+## 🔗 相关概念
+
+- **[SQLx 数据库交互](./06-sqlx-database)**：持久化数据存储
+- **[Axum 框架](./02-axum-framework)**：Web 框架集成
+- **[认证与授权](./12-authentication-authorization)**：Session 管理
 
 ## 📝 学习检查点
 
-- [ ] 理解Redis 集成的核心概念
-- [ ] 能够在实际项目中应用Redis 集成
+- [ ] 能够连接 Redis 并执行基本命令
+- [ ] 掌握 Hash、List、Set、Sorted Set 等数据结构
+- [ ] 能够使用 Pipeline 进行批量操作
+- [ ] 理解异步 Redis 操作的使用方式
+- [ ] 能够封装通用的缓存层服务
+
+## 🚀 下一步
+
+→ [RESTful API 设计](./10-restful-api-design)
