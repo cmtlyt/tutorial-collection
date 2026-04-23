@@ -1,17 +1,261 @@
 # ? 运算符
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「? 运算符」相关知识。
+`?` 运算符是 Rust 中最常用的错误传播语法糖。它可以将冗长的 `match` 错误处理代码压缩为一行，同时自动调用 `From` trait 进行错误类型转换。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 基本用法
+
+### 从 match 到 ?
+
+对比手动 `match` 和 `?` 运算符的写法：
+
+```rust
+use std::fs::File;
+use std::io::{self, Read};
+
+// 手动 match 版本
+fn read_file_manual() -> Result<String, io::Error> {
+    let file_result = File::open("hello.txt");
+    let mut file = match file_result {
+        Ok(file) => file,
+        Err(error) => return Err(error),
+    };
+    let mut content = String::new();
+    match file.read_to_string(&mut content) {
+        Ok(_) => Ok(content),
+        Err(error) => Err(error),
+    }
+}
+
+// 使用 ? 运算符的版本
+fn read_file_with_question_mark() -> Result<String, io::Error> {
+    let mut file = File::open("hello.txt")?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+fn main() {
+    match read_file_with_question_mark() {
+        Ok(content) => println!("文件内容: {}", content),
+        Err(error) => println!("读取失败: {}", error),
+    }
+}
+```
+
+### ? 运算符的工作原理
+
+`?` 运算符的行为等价于：
+
+```rust
+// expression? 展开后等价于：
+match expression {
+    Ok(value) => value,           // 成功：解包值，继续执行
+    Err(error) => return Err(From::from(error)),  // 失败：转换错误类型并提前返回
+}
+```
+
+关键点：
+- **成功时**：从 `Ok` 中取出值，代码继续往下执行
+- **失败时**：调用 `From::from(error)` 转换错误类型，然后 `return Err(...)`
+
+## 🔗 链式调用
+
+`?` 运算符可以链式使用，极大简化代码：
+
+```rust
+use std::fs::File;
+use std::io::{self, Read};
+
+fn read_username() -> Result<String, io::Error> {
+    let mut content = String::new();
+    File::open("username.txt")?.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+// 甚至可以用标准库的便捷方法进一步简化
+fn read_username_short() -> Result<String, io::Error> {
+    std::fs::read_to_string("username.txt")
+}
+
+fn main() {
+    match read_username() {
+        Ok(name) => println!("用户名: {}", name),
+        Err(error) => println!("读取失败: {}", error),
+    }
+}
+```
+
+## 🔄 ? 与 From trait 的自动转换
+
+当函数返回类型中的错误类型与 `?` 表达式的错误类型不同时，`?` 会自动调用 `From` trait 进行转换：
+
+```rust
+use std::fs::File;
+use std::io::{self, Read};
+use std::num::ParseIntError;
+
+#[derive(Debug)]
+enum AppError {
+    Io(io::Error),
+    Parse(ParseIntError),
+}
+
+impl From<io::Error> for AppError {
+    fn from(error: io::Error) -> Self {
+        AppError::Io(error)
+    }
+}
+
+impl From<ParseIntError> for AppError {
+    fn from(error: ParseIntError) -> Self {
+        AppError::Parse(error)
+    }
+}
+
+fn read_and_parse_number() -> Result<i32, AppError> {
+    // ? 自动将 io::Error 转换为 AppError::Io
+    let mut content = String::new();
+    File::open("number.txt")?.read_to_string(&mut content)?;
+
+    // ? 自动将 ParseIntError 转换为 AppError::Parse
+    let number: i32 = content.trim().parse()?;
+
+    Ok(number)
+}
+
+fn main() {
+    match read_and_parse_number() {
+        Ok(number) => println!("读取到数字: {}", number),
+        Err(AppError::Io(error)) => println!("IO 错误: {}", error),
+        Err(AppError::Parse(error)) => println!("解析错误: {}", error),
+    }
+}
+```
+
+## 🎯 ? 用于 Option
+
+`?` 运算符不仅适用于 `Result`，也适用于 `Option`：
+
+```rust
+fn last_char_of_first_line(text: &str) -> Option<char> {
+    // 如果 next() 返回 None，? 会直接返回 None
+    // 如果 last() 返回 None，? 也会直接返回 None
+    text.lines().next()?.chars().last()
+}
+
+fn main() {
+    println!("{:?}", last_char_of_first_line("hello\nworld")); // Some('o')
+    println!("{:?}", last_char_of_first_line(""));              // None
+    println!("{:?}", last_char_of_first_line("\nhi"));           // None
+}
+```
+
+:::warning 注意
+`?` 用于 `Result` 的函数必须返回 `Result`，用于 `Option` 的函数必须返回 `Option`。不能在返回 `Option` 的函数中对 `Result` 使用 `?`，反之亦然。可以通过 `.ok()` 或 `.ok_or()` 在两者之间转换。
 :::
+
+## 🏠 在 main 中使用 ?
+
+默认的 `main` 函数返回 `()`，不能直接使用 `?`。但可以将 `main` 的返回值改为 `Result`：
+
+```rust
+use std::fs::File;
+use std::io::{self, Read};
+
+fn main() -> Result<(), io::Error> {
+    let mut content = String::new();
+    File::open("hello.txt")?.read_to_string(&mut content)?;
+    println!("文件内容: {}", content);
+    Ok(())
+}
+// 如果文件不存在，程序会输出错误信息并以非零状态码退出
+```
+
+更灵活的方式是使用 `Box<dyn std::error::Error>`：
+
+```rust
+use std::fs::File;
+use std::io::Read;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut content = String::new();
+    File::open("config.txt")?.read_to_string(&mut content)?;
+
+    let port: u16 = content.trim().parse()?; // ParseIntError 也能自动转换
+    println!("端口号: {}", port);
+    Ok(())
+}
+```
+
+## 📝 实际应用：多步骤数据处理
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug)]
+struct User {
+    name: String,
+    age: u32,
+    email: String,
+}
+
+fn find_user_email(
+    users: &HashMap<u32, User>,
+    user_id: u32,
+) -> Option<&str> {
+    let user = users.get(&user_id)?;
+    if user.email.is_empty() {
+        return None;
+    }
+    Some(&user.email)
+}
+
+fn get_email_domain(
+    users: &HashMap<u32, User>,
+    user_id: u32,
+) -> Option<&str> {
+    let email = find_user_email(users, user_id)?;
+    let domain = email.split('@').nth(1)?;
+    Some(domain)
+}
+
+fn main() {
+    let mut users = HashMap::new();
+    users.insert(1, User {
+        name: "Alice".to_string(),
+        age: 30,
+        email: "alice@example.com".to_string(),
+    });
+    users.insert(2, User {
+        name: "Bob".to_string(),
+        age: 25,
+        email: String::new(),
+    });
+
+    println!("用户1的邮箱域名: {:?}", get_email_domain(&users, 1)); // Some("example.com")
+    println!("用户2的邮箱域名: {:?}", get_email_domain(&users, 2)); // None（空邮箱）
+    println!("用户3的邮箱域名: {:?}", get_email_domain(&users, 3)); // None（不存在）
+}
+```
+
+## 🔗 相关概念
+
+- **Result 与可恢复错误**：`?` 运算符是 Result 错误传播的语法糖
+- **From trait 与错误转换**：`?` 在传播错误时自动调用 From 进行类型转换
+- **unwrap / expect**：当你确定不会出错时的快捷方式
 
 ## 📝 学习检查点
 
-- [ ] 理解? 运算符的核心概念
-- [ ] 能够在实际项目中应用? 运算符
+- [ ] 理解 `?` 运算符的展开逻辑
+- [ ] 能够在 `Result` 和 `Option` 上使用 `?`
+- [ ] 理解 `?` 如何自动调用 `From` 进行错误类型转换
+- [ ] 掌握在 `main` 函数中使用 `?` 的方法
+
+## 🚀 下一步
+
+→ [unwrap 与 expect](./05-unwrap-expect)

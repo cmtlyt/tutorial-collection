@@ -1,17 +1,305 @@
 # 迭代器适配器
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解迭代器与闭包中的「迭代器适配器」相关知识。
+迭代器适配器（Iterator Adaptors）是接收一个迭代器、返回一个新迭代器的方法。它们是**惰性的**——调用适配器方法不会立即执行计算，只有在消费适配器（如 `collect`）消费时才真正遍历数据。本节将讲解最常用的适配器：`map`、`filter`、`fold`、`flat_map` 等。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 map — 变换每个元素
+
+`map` 对每个元素应用一个闭包，产出变换后的新迭代器：
+
+```rust
+fn main() {
+    let numbers = vec![1, 2, 3, 4, 5];
+
+    // 每个元素乘以 2
+    let doubled: Vec<i32> = numbers.iter().map(|x| x * 2).collect();
+    println!("doubled: {:?}", doubled); // [2, 4, 6, 8, 10]
+
+    // 转换类型：i32 → String
+    let strings: Vec<String> = numbers.iter().map(|x| x.to_string()).collect();
+    println!("strings: {:?}", strings); // ["1", "2", "3", "4", "5"]
+
+    // 提取结构体字段
+    struct User { name: String, age: u32 }
+    let users = vec![
+        User { name: "Alice".into(), age: 30 },
+        User { name: "Bob".into(), age: 25 },
+    ];
+    let names: Vec<&str> = users.iter().map(|user| user.name.as_str()).collect();
+    println!("names: {:?}", names); // ["Alice", "Bob"]
+}
+```
+
+## 🔍 filter — 筛选元素
+
+`filter` 保留满足条件的元素，注意闭包接收的是**引用的引用**（`&&T`）：
+
+```rust
+fn main() {
+    let numbers = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+    // 筛选偶数
+    let evens: Vec<&i32> = numbers.iter().filter(|x| *x % 2 == 0).collect();
+    println!("偶数: {:?}", evens); // [2, 4, 6, 8, 10]
+
+    // 筛选大于 5 的数
+    let large: Vec<&i32> = numbers.iter().filter(|&&x| x > 5).collect();
+    println!("大于5: {:?}", large); // [6, 7, 8, 9, 10]
+
+    // 字符串筛选
+    let words = vec!["hello", "", "world", "", "rust"];
+    let non_empty: Vec<&&str> = words.iter().filter(|w| !w.is_empty()).collect();
+    println!("非空: {:?}", non_empty); // ["hello", "world", "rust"]
+}
+```
+
+### filter_map — 同时筛选和变换
+
+`filter_map` 将 `filter` 和 `map` 合二为一，闭包返回 `Option`，`Some` 保留并解包，`None` 跳过：
+
+```rust
+fn main() {
+    let strings = vec!["1", "abc", "3", "def", "5"];
+
+    // 尝试解析为数字，跳过失败的
+    let numbers: Vec<i32> = strings
+        .iter()
+        .filter_map(|s| s.parse::<i32>().ok())
+        .collect();
+    println!("成功解析的数字: {:?}", numbers); // [1, 3, 5]
+
+    // 等价的 filter + map 写法（更冗长）
+    let numbers_verbose: Vec<i32> = strings
+        .iter()
+        .map(|s| s.parse::<i32>())
+        .filter(|result| result.is_ok())
+        .map(|result| result.unwrap())
+        .collect();
+    println!("同样的结果: {:?}", numbers_verbose); // [1, 3, 5]
+}
+```
+
+## 📐 fold — 折叠/归约
+
+`fold` 将迭代器的所有元素归约为一个值，需要一个初始值和一个累加闭包：
+
+```rust
+fn main() {
+    let numbers = vec![1, 2, 3, 4, 5];
+
+    // 求和
+    let sum = numbers.iter().fold(0, |accumulator, item| accumulator + item);
+    println!("求和: {}", sum); // 15
+
+    // 求积
+    let product = numbers.iter().fold(1, |accumulator, item| accumulator * item);
+    println!("求积: {}", product); // 120
+
+    // 拼接字符串
+    let words = vec!["Hello", "World", "Rust"];
+    let sentence = words.iter().fold(String::new(), |mut acc, word| {
+        if !acc.is_empty() {
+            acc.push(' ');
+        }
+        acc.push_str(word);
+        acc
+    });
+    println!("句子: {}", sentence); // Hello World Rust
+
+    // 找最大值
+    let max = numbers.iter().fold(i32::MIN, |max_val, &item| {
+        if item > max_val { item } else { max_val }
+    });
+    println!("最大值: {}", max); // 5
+}
+```
+
+## 🔗 flat_map — 映射并展平
+
+`flat_map` 对每个元素映射为一个迭代器，然后将所有迭代器展平为一个：
+
+```rust
+fn main() {
+    // 将嵌套的 Vec 展平
+    let nested = vec![vec![1, 2], vec![3, 4], vec![5, 6]];
+    let flat: Vec<&i32> = nested.iter().flat_map(|inner| inner.iter()).collect();
+    println!("展平: {:?}", flat); // [1, 2, 3, 4, 5, 6]
+
+    // 将句子拆分为单词
+    let sentences = vec!["hello world", "foo bar baz"];
+    let words: Vec<&str> = sentences
+        .iter()
+        .flat_map(|sentence| sentence.split_whitespace())
+        .collect();
+    println!("所有单词: {:?}", words); // ["hello", "world", "foo", "bar", "baz"]
+
+    // 生成笛卡尔积
+    let rows = vec![1, 2];
+    let cols = vec!['a', 'b', 'c'];
+    let pairs: Vec<(i32, char)> = rows
+        .iter()
+        .flat_map(|&row| cols.iter().map(move |&col| (row, col)))
+        .collect();
+    println!("笛卡尔积: {:?}", pairs);
+    // [(1, 'a'), (1, 'b'), (1, 'c'), (2, 'a'), (2, 'b'), (2, 'c')]
+}
+```
+
+## 🛠️ 其他常用适配器
+
+### take / skip
+
+```rust
+fn main() {
+    let numbers: Vec<i32> = (1..=10).collect();
+
+    // take：取前 N 个
+    let first_three: Vec<i32> = numbers.iter().copied().take(3).collect();
+    println!("前3个: {:?}", first_three); // [1, 2, 3]
+
+    // skip：跳过前 N 个
+    let after_seven: Vec<i32> = numbers.iter().copied().skip(7).collect();
+    println!("跳过7个: {:?}", after_seven); // [8, 9, 10]
+
+    // 组合使用：取第 4~6 个元素
+    let middle: Vec<i32> = numbers.iter().copied().skip(3).take(3).collect();
+    println!("第4~6个: {:?}", middle); // [4, 5, 6]
+}
+```
+
+### take_while / skip_while
+
+```rust
+fn main() {
+    let numbers = vec![2, 4, 6, 7, 8, 10];
+
+    // take_while：持续取元素，直到条件不满足
+    let evens: Vec<&i32> = numbers.iter().take_while(|&&x| x % 2 == 0).collect();
+    println!("开头的偶数: {:?}", evens); // [2, 4, 6]
+
+    // skip_while：跳过元素，直到条件不满足
+    let after_evens: Vec<&i32> = numbers.iter().skip_while(|&&x| x % 2 == 0).collect();
+    println!("第一个奇数起: {:?}", after_evens); // [7, 8, 10]
+}
+```
+
+### chain — 串联迭代器
+
+```rust
+fn main() {
+    let first = vec![1, 2, 3];
+    let second = vec![4, 5, 6];
+
+    let combined: Vec<&i32> = first.iter().chain(second.iter()).collect();
+    println!("串联: {:?}", combined); // [1, 2, 3, 4, 5, 6]
+}
+```
+
+### inspect — 调试用途
+
+```rust
+fn main() {
+    let result: Vec<i32> = (1..=5)
+        .inspect(|x| println!("  原始值: {}", x))
+        .filter(|x| x % 2 != 0)
+        .inspect(|x| println!("  过滤后: {}", x))
+        .map(|x| x * 10)
+        .collect();
+
+    println!("最终结果: {:?}", result); // [10, 30, 50]
+}
+```
+
+## 📝 实际应用：日志分析
+
+```rust
+#[derive(Debug)]
+struct LogEntry {
+    level: String,
+    message: String,
+    timestamp: u64,
+}
+
+fn parse_log_line(line: &str) -> Option<LogEntry> {
+    let parts: Vec<&str> = line.splitn(3, ' ').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    Some(LogEntry {
+        timestamp: parts[0].parse().ok()?,
+        level: parts[1].to_string(),
+        message: parts[2].to_string(),
+    })
+}
+
+fn main() {
+    let raw_logs = vec![
+        "1000 ERROR 数据库连接超时",
+        "1001 INFO 用户登录成功",
+        "1002 WARN 磁盘空间不足",
+        "invalid line",
+        "1003 ERROR 文件写入失败",
+        "1004 INFO 请求处理完成",
+    ];
+
+    // 解析日志 → 只保留 ERROR 级别 → 提取消息
+    let error_messages: Vec<String> = raw_logs
+        .iter()
+        .filter_map(|line| parse_log_line(line))
+        .filter(|entry| entry.level == "ERROR")
+        .map(|entry| format!("[{}] {}", entry.timestamp, entry.message))
+        .collect();
+
+    println!("错误日志:");
+    for msg in &error_messages {
+        println!("  {}", msg);
+    }
+
+    // 统计各级别数量
+    let total_parsed = raw_logs
+        .iter()
+        .filter_map(|line| parse_log_line(line))
+        .fold(
+            std::collections::HashMap::new(),
+            |mut counts, entry| {
+                *counts.entry(entry.level).or_insert(0u32) += 1;
+                counts
+            },
+        );
+
+    println!("\n日志级别统计:");
+    for (level, count) in &total_parsed {
+        println!("  {}: {}", level, count);
+    }
+}
+// 输出：
+// 错误日志:
+//   [1000] 数据库连接超时
+//   [1003] 文件写入失败
+//
+// 日志级别统计:
+//   ERROR: 2
+//   INFO: 2
+//   WARN: 1
+```
+
+## 🔗 相关概念
+
+- **Iterator trait 与 next**：适配器建立在 Iterator trait 的基础上
+- **消费适配器**：`collect`、`sum` 等触发迭代器链的实际执行
+- **惰性求值**：适配器本身不执行计算，只在被消费时才运行
 
 ## 📝 学习检查点
 
-- [ ] 理解迭代器适配器的核心概念
-- [ ] 能够在实际项目中应用迭代器适配器
+- [ ] 掌握 `map`、`filter`、`filter_map` 的用法和区别
+- [ ] 理解 `fold` 的累加逻辑和初始值的作用
+- [ ] 能够使用 `flat_map` 处理嵌套数据
+- [ ] 熟悉 `take`、`skip`、`chain`、`inspect` 等辅助适配器
+
+## 🚀 下一步
+
+→ [消费适配器](./04-consuming-adaptors)

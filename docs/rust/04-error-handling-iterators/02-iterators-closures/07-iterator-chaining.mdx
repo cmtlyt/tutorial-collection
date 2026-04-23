@@ -1,17 +1,320 @@
 # 迭代器链式调用
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解迭代器与闭包中的「迭代器链式调用」相关知识。
+迭代器链式调用是 Rust 函数式编程风格的核心模式。通过将多个适配器和消费器串联起来，可以用声明式的方式描述数据变换流程，代码简洁且语义清晰。本节将通过各种实际场景展示链式调用的设计模式和最佳实践。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本链式调用模式
+
+### 简单管道
+
+```rust
+fn main() {
+    let sentence = "the quick brown fox jumps over the lazy dog";
+
+    // 链式调用：分词 → 过滤短词 → 首字母大写 → 收集
+    let important_words: Vec<String> = sentence
+        .split_whitespace()
+        .filter(|word| word.len() > 3)
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => {
+                    first.to_uppercase().to_string() + chars.as_str()
+                }
+                None => String::new(),
+            }
+        })
+        .collect();
+
+    println!("{:?}", important_words);
+    // ["Quick", "Brown", "Jumps", "Over", "Lazy"]
+}
+```
+
+### 多数据源合并
+
+```rust
+fn main() {
+    let primary_scores = vec![90, 85, 92];
+    let bonus_scores = vec![5, 3, 8];
+
+    // 合并两组分数并计算总分
+    let totals: Vec<i32> = primary_scores
+        .iter()
+        .zip(bonus_scores.iter())
+        .map(|(primary, bonus)| primary + bonus)
+        .collect();
+
+    println!("总分: {:?}", totals); // [95, 88, 100]
+
+    // 串联多个数据源
+    let team_a = vec![100, 95, 88];
+    let team_b = vec![92, 97, 85];
+    let team_c = vec![88, 90, 93];
+
+    let all_scores: Vec<&i32> = team_a.iter()
+        .chain(team_b.iter())
+        .chain(team_c.iter())
+        .collect();
+
+    let average: f64 = all_scores.iter().map(|&&x| x as f64).sum::<f64>()
+        / all_scores.len() as f64;
+    println!("全部选手平均分: {:.1}", average);
+}
+```
+
+## 🔄 多步骤数据转换
+
+### 分组统计
+
+```rust
+use std::collections::HashMap;
+
+fn main() {
+    let transactions = vec![
+        ("食品", 45.0f64),
+        ("交通", 15.0),
+        ("食品", 30.0),
+        ("娱乐", 80.0),
+        ("交通", 25.0),
+        ("食品", 55.0),
+        ("娱乐", 40.0),
+    ];
+
+    // 按类别分组并求和
+    let category_totals: HashMap<&str, f64> = transactions
+        .iter()
+        .fold(HashMap::new(), |mut map, (category, amount)| {
+            *map.entry(category).or_insert(0.0) += amount;
+            map
+        });
+
+    // 按金额排序输出
+    let mut sorted: Vec<(&&str, &f64)> = category_totals.iter().collect();
+    sorted.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
+
+    println!("支出统计:");
+    for (category, total) in &sorted {
+        println!("  {}: {:.0}元", category, total);
+    }
+
+    let grand_total: f64 = category_totals.values().sum();
+    println!("总计: {:.0}元", grand_total);
+}
+// 输出：
+// 支出统计:
+//   食品: 130元
+//   娱乐: 120元
+//   交通: 40元
+// 总计: 290元
+```
+
+### 嵌套数据展平与处理
+
+```rust
+fn main() {
+    let departments = vec![
+        ("工程部", vec!["Alice", "Bob", "Charlie"]),
+        ("设计部", vec!["Diana", "Eve"]),
+        ("市场部", vec!["Frank", "Grace", "Henry"]),
+    ];
+
+    // 展平并生成带部门前缀的名单
+    let roster: Vec<String> = departments
+        .iter()
+        .flat_map(|(dept, members)| {
+            members.iter().map(move |name| format!("{} - {}", dept, name))
+        })
+        .collect();
+
+    println!("全员名单:");
+    for (index, entry) in roster.iter().enumerate() {
+        println!("  {}. {}", index + 1, entry);
+    }
+
+    // 统计总人数
+    let total: usize = departments.iter().map(|(_, members)| members.len()).sum();
+    println!("总人数: {}", total);
+}
+// 输出：
+// 全员名单:
+//   1. 工程部 - Alice
+//   2. 工程部 - Bob
+//   3. 工程部 - Charlie
+//   4. 设计部 - Diana
+//   5. 设计部 - Eve
+//   6. 市场部 - Frank
+//   7. 市场部 - Grace
+//   8. 市场部 - Henry
+// 总人数: 8
+```
+
+## 🛠️ 链式调用的可读性技巧
+
+### 提取闭包为具名函数
+
+当闭包逻辑复杂时，提取为独立函数提升可读性：
+
+```rust
+fn is_valid_email(email: &&str) -> bool {
+    email.contains('@') && email.contains('.') && email.len() >= 5
+}
+
+fn normalize_email(email: &&str) -> String {
+    email.trim().to_lowercase()
+}
+
+fn main() {
+    let raw_emails = vec![
+        "Alice@Example.COM",
+        "invalid",
+        "  Bob@Test.Org  ",
+        "x@y",
+        "Charlie@Demo.Net",
+    ];
+
+    let valid_emails: Vec<String> = raw_emails
+        .iter()
+        .filter(is_valid_email)
+        .map(normalize_email)
+        .collect();
+
+    println!("有效邮箱: {:?}", valid_emails);
+    // ["alice@example.com", "bob@test.org", "charlie@demo.net"]
+}
+```
+
+### 用中间变量分段
+
+```rust
+fn main() {
+    let raw_data = "10,20,abc,30,def,40,50";
+
+    // 分段处理，添加中间注释提升可读性
+    let numbers: Vec<i32> = raw_data
+        .split(',')
+        // 尝试解析为数字，过滤掉非数字
+        .filter_map(|s| s.parse::<i32>().ok())
+        // 只保留 20 以上的
+        .filter(|&n| n > 20)
+        // 排序需要先收集
+        .collect();
+
+    // 第二阶段处理
+    let mut sorted = numbers;
+    sorted.sort();
+
+    let result: String = sorted
+        .iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(" > ");
+
+    println!("结果: {}", result); // 30 > 40 > 50
+}
+```
+
+## 📝 实际应用：CSV 数据处理管道
+
+```rust
+#[derive(Debug)]
+struct Record {
+    name: String,
+    department: String,
+    salary: f64,
+}
+
+fn parse_csv_line(line: &str) -> Option<Record> {
+    let fields: Vec<&str> = line.split(',').collect();
+    if fields.len() != 3 {
+        return None;
+    }
+    let salary = fields[2].trim().parse::<f64>().ok()?;
+    Some(Record {
+        name: fields[0].trim().to_string(),
+        department: fields[1].trim().to_string(),
+        salary,
+    })
+}
+
+fn main() {
+    let csv_data = "\
+Alice, 工程部, 15000
+Bob, 设计部, 12000
+Charlie, 工程部, 18000
+invalid_line
+Diana, 市场部, 13000
+Eve, 工程部, 16000
+Frank, 设计部, 14000";
+
+    let records: Vec<Record> = csv_data
+        .lines()
+        .filter_map(parse_csv_line)
+        .collect();
+
+    // 1. 工程部平均薪资
+    let engineering_avg: f64 = {
+        let engineering: Vec<&Record> = records
+            .iter()
+            .filter(|r| r.department == "工程部")
+            .collect();
+        let total: f64 = engineering.iter().map(|r| r.salary).sum();
+        total / engineering.len() as f64
+    };
+    println!("工程部平均薪资: {:.0}", engineering_avg);
+
+    // 2. 最高薪资员工
+    let top_earner = records
+        .iter()
+        .max_by(|a, b| a.salary.partial_cmp(&b.salary).unwrap())
+        .unwrap();
+    println!("最高薪资: {} ({}元)", top_earner.name, top_earner.salary);
+
+    // 3. 按部门汇总
+    let mut dept_summary: std::collections::HashMap<&str, (usize, f64)> =
+        std::collections::HashMap::new();
+
+    for record in &records {
+        let entry = dept_summary
+            .entry(record.department.as_str())
+            .or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += record.salary;
+    }
+
+    println!("\n部门汇总:");
+    for (dept, (count, total)) in &dept_summary {
+        println!("  {}: {}人, 总薪资 {:.0}元, 平均 {:.0}元",
+            dept, count, total, total / *count as f64);
+    }
+}
+// 输出：
+// 工程部平均薪资: 16333
+// 最高薪资: Charlie (18000元)
+//
+// 部门汇总:
+//   工程部: 3人, 总薪资 49000元, 平均 16333元
+//   设计部: 2人, 总薪资 26000元, 平均 13000元
+//   市场部: 1人, 总薪资 13000元, 平均 13000元
+```
+
+## 🔗 相关概念
+
+- **迭代器适配器**：链式调用的每一环都是适配器
+- **惰性求值**：链式管道直到被消费才执行
+- **消费适配器**：触发整个链式管道执行的终点
 
 ## 📝 学习检查点
 
-- [ ] 理解迭代器链式调用的核心概念
-- [ ] 能够在实际项目中应用迭代器链式调用
+- [ ] 能够设计多步骤的迭代器链式管道
+- [ ] 掌握提取闭包和分段处理的可读性技巧
+- [ ] 能够使用 `zip`、`chain`、`flat_map` 处理多数据源
+- [ ] 能够用迭代器链实现分组统计等复杂操作
+
+## 🚀 下一步
+
+→ [iter / iter_mut / into_iter](./08-iter-iter-mut-into-iter)

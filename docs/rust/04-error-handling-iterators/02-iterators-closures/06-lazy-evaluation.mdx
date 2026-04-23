@@ -1,17 +1,260 @@
 # 惰性求值
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解迭代器与闭包中的「惰性求值」相关知识。
+Rust 的迭代器是**惰性的**（lazy）：调用适配器方法（如 `map`、`filter`）不会立即执行任何计算，它们只是构建了一个"计算管道"。只有当消费适配器（如 `collect`、`sum`）被调用时，数据才会真正流经管道。这种设计带来了显著的性能优势。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 惰性求值的直观理解
+
+### 证明迭代器是惰性的
+
+```rust
+fn main() {
+    let numbers = vec![1, 2, 3, 4, 5];
+
+    // 这行代码不会打印任何东西！
+    // map 只是创建了一个新的迭代器，没有执行闭包
+    let _lazy_iter = numbers.iter().map(|x| {
+        println!("处理元素: {}", x);
+        x * 2
+    });
+
+    println!("--- 迭代器已创建，但还没有执行 ---");
+
+    // 编译器会给出警告：
+    // warning: unused `Map` that must be used
+    // note: iterators are lazy and do nothing unless consumed
+}
+// 输出：
+// --- 迭代器已创建，但还没有执行 ---
+```
+
+### 触发执行
+
+```rust
+fn main() {
+    let numbers = vec![1, 2, 3, 4, 5];
+
+    println!("--- 开始收集 ---");
+    let doubled: Vec<i32> = numbers.iter().map(|x| {
+        println!("  处理元素: {}", x);
+        x * 2
+    }).collect();
+
+    println!("--- 收集完成 ---");
+    println!("结果: {:?}", doubled);
+}
+// 输出：
+// --- 开始收集 ---
+//   处理元素: 1
+//   处理元素: 2
+//   处理元素: 3
+//   处理元素: 4
+//   处理元素: 5
+// --- 收集完成 ---
+// 结果: [2, 4, 6, 8, 10]
+```
+
+## 🔍 惰性求值 vs 即时求值
+
+### 即时求值的问题
+
+假设我们用"即时求值"（每步都生成中间集合）来处理数据：
+
+```rust
+fn main() {
+    let data: Vec<i32> = (1..=1_000_000).collect();
+
+    // 即时求值方式（每一步都创建中间 Vec）
+    let step1: Vec<i32> = data.iter().map(|x| x * 2).cloned().collect();       // 分配 100万元素
+    let step2: Vec<i32> = step1.iter().filter(|x| *x % 3 == 0).cloned().collect(); // 又分配
+    let result: i32 = step2.iter().sum();
+
+    println!("即时求值结果: {}", result);
+}
+```
+
+### 惰性求值的优势
+
+```rust
+fn main() {
+    let data: Vec<i32> = (1..=1_000_000).collect();
+
+    // 惰性求值方式（零中间分配）
+    let result: i32 = data
+        .iter()
+        .map(|x| x * 2)
+        .filter(|x| x % 3 == 0)
+        .sum();
+
+    println!("惰性求值结果: {}", result);
+}
+```
+
+**关键区别**：
+- **即时求值**：每个操作都生成一个完整的中间集合，内存开销巨大
+- **惰性求值**：每个元素一次性流经整个管道，不产生中间集合
+
+## 📊 元素的处理顺序
+
+惰性迭代器是**逐元素处理**的，而非逐步骤处理：
+
+```rust
+fn main() {
+    let result: Vec<i32> = vec![1, 2, 3, 4, 5]
+        .into_iter()
+        .inspect(|x| println!("[1] 原始值: {}", x))
+        .map(|x| x * 10)
+        .inspect(|x| println!("[2] ×10 后: {}", x))
+        .filter(|x| x > &20)
+        .inspect(|x| println!("[3] 过滤通过: {}", x))
+        .collect();
+
+    println!("最终结果: {:?}", result);
+}
+// 输出（逐元素处理，而非逐步骤处理）：
+// [1] 原始值: 1
+// [2] ×10 后: 10
+// [1] 原始值: 2
+// [2] ×10 后: 20
+// [1] 原始值: 3
+// [2] ×10 后: 30
+// [3] 过滤通过: 30
+// [1] 原始值: 4
+// [2] ×10 后: 40
+// [3] 过滤通过: 40
+// [1] 原始值: 5
+// [2] ×10 后: 50
+// [3] 过滤通过: 50
+// 最终结果: [30, 40, 50]
+```
+
+## 🛡️ 短路特性
+
+惰性求值让某些操作可以**短路**——找到结果后立即停止，不处理剩余元素：
+
+```rust
+fn main() {
+    let large_data: Vec<i32> = (1..=1_000_000).collect();
+
+    // find 找到第一个满足条件的就停止
+    let first = large_data
+        .iter()
+        .inspect(|x| {
+            if **x <= 5 || **x == 100 {
+                println!("检查: {}", x);
+            }
+        })
+        .find(|&&x| x == 100);
+
+    println!("找到: {:?}", first); // Some(&100)
+    // 只检查了前 100 个元素，而非全部 100 万个
+
+    // any 也具有短路特性
+    let has_negative = vec![1, 2, -3, 4, 5]
+        .into_iter()
+        .inspect(|x| println!("检查: {}", x))
+        .any(|x| x < 0);
+
+    println!("包含负数: {}", has_negative);
+}
+// 输出：
+// 检查: 1
+// 检查: 2
+// 检查: 3
+// ...（只到 100）
+// 找到: Some(&100)
+// 检查: 1
+// 检查: 2
+// 检查: -3
+// 包含负数: true（在 -3 处短路，4 和 5 没有被检查）
+```
+
+## 🔧 与无限迭代器配合
+
+惰性求值使无限迭代器成为可能——只取需要的部分：
+
+```rust
+fn main() {
+    // 生成无限的偶数序列，只取前 10 个
+    let even_numbers: Vec<u64> = (0u64..)
+        .filter(|x| x % 2 == 0)
+        .take(10)
+        .collect();
+    println!("前10个偶数: {:?}", even_numbers);
+    // [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
+
+    // 生成无限的平方数，取第一个超过 1000 的
+    let first_large_square = (1u64..)
+        .map(|x| x * x)
+        .find(|&square| square > 1000);
+    println!("第一个超过1000的平方数: {:?}", first_large_square);
+    // Some(1024)  即 32²
+}
+```
+
+## 📝 实际应用：惰性文本处理
+
+```rust
+fn process_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .enumerate()
+        // 跳过空行
+        .filter(|(_, line)| !line.trim().is_empty())
+        // 跳过注释行
+        .filter(|(_, line)| !line.trim_start().starts_with('#'))
+        // 格式化输出
+        .map(|(line_num, line)| {
+            format!("{:>4} | {}", line_num + 1, line.trim())
+        })
+        .collect()
+}
+
+fn main() {
+    let config_text = r#"
+# 数据库配置
+host = localhost
+port = 5432
+
+# 认证配置
+username = admin
+password = secret
+
+# 连接池
+max_connections = 10
+"#;
+
+    let processed = process_lines(config_text);
+    println!("有效配置行:");
+    for line in &processed {
+        println!("{}", line);
+    }
+}
+// 输出：
+// 有效配置行:
+//    3 | host = localhost
+//    4 | port = 5432
+//    7 | username = admin
+//    8 | password = secret
+//   11 | max_connections = 10
+```
+
+## 🔗 相关概念
+
+- **迭代器适配器**：所有适配器都是惰性的，返回新的迭代器
+- **消费适配器**：触发惰性管道执行的最终操作
+- **迭代器性能**：惰性求值是零成本抽象的基础
 
 ## 📝 学习检查点
 
-- [ ] 理解惰性求值的核心概念
-- [ ] 能够在实际项目中应用惰性求值
+- [ ] 理解惰性求值的含义和"不消费不执行"的原则
+- [ ] 明白惰性迭代器是逐元素处理而非逐步骤处理
+- [ ] 理解惰性求值避免中间集合分配的性能优势
+- [ ] 掌握短路特性在 `find`、`any`、`take` 等操作中的表现
+
+## 🚀 下一步
+
+→ [迭代器链式调用](./07-iterator-chaining)

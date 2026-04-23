@@ -1,17 +1,307 @@
 # miette 与 color-eyre
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「miette 与 color-eyre」相关知识。
+在 `thiserror` 和 `anyhow` 之外，Rust 生态还有两个专注于**错误展示体验**的库：`miette` 提供诊断友好的错误报告（特别适合编译器、linter 等工具），`color-eyre` 则为 `eyre`（anyhow 的替代品）提供彩色的、带有源码片段的 panic 和错误报告。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 📦 安装
+
+```toml
+[dependencies]
+miette = { version = "7", features = ["fancy"] }
+color-eyre = "0.6"
+```
+
+## 🎯 miette — 诊断友好的错误报告
+
+### 核心概念
+
+`miette` 的核心是 `Diagnostic` trait，它扩展了 `std::error::Error`，增加了以下信息：
+- **错误码**（error code）
+- **严重级别**（severity）
+- **帮助提示**（help）
+- **源码标注**（labels + source code）
+
+### 基本用法
+
+```rust
+use miette::{Diagnostic, NamedSource, SourceSpan};
+use thiserror::Error;
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("发现未定义的变量")]
+#[diagnostic(
+    code(lint::undefined_variable),
+    help("请检查变量名是否拼写正确，或者是否已经声明")
+)]
+struct UndefinedVariableError {
+    #[source_code]
+    src: NamedSource<String>,
+
+    #[label("这个变量未定义")]
+    span: SourceSpan,
+}
+
+fn check_variable(source: &str, filename: &str) -> Result<(), UndefinedVariableError> {
+    // 模拟检查：查找未声明的变量 "foo"
+    if let Some(position) = source.find("foo") {
+        return Err(UndefinedVariableError {
+            src: NamedSource::new(filename, source.to_string()),
+            span: (position, 3).into(),
+        });
+    }
+    Ok(())
+}
+
+fn main() {
+    // 安装 miette 的全局 handler（启用 fancy 输出）
+    miette::set_hook(Box::new(|_| {
+        Box::new(miette::MietteHandlerOpts::new().build())
+    }))
+    .ok();
+
+    let source_code = "let result = foo + bar;";
+    if let Err(error) = check_variable(source_code, "main.rs") {
+        println!("{:?}", miette::Report::new(error));
+    }
+}
+// fancy 模式下的输出类似于：
+// × 发现未定义的变量
+//   ╭─[main.rs:1:14]
+// 1 │ let result = foo + bar;
+//   ·              ─── 这个变量未定义
+//   ╰──
+//   help: 请检查变量名是否拼写正确，或者是否已经声明
+```
+
+### 多标签标注
+
+```rust
+use miette::{Diagnostic, NamedSource, SourceSpan};
+use thiserror::Error;
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("类型不匹配")]
+#[diagnostic(code(type::mismatch))]
+struct TypeMismatchError {
+    #[source_code]
+    src: NamedSource<String>,
+
+    #[label("这个表达式的类型是 String")]
+    left: SourceSpan,
+
+    #[label("但这里期望的是 i32")]
+    right: SourceSpan,
+
+    #[help]
+    advice: String,
+}
+
+fn check_types(source: &str, filename: &str) -> Result<(), TypeMismatchError> {
+    // 模拟类型检查
+    let left_pos = source.find("name").unwrap_or(0);
+    let right_pos = source.find("42").unwrap_or(0);
+
+    Err(TypeMismatchError {
+        src: NamedSource::new(filename, source.to_string()),
+        left: (left_pos, 4).into(),
+        right: (right_pos, 2).into(),
+        advice: "尝试使用 .parse::<i32>() 将 String 转换为 i32".to_string(),
+    })
+}
+
+fn main() {
+    miette::set_hook(Box::new(|_| {
+        Box::new(miette::MietteHandlerOpts::new().build())
+    }))
+    .ok();
+
+    let code = "let x: i32 = name + 42;";
+    if let Err(error) = check_types(code, "example.rs") {
+        println!("{:?}", miette::Report::new(error));
+    }
+}
+```
+
+### 不带源码的简单用法
+
+`miette` 也可以不涉及源码标注，单纯作为更友好的错误输出工具：
+
+```rust
+use miette::{miette, IntoDiagnostic, Result, WrapErr};
+
+fn read_config(path: &str) -> Result<String> {
+    std::fs::read_to_string(path)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("无法读取配置文件 {}", path))
+}
+
+fn start_app() -> Result<()> {
+    let _config = read_config("app.toml")
+        .wrap_err("应用启动失败")?;
+    Ok(())
+}
+
+fn main() {
+    miette::set_hook(Box::new(|_| {
+        Box::new(miette::MietteHandlerOpts::new().build())
+    }))
+    .ok();
+
+    if let Err(report) = start_app() {
+        println!("{:?}", report);
+    }
+}
+// 输出类似于：
+// × 应用启动失败
+// ├── × 无法读取配置文件 app.toml
+// ╰── × No such file or directory (os error 2)
+```
+
+## 🎨 color-eyre — 彩色错误报告
+
+### 核心概念
+
+`color-eyre` 是 `eyre`（类似 anyhow 的错误处理库）的扩展，提供：
+- **彩色终端输出**
+- **panic 时的美化报告**
+- **SpanTrace 支持**（与 tracing 集成）
+- **自定义 Section** 添加额外信息
+
+### 基本用法
+
+```rust
+use color_eyre::eyre::{eyre, Context, Result};
+
+fn connect_database(url: &str) -> Result<String> {
+    if url.is_empty() {
+        return Err(eyre!("数据库 URL 为空"));
+    }
+    if !url.starts_with("postgres://") {
+        return Err(eyre!("不支持的数据库协议，URL: {}", url));
+    }
+    Ok(format!("已连接到 {}", url))
+}
+
+fn initialize_app() -> Result<()> {
+    let database_url = "mysql://localhost/mydb";
+    let _connection = connect_database(database_url)
+        .wrap_err("数据库初始化失败")?;
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    // 安装 color-eyre 的 panic 和错误 handler
+    color_eyre::install()?;
+
+    if let Err(report) = initialize_app() {
+        println!("{:?}", report);
+    }
+
+    Ok(())
+}
+// 输出（带颜色）：
+// Error:
+//    0: 数据库初始化失败
+//    1: 不支持的数据库协议，URL: mysql://localhost/mydb
+```
+
+### 添加 Section
+
+`color-eyre` 允许为错误添加额外的"节"（Section），提供更丰富的调试信息：
+
+```rust
+use color_eyre::eyre::{eyre, Result};
+use color_eyre::Section;
+
+fn validate_config(config: &std::collections::HashMap<String, String>) -> Result<()> {
+    let required_keys = vec!["host", "port", "database"];
+    let missing: Vec<&str> = required_keys
+        .iter()
+        .filter(|key| !config.contains_key(**key))
+        .copied()
+        .collect();
+
+    if !missing.is_empty() {
+        return Err(eyre!("配置验证失败"))
+            .suggestion("请在 config.toml 中添加缺失的配置项")
+            .with_section(|| {
+                missing.join(", ").header("缺失的配置项:")
+            })
+            .with_section(|| {
+                config
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+                    .header("当前已有的配置项:")
+            });
+    }
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    color_eyre::install()?;
+
+    let mut config = std::collections::HashMap::new();
+    config.insert("host".to_string(), "localhost".to_string());
+
+    if let Err(report) = validate_config(&config) {
+        println!("{:?}", report);
+    }
+
+    Ok(())
+}
+// 输出（带颜色和格式化）：
+// Error:
+//    0: 配置验证失败
+//
+// Suggestion: 请在 config.toml 中添加缺失的配置项
+//
+// 缺失的配置项:
+//    port, database
+//
+// 当前已有的配置项:
+//    host
+```
+
+## ⚖️ 库选型指南
+
+| 库 | 适用场景 | 核心特点 |
+|------|----------|----------|
+| **thiserror** | 库代码 | 定义具体错误类型，零运行时开销 |
+| **anyhow** | 应用代码 | 通用错误类型，context 上下文 |
+| **miette** | 编译器/Linter/CLI 工具 | 源码标注，诊断信息，fancy 输出 |
+| **color-eyre** | 应用代码（需要美化输出） | 彩色输出，Section，tracing 集成 |
+| **eyre** | 应用代码（anyhow 替代） | 类似 anyhow，可自定义 handler |
+
+### 组合建议
+
+```
+库代码：thiserror
+    ↓
+应用代码（简单场景）：anyhow
+应用代码（需要彩色输出）：color-eyre
+CLI / 编译器 / Linter：miette
+```
+
+## 🔗 相关概念
+
+- **thiserror**：定义具体的错误类型，miette 的 `Diagnostic` 派生宏常与 thiserror 配合
+- **anyhow**：anyhow 和 color-eyre 在使用上非常相似，核心区别是输出格式
+- **错误链**：miette 和 color-eyre 都支持完整的错误链展示
 
 ## 📝 学习检查点
 
-- [ ] 理解miette 与 color-eyre的核心概念
-- [ ] 能够在实际项目中应用miette 与 color-eyre
+- [ ] 理解 miette 的 `Diagnostic` trait 和源码标注能力
+- [ ] 能够使用 miette 创建带有 label 和 help 的诊断报告
+- [ ] 理解 color-eyre 的安装方式和 Section 功能
+- [ ] 根据项目类型选择合适的错误处理库
+
+## 🚀 下一步
+
+→ [迭代器与闭包 - 总览](../02-iterators-closures/01-iterators-closures-overview)

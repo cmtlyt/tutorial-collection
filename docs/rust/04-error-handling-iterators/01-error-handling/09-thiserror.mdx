@@ -1,17 +1,419 @@
 # thiserror 库
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「thiserror 库」相关知识。
+在前面几节中，我们手动实现了 `Display`、`Error` 和 `From` trait，代码量不小。`thiserror` 是一个过程宏库，能够通过派生宏自动生成这些样板代码，让自定义错误类型的定义简洁优雅。它特别适合用于**库代码**中定义具体的错误类型。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 📦 安装
+
+在 `Cargo.toml` 中添加依赖：
+
+```toml
+[dependencies]
+thiserror = "2"
+```
+
+## 🎯 基本用法
+
+### 枚举错误类型
+
+```rust
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+enum DataError {
+    #[error("输入数据为空")]
+    EmptyInput,
+
+    #[error("数据格式无效: {0}")]
+    InvalidFormat(String),
+
+    #[error("值 {value} 超出范围 [{min}, {max}]")]
+    OutOfRange { value: i64, min: i64, max: i64 },
+
+    #[error("数字解析失败")]
+    ParseFailure(#[from] std::num::ParseIntError),
+}
+
+fn parse_age(input: &str) -> Result<u8, DataError> {
+    if input.is_empty() {
+        return Err(DataError::EmptyInput);
+    }
+
+    let age: i64 = input.parse()?; // ParseIntError 自动转为 DataError
+
+    if age < 0 || age > 150 {
+        return Err(DataError::OutOfRange {
+            value: age,
+            min: 0,
+            max: 150,
+        });
+    }
+
+    Ok(age as u8)
+}
+
+fn main() {
+    let test_cases = vec!["", "abc", "25", "-5", "200"];
+
+    for input in test_cases {
+        match parse_age(input) {
+            Ok(age) => println!("{:?} → 年龄: {}", input, age),
+            Err(error) => println!("{:?} → 错误: {}", input, error),
+        }
+    }
+}
+// 输出：
+// "" → 错误: 输入数据为空
+// "abc" → 错误: 数字解析失败
+// "25" → 年龄: 25
+// "-5" → 错误: 值 -5 超出范围 [0, 150]
+// "200" → 错误: 值 200 超出范围 [0, 150]
+```
+
+### 结构体错误类型
+
+```rust
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+#[error("字段 '{field}' 验证失败: {message}")]
+struct ValidationError {
+    field: String,
+    message: String,
+}
+
+fn validate_username(name: &str) -> Result<(), ValidationError> {
+    if name.len() < 3 {
+        return Err(ValidationError {
+            field: "username".to_string(),
+            message: "长度不能少于 3 个字符".to_string(),
+        });
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Err(ValidationError {
+            field: "username".to_string(),
+            message: "只能包含字母、数字和下划线".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn main() {
+    for name in ["alice", "ab", "hello world"] {
+        match validate_username(name) {
+            Ok(()) => println!("{:?} ✓", name),
+            Err(error) => println!("{:?} ✗ {}", name, error),
+        }
+    }
+}
+// 输出：
+// "alice" ✓
+// "ab" ✗ 字段 'username' 验证失败: 长度不能少于 3 个字符
+// "hello world" ✗ 字段 'username' 验证失败: 只能包含字母、数字和下划线
+```
+
+## 🔑 核心属性详解
+
+### `#[error("...")]` — 生成 Display 实现
+
+```rust
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+enum FormatExample {
+    // 字面量消息
+    #[error("操作失败")]
+    Simple,
+
+    // 引用元组字段（从 0 开始）
+    #[error("文件 {0} 不存在")]
+    FileNotFound(String),
+
+    // 引用命名字段
+    #[error("第 {line} 行第 {column} 列语法错误")]
+    SyntaxError { line: usize, column: usize },
+
+    // 使用 Display trait（默认）
+    #[error("数据库错误: {0}")]
+    Database(String),
+
+    // 使用 Debug trait 格式化
+    #[error("未知错误: {0:?}")]
+    Unknown(Vec<u8>),
+}
+
+fn main() {
+    let errors: Vec<Box<dyn std::error::Error>> = vec![
+        Box::new(FormatExample::Simple),
+        Box::new(FormatExample::FileNotFound("config.toml".to_string())),
+        Box::new(FormatExample::SyntaxError { line: 42, column: 7 }),
+        Box::new(FormatExample::Database("连接超时".to_string())),
+        Box::new(FormatExample::Unknown(vec![0xFF, 0xFE])),
+    ];
+
+    for error in &errors {
+        println!("{}", error);
+    }
+}
+// 输出：
+// 操作失败
+// 文件 config.toml 不存在
+// 第 42 行第 7 列语法错误
+// 数据库错误: 连接超时
+// 未知错误: [255, 254]
+```
+
+### `#[from]` — 自动生成 From 实现
+
+```rust
+use thiserror::Error;
+use std::io;
+use std::num::ParseIntError;
+
+#[derive(Debug, Error)]
+enum AppError {
+    #[error("IO 错误: {0}")]
+    Io(#[from] io::Error),
+
+    #[error("解析错误: {0}")]
+    Parse(#[from] ParseIntError),
+}
+
+fn read_and_parse(path: &str) -> Result<i32, AppError> {
+    let content = std::fs::read_to_string(path)?; // io::Error → AppError::Io
+    let number = content.trim().parse::<i32>()?;   // ParseIntError → AppError::Parse
+    Ok(number)
+}
+
+fn main() {
+    match read_and_parse("number.txt") {
+        Ok(number) => println!("数字: {}", number),
+        Err(error) => println!("错误: {}", error),
+    }
+}
+```
+
+### `#[source]` — 标记错误链源
+
+当你不想自动生成 `From` 实现，但仍想让字段作为 `source()` 返回时，使用 `#[source]`：
+
+```rust
+use thiserror::Error;
+use std::io;
+
+#[derive(Debug, Error)]
+enum ProcessError {
+    // #[source] 标记为 source，但不生成 From
+    #[error("处理文件 '{path}' 时失败")]
+    FileProcess {
+        path: String,
+        #[source]
+        cause: io::Error,
+    },
+}
+
+fn process_file(path: &str) -> Result<(), ProcessError> {
+    std::fs::read_to_string(path).map_err(|io_err| ProcessError::FileProcess {
+        path: path.to_string(),
+        cause: io_err,
+    })?;
+    Ok(())
+}
+
+fn main() {
+    if let Err(error) = process_file("不存在的文件.txt") {
+        println!("错误: {}", error);
+        if let Some(source) = std::error::Error::source(&error) {
+            println!("原因: {}", source);
+        }
+    }
+}
+// 输出：
+// 错误: 处理文件 '不存在的文件.txt' 时失败
+// 原因: No such file or directory (os error 2)
+```
+
+## ⚖️ 手动实现 vs thiserror 对比
+
+```rust
+use std::io;
+use std::num::ParseIntError;
+
+// === 手动实现（约 30 行）===
+mod manual {
+    use super::*;
+    use std::fmt;
+
+    #[derive(Debug)]
+    pub enum AppError {
+        Io(io::Error),
+        Parse(ParseIntError),
+    }
+
+    impl fmt::Display for AppError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                AppError::Io(e) => write!(f, "IO 错误: {}", e),
+                AppError::Parse(e) => write!(f, "解析错误: {}", e),
+            }
+        }
+    }
+
+    impl std::error::Error for AppError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                AppError::Io(e) => Some(e),
+                AppError::Parse(e) => Some(e),
+            }
+        }
+    }
+
+    impl From<io::Error> for AppError {
+        fn from(e: io::Error) -> Self { AppError::Io(e) }
+    }
+
+    impl From<ParseIntError> for AppError {
+        fn from(e: ParseIntError) -> Self { AppError::Parse(e) }
+    }
+}
+
+// === thiserror 实现（约 10 行）===
+mod with_thiserror {
+    use super::*;
+    use thiserror::Error;
+
+    #[derive(Debug, Error)]
+    pub enum AppError {
+        #[error("IO 错误: {0}")]
+        Io(#[from] io::Error),
+
+        #[error("解析错误: {0}")]
+        Parse(#[from] ParseIntError),
+    }
+}
+
+fn main() {
+    // 两种实现在使用上完全一致
+    println!("thiserror 大大减少了样板代码！");
+}
+```
+
+## 📝 实际应用：HTTP API 错误
+
+```rust
+use thiserror::Error;
+use std::num::ParseIntError;
+
+#[derive(Debug, Error)]
+enum ApiError {
+    #[error("请求参数 '{param}' 缺失")]
+    MissingParam { param: String },
+
+    #[error("参数 '{param}' 格式错误: {source}")]
+    InvalidParam {
+        param: String,
+        #[source]
+        source: ParseIntError,
+    },
+
+    #[error("用户 {user_id} 未找到")]
+    UserNotFound { user_id: u64 },
+
+    #[error("权限不足: 需要 {required} 角色")]
+    Forbidden { required: String },
+
+    #[error("内部服务器错误")]
+    Internal(#[from] std::io::Error),
+}
+
+impl ApiError {
+    fn status_code(&self) -> u16 {
+        match self {
+            ApiError::MissingParam { .. } => 400,
+            ApiError::InvalidParam { .. } => 400,
+            ApiError::UserNotFound { .. } => 404,
+            ApiError::Forbidden { .. } => 403,
+            ApiError::Internal(_) => 500,
+        }
+    }
+}
+
+fn get_user(params: &std::collections::HashMap<&str, &str>) -> Result<String, ApiError> {
+    let id_str = params.get("id").ok_or_else(|| ApiError::MissingParam {
+        param: "id".to_string(),
+    })?;
+
+    let user_id: u64 = id_str.parse().map_err(|err| ApiError::InvalidParam {
+        param: "id".to_string(),
+        source: err,
+    })?;
+
+    if user_id == 0 {
+        return Err(ApiError::UserNotFound { user_id });
+    }
+
+    Ok(format!("用户#{}", user_id))
+}
+
+fn main() {
+    use std::collections::HashMap;
+
+    // 正常请求
+    let mut params = HashMap::new();
+    params.insert("id", "42");
+    match get_user(&params) {
+        Ok(user) => println!("200 → {}", user),
+        Err(err) => println!("{} → {}", err.status_code(), err),
+    }
+
+    // 缺少参数
+    let empty = HashMap::new();
+    match get_user(&empty) {
+        Ok(user) => println!("200 → {}", user),
+        Err(err) => println!("{} → {}", err.status_code(), err),
+    }
+
+    // 参数格式错误
+    let mut bad_params = HashMap::new();
+    bad_params.insert("id", "abc");
+    match get_user(&bad_params) {
+        Ok(user) => println!("200 → {}", user),
+        Err(err) => println!("{} → {}", err.status_code(), err),
+    }
+
+    // 用户不存在
+    let mut zero_params = HashMap::new();
+    zero_params.insert("id", "0");
+    match get_user(&zero_params) {
+        Ok(user) => println!("200 → {}", user),
+        Err(err) => println!("{} → {}", err.status_code(), err),
+    }
+}
+// 输出：
+// 200 → 用户#42
+// 400 → 请求参数 'id' 缺失
+// 400 → 参数 'id' 格式错误: invalid digit found in string
+// 404 → 用户 0 未找到
+```
+
+## 🔗 相关概念
+
+- **自定义错误类型**：thiserror 自动化了手动实现的过程
+- **From trait 与错误转换**：`#[from]` 属性自动生成 `From` 实现
+- **错误链**：`#[source]` 和 `#[from]` 自动实现 `source()` 方法
+- **anyhow**：thiserror 定义错误类型，anyhow 在应用层使用它们
 
 ## 📝 学习检查点
 
-- [ ] 理解thiserror 库的核心概念
-- [ ] 能够在实际项目中应用thiserror 库
+- [ ] 理解 thiserror 的三个核心属性：`#[error]`、`#[from]`、`#[source]`
+- [ ] 能够用 thiserror 定义枚举和结构体错误类型
+- [ ] 理解 thiserror 适用于库代码的原因
+- [ ] 掌握 `#[from]` 和 `#[source]` 的区别
+
+## 🚀 下一步
+
+→ [anyhow 库](./10-anyhow)

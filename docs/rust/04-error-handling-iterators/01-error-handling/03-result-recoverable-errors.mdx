@@ -1,17 +1,287 @@
 # Result 与可恢复错误
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「Result 与可恢复错误」相关知识。
+大多数错误并不严重到需要终止程序。比如打开一个不存在的文件，我们可能想创建它而不是直接崩溃。Rust 通过 `Result<T, E>` 枚举来表达这类可恢复错误，让调用者决定如何处理。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 Result 枚举
+
+### 定义
+
+`Result` 是标准库中定义的泛型枚举：
+
+```rust
+enum Result<T, E> {
+    Ok(T),  // 操作成功，包含返回值
+    Err(E), // 操作失败，包含错误信息
+}
+```
+
+- **`T`**：成功时返回的值的类型
+- **`E`**：失败时返回的错误类型
+
+### 基本用法
+
+```rust
+use std::fs::File;
+
+fn main() {
+    let greeting_file_result = File::open("hello.txt");
+
+    let greeting_file = match greeting_file_result {
+        Ok(file) => file,
+        Err(error) => panic!("打开文件失败: {:?}", error),
+    };
+
+    println!("文件打开成功: {:?}", greeting_file);
+}
+```
+
+## 🔍 匹配不同的错误类型
+
+通过嵌套 `match` 可以针对不同的错误类型执行不同的处理逻辑：
+
+```rust
+use std::fs::File;
+use std::io::ErrorKind;
+
+fn main() {
+    let greeting_file = match File::open("hello.txt") {
+        Ok(file) => file,
+        Err(error) => match error.kind() {
+            ErrorKind::NotFound => match File::create("hello.txt") {
+                Ok(created_file) => {
+                    println!("文件不存在，已创建");
+                    created_file
+                }
+                Err(create_error) => {
+                    panic!("创建文件失败: {:?}", create_error);
+                }
+            },
+            ErrorKind::PermissionDenied => {
+                panic!("没有权限打开文件");
+            }
+            other_error => {
+                panic!("打开文件时发生未知错误: {:?}", other_error);
+            }
+        },
+    };
+
+    println!("文件就绪: {:?}", greeting_file);
+}
+```
+
+### 使用闭包简化
+
+上面嵌套的 `match` 可以用 `unwrap_or_else` 和闭包来简化：
+
+```rust
+use std::fs::File;
+use std::io::ErrorKind;
+
+fn main() {
+    let greeting_file = File::open("hello.txt").unwrap_or_else(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            File::create("hello.txt").unwrap_or_else(|create_error| {
+                panic!("创建文件失败: {:?}", create_error);
+            })
+        } else {
+            panic!("打开文件失败: {:?}", error);
+        }
+    });
+
+    println!("文件就绪: {:?}", greeting_file);
+}
+```
+
+## 🛠️ Result 的常用方法
+
+### 判断与提取
+
+```rust
+fn main() {
+    let success: Result<i32, &str> = Ok(42);
+    let failure: Result<i32, &str> = Err("出错了");
+
+    // is_ok / is_err：判断结果
+    println!("success 是否成功: {}", success.is_ok());  // true
+    println!("failure 是否失败: {}", failure.is_err()); // true
+
+    // ok() / err()：转换为 Option
+    let opt_value: Option<i32> = success.ok();
+    println!("ok 转 Option: {:?}", opt_value); // Some(42)
+
+    let opt_error: Option<&str> = failure.err();
+    println!("err 转 Option: {:?}", opt_error); // Some("出错了")
+}
+```
+
+### 映射与转换
+
+```rust
+fn main() {
+    let result: Result<i32, String> = Ok(5);
+
+    // map：转换成功值
+    let doubled = result.map(|value| value * 2);
+    println!("map 结果: {:?}", doubled); // Ok(10)
+
+    // map_err：转换错误值
+    let error_result: Result<i32, String> = Err(String::from("原始错误"));
+    let mapped_error = error_result.map_err(|err| format!("包装: {}", err));
+    println!("map_err 结果: {:?}", mapped_error); // Err("包装: 原始错误")
+
+    // and_then：链式操作（类似 flatMap）
+    let chained = Ok(2)
+        .and_then(|value: i32| {
+            if value > 0 {
+                Ok(value * 10)
+            } else {
+                Err("值必须为正数")
+            }
+        });
+    println!("and_then 结果: {:?}", chained); // Ok(20)
+}
+```
+
+### 默认值处理
+
+```rust
+fn main() {
+    let error_result: Result<i32, &str> = Err("出错了");
+
+    // unwrap_or：提供默认值
+    let value = error_result.unwrap_or(0);
+    println!("unwrap_or: {}", value); // 0
+
+    // unwrap_or_else：通过闭包计算默认值
+    let value = error_result.unwrap_or_else(|err| {
+        println!("发生错误: {}, 使用默认值", err);
+        -1
+    });
+    println!("unwrap_or_else: {}", value); // -1
+
+    // unwrap_or_default：使用类型的 Default 值
+    let value: Result<i32, &str> = Err("出错了");
+    let default_value = value.unwrap_or_default();
+    println!("unwrap_or_default: {}", default_value); // 0
+}
+```
+
+## 📤 传播错误
+
+函数内部遇到错误时，可以将错误返回给调用者处理：
+
+```rust
+use std::fs::File;
+use std::io::{self, Read};
+
+fn read_username_from_file() -> Result<String, io::Error> {
+    let file_result = File::open("username.txt");
+
+    let mut file = match file_result {
+        Ok(file) => file,
+        Err(error) => return Err(error), // 提前返回错误
+    };
+
+    let mut username = String::new();
+
+    match file.read_to_string(&mut username) {
+        Ok(_) => Ok(username),
+        Err(error) => Err(error),
+    }
+}
+
+fn main() {
+    match read_username_from_file() {
+        Ok(name) => println!("用户名: {}", name),
+        Err(error) => println!("读取失败: {}", error),
+    }
+}
+```
+
+:::tip 提示
+上面手动传播错误的写法比较冗长，Rust 提供了 `?` 运算符来大幅简化这个过程，下一节会详细讲解。
 :::
+
+## 📝 实际应用：配置解析
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug)]
+enum ConfigError {
+    MissingField(String),
+    InvalidPort(String),
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigError::MissingField(field) => {
+                write!(formatter, "缺少必要的配置项: {}", field)
+            }
+            ConfigError::InvalidPort(value) => {
+                write!(formatter, "端口号格式错误: {}", value)
+            }
+        }
+    }
+}
+
+fn parse_config(raw: &HashMap<&str, &str>) -> Result<(String, u16), ConfigError> {
+    let host = raw
+        .get("host")
+        .ok_or_else(|| ConfigError::MissingField("host".to_string()))?;
+
+    let port_str = raw
+        .get("port")
+        .ok_or_else(|| ConfigError::MissingField("port".to_string()))?;
+
+    let port: u16 = port_str
+        .parse()
+        .map_err(|_| ConfigError::InvalidPort(port_str.to_string()))?;
+
+    Ok((host.to_string(), port))
+}
+
+fn main() {
+    let mut config = HashMap::new();
+    config.insert("host", "localhost");
+    config.insert("port", "8080");
+
+    match parse_config(&config) {
+        Ok((host, port)) => println!("服务器地址: {}:{}", host, port),
+        Err(error) => println!("配置解析失败: {}", error),
+    }
+
+    // 测试缺少字段的情况
+    let empty_config = HashMap::new();
+    match parse_config(&empty_config) {
+        Ok((host, port)) => println!("服务器地址: {}:{}", host, port),
+        Err(error) => println!("配置解析失败: {}", error),
+    }
+}
+// 输出：
+// 服务器地址: localhost:8080
+// 配置解析失败: 缺少必要的配置项: host
+```
+
+## 🔗 相关概念
+
+- **panic! 与不可恢复错误**：当错误确实无法恢复时使用 panic
+- **? 运算符**：简化 Result 的错误传播语法
+- **Option 类型**：与 Result 类似，但不携带错误信息，仅表达"有值"或"无值"
 
 ## 📝 学习检查点
 
-- [ ] 理解Result 与可恢复错误的核心概念
-- [ ] 能够在实际项目中应用Result 与可恢复错误
+- [ ] 理解 `Result<T, E>` 的两个变体 `Ok` 和 `Err`
+- [ ] 能够使用 `match` 对 Result 进行模式匹配
+- [ ] 掌握 `map`、`and_then`、`unwrap_or` 等常用方法
+- [ ] 理解错误传播的概念和手动实现方式
+
+## 🚀 下一步
+
+→ [? 运算符](./04-question-mark-operator)

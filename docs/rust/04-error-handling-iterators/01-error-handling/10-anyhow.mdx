@@ -1,17 +1,353 @@
 # anyhow 库
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「anyhow 库」相关知识。
+`anyhow` 是 Rust 生态中最流行的**应用级**错误处理库。与 `thiserror` 关注「定义具体错误类型」不同，`anyhow` 关注的是「方便地处理和传播各种错误」。它提供了一个通用的 `anyhow::Error` 类型，可以包装任何实现了 `std::error::Error` 的错误，并支持添加上下文信息。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 📦 安装
+
+在 `Cargo.toml` 中添加依赖：
+
+```toml
+[dependencies]
+anyhow = "1"
+```
+
+## 🎯 基本用法
+
+### anyhow::Result
+
+`anyhow::Result<T>` 是 `Result<T, anyhow::Error>` 的类型别名，可以替代标准库的 `Result`：
+
+```rust
+use anyhow::Result;
+use std::fs;
+
+fn read_config() -> Result<String> {
+    // 任何实现了 std::error::Error 的错误都会自动转换
+    let content = fs::read_to_string("config.toml")?;
+    Ok(content)
+}
+
+fn main() -> Result<()> {
+    match read_config() {
+        Ok(config) => println!("配置内容: {}", config),
+        Err(error) => println!("错误: {}", error),
+    }
+    Ok(())
+}
+```
+
+### anyhow! 宏
+
+`anyhow!` 宏用于快速创建错误，类似于 `format!`：
+
+```rust
+use anyhow::{anyhow, Result};
+
+fn validate_port(port: u16) -> Result<u16> {
+    if port == 0 {
+        return Err(anyhow!("端口号不能为 0"));
+    }
+    if port < 1024 {
+        return Err(anyhow!("端口号 {} 是保留端口，请使用 1024 以上的端口", port));
+    }
+    Ok(port)
+}
+
+fn main() {
+    match validate_port(80) {
+        Ok(port) => println!("端口: {}", port),
+        Err(error) => println!("验证失败: {}", error),
+    }
+
+    match validate_port(8080) {
+        Ok(port) => println!("端口: {}", port),
+        Err(error) => println!("验证失败: {}", error),
+    }
+}
+// 输出：
+// 验证失败: 端口号 80 是保留端口，请使用 1024 以上的端口
+// 端口: 8080
+```
+
+### bail! 宏
+
+`bail!` 是 `return Err(anyhow!(...))` 的简写：
+
+```rust
+use anyhow::{bail, Result};
+
+fn parse_env_var(key: &str) -> Result<String> {
+    let value = std::env::var(key);
+    match value {
+        Ok(v) if v.is_empty() => bail!("环境变量 {} 为空", key),
+        Ok(v) => Ok(v),
+        Err(_) => bail!("环境变量 {} 未设置", key),
+    }
+}
+
+fn main() {
+    match parse_env_var("UNDEFINED_VAR") {
+        Ok(value) => println!("值: {}", value),
+        Err(error) => println!("错误: {}", error),
+    }
+}
+// 输出：
+// 错误: 环境变量 UNDEFINED_VAR 未设置
+```
+
+### ensure! 宏
+
+`ensure!` 类似于 `assert!`，但返回 `Err` 而不是 panic：
+
+```rust
+use anyhow::{ensure, Result};
+
+fn divide(numerator: f64, denominator: f64) -> Result<f64> {
+    ensure!(denominator != 0.0, "除数不能为零");
+    ensure!(
+        !numerator.is_nan() && !denominator.is_nan(),
+        "操作数不能为 NaN"
+    );
+    Ok(numerator / denominator)
+}
+
+fn main() {
+    println!("10 / 3 = {:?}", divide(10.0, 3.0));    // Ok(3.333...)
+    println!("10 / 0 = {:?}", divide(10.0, 0.0));    // Err(除数不能为零)
+    println!("NaN / 1 = {:?}", divide(f64::NAN, 1.0)); // Err(操作数不能为 NaN)
+}
+```
+
+## 🏷️ 添加上下文（Context）
+
+`anyhow` 最强大的特性之一是 `.context()` 和 `.with_context()` 方法，可以为错误添加描述性的上下文信息：
+
+```rust
+use anyhow::{Context, Result};
+use std::fs;
+
+fn read_user_config(user_id: u32) -> Result<String> {
+    let path = format!("/etc/app/users/{}.toml", user_id);
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("读取用户 {} 的配置文件 {} 失败", user_id, path))?;
+    Ok(content)
+}
+
+fn load_user_settings(user_id: u32) -> Result<String> {
+    let config = read_user_config(user_id)
+        .context("加载用户设置失败")?;
+    Ok(config)
+}
+
+fn main() {
+    if let Err(error) = load_user_settings(42) {
+        // 打印错误和完整的上下文链
+        println!("错误: {}", error);
+
+        // 打印完整的错误链
+        println!("\n完整错误链:");
+        for (index, cause) in error.chain().enumerate() {
+            println!("  {}: {}", index, cause);
+        }
+    }
+}
+// 输出：
+// 错误: 加载用户设置失败
+//
+// 完整错误链:
+//   0: 加载用户设置失败
+//   1: 读取用户 42 的配置文件 /etc/app/users/42.toml 失败
+//   2: No such file or directory (os error 2)
+```
+
+### context vs with_context
+
+| 方法 | 说明 | 适用场景 |
+|------|------|----------|
+| `.context("固定消息")` | 始终构造消息字符串 | 消息是静态的或廉价的 |
+| `.with_context(\|\| format!(...))` | 惰性构造，仅在错误时执行 | 消息需要 format! 等开销较大的操作 |
+
+## 🔍 错误链遍历
+
+```rust
+use anyhow::{Context, Result};
+use std::fs;
+
+fn process_data_file(path: &str) -> Result<Vec<i32>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("无法读取数据文件 {}", path))?;
+
+    let numbers: Result<Vec<i32>> = content
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(line_num, line)| {
+            line.trim()
+                .parse::<i32>()
+                .with_context(|| format!("第 {} 行 {:?} 不是有效的数字", line_num + 1, line))
+        })
+        .collect();
+
+    numbers.context("数据文件解析失败")
+}
+
+fn main() {
+    if let Err(error) = process_data_file("data.txt") {
+        // 使用 Debug 格式打印完整信息（包括回溯）
+        println!("错误详情:\n{:?}", error);
+
+        println!();
+
+        // 只打印最外层错误
+        println!("简要: {}", error);
+
+        // 获取根因
+        println!("根因: {}", error.root_cause());
+    }
+}
+```
+
+## ⚖️ anyhow 与 thiserror 的配合
+
+在实际项目中，`thiserror` 和 `anyhow` 经常搭配使用：
+
+- **库代码**：用 `thiserror` 定义具体的错误类型
+- **应用代码**：用 `anyhow` 处理和传播错误
+
+```rust
+use anyhow::{Context, Result};
+use thiserror::Error;
+
+// === 库层：用 thiserror 定义具体错误 ===
+#[derive(Debug, Error)]
+enum DatabaseError {
+    #[error("连接失败: {host}:{port}")]
+    ConnectionFailed { host: String, port: u16 },
+
+    #[error("查询超时: {query}")]
+    QueryTimeout { query: String },
+}
+
+#[derive(Debug, Error)]
+enum CacheError {
+    #[error("缓存未命中: key={key}")]
+    Miss { key: String },
+
+    #[error("缓存已过期: key={key}")]
+    Expired { key: String },
+}
+
+// 模拟库函数
+fn query_database(user_id: u32) -> std::result::Result<String, DatabaseError> {
+    if user_id == 0 {
+        return Err(DatabaseError::ConnectionFailed {
+            host: "db.example.com".to_string(),
+            port: 5432,
+        });
+    }
+    Ok(format!("用户#{}", user_id))
+}
+
+fn get_cache(key: &str) -> std::result::Result<String, CacheError> {
+    Err(CacheError::Miss {
+        key: key.to_string(),
+    })
+}
+
+// === 应用层：用 anyhow 统一处理 ===
+fn get_user_name(user_id: u32) -> Result<String> {
+    // 先查缓存
+    let cache_key = format!("user:{}", user_id);
+    if let Ok(cached) = get_cache(&cache_key) {
+        return Ok(cached);
+    }
+
+    // 缓存未命中，查数据库
+    let name = query_database(user_id)
+        .with_context(|| format!("获取用户 {} 信息失败", user_id))?;
+
+    Ok(name)
+}
+
+fn main() {
+    match get_user_name(1) {
+        Ok(name) => println!("用户名: {}", name),
+        Err(error) => println!("错误: {:#}", error),
+    }
+
+    match get_user_name(0) {
+        Ok(name) => println!("用户名: {}", name),
+        Err(error) => {
+            println!("错误: {:#}", error);
+            // 可以尝试 downcast 到具体类型
+            if let Some(db_err) = error.downcast_ref::<DatabaseError>() {
+                println!("这是数据库错误: {:?}", db_err);
+            }
+        }
+    }
+}
+// 输出：
+// 用户名: 用户#1
+// 错误: 获取用户 0 信息失败: 连接失败: db.example.com:5432
+// 这是数据库错误: ConnectionFailed { host: "db.example.com", port: 5432 }
+```
+
+## 🔄 Downcast 错误类型
+
+`anyhow::Error` 可以向下转换为具体的错误类型：
+
+```rust
+use anyhow::{anyhow, Result};
+use std::io;
+
+fn might_fail(case: u8) -> Result<()> {
+    match case {
+        1 => Err(anyhow!(io::Error::new(io::ErrorKind::NotFound, "文件不存在"))),
+        2 => Err(anyhow!("自定义错误消息")),
+        _ => Ok(()),
+    }
+}
+
+fn main() {
+    for case in 1..=3 {
+        match might_fail(case) {
+            Ok(()) => println!("case {} 成功", case),
+            Err(error) => {
+                // 尝试 downcast 到 io::Error
+                if let Some(io_err) = error.downcast_ref::<io::Error>() {
+                    println!("case {} → IO 错误: {} (kind: {:?})", case, io_err, io_err.kind());
+                } else {
+                    println!("case {} → 其他错误: {}", case, error);
+                }
+            }
+        }
+    }
+}
+// 输出：
+// case 1 → IO 错误: 文件不存在 (kind: NotFound)
+// case 2 → 其他错误: 自定义错误消息
+// case 3 成功
+```
+
+## 🔗 相关概念
+
+- **thiserror**：定义具体的错误类型，与 anyhow 互补
+- **错误链**：anyhow 的 `.context()` 自动构建错误链
+- **? 运算符**：anyhow 与 `?` 完美配合，自动包装各种错误
 
 ## 📝 学习检查点
 
-- [ ] 理解anyhow 库的核心概念
-- [ ] 能够在实际项目中应用anyhow 库
+- [ ] 理解 `anyhow::Result` 与标准库 `Result` 的区别
+- [ ] 掌握 `anyhow!`、`bail!`、`ensure!` 三个宏的用法
+- [ ] 能够使用 `.context()` 为错误添加上下文
+- [ ] 理解 anyhow 与 thiserror 的适用场景差异
+- [ ] 能够使用 `downcast_ref` 检查具体错误类型
+
+## 🚀 下一步
+
+→ [miette 与 color-eyre](./11-miette-color-eyre)

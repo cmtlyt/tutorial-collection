@@ -1,17 +1,246 @@
 # panic! 与不可恢复错误
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「panic! 与不可恢复错误」相关知识。
+在 Rust 中，有些错误是无法恢复的——程序遇到了不应该继续执行的状态。此时 Rust 提供了 `panic!` 宏来立即终止程序并展开（unwind）调用栈。本节将讲解 `panic!` 的触发方式、栈展开与中止策略，以及何时应该使用 panic。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 panic! 宏基础
+
+### 手动触发 panic
+
+```rust
+fn main() {
+    panic!("程序遇到了无法恢复的错误！");
+}
+// 输出：
+// thread 'main' panicked at '程序遇到了无法恢复的错误！', src/main.rs:2:5
+```
+
+### 带格式化的 panic 信息
+
+```rust
+fn main() {
+    let filename = "config.toml";
+    let line_number = 42;
+    panic!(
+        "解析文件 {} 失败，第 {} 行格式错误",
+        filename, line_number
+    );
+}
+```
+
+### 隐式触发 panic
+
+许多标准库操作在遇到非法状态时会自动 panic：
+
+```rust
+fn main() {
+    // 数组越界访问会 panic
+    let numbers = vec![1, 2, 3];
+    println!("{}", numbers[99]); // thread 'main' panicked at 'index out of bounds'
+
+    // 整数溢出在 debug 模式下会 panic
+    let value: u8 = 255;
+    let _overflow = value + 1; // debug 模式下 panic
+}
+```
+
+## 🔍 栈展开 vs 中止
+
+当 panic 发生时，Rust 提供两种处理策略：
+
+### 栈展开（Unwind）— 默认行为
+
+Rust 沿着调用栈逐层回退，清理每个栈帧中的数据（调用 `drop`）。这种方式安全但会增加二进制体积。
+
+```rust
+struct Resource {
+    name: String,
+}
+
+impl Drop for Resource {
+    fn drop(&mut self) {
+        println!("正在清理资源: {}", self.name);
+    }
+}
+
+fn inner_function() {
+    let _resource = Resource {
+        name: String::from("数据库连接"),
+    };
+    panic!("inner_function 出错了！");
+    // panic 后，_resource 的 drop 方法会被调用
+}
+
+fn main() {
+    let _outer_resource = Resource {
+        name: String::from("文件句柄"),
+    };
+    inner_function();
+}
+// 输出：
+// 正在清理资源: 数据库连接
+// 正在清理资源: 文件句柄
+```
+
+### 中止（Abort）
+
+直接终止进程，不清理资源，交给操作系统回收。二进制体积更小，适合嵌入式场景。
+
+在 `Cargo.toml` 中配置：
+
+```toml
+[profile.release]
+panic = 'abort'
+```
+
+## 🛡️ 捕获 panic
+
+使用 `std::panic::catch_unwind` 可以捕获 panic，防止整个程序崩溃。这在线程池、FFI 边界等场景下非常有用。
+
+```rust
+use std::panic;
+
+fn risky_operation(input: i32) -> i32 {
+    if input < 0 {
+        panic!("输入不能为负数: {}", input);
+    }
+    input * 2
+}
+
+fn main() {
+    let result = panic::catch_unwind(|| {
+        risky_operation(-1)
+    });
+
+    match result {
+        Ok(value) => println!("操作成功: {}", value),
+        Err(_) => println!("操作失败，但程序继续运行"),
+    }
+
+    // 程序可以继续执行
+    let safe_result = risky_operation(5);
+    println!("安全操作结果: {}", safe_result);
+}
+// 输出：
+// 操作失败，但程序继续运行
+// 安全操作结果: 10
+```
+
+:::warning 注意
+`catch_unwind` 只能捕获展开（unwind）模式的 panic。如果 panic 策略设置为 abort，则无法捕获。此外，`catch_unwind` 不应作为常规的错误处理手段，它主要用于 FFI 边界和线程隔离。
 :::
+
+## 📋 自定义 panic 钩子
+
+使用 `std::panic::set_hook` 可以自定义 panic 时的行为，例如记录日志：
+
+```rust
+use std::panic;
+
+fn main() {
+    panic::set_hook(Box::new(|panic_info| {
+        if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("[错误日志] panic 信息: {}", message);
+        }
+        if let Some(location) = panic_info.location() {
+            eprintln!(
+                "[错误日志] 发生位置: {}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            );
+        }
+    }));
+
+    panic!("自定义 panic 处理示例");
+}
+// 输出：
+// [错误日志] panic 信息: 自定义 panic 处理示例
+// [错误日志] 发生位置: src/main.rs:17:5
+```
+
+## 🎯 RUST_BACKTRACE 环境变量
+
+设置 `RUST_BACKTRACE` 环境变量可以在 panic 时输出完整的调用栈，帮助定位问题：
+
+```bash
+# 显示简要回溯
+RUST_BACKTRACE=1 cargo run
+
+# 显示完整回溯
+RUST_BACKTRACE=full cargo run
+```
+
+## 💡 何时使用 panic
+
+### 适合使用 panic 的场景
+
+| 场景 | 说明 |
+|------|------|
+| **原型开发** | 快速验证逻辑，后续替换为 `Result` |
+| **测试代码** | `assert!`、`assert_eq!` 本质是 panic |
+| **逻辑不可能的分支** | `unreachable!()` 标记不可能到达的代码 |
+| **违反不变量** | 数据结构被破坏，继续运行会造成更大问题 |
+| **示例和教程** | 简化错误处理，聚焦核心逻辑 |
+
+### 不适合使用 panic 的场景
+
+| 场景 | 替代方案 |
+|------|----------|
+| **文件不存在** | `Result<T, io::Error>` |
+| **网络请求失败** | `Result<T, reqwest::Error>` |
+| **用户输入格式错误** | `Result<T, ParseError>` |
+| **可预见的运行时错误** | `Result` 或 `Option` |
+
+## 📝 实际应用：输入验证
+
+```rust
+/// 创建一个值在 1-100 之间的 Guess 实例
+struct Guess {
+    value: i32,
+}
+
+impl Guess {
+    fn new(value: i32) -> Guess {
+        if value < 1 || value > 100 {
+            panic!("Guess 值必须在 1 到 100 之间，收到的是 {}", value);
+        }
+        Guess { value }
+    }
+
+    fn value(&self) -> i32 {
+        self.value
+    }
+}
+
+fn main() {
+    let guess = Guess::new(42);
+    println!("你的猜测是: {}", guess.value());
+
+    // 下面这行会 panic
+    // let bad_guess = Guess::new(200);
+}
+// 输出：
+// 你的猜测是: 42
+```
+
+## 🔗 相关概念
+
+- **Result 与可恢复错误**：大多数场景下推荐使用 `Result` 而非 panic
+- **unwrap / expect**：这两个方法在 `None` 或 `Err` 时会触发 panic
+- **assert 宏家族**：`assert!`、`assert_eq!`、`assert_ne!` 本质上都是条件 panic
 
 ## 📝 学习检查点
 
-- [ ] 理解panic! 与不可恢复错误的核心概念
-- [ ] 能够在实际项目中应用panic! 与不可恢复错误
+- [ ] 理解 `panic!` 宏的作用和触发方式
+- [ ] 区分栈展开（unwind）和中止（abort）两种 panic 策略
+- [ ] 掌握 `catch_unwind` 的使用场景和限制
+- [ ] 能够判断何时该用 panic、何时该用 Result
+
+## 🚀 下一步
+
+→ [Result 与可恢复错误](./03-result-recoverable-errors)

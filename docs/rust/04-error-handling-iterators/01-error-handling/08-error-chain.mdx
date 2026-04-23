@@ -1,17 +1,282 @@
 # 错误链
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「错误链」相关知识。
+在真实系统中，一个高层错误往往由底层错误引发。错误链（Error Chain）通过 `Error::source()` 方法将这些错误串联起来，让调用者可以逐层追溯错误的根因。本节将讲解如何构建和遍历错误链。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 source() 方法
+
+### 基本概念
+
+`std::error::Error` trait 的 `source()` 方法返回导致当前错误的底层原因：
+
+```rust
+use std::error::Error;
+use std::fmt;
+use std::io;
+
+#[derive(Debug)]
+struct DatabaseError {
+    message: String,
+    source: io::Error,
+}
+
+impl fmt::Display for DatabaseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "数据库错误: {}", self.message)
+    }
+}
+
+impl Error for DatabaseError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn connect_database() -> Result<(), DatabaseError> {
+    // 模拟底层 IO 错误
+    let io_error = io::Error::new(
+        io::ErrorKind::ConnectionRefused,
+        "连接被拒绝",
+    );
+    Err(DatabaseError {
+        message: "无法连接到 PostgreSQL".to_string(),
+        source: io_error,
+    })
+}
+
+fn main() {
+    if let Err(error) = connect_database() {
+        println!("错误: {}", error);
+        if let Some(source) = error.source() {
+            println!("原因: {}", source);
+        }
+    }
+}
+// 输出：
+// 错误: 数据库错误: 无法连接到 PostgreSQL
+// 原因: 连接被拒绝
+```
+
+## 🔗 构建多层错误链
+
+```rust
+use std::error::Error;
+use std::fmt;
+use std::io;
+
+// === 第一层：IO 错误 ===
+// 使用标准库的 io::Error
+
+// === 第二层：存储层错误 ===
+#[derive(Debug)]
+struct StorageError {
+    operation: String,
+    source: io::Error,
+}
+
+impl fmt::Display for StorageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "存储操作 '{}' 失败", self.operation)
+    }
+}
+
+impl Error for StorageError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+// === 第三层：服务层错误 ===
+#[derive(Debug)]
+struct ServiceError {
+    context: String,
+    source: StorageError,
+}
+
+impl fmt::Display for ServiceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "服务错误: {}", self.context)
+    }
+}
+
+impl Error for ServiceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn read_storage(path: &str) -> Result<String, StorageError> {
+    std::fs::read_to_string(path).map_err(|io_err| StorageError {
+        operation: format!("读取文件 {}", path),
+        source: io_err,
+    })
+}
+
+fn load_user_profile(user_id: u32) -> Result<String, ServiceError> {
+    let path = format!("/data/users/{}.json", user_id);
+    read_storage(&path).map_err(|storage_err| ServiceError {
+        context: format!("加载用户 {} 的配置", user_id),
+        source: storage_err,
+    })
+}
+
+fn main() {
+    if let Err(error) = load_user_profile(42) {
+        println!("发生错误: {}", error);
+
+        // 手动遍历错误链
+        let mut current: &dyn Error = &error;
+        let mut depth = 0;
+        while let Some(source) = current.source() {
+            depth += 1;
+            println!("{}原因 {}: {}", "  ".repeat(depth), depth, source);
+            current = source;
+        }
+    }
+}
+// 输出：
+// 发生错误: 服务错误: 加载用户 42 的配置
+//   原因 1: 存储操作 '读取文件 /data/users/42.json' 失败
+//     原因 2: No such file or directory (os error 2)
+```
+
+## 🛠️ 通用错误链遍历工具
+
+编写一个通用函数来打印完整的错误链：
+
+```rust
+use std::error::Error;
+use std::fmt;
+use std::num::ParseIntError;
+
+fn print_error_chain(error: &dyn Error) {
+    println!("错误: {}", error);
+
+    let mut current = error.source();
+    let mut index = 1;
+    while let Some(cause) = current {
+        println!("  └─ 原因 {}: {}", index, cause);
+        current = cause.source();
+        index += 1;
+    }
+}
+
+fn collect_error_chain(error: &dyn Error) -> Vec<String> {
+    let mut chain = vec![error.to_string()];
+    let mut current = error.source();
+    while let Some(cause) = current {
+        chain.push(cause.to_string());
+        current = cause.source();
+    }
+    chain
+}
+
+// 示例错误类型
+#[derive(Debug)]
+struct ConfigError {
+    key: String,
+    source: ParseIntError,
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "配置项 '{}' 解析失败", self.key)
+    }
+}
+
+impl Error for ConfigError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[derive(Debug)]
+struct StartupError {
+    phase: String,
+    source: ConfigError,
+}
+
+impl fmt::Display for StartupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "启动阶段 '{}' 失败", self.phase)
+    }
+}
+
+impl Error for StartupError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn parse_port(value: &str) -> Result<u16, ConfigError> {
+    value.parse::<u16>().map_err(|parse_err| ConfigError {
+        key: "server.port".to_string(),
+        source: parse_err,
+    })
+}
+
+fn start_server() -> Result<(), StartupError> {
+    let _port = parse_port("not_a_port").map_err(|config_err| StartupError {
+        phase: "配置加载".to_string(),
+        source: config_err,
+    })?;
+    Ok(())
+}
+
+fn main() {
+    if let Err(error) = start_server() {
+        // 使用通用遍历函数
+        print_error_chain(&error);
+
+        println!();
+
+        // 收集为 Vec
+        let chain = collect_error_chain(&error);
+        println!("错误链长度: {}", chain.len());
+        for (index, msg) in chain.iter().enumerate() {
+            println!("  [{}] {}", index, msg);
+        }
+    }
+}
+// 输出：
+// 错误: 启动阶段 '配置加载' 失败
+//   └─ 原因 1: 配置项 'server.port' 解析失败
+//   └─ 原因 2: invalid digit found in string
+//
+// 错误链长度: 3
+//   [0] 启动阶段 '配置加载' 失败
+//   [1] 配置项 'server.port' 解析失败
+//   [2] invalid digit found in string
+```
+
+## 💡 错误链设计原则
+
+| 原则 | 说明 |
+|------|------|
+| **每层添加上下文** | 每个错误层级应补充调用者关心的上下文信息 |
+| **保留原始错误** | 通过 `source()` 保留底层错误，便于调试 |
+| **Display 给用户看** | `Display` 实现应面向最终用户，简洁清晰 |
+| **Debug 给开发者看** | `Debug` 输出包含所有技术细节 |
+| **不要吞掉错误** | 避免用 `unwrap` 或忽略 `source` 导致信息丢失 |
+
+## 🔗 相关概念
+
+- **自定义错误类型**：错误链需要在自定义类型中存储 source 字段
+- **From trait 与错误转换**：`From` 转换时保留底层错误以构建链
+- **thiserror**：通过 `#[source]` 属性自动实现 `source()` 方法
+- **anyhow**：自动维护完整的错误链和上下文
 
 ## 📝 学习检查点
 
-- [ ] 理解错误链的核心概念
-- [ ] 能够在实际项目中应用错误链
+- [ ] 理解 `source()` 方法的作用和返回类型
+- [ ] 能够构建多层错误链
+- [ ] 掌握遍历错误链的方法
+- [ ] 理解错误链的设计原则
+
+## 🚀 下一步
+
+→ [thiserror 库](./09-thiserror)

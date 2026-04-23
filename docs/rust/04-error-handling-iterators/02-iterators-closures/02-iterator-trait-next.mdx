@@ -1,17 +1,317 @@
 # Iterator trait 与 next 方法
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解迭代器与闭包中的「Iterator trait 与 next 方法」相关知识。
+迭代器（Iterator）是 Rust 中处理序列数据的核心抽象。所有迭代器都实现了 `Iterator` trait，其核心是 `next()` 方法——每次调用返回序列中的下一个元素，直到返回 `None` 表示遍历结束。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Iterator trait 定义
+
+### trait 签名
+
+```rust
+pub trait Iterator {
+    type Item;  // 关联类型：迭代器产出的元素类型
+
+    fn next(&mut self) -> Option<Self::Item>;
+
+    // 以下方法有默认实现，不需要手动实现
+    // fn size_hint(&self) -> (usize, Option<usize>) { ... }
+    // fn count(self) -> usize { ... }
+    // fn map<B, F>(self, f: F) -> Map<Self, F> { ... }
+    // ... 还有 70+ 个方法
+}
+```
+
+关键点：
+- **`type Item`**：关联类型，定义每次迭代产出的元素类型
+- **`next(&mut self)`**：唯一需要实现的方法，接收可变引用
+- **`Option<Self::Item>`**：返回 `Some(item)` 表示有值，`None` 表示遍历结束
+
+## 🔍 手动调用 next
+
+```rust
+fn main() {
+    let numbers = vec![10, 20, 30];
+    let mut iter = numbers.iter(); // 创建迭代器
+
+    // 每次调用 next 返回下一个元素的引用
+    println!("{:?}", iter.next()); // Some(&10)
+    println!("{:?}", iter.next()); // Some(&20)
+    println!("{:?}", iter.next()); // Some(&30)
+    println!("{:?}", iter.next()); // None（遍历结束）
+    println!("{:?}", iter.next()); // None（再次调用依然是 None）
+}
+```
+
+### 迭代器是有状态的
+
+迭代器内部维护了遍历进度，因此 `next` 接收 `&mut self`：
+
+```rust
+fn main() {
+    let data = vec![1, 2, 3, 4, 5];
+    let mut iter = data.iter();
+
+    // 消耗前两个元素
+    iter.next(); // Some(&1)
+    iter.next(); // Some(&2)
+
+    // 剩余元素可以用 for 循环消费
+    for item in iter {
+        print!("{} ", item); // 3 4 5
+    }
+    println!();
+}
+```
+
+## 🔄 for 循环与迭代器
+
+`for` 循环是迭代器的语法糖，编译器会自动调用 `into_iter()` 和 `next()`：
+
+```rust
+fn main() {
+    let colors = vec!["红", "绿", "蓝"];
+
+    // 这个 for 循环...
+    for color in &colors {
+        println!("颜色: {}", color);
+    }
+
+    // ...等价于这段代码
+    let mut iter = (&colors).into_iter();
+    loop {
+        match iter.next() {
+            Some(color) => println!("颜色: {}", color),
+            None => break,
+        }
+    }
+}
+```
+
+## 📦 常见类型的迭代器
+
+### Vec 和数组
+
+```rust
+fn main() {
+    // Vec
+    let vec_data = vec![1, 2, 3];
+    for item in &vec_data {
+        print!("{} ", item); // 1 2 3
+    }
+    println!();
+
+    // 数组
+    let array_data = [10, 20, 30];
+    for item in &array_data {
+        print!("{} ", item); // 10 20 30
+    }
+    println!();
+
+    // 切片
+    let slice: &[i32] = &[100, 200, 300];
+    for item in slice {
+        print!("{} ", item); // 100 200 300
+    }
+    println!();
+}
+```
+
+### 字符串
+
+```rust
+fn main() {
+    let text = "Hello, 世界!";
+
+    // chars()：按 Unicode 字符迭代
+    print!("字符: ");
+    for ch in text.chars() {
+        print!("{} ", ch);
+    }
+    println!(); // H e l l o ,   世 界 !
+
+    // bytes()：按字节迭代
+    print!("字节数: {}", text.bytes().count());
+    println!(); // 13
+
+    // lines()：按行迭代
+    let multiline = "第一行\n第二行\n第三行";
+    for (index, line) in multiline.lines().enumerate() {
+        println!("  行 {}: {}", index + 1, line);
+    }
+}
+```
+
+### HashMap
+
+```rust
+use std::collections::HashMap;
+
+fn main() {
+    let mut scores = HashMap::new();
+    scores.insert("Alice", 95);
+    scores.insert("Bob", 87);
+    scores.insert("Charlie", 92);
+
+    // 迭代键值对
+    for (name, score) in &scores {
+        println!("{}: {}", name, score);
+    }
+
+    // 只迭代键
+    print!("所有学生: ");
+    for name in scores.keys() {
+        print!("{} ", name);
+    }
+    println!();
+
+    // 只迭代值
+    let total: i32 = scores.values().sum();
+    println!("总分: {}", total);
+}
+```
+
+### Range（范围）
+
+```rust
+fn main() {
+    // 左闭右开区间
+    print!("0..5: ");
+    for i in 0..5 {
+        print!("{} ", i); // 0 1 2 3 4
+    }
+    println!();
+
+    // 左闭右闭区间
+    print!("1..=3: ");
+    for i in 1..=3 {
+        print!("{} ", i); // 1 2 3
+    }
+    println!();
+
+    // 字符范围
+    print!("a..=f: ");
+    for ch in 'a'..='f' {
+        print!("{} ", ch); // a b c d e f
+    }
+    println!();
+}
+```
+
+## 🛠️ 常用辅助方法
+
+### enumerate：带索引迭代
+
+```rust
+fn main() {
+    let fruits = vec!["苹果", "香蕉", "橙子"];
+
+    for (index, fruit) in fruits.iter().enumerate() {
+        println!("{}. {}", index + 1, fruit);
+    }
+}
+// 输出：
+// 1. 苹果
+// 2. 香蕉
+// 3. 橙子
+```
+
+### zip：并行迭代两个序列
+
+```rust
+fn main() {
+    let names = vec!["Alice", "Bob", "Charlie"];
+    let scores = vec![95, 87, 92];
+
+    for (name, score) in names.iter().zip(scores.iter()) {
+        println!("{}: {}", name, score);
+    }
+}
+// 输出：
+// Alice: 95
+// Bob: 87
+// Charlie: 92
+```
+
+### peekable：查看下一个元素但不消费
+
+```rust
+fn main() {
+    let numbers = vec![1, 2, 3];
+    let mut iter = numbers.iter().peekable();
+
+    // peek 查看下一个元素但不移动迭代器
+    println!("peek: {:?}", iter.peek());   // Some(&&1)
+    println!("peek: {:?}", iter.peek());   // Some(&&1)（同一个元素）
+    println!("next: {:?}", iter.next());   // Some(&1)
+    println!("peek: {:?}", iter.peek());   // Some(&&2)（移动到下一个了）
+    println!("next: {:?}", iter.next());   // Some(&2)
+}
+```
+
+## 📝 实际应用：单词频率统计
+
+```rust
+use std::collections::HashMap;
+
+fn word_frequency(text: &str) -> Vec<(String, usize)> {
+    let mut frequency_map: HashMap<String, usize> = HashMap::new();
+
+    for word in text.split_whitespace() {
+        let normalized = word.to_lowercase();
+        let cleaned: String = normalized
+            .chars()
+            .filter(|ch| ch.is_alphanumeric())
+            .collect();
+
+        if !cleaned.is_empty() {
+            *frequency_map.entry(cleaned).or_insert(0) += 1;
+        }
+    }
+
+    let mut result: Vec<(String, usize)> = frequency_map.into_iter().collect();
+    result.sort_by(|a, b| b.1.cmp(&a.1)); // 按频率降序排列
+    result
+}
+
+fn main() {
+    let text = "the quick brown fox jumps over the lazy dog the fox";
+
+    let frequencies = word_frequency(text);
+    println!("单词频率统计:");
+    for (word, count) in &frequencies {
+        let bar = "█".repeat(*count);
+        println!("  {:>8} │{} ({})", word, bar, count);
+    }
+}
+// 输出：
+// 单词频率统计:
+//      the │███ (3)
+//      fox │██ (2)
+//    quick │█ (1)
+//    brown │█ (1)
+//    jumps │█ (1)
+//     over │█ (1)
+//     lazy │█ (1)
+//      dog │█ (1)
+```
+
+## 🔗 相关概念
+
+- **迭代器适配器**：`map`、`filter` 等方法对迭代器进行惰性变换
+- **消费适配器**：`collect`、`sum` 等方法消费迭代器并产出最终结果
+- **iter / iter_mut / into_iter**：三种创建迭代器的方式，所有权语义不同
 
 ## 📝 学习检查点
 
-- [ ] 理解Iterator trait 与 next 方法的核心概念
-- [ ] 能够在实际项目中应用Iterator trait 与 next 方法
+- [ ] 理解 `Iterator` trait 的定义和 `Item` 关联类型
+- [ ] 掌握 `next()` 方法的调用方式和返回值含义
+- [ ] 理解 `for` 循环与迭代器的等价关系
+- [ ] 熟悉常见类型（Vec、String、HashMap、Range）的迭代方式
+
+## 🚀 下一步
+
+→ [迭代器适配器](./03-iterator-adaptors)

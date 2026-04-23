@@ -1,17 +1,390 @@
 # From trait 与错误转换
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「From trait 与错误转换」相关知识。
+当函数可能产生多种不同类型的错误时，我们需要将它们统一为一个错误类型。Rust 通过 `From` trait 提供了类型转换机制，而 `?` 运算符会自动调用 `From::from()` 进行错误转换。本节将深入讲解 `From` trait 在错误处理中的核心作用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 From trait 基础
+
+### trait 定义
+
+```rust
+pub trait From<T> {
+    fn from(value: T) -> Self;
+}
+```
+
+`From<T>` 表示类型可以从 `T` 无损地转换而来。在错误处理中，我们为自定义错误类型实现 `From<SomeError>`，使其能自动包装底层错误。
+
+### ? 运算符与 From 的关系
+
+```rust
+// 当你写：
+let value = some_operation()?;
+
+// 编译器会展开为：
+let value = match some_operation() {
+    Ok(v) => v,
+    Err(e) => return Err(From::from(e)),  // 自动调用 From::from
+};
+```
+
+## 🔄 实现 From 进行错误转换
+
+### 基本示例
+
+```rust
+use std::fmt;
+use std::io;
+use std::num::ParseIntError;
+
+#[derive(Debug)]
+enum AppError {
+    Io(io::Error),
+    Parse(ParseIntError),
+}
+
+impl fmt::Display for AppError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppError::Io(error) => write!(formatter, "IO 错误: {}", error),
+            AppError::Parse(error) => write!(formatter, "解析错误: {}", error),
+        }
+    }
+}
+
+impl std::error::Error for AppError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            AppError::Io(error) => Some(error),
+            AppError::Parse(error) => Some(error),
+        }
+    }
+}
+
+// 实现 From<io::Error> → AppError
+impl From<io::Error> for AppError {
+    fn from(error: io::Error) -> Self {
+        AppError::Io(error)
+    }
+}
+
+// 实现 From<ParseIntError> → AppError
+impl From<ParseIntError> for AppError {
+    fn from(error: ParseIntError) -> Self {
+        AppError::Parse(error)
+    }
+}
+
+// 现在可以用 ? 自动转换
+fn read_number_from_file(path: &str) -> Result<i64, AppError> {
+    let content = std::fs::read_to_string(path)?;  // io::Error → AppError
+    let number = content.trim().parse::<i64>()?;    // ParseIntError → AppError
+    Ok(number)
+}
+
+fn main() {
+    match read_number_from_file("number.txt") {
+        Ok(number) => println!("读取到数字: {}", number),
+        Err(error) => println!("错误: {}", error),
+    }
+}
+```
+
+## 🏗️ 多层错误转换
+
+在实际项目中，错误通常需要在多个层级之间传递：
+
+```rust
+use std::fmt;
+use std::io;
+use std::num::ParseIntError;
+
+// === 数据层错误 ===
+#[derive(Debug)]
+enum DataError {
+    Io(io::Error),
+    Parse(ParseIntError),
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::Io(error) => write!(formatter, "数据读取失败: {}", error),
+            DataError::Parse(error) => write!(formatter, "数据解析失败: {}", error),
+        }
+    }
+}
+
+impl std::error::Error for DataError {}
+
+impl From<io::Error> for DataError {
+    fn from(error: io::Error) -> Self {
+        DataError::Io(error)
+    }
+}
+
+impl From<ParseIntError> for DataError {
+    fn from(error: ParseIntError) -> Self {
+        DataError::Parse(error)
+    }
+}
+
+// === 业务层错误 ===
+#[derive(Debug)]
+enum ServiceError {
+    Data(DataError),
+    BusinessRule(String),
+}
+
+impl fmt::Display for ServiceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ServiceError::Data(error) => write!(formatter, "服务错误: {}", error),
+            ServiceError::BusinessRule(msg) => write!(formatter, "业务规则违反: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ServiceError {}
+
+// DataError → ServiceError
+impl From<DataError> for ServiceError {
+    fn from(error: DataError) -> Self {
+        ServiceError::Data(error)
+    }
+}
+
+// === 数据层函数 ===
+fn load_config_value(key: &str) -> Result<i64, DataError> {
+    // 模拟从配置中读取
+    let raw_data = match key {
+        "max_connections" => "100",
+        "timeout" => "not_a_number",
+        _ => return Err(DataError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("配置项 {} 不存在", key),
+        ))),
+    };
+    let value = raw_data.parse::<i64>()?; // ParseIntError → DataError
+    Ok(value)
+}
+
+// === 业务层函数 ===
+fn get_max_connections() -> Result<i64, ServiceError> {
+    let max_conn = load_config_value("max_connections")?; // DataError → ServiceError
+    if max_conn > 1000 {
+        return Err(ServiceError::BusinessRule(
+            "最大连接数不能超过 1000".to_string(),
+        ));
+    }
+    Ok(max_conn)
+}
+
+fn main() {
+    match get_max_connections() {
+        Ok(value) => println!("最大连接数: {}", value),
+        Err(error) => println!("获取配置失败: {}", error),
+    }
+
+    // 测试解析错误的传递链
+    match load_config_value("timeout") {
+        Ok(value) => println!("超时: {}", value),
+        Err(error) => println!("错误: {}", error),
+    }
+
+    // 测试不存在的配置项
+    match load_config_value("unknown_key") {
+        Ok(value) => println!("值: {}", value),
+        Err(error) => println!("错误: {}", error),
+    }
+}
+// 输出：
+// 最大连接数: 100
+// 错误: 数据解析失败: invalid digit found in string
+// 错误: 数据读取失败: 配置项 unknown_key 不存在
+```
+
+## ⚖️ From vs Into
+
+`From` 和 `Into` 是一对互逆的 trait。实现了 `From<T>` 后，编译器会自动提供 `Into<U>` 的实现：
+
+```rust
+use std::fmt;
+
+#[derive(Debug)]
+struct AppError {
+    message: String,
+}
+
+impl fmt::Display for AppError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+}
+
+impl std::error::Error for AppError {}
+
+// 实现 From<&str> for AppError
+impl From<&str> for AppError {
+    fn from(message: &str) -> Self {
+        AppError {
+            message: message.to_string(),
+        }
+    }
+}
+
+// 实现 From<String> for AppError
+impl From<String> for AppError {
+    fn from(message: String) -> Self {
+        AppError { message }
+    }
+}
+
+fn might_fail(succeed: bool) -> Result<(), AppError> {
+    if succeed {
+        Ok(())
+    } else {
+        // 由于实现了 From<&str>，可以直接使用字符串字面量
+        Err("操作失败了".into())
+    }
+}
+
+fn main() {
+    // From 调用
+    let error1 = AppError::from("从 &str 创建");
+    println!("{}", error1); // 从 &str 创建
+
+    // Into 调用（编译器自动提供）
+    let error2: AppError = String::from("从 String 创建").into();
+    println!("{}", error2); // 从 String 创建
+
+    match might_fail(false) {
+        Ok(()) => println!("成功"),
+        Err(error) => println!("错误: {}", error),
+    }
+}
+// 输出：
+// 从 &str 创建
+// 从 String 创建
+// 错误: 操作失败了
+```
+
+## 📝 实际应用：文件处理管道
+
+```rust
+use std::fmt;
+use std::io;
+use std::num::ParseFloatError;
+
+#[derive(Debug)]
+enum PipelineError {
+    FileRead(io::Error),
+    DataParse(ParseFloatError),
+    Validation(String),
+}
+
+impl fmt::Display for PipelineError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PipelineError::FileRead(err) => write!(formatter, "文件读取失败: {}", err),
+            PipelineError::DataParse(err) => write!(formatter, "数据解析失败: {}", err),
+            PipelineError::Validation(msg) => write!(formatter, "数据验证失败: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for PipelineError {}
+
+impl From<io::Error> for PipelineError {
+    fn from(error: io::Error) -> Self {
+        PipelineError::FileRead(error)
+    }
+}
+
+impl From<ParseFloatError> for PipelineError {
+    fn from(error: ParseFloatError) -> Self {
+        PipelineError::DataParse(error)
+    }
+}
+
+fn process_data_line(line: &str) -> Result<f64, PipelineError> {
+    let value: f64 = line.trim().parse()?; // ParseFloatError → PipelineError
+    if value.is_nan() || value.is_infinite() {
+        return Err(PipelineError::Validation(
+            "值不能是 NaN 或无穷大".to_string(),
+        ));
+    }
+    if value < 0.0 {
+        return Err(PipelineError::Validation(format!(
+            "值 {} 不能为负数",
+            value
+        )));
+    }
+    Ok(value)
+}
+
+fn calculate_average(data: &str) -> Result<f64, PipelineError> {
+    let mut sum = 0.0;
+    let mut count = 0;
+
+    for line in data.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value = process_data_line(line)?;
+        sum += value;
+        count += 1;
+    }
+
+    if count == 0 {
+        return Err(PipelineError::Validation("没有有效数据".to_string()));
+    }
+
+    Ok(sum / count as f64)
+}
+
+fn main() {
+    let valid_data = "10.5\n20.3\n30.7\n";
+    match calculate_average(valid_data) {
+        Ok(avg) => println!("平均值: {:.2}", avg),
+        Err(error) => println!("错误: {}", error),
+    }
+
+    let invalid_data = "10.5\nabc\n30.7\n";
+    match calculate_average(invalid_data) {
+        Ok(avg) => println!("平均值: {:.2}", avg),
+        Err(error) => println!("错误: {}", error),
+    }
+
+    let negative_data = "10.5\n-5.0\n30.7\n";
+    match calculate_average(negative_data) {
+        Ok(avg) => println!("平均值: {:.2}", avg),
+        Err(error) => println!("错误: {}", error),
+    }
+}
+// 输出：
+// 平均值: 20.50
+// 错误: 数据解析失败: invalid float literal
+// 错误: 数据验证失败: 值 -5 不能为负数
+```
+
+## 🔗 相关概念
+
+- **自定义错误类型**：`From` 通常与自定义错误枚举配合使用
+- **? 运算符**：`?` 在传播错误时自动调用 `From::from()`
+- **错误链**：`From` 转换保留了底层错误信息，支持构建错误链
 
 ## 📝 学习检查点
 
-- [ ] 理解From trait 与错误转换的核心概念
-- [ ] 能够在实际项目中应用From trait 与错误转换
+- [ ] 理解 `From` trait 在错误转换中的作用
+- [ ] 掌握为自定义错误类型实现 `From` 的方法
+- [ ] 理解 `?` 运算符如何利用 `From` 进行自动转换
+- [ ] 能够设计多层级的错误转换链路
+
+## 🚀 下一步
+
+→ [错误链](./08-error-chain)

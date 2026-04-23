@@ -1,17 +1,261 @@
 # unwrap 与 expect
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「unwrap 与 expect」相关知识。
+`unwrap` 和 `expect` 是 `Result` 和 `Option` 上的快捷方法，用于直接提取值。当遇到 `Err` 或 `None` 时，它们会触发 panic。本节将讲解它们的行为差异、适用场景以及更安全的替代方案。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 unwrap 方法
+
+### Result 上的 unwrap
+
+```rust
+use std::fs::File;
+
+fn main() {
+    // 成功时，unwrap 返回 Ok 中的值
+    let number: Result<i32, &str> = Ok(42);
+    println!("值: {}", number.unwrap()); // 42
+
+    // 失败时，unwrap 触发 panic
+    let file = File::open("不存在的文件.txt").unwrap();
+    // thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: ...'
+}
+```
+
+### Option 上的 unwrap
+
+```rust
+fn main() {
+    let some_value: Option<i32> = Some(10);
+    println!("值: {}", some_value.unwrap()); // 10
+
+    let none_value: Option<i32> = None;
+    println!("值: {}", none_value.unwrap());
+    // thread 'main' panicked at 'called `Option::unwrap()` on a `None` value'
+}
+```
+
+## 🎯 expect 方法
+
+`expect` 与 `unwrap` 功能相同，但允许你提供自定义的 panic 信息，便于定位问题：
+
+```rust
+use std::fs::File;
+
+fn main() {
+    // expect 提供更有意义的错误信息
+    let config_file = File::open("config.toml")
+        .expect("配置文件 config.toml 必须存在于项目根目录");
+    // thread 'main' panicked at '配置文件 config.toml 必须存在于项目根目录: ...'
+
+    let port: Option<u16> = None;
+    let port_value = port.expect("端口号必须在环境变量中设置");
+    // thread 'main' panicked at '端口号必须在环境变量中设置'
+}
+```
+
+## ⚖️ unwrap vs expect 对比
+
+| 特性 | `unwrap` | `expect` |
+|------|----------|----------|
+| **panic 信息** | 通用的默认信息 | 自定义的描述信息 |
+| **可读性** | 较低，难以定位 | 较高，清晰表达意图 |
+| **推荐度** | 仅用于原型/测试 | 生产代码优先使用 |
+| **Clippy 提示** | 会被 `clippy::unwrap_used` 警告 | 通常不会被警告 |
+
+```rust
+fn main() {
+    let env_vars = std::collections::HashMap::from([
+        ("DATABASE_URL", "postgres://localhost/mydb"),
+    ]);
+
+    // 不推荐：panic 信息不明确
+    let _database_url = env_vars.get("DATABASE_URL").unwrap();
+
+    // 推荐：panic 信息清楚说明了前提条件
+    let _database_url = env_vars
+        .get("DATABASE_URL")
+        .expect("环境变量 DATABASE_URL 必须设置");
+}
+```
+
+## 🛡️ 合理使用场景
+
+### 1. 逻辑上不可能失败
+
+当你能从上下文确定操作一定成功时，`unwrap` / `expect` 是合理的：
+
+```rust
+fn main() {
+    // 硬编码的字符串解析，逻辑上不可能失败
+    let home_ip: std::net::IpAddr = "127.0.0.1"
+        .parse()
+        .expect("硬编码的 IP 地址应当始终合法");
+    println!("本地地址: {}", home_ip);
+
+    // 已经做过检查
+    let text = "hello, world";
+    if text.contains(',') {
+        let first_part = text.split(',').next().unwrap();
+        println!("逗号前的内容: {}", first_part);
+    }
+}
+```
+
+### 2. 原型开发和测试
+
+```rust
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_parse_number() {
+        // 测试中使用 unwrap 是完全合理的
+        let result: i32 = "42".parse().unwrap();
+        assert_eq!(result, 42);
+    }
+}
+
+fn prototype_function() {
+    // 原型阶段用 unwrap 快速验证逻辑
+    // 后续用 Result 或 ? 替换
+    let data = std::fs::read_to_string("data.json").unwrap();
+    println!("数据: {}", data);
+}
+
+fn main() {
+    prototype_function();
+}
+```
+
+### 3. 程序初始化的必要条件
+
+```rust
+fn main() {
+    // 缺少这些配置，程序无法运行，panic 是合理的
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("环境变量 DATABASE_URL 必须设置");
+    let port: u16 = std::env::var("PORT")
+        .expect("环境变量 PORT 必须设置")
+        .parse()
+        .expect("PORT 必须是有效的端口号");
+
+    println!("数据库: {}, 端口: {}", database_url, port);
+}
+```
+
+## 🔄 更安全的替代方案
+
+### unwrap_or 系列
+
+```rust
+fn main() {
+    let config_port: Result<String, std::env::VarError> = Err(std::env::VarError::NotPresent);
+
+    // unwrap_or：提供固定默认值
+    let port = config_port.unwrap_or(String::from("3000"));
+    println!("端口: {}", port); // 3000
+
+    // unwrap_or_else：惰性计算默认值
+    let timeout: Option<u64> = None;
+    let timeout_value = timeout.unwrap_or_else(|| {
+        println!("未设置超时，使用默认值");
+        30
+    });
+    println!("超时: {}s", timeout_value); // 30
+
+    // unwrap_or_default：使用类型的 Default 实现
+    let count: Result<i32, &str> = Err("解析失败");
+    let count_value = count.unwrap_or_default();
+    println!("计数: {}", count_value); // 0
+}
+```
+
+### if let / let-else
+
+```rust
+fn main() {
+    let maybe_number: Option<i32> = Some(42);
+
+    // if let：只处理成功的情况
+    if let Some(number) = maybe_number {
+        println!("找到数字: {}", number);
+    }
+
+    // let-else（Rust 1.65+）：在失败时提前退出
+    let some_value: Option<i32> = Some(100);
+    let Some(value) = some_value else {
+        println!("没有值，退出");
+        return;
+    };
+    println!("值: {}", value);
+}
+```
+
+## 📝 实际应用：命令行参数解析
+
+```rust
+use std::collections::HashMap;
+
+fn parse_args(args: &[String]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let mut iter = args.iter().skip(1); // 跳过程序名
+
+    while let Some(arg) = iter.next() {
+        if arg.starts_with("--") {
+            let key = arg.trim_start_matches("--").to_string();
+            let value = iter
+                .next()
+                .unwrap_or_else(|| panic!("参数 --{} 缺少值", key))
+                .clone();
+            map.insert(key, value);
+        }
+    }
+
+    map
+}
+
+fn main() {
+    let args = vec![
+        String::from("myapp"),
+        String::from("--host"),
+        String::from("localhost"),
+        String::from("--port"),
+        String::from("8080"),
+    ];
+
+    let config = parse_args(&args);
+
+    let host = config
+        .get("host")
+        .expect("必须提供 --host 参数");
+    let port: u16 = config
+        .get("port")
+        .expect("必须提供 --port 参数")
+        .parse()
+        .expect("--port 必须是有效的端口号");
+
+    println!("服务器将在 {}:{} 启动", host, port);
+}
+// 输出：
+// 服务器将在 localhost:8080 启动
+```
+
+## 🔗 相关概念
+
+- **Result 与可恢复错误**：`unwrap` / `expect` 是 Result 的快捷提取方法
+- **? 运算符**：在函数中传播错误的更优雅方式
+- **panic! 与不可恢复错误**：`unwrap` / `expect` 在失败时本质上就是触发 panic
 
 ## 📝 学习检查点
 
-- [ ] 理解unwrap 与 expect的核心概念
-- [ ] 能够在实际项目中应用unwrap 与 expect
+- [ ] 理解 `unwrap` 和 `expect` 的行为差异
+- [ ] 知道何时使用 `unwrap` / `expect` 是合理的
+- [ ] 掌握 `unwrap_or`、`unwrap_or_else`、`unwrap_or_default` 等安全替代方案
+- [ ] 能够在生产代码中做出正确的选择
+
+## 🚀 下一步
+
+→ [自定义错误类型](./06-custom-error-types)

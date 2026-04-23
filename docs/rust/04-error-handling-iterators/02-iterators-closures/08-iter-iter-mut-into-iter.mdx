@@ -1,17 +1,337 @@
 # iter / iter_mut / into_iter
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解迭代器与闭包中的「iter / iter_mut / into_iter」相关知识。
+Rust 的集合类型通常提供三种创建迭代器的方法：`iter()`、`iter_mut()` 和 `into_iter()`。它们的核心区别在于**所有权语义**——是借用、可变借用还是获取所有权。理解这三者的区别是正确使用 Rust 迭代器的关键。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 三种迭代器对比
+
+| 方法 | 元素类型 | 所有权 | 集合是否可继续使用 |
+|------|----------|--------|-------------------|
+| `.iter()` | `&T` | 不可变借用 | ✅ 可以 |
+| `.iter_mut()` | `&mut T` | 可变借用 | ✅ 可以（借用结束后） |
+| `.into_iter()` | `T` | 获取所有权 | ❌ 被消费 |
+
+## 🔍 iter() — 不可变借用
+
+`iter()` 产出元素的不可变引用 `&T`，不影响原集合：
+
+```rust
+fn main() {
+    let names = vec!["Alice", "Bob", "Charlie"];
+
+    // iter() 产出 &&str（因为 Vec<&str> 的元素是 &str，再借用一次）
+    for name in names.iter() {
+        println!("Hello, {}!", name);
+    }
+
+    // 原集合仍然可用
+    println!("总人数: {}", names.len()); // 3
+    println!("第一个: {}", names[0]);     // Alice
+}
+```
+
+## 🔍 iter_mut() — 可变借用
+
+`iter_mut()` 产出元素的可变引用 `&mut T`，允许原地修改元素：
+
+```rust
+fn main() {
+    let mut scores = vec![80, 75, 90, 65, 85];
+
+    // iter_mut() 产出 &mut i32，可以修改元素
+    for score in scores.iter_mut() {
+        // 加分：低于 70 分的加 10 分
+        if *score < 70 {
+            *score += 10;
+        }
+    }
+
+    println!("调整后的分数: {:?}", scores); // [80, 75, 90, 75, 85]
+
+    // 批量转换
+    let mut prices = vec![100.0f64, 200.0, 300.0];
+    prices.iter_mut().for_each(|price| *price *= 0.8); // 打八折
+    println!("折后价格: {:?}", prices); // [80.0, 160.0, 240.0]
+}
+```
+
+## 🔍 into_iter() — 获取所有权
+
+`into_iter()` 消费集合，获取每个元素的所有权。调用后原集合不可再使用：
+
+```rust
+fn main() {
+    let names = vec![
+        String::from("Alice"),
+        String::from("Bob"),
+        String::from("Charlie"),
+    ];
+
+    // into_iter() 产出 String（获取所有权）
+    let uppercased: Vec<String> = names
+        .into_iter()
+        .map(|name| name.to_uppercase())
+        .collect();
+
+    // names 已被消费，不能再使用
+    // println!("{:?}", names); // 编译错误！
+
+    println!("大写: {:?}", uppercased); // ["ALICE", "BOB", "CHARLIE"]
+}
+```
+
+## 📊 详细对比示例
+
+```rust
+fn main() {
+    // === iter()：借用 ===
+    let data = vec![1, 2, 3];
+    let sum: i32 = data.iter().sum();        // 产出 &i32
+    println!("sum = {}, data = {:?}", sum, data); // data 仍可用
+
+    // === iter_mut()：可变借用 ===
+    let mut data = vec![1, 2, 3];
+    data.iter_mut().for_each(|x| *x *= 10);  // 产出 &mut i32
+    println!("修改后: {:?}", data);            // [10, 20, 30]
+
+    // === into_iter()：转移所有权 ===
+    let data = vec![1, 2, 3];
+    let new_data: Vec<i32> = data.into_iter().map(|x| x + 100).collect();
+    // data 已不可用
+    println!("转换后: {:?}", new_data);        // [101, 102, 103]
+}
+```
+
+## 🔄 for 循环中的自动转换
+
+`for` 循环会根据你使用的语法自动选择迭代器类型：
+
+```rust
+fn main() {
+    let mut items = vec![10, 20, 30];
+
+    // &items → 自动调用 items.iter()，产出 &i32
+    for item in &items {
+        print!("{} ", item); // 10 20 30
+    }
+    println!();
+
+    // &mut items → 自动调用 items.iter_mut()，产出 &mut i32
+    for item in &mut items {
+        *item += 1;
+    }
+    println!("加1后: {:?}", items); // [11, 21, 31]
+
+    // items → 自动调用 items.into_iter()，产出 i32
+    for item in items {
+        print!("{} ", item); // 11 21 31
+    }
+    println!();
+    // items 已被消费，不可再使用
+}
+```
+
+## ⚠️ 常见陷阱
+
+### 陷阱 1：意外消费集合
+
+```rust
+fn main() {
+    let names = vec![String::from("Alice"), String::from("Bob")];
+
+    // 错误：into_iter 消费了 names
+    // for name in names {
+    //     println!("{}", name);
+    // }
+    // println!("{:?}", names); // 编译错误！
+
+    // 正确：使用引用
+    for name in &names {
+        println!("{}", name);
+    }
+    println!("names 仍可用: {:?}", names);
+}
+```
+
+### 陷阱 2：需要所有权时用了借用
+
+```rust
+fn main() {
+    let words = vec!["hello", "world", "rust"];
+
+    // iter() 产出 &&str，有时不是你想要的类型
+    let borrowed: Vec<&&str> = words.iter().collect();
+    println!("借用: {:?}", borrowed);
+
+    // 如果需要 Vec<&str>，用 copied()
+    let copied: Vec<&str> = words.iter().copied().collect();
+    println!("copied: {:?}", copied);
+
+    // 或者使用 into_iter
+    let owned: Vec<&str> = words.into_iter().collect();
+    println!("owned: {:?}", owned);
+}
+```
+
+### 陷阱 3：在 iter_mut 迭代时修改集合结构
+
+```rust
+fn main() {
+    let mut numbers = vec![1, 2, 3, 4, 5];
+
+    // 可以修改元素值
+    numbers.iter_mut().for_each(|x| *x *= 2);
+    println!("翻倍: {:?}", numbers); // [2, 4, 6, 8, 10]
+
+    // 不能在迭代时改变集合长度（增删元素）
+    // 以下写法无法编译：
+    // for item in numbers.iter() {
+    //     if *item > 5 {
+    //         numbers.push(0); // 编译错误：不能同时借用
+    //     }
+    // }
+
+    // 正确做法：先收集索引或条件，再修改
+    let to_remove: Vec<usize> = numbers
+        .iter()
+        .enumerate()
+        .filter(|(_, &x)| x > 5)
+        .map(|(i, _)| i)
+        .collect();
+
+    // 从后往前删除，避免索引偏移
+    for index in to_remove.into_iter().rev() {
+        numbers.remove(index);
+    }
+    println!("过滤后: {:?}", numbers); // [2, 4]
+}
+```
+
+## 📋 不同集合类型的迭代器
+
+```rust
+use std::collections::{HashMap, HashSet, BTreeMap};
+
+fn main() {
+    // HashMap
+    let mut map = HashMap::new();
+    map.insert("a", 1);
+    map.insert("b", 2);
+
+    for (key, value) in &map { // iter() → (&K, &V)
+        println!("{}: {}", key, value);
+    }
+
+    for (_, value) in &mut map { // iter_mut() → (&K, &mut V)
+        *value *= 10;
+    }
+    println!("map 翻10倍: {:?}", map);
+
+    // HashSet
+    let set: HashSet<i32> = vec![1, 2, 3].into_iter().collect();
+    for item in &set { // iter() → &T
+        print!("{} ", item);
+    }
+    println!();
+
+    // BTreeMap（有序）
+    let btree: BTreeMap<&str, i32> = vec![("c", 3), ("a", 1), ("b", 2)]
+        .into_iter()
+        .collect();
+    for (key, value) in &btree {
+        println!("{}: {}", key, value); // 按键排序输出
+    }
+}
+```
+
+## 📝 实际应用：批量数据转换
+
+```rust
+#[derive(Debug, Clone)]
+struct Product {
+    name: String,
+    price: f64,
+    in_stock: bool,
+}
+
+fn main() {
+    let mut products = vec![
+        Product { name: "笔记本".into(), price: 5999.0, in_stock: true },
+        Product { name: "鼠标".into(), price: 199.0, in_stock: false },
+        Product { name: "键盘".into(), price: 399.0, in_stock: true },
+        Product { name: "显示器".into(), price: 2499.0, in_stock: true },
+    ];
+
+    // iter()：只读统计
+    let in_stock_count = products.iter().filter(|p| p.in_stock).count();
+    println!("在售商品数: {}", in_stock_count);
+
+    let avg_price: f64 = {
+        let prices: Vec<f64> = products.iter().map(|p| p.price).collect();
+        prices.iter().sum::<f64>() / prices.len() as f64
+    };
+    println!("平均价格: {:.0}元", avg_price);
+
+    // iter_mut()：批量打折
+    products.iter_mut().for_each(|product| {
+        if product.price > 1000.0 {
+            product.price *= 0.9; // 大件打九折
+        }
+    });
+
+    println!("\n折后价格:");
+    for product in &products {
+        println!("  {}: {:.0}元 {}", 
+            product.name, product.price,
+            if product.in_stock { "✓" } else { "✗" }
+        );
+    }
+
+    // into_iter()：转换为报告数据（消费原集合）
+    let report: Vec<String> = products
+        .into_iter()
+        .filter(|p| p.in_stock)
+        .map(|p| format!("{} - ¥{:.0}", p.name, p.price))
+        .collect();
+
+    println!("\n在售商品报告:");
+    for line in &report {
+        println!("  {}", line);
+    }
+}
+// 输出：
+// 在售商品数: 3
+// 平均价格: 2274元
+//
+// 折后价格:
+//   笔记本: 5399元 ✓
+//   鼠标: 199元 ✗
+//   键盘: 399元 ✓
+//   显示器: 2249元 ✓
+//
+// 在售商品报告:
+//   笔记本 - ¥5399
+//   键盘 - ¥399
+//   显示器 - ¥2249
+```
+
+## 🔗 相关概念
+
+- **Iterator trait 与 next**：三种方法最终都返回实现了 Iterator 的类型
+- **自定义迭代器**：为自定义集合实现三种迭代器方法
+- **所有权与借用**：三种迭代器的核心区别在于 Rust 的所有权规则
 
 ## 📝 学习检查点
 
-- [ ] 理解iter / iter_mut / into_iter的核心概念
-- [ ] 能够在实际项目中应用iter / iter_mut / into_iter
+- [ ] 清晰区分 `iter()`、`iter_mut()`、`into_iter()` 的所有权语义
+- [ ] 理解 `for` 循环中 `&`、`&mut`、值 三种写法的自动转换
+- [ ] 知道何时使用 `copied()` / `cloned()` 转换引用类型
+- [ ] 避免意外消费集合或在迭代中修改集合结构的陷阱
+
+## 🚀 下一步
+
+→ [迭代器性能（零成本抽象）](./09-iterator-performance)

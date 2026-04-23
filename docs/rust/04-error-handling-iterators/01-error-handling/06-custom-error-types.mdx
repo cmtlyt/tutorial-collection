@@ -1,17 +1,292 @@
 # 自定义错误类型
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解错误处理中的「自定义错误类型」相关知识。
+当标准库提供的错误类型无法满足需求时，我们需要定义自己的错误类型。Rust 通过 `std::error::Error` trait 提供了统一的错误接口。本节将讲解如何用枚举和结构体定义错误类型，并手动实现 `Error` trait。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 std::error::Error trait
+
+### trait 定义
+
+```rust
+// 标准库中 Error trait 的定义（简化版）
+pub trait Error: std::fmt::Display + std::fmt::Debug {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        None
+    }
+}
+```
+
+实现 `Error` trait 需要满足：
+- **`Debug`**：通常通过 `#[derive(Debug)]` 自动实现
+- **`Display`**：必须手动实现，提供面向用户的错误描述
+- **`source()`**：可选，返回底层错误（用于构建错误链）
+
+## 🏗️ 用枚举定义错误类型
+
+枚举是定义错误类型最常见的方式，每个变体代表一种不同的错误情况：
+
+```rust
+use std::fmt;
+use std::num::ParseIntError;
+
+#[derive(Debug)]
+enum DataError {
+    EmptyInput,
+    InvalidFormat(String),
+    OutOfRange { value: i64, min: i64, max: i64 },
+    ParseFailure(ParseIntError),
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::EmptyInput => write!(formatter, "输入数据为空"),
+            DataError::InvalidFormat(detail) => {
+                write!(formatter, "数据格式无效: {}", detail)
+            }
+            DataError::OutOfRange { value, min, max } => {
+                write!(
+                    formatter,
+                    "值 {} 超出范围 [{}, {}]",
+                    value, min, max
+                )
+            }
+            DataError::ParseFailure(source) => {
+                write!(formatter, "数字解析失败: {}", source)
+            }
+        }
+    }
+}
+
+impl std::error::Error for DataError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            DataError::ParseFailure(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+
+fn parse_age(input: &str) -> Result<u8, DataError> {
+    if input.is_empty() {
+        return Err(DataError::EmptyInput);
+    }
+
+    let age: i64 = input
+        .parse()
+        .map_err(|err: ParseIntError| DataError::ParseFailure(err))?;
+
+    if age < 0 || age > 150 {
+        return Err(DataError::OutOfRange {
+            value: age,
+            min: 0,
+            max: 150,
+        });
+    }
+
+    Ok(age as u8)
+}
+
+fn main() {
+    let test_cases = vec!["", "abc", "25", "-5", "200"];
+
+    for input in test_cases {
+        match parse_age(input) {
+            Ok(age) => println!("输入 {:?} → 年龄: {}", input, age),
+            Err(error) => println!("输入 {:?} → 错误: {}", input, error),
+        }
+    }
+}
+// 输出：
+// 输入 "" → 错误: 输入数据为空
+// 输入 "abc" → 错误: 数字解析失败: invalid digit found in string
+// 输入 "25" → 年龄: 25
+// 输入 "-5" → 错误: 值 -5 超出范围 [0, 150]
+// 输入 "200" → 错误: 值 200 超出范围 [0, 150]
+```
+
+## 🏗️ 用结构体定义错误类型
+
+当错误类型只有一种情况时，可以用结构体：
+
+```rust
+use std::fmt;
+
+#[derive(Debug)]
+struct ValidationError {
+    field: String,
+    message: String,
+}
+
+impl ValidationError {
+    fn new(field: impl Into<String>, message: impl Into<String>) -> Self {
+        ValidationError {
+            field: field.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "字段 '{}' 验证失败: {}",
+            self.field, self.message
+        )
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
+fn validate_email(email: &str) -> Result<(), ValidationError> {
+    if !email.contains('@') {
+        return Err(ValidationError::new("email", "缺少 @ 符号"));
+    }
+    if email.len() < 5 {
+        return Err(ValidationError::new("email", "长度不能少于 5 个字符"));
+    }
+    Ok(())
+}
+
+fn main() {
+    let emails = vec!["alice@example.com", "invalid", "a@b"];
+
+    for email in emails {
+        match validate_email(email) {
+            Ok(()) => println!("{} ✓", email),
+            Err(error) => println!("{} ✗ {}", email, error),
+        }
+    }
+}
+// 输出：
+// alice@example.com ✓
+// invalid ✗ 字段 'email' 验证失败: 缺少 @ 符号
+// a@b ✗ 字段 'email' 验证失败: 长度不能少于 5 个字符
+```
+
+## 📝 实际应用：API 响应解析
+
+```rust
+use std::collections::HashMap;
+use std::fmt;
+use std::num::ParseIntError;
+
+#[derive(Debug)]
+enum ApiError {
+    MissingField(String),
+    InvalidStatusCode(ParseIntError),
+    ServerError { code: u16, message: String },
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiError::MissingField(field) => {
+                write!(formatter, "API 响应缺少字段: {}", field)
+            }
+            ApiError::InvalidStatusCode(source) => {
+                write!(formatter, "状态码格式错误: {}", source)
+            }
+            ApiError::ServerError { code, message } => {
+                write!(formatter, "服务器错误 [{}]: {}", code, message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ApiError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ApiError::InvalidStatusCode(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl From<ParseIntError> for ApiError {
+    fn from(error: ParseIntError) -> Self {
+        ApiError::InvalidStatusCode(error)
+    }
+}
+
+fn parse_api_response(
+    data: &HashMap<&str, &str>,
+) -> Result<String, ApiError> {
+    let status_str = data
+        .get("status")
+        .ok_or_else(|| ApiError::MissingField("status".to_string()))?;
+
+    let status_code: u16 = status_str.parse()?;
+
+    if status_code >= 400 {
+        let message = data
+            .get("message")
+            .unwrap_or(&"未知错误")
+            .to_string();
+        return Err(ApiError::ServerError {
+            code: status_code,
+            message,
+        });
+    }
+
+    let body = data
+        .get("body")
+        .ok_or_else(|| ApiError::MissingField("body".to_string()))?;
+
+    Ok(body.to_string())
+}
+
+fn main() {
+    // 成功的响应
+    let mut success_response = HashMap::new();
+    success_response.insert("status", "200");
+    success_response.insert("body", "Hello, World!");
+
+    // 服务器错误的响应
+    let mut error_response = HashMap::new();
+    error_response.insert("status", "500");
+    error_response.insert("message", "内部服务器错误");
+
+    // 缺少字段的响应
+    let missing_response = HashMap::new();
+
+    for response in [&success_response, &error_response, &missing_response] {
+        match parse_api_response(response) {
+            Ok(body) => println!("成功: {}", body),
+            Err(error) => {
+                println!("失败: {}", error);
+                // 检查是否有底层错误
+                if let Some(source) = std::error::Error::source(&error) {
+                    println!("  原因: {}", source);
+                }
+            }
+        }
+    }
+}
+// 输出：
+// 成功: Hello, World!
+// 失败: 服务器错误 [500]: 内部服务器错误
+// 失败: API 响应缺少字段: status
+```
+
+## 🔗 相关概念
+
+- **From trait 与错误转换**：通过实现 `From` 让 `?` 自动转换错误类型
+- **错误链**：利用 `source()` 方法构建错误因果链
+- **thiserror**：通过派生宏自动实现 Error trait，减少样板代码
 
 ## 📝 学习检查点
 
-- [ ] 理解自定义错误类型的核心概念
-- [ ] 能够在实际项目中应用自定义错误类型
+- [ ] 理解 `std::error::Error` trait 的要求（Debug + Display + source）
+- [ ] 能够用枚举定义多变体错误类型
+- [ ] 能够用结构体定义单一错误类型
+- [ ] 掌握手动实现 `Display` 和 `Error` trait
+
+## 🚀 下一步
+
+→ [From trait 与错误转换](./07-from-trait-error-conversion)
