@@ -1,17 +1,346 @@
 # 切片的安全性保证
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解引用与借用中的「切片的安全性保证」相关知识。
+Rust 的切片不仅仅是一种便捷的数据访问方式，更重要的是它提供了一系列**编译期和运行时的安全保证**。这些保证包括：边界检查防止越界访问、借用规则防止数据竞争、以及生命周期检查确保切片指向的数据始终有效。理解这些保证有助于你充分利用切片的安全性编写可靠的代码。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 边界检查
+
+### 运行时边界检查
+
+Rust 在通过索引访问切片元素时会进行运行时边界检查：
+
+```rust
+fn main() {
+    let data = vec![10, 20, 30, 40, 50];
+
+    // 安全访问
+    println!("data[2] = {}", data[2]); // OK
+
+    // 越界访问会 panic（不是未定义行为）
+    // println!("data[10] = {}", data[10]); // panic: index out of bounds
+
+    // 使用 get 方法安全访问，返回 Option
+    match data.get(2) {
+        Some(value) => println!("Found: {}", value),
+        None => println!("Index out of bounds"),
+    }
+
+    match data.get(10) {
+        Some(value) => println!("Found: {}", value),
+        None => println!("Index 10 is out of bounds"),
+    }
+}
+```
+
+### 切片范围检查
+
+创建切片时也会检查范围的合法性：
+
+```rust
+fn main() {
+    let data = vec![1, 2, 3, 4, 5];
+
+    // 安全的切片范围
+    let slice = &data[1..4]; // [2, 3, 4]
+    println!("Slice: {:?}", slice);
+
+    // 越界的切片范围会 panic
+    // let bad_slice = &data[3..10]; // panic: range end index 10 out of range
+
+    // 安全的替代方案
+    let safe_end = data.len().min(10);
+    let safe_slice = &data[3..safe_end];
+    println!("Safe slice: {:?}", safe_slice);
+
+    // 使用 get 获取切片（返回 Option）
+    let maybe_slice = data.get(3..10);
+    println!("Get result: {:?}", maybe_slice); // None
+}
+```
+
+## 🔒 借用规则保护
+
+### 防止在切片有效期间修改原数据
+
+```rust
+fn main() {
+    let mut numbers = vec![1, 2, 3, 4, 5];
+
+    // 创建不可变切片
+    let slice = &numbers[1..4];
+
+    // ❌ 切片有效期间不能修改原 Vec
+    // numbers.push(6); // 错误：不可变借用期间不能可变借用
+    // numbers[0] = 100; // 错误
+
+    println!("Slice: {:?}", slice);
+    // slice 的最后一次使用在此
+
+    // ✅ 切片不再使用后，可以修改
+    numbers.push(6);
+    println!("Modified: {:?}", numbers);
+}
+```
+
+### 防止切片失效
+
+这条规则对 Vec 特别重要，因为 `push` 可能导致内存重分配：
+
+```rust
+fn main() {
+    let mut data = vec![1, 2, 3];
+
+    // 如果允许在持有切片时 push：
+    // 1. 创建切片指向堆地址 0x1000
+    // 2. push 导致重分配，数据移到 0x2000
+    // 3. 切片仍指向 0x1000 → 悬垂引用！
+
+    // Rust 的借用规则在编译期阻止了这种情况：
+    let slice = &data[..];
+    // data.push(4); // ❌ 编译错误
+    println!("{:?}", slice);
+
+    // 切片结束后才能修改
+    data.push(4);
+    println!("{:?}", data);
+}
+```
+
+### 可变切片的独占性
+
+```rust
+fn main() {
+    let mut data = vec![1, 2, 3, 4, 5, 6];
+
+    // 可变切片独占数据访问
+    let slice = &mut data[..3];
+    slice[0] = 100;
+    // let another = &data[3..]; // ❌ 可变借用期间不能创建其他引用
+    println!("Modified slice: {:?}", slice);
+
+    // ✅ 使用 split_at_mut 可以安全地获取不重叠的可变切片
+    let (left, right) = data.split_at_mut(3);
+    left[0] = 10;
+    right[0] = 40;
+    println!("Left: {:?}, Right: {:?}", left, right);
+}
+```
+
+## 🛡️ 生命周期保证
+
+### 切片不能超出数据的生命周期
+
+```rust
+fn main() {
+    let slice;
+
+    {
+        let data = vec![1, 2, 3];
+        slice = &data[..];
+        // data 在此处被 drop
+    }
+
+    // ❌ slice 指向已释放的数据
+    // println!("{:?}", slice); // 编译错误：data does not live long enough
+}
+```
+
+### 函数返回切片必须标注生命周期
+
+```rust
+// 从输入切片中返回子切片：生命周期与输入绑定
+fn first_half(data: &[i32]) -> &[i32] {
+    let mid = data.len() / 2;
+    &data[..mid]
+}
+
+// 返回满足条件的子切片
+fn take_while_positive(data: &[i32]) -> &[i32] {
+    let end = data.iter()
+        .position(|&x| x <= 0)
+        .unwrap_or(data.len());
+    &data[..end]
+}
+
+fn main() {
+    let numbers = vec![5, 3, 8, -1, 4, 7];
+
+    let half = first_half(&numbers);
+    println!("First half: {:?}", half);
+
+    let positives = take_while_positive(&numbers);
+    println!("Positive prefix: {:?}", positives);
+}
+```
+
+## 📊 安全保证总结
+
+| 保证类型 | 机制 | 检查时机 | 防止的问题 |
+|----------|------|---------|-----------|
+| 边界检查 | 索引范围验证 | 运行时（panic） | 缓冲区溢出 |
+| 借用规则 | 不可变/可变引用互斥 | 编译期 | 数据竞争、迭代器失效 |
+| 生命周期 | 引用不超出数据生命周期 | 编译期 | 悬垂引用 |
+| 类型安全 | 泛型约束 | 编译期 | 类型混淆 |
+
+## 💡 安全切片操作模式
+
+### 使用 get 替代直接索引
+
+```rust
+fn safe_access(data: &[i32], indices: &[usize]) -> Vec<Option<i32>> {
+    indices.iter()
+        .map(|&i| data.get(i).copied())
+        .collect()
+}
+
+fn main() {
+    let data = [10, 20, 30, 40, 50];
+    let indices = [0, 2, 5, 1, 10];
+
+    let results = safe_access(&data, &indices);
+    for (index, result) in indices.iter().zip(results.iter()) {
+        match result {
+            Some(value) => println!("data[{}] = {}", index, value),
+            None => println!("data[{}] = out of bounds", index),
+        }
+    }
+}
+```
+
+### split_at_mut 安全分割
+
+```rust
+fn parallel_fill(data: &mut [i32], left_value: i32, right_value: i32) {
+    let mid = data.len() / 2;
+    let (left, right) = data.split_at_mut(mid);
+
+    // 两个不重叠的可变切片，可以安全地独立修改
+    for item in left.iter_mut() {
+        *item = left_value;
+    }
+    for item in right.iter_mut() {
+        *item = right_value;
+    }
+}
+
+fn swap_halves(data: &mut [i32]) {
+    let mid = data.len() / 2;
+    let (left, right) = data.split_at_mut(mid);
+
+    for i in 0..mid.min(right.len()) {
+        std::mem::swap(&mut left[i], &mut right[i]);
+    }
+}
+
+fn main() {
+    let mut data = vec![0; 8];
+    parallel_fill(&mut data, 1, 2);
+    println!("Filled: {:?}", data);
+
+    let mut data2 = vec![1, 2, 3, 4, 5, 6];
+    swap_halves(&mut data2);
+    println!("Swapped: {:?}", data2);
+}
+```
+
+## 📝 实际应用示例
+
+### 安全的矩阵操作
+
+```rust
+struct Matrix {
+    data: Vec<f64>,
+    rows: usize,
+    cols: usize,
+}
+
+impl Matrix {
+    fn new(rows: usize, cols: usize) -> Self {
+        Matrix {
+            data: vec![0.0; rows * cols],
+            rows,
+            cols,
+        }
+    }
+
+    fn get(&self, row: usize, col: usize) -> Option<f64> {
+        if row < self.rows && col < self.cols {
+            Some(self.data[row * self.cols + col])
+        } else {
+            None
+        }
+    }
+
+    fn set(&mut self, row: usize, col: usize, value: f64) -> Result<(), String> {
+        if row >= self.rows || col >= self.cols {
+            return Err(format!("Index ({}, {}) out of bounds for {}x{} matrix",
+                row, col, self.rows, self.cols));
+        }
+        self.data[row * self.cols + col] = value;
+        Ok(())
+    }
+
+    fn row_slice(&self, row: usize) -> Option<&[f64]> {
+        if row < self.rows {
+            let start = row * self.cols;
+            Some(&self.data[start..start + self.cols])
+        } else {
+            None
+        }
+    }
+
+    fn display(&self) {
+        for row in 0..self.rows {
+            if let Some(row_data) = self.row_slice(row) {
+                let formatted: Vec<String> = row_data.iter()
+                    .map(|v| format!("{:6.1}", v))
+                    .collect();
+                println!("[{}]", formatted.join(", "));
+            }
+        }
+    }
+}
+
+fn main() {
+    let mut matrix = Matrix::new(3, 4);
+
+    for row in 0..3 {
+        for col in 0..4 {
+            let _ = matrix.set(row, col, (row * 4 + col + 1) as f64);
+        }
+    }
+
+    matrix.display();
+
+    // 安全访问
+    println!("\nget(1,2) = {:?}", matrix.get(1, 2));
+    println!("get(5,0) = {:?}", matrix.get(5, 0));
+
+    // 行切片
+    if let Some(row) = matrix.row_slice(1) {
+        println!("Row 1: {:?}", row);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **借用规则**：切片安全性的核心保证来自借用规则
+- **生命周期**：确保切片不会超出数据的生命周期
+- **悬垂引用防护**：切片不能指向已释放的数据
 
 ## 📝 学习检查点
 
-- [ ] 理解切片的安全性保证的核心概念
-- [ ] 能够在实际项目中应用切片的安全性保证
+- [ ] 理解切片的三层安全保证：边界检查、借用规则、生命周期
+- [ ] 知道为什么持有切片时不能修改原数据
+- [ ] 掌握使用 `get` 方法安全访问元素
+- [ ] 会使用 `split_at_mut` 获取不重叠的可变切片
+- [ ] 能够设计安全的切片 API
+
+## 🚀 下一步
+
+→ [生命周期 - 总览](../03-lifetimes/01-lifetimes-overview)

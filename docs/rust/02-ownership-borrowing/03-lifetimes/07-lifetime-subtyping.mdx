@@ -1,17 +1,255 @@
 # 生命周期子类型
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解生命周期中的「生命周期子类型」相关知识。
+生命周期子类型（Lifetime Subtyping）是指一个生命周期可以"包含"另一个生命周期的关系。如果生命周期 `'a` 至少和 `'b` 一样长，我们称 `'a` 是 `'b` 的子类型，记作 `'a: 'b`（读作"'a outlives 'b"）。这个概念在处理多个不同生命周期的引用时很重要，它让编译器理解哪些引用可以安全地替代另一些引用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本概念
+
+### outlives 关系
+
+```rust
+// 'a: 'b 表示 'a 至少和 'b 活得一样长
+// 即 'a 是 'b 的子类型
+fn example<'a: 'b, 'b>(long: &'a str, _short: &'b str) -> &'b str {
+    // 可以将 'a（更长的）当作 'b（更短的）使用
+    long // long 的生命周期 'a >= 'b，所以可以作为 'b 返回
+}
+
+fn main() {
+    let long_lived = String::from("I live long");
+    let result;
+
+    {
+        let short_lived = String::from("I'm short");
+        result = example(&long_lived, &short_lived);
+        println!("{}", result);
+    }
+    // result 绑定的是 'b（短生命周期），所以不能在这里使用
+}
+```
+
+### 'static 是所有生命周期的子类型
+
+`'static` 比任何生命周期都长，因此它是所有生命周期的子类型：
+
+```rust
+fn needs_short_lifetime<'a>(r: &'a str) -> &'a str {
+    r
+}
+
+fn main() {
+    // &'static str 可以用在任何需要 &'a str 的地方
+    let result = needs_short_lifetime("static string");
+    println!("{}", result);
+
+    let owned = String::from("owned");
+    let result2 = needs_short_lifetime(&owned);
+    println!("{}", result2);
+}
+```
+
+## 🔍 实际应用
+
+### 多层嵌套的借用
+
+当一个结构体引用另一个结构体中的数据时，需要子类型约束：
+
+```rust
+struct Document<'a> {
+    content: &'a str,
+}
+
+struct Highlight<'doc, 'content: 'doc> {
+    document: &'doc Document<'content>,
+    start: usize,
+    end: usize,
+}
+
+impl<'doc, 'content: 'doc> Highlight<'doc, 'content> {
+    fn new(document: &'doc Document<'content>, start: usize, end: usize) -> Self {
+        Highlight { document, start, end }
+    }
+
+    fn text(&self) -> &str {
+        &self.document.content[self.start..self.end]
+    }
+}
+
+fn main() {
+    let text = String::from("Hello, beautiful world!");
+    let doc = Document { content: &text };
+
+    let highlight = Highlight::new(&doc, 7, 16);
+    println!("Highlighted: '{}'", highlight.text());
+}
+```
+
+### 协变与逆变
+
+生命周期在 Rust 类型系统中是**协变**的——较长的生命周期可以用在需要较短生命周期的地方：
+
+```rust
+fn covariance_demo<'long, 'short>(long_ref: &'long str)
+where
+    'long: 'short, // 'long 至少和 'short 一样长
+{
+    // 可以将 &'long str 当作 &'short str 使用
+    let _short_ref: &'short str = long_ref;
+    println!("{}", _short_ref);
+}
+
+fn main() {
+    let data = String::from("hello");
+    covariance_demo::<'_, '_>(&data);
+}
+```
+
+### 函数指针和生命周期约束
+
+```rust
+struct Processor<'a> {
+    data: &'a [i32],
+}
+
+impl<'a> Processor<'a> {
+    fn new(data: &'a [i32]) -> Self {
+        Processor { data }
+    }
+
+    // 返回值的生命周期 <= self 的生命周期 <= 'a
+    fn slice(&self, start: usize, end: usize) -> &[i32] {
+        &self.data[start..end]
+    }
+
+    fn sum(&self) -> i32 {
+        self.data.iter().sum()
+    }
+
+    fn filter_positive(&self) -> Vec<&i32> {
+        self.data.iter().filter(|&&x| x > 0).collect()
+    }
+}
+
+fn main() {
+    let numbers = vec![1, -2, 3, -4, 5];
+    let processor = Processor::new(&numbers);
+
+    println!("Sum: {}", processor.sum());
+    println!("Slice [1..3]: {:?}", processor.slice(1, 3));
+    println!("Positive: {:?}", processor.filter_positive());
+}
+```
+
+## 📊 子类型关系图
+
+```
+'static (最长，是所有生命周期的子类型)
+   |
+   ↓ 可以替代
+  'a (较长的生命周期)
+   |
+   ↓ 可以替代
+  'b (较短的生命周期)
+   |
+   ↓ 可以替代
+  (最短的有效作用域)
+```
+
+| 关系 | 含义 | 示例 |
+|------|------|------|
+| `'a: 'b` | `'a` 至少和 `'b` 一样长 | `&'a str` 可用在需要 `&'b str` 的地方 |
+| `'static: 'a` | `'static` 比任何 `'a` 都长 | `&'static str` 可用在任何地方 |
+| `T: 'a` | 类型 `T` 中的引用至少活 `'a` 长 | 结构体字段约束 |
+
+## 📝 实际应用示例
+
+### 缓存引用
+
+```rust
+struct Cache<'source> {
+    source: &'source str,
+    cached_words: Vec<&'source str>,
+}
+
+impl<'source> Cache<'source> {
+    fn new(source: &'source str) -> Self {
+        let cached_words = source.split_whitespace().collect();
+        Cache { source, cached_words }
+    }
+
+    fn get_word(&self, index: usize) -> Option<&'source str> {
+        self.cached_words.get(index).copied()
+    }
+
+    fn word_count(&self) -> usize {
+        self.cached_words.len()
+    }
+
+    fn contains(&self, word: &str) -> bool {
+        self.cached_words.iter().any(|&w| w == word)
+    }
+}
+
+fn main() {
+    let text = String::from("the quick brown fox jumps over the lazy dog");
+    let cache = Cache::new(&text);
+
+    println!("Word count: {}", cache.word_count());
+    println!("Word 3: {:?}", cache.get_word(3));
+    println!("Contains 'fox': {}", cache.contains("fox"));
+    println!("Contains 'cat': {}", cache.contains("cat"));
+}
+```
+
+### 泛型与生命周期约束
+
+```rust
+use std::fmt::Display;
+
+struct Wrapper<'a, T: Display + 'a> {
+    value: &'a T,
+    label: &'a str,
+}
+
+impl<'a, T: Display + 'a> Wrapper<'a, T> {
+    fn new(value: &'a T, label: &'a str) -> Self {
+        Wrapper { value, label }
+    }
+
+    fn display(&self) -> String {
+        format!("{}: {}", self.label, self.value)
+    }
+}
+
+fn main() {
+    let number = 42;
+    let text = String::from("hello");
+
+    let w1 = Wrapper::new(&number, "count");
+    let w2 = Wrapper::new(&text, "greeting");
+
+    println!("{}", w1.display());
+    println!("{}", w2.display());
+}
+```
+
+## 🔗 相关概念
+
+- **'static 生命周期**：最长的生命周期，是所有其他的子类型
+- **生命周期标注语法**：`'a: 'b` 约束的语法
+- **高阶 trait bound**：更高级的生命周期约束
 
 ## 📝 学习检查点
 
-- [ ] 理解生命周期子类型的核心概念
-- [ ] 能够在实际项目中应用生命周期子类型
+- [ ] 理解 `'a: 'b` 表示 `'a` 至少和 `'b` 一样长
+- [ ] 知道 `'static` 是所有生命周期的子类型
+- [ ] 理解较长生命周期的引用可以用在需要较短生命周期的地方
+- [ ] 能够在多层嵌套借用中正确标注生命周期约束
+
+## 🚀 下一步
+
+→ [高阶 trait bound（HRTB）](./08-higher-ranked-trait-bounds)

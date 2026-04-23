@@ -1,17 +1,409 @@
 # 结构体中的生命周期
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解生命周期中的「结构体中的生命周期」相关知识。
+当结构体持有引用类型的字段时，必须为其标注生命周期参数。这是因为编译器需要确保结构体实例的生命周期不会超过它所引用的数据。生命周期参数声明在结构体名称后的尖括号中，就像泛型类型参数一样。这让你可以创建轻量级的"视图"类型，借用外部数据而不获取所有权。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本语法
+
+### 持有引用的结构体
+
+```rust
+// 结构体持有 &str 引用，必须标注生命周期
+struct Excerpt<'a> {
+    content: &'a str,
+}
+
+fn main() {
+    let novel = String::from("Call me Ishmael. Some years ago...");
+    let first_sentence;
+
+    {
+        let excerpt = Excerpt {
+            content: &novel[..16], // 借用 novel 的一部分
+        };
+        first_sentence = excerpt.content;
+        println!("Excerpt: {}", excerpt.content);
+    }
+
+    // first_sentence 仍然有效，因为 novel 还在作用域中
+    println!("First sentence: {}", first_sentence);
+}
+```
+
+### 生命周期约束的含义
+
+```rust
+struct Reference<'a> {
+    data: &'a i32,
+}
+
+fn main() {
+    let value = 42;
+    let reference = Reference { data: &value };
+    println!("Reference to: {}", reference.data);
+
+    // 结构体实例不能比它引用的数据活得更久
+    // let dangling;
+    // {
+    //     let temp = 100;
+    //     dangling = Reference { data: &temp };
+    //     // temp 在此处被 drop
+    // }
+    // println!("{}", dangling.data); // 错误：temp 已不存在
+}
+```
+
+## 🔍 多个生命周期参数
+
+### 不同字段引用不同数据
+
+```rust
+struct Comparison<'a, 'b> {
+    first: &'a str,
+    second: &'b str,
+}
+
+impl<'a, 'b> Comparison<'a, 'b> {
+    fn longer(&self) -> &str {
+        if self.first.len() >= self.second.len() {
+            self.first
+        } else {
+            self.second
+        }
+    }
+
+    fn report(&self) -> String {
+        format!("'{}' ({} chars) vs '{}' ({} chars)",
+            self.first, self.first.len(),
+            self.second, self.second.len())
+    }
+}
+
+fn main() {
+    let word1 = String::from("hello");
+    let result;
+
+    {
+        let word2 = String::from("hi");
+        let comp = Comparison {
+            first: &word1,
+            second: &word2,
+        };
+        println!("{}", comp.report());
+        result = comp.longer().to_string(); // 转为 String 以获取所有权
+    }
+
+    println!("Longer: {}", result);
+}
+```
+
+### 共享生命周期 vs 独立生命周期
+
+```rust
+// 共享生命周期：两个字段引用的数据必须活得一样久
+struct SharedLifetime<'a> {
+    key: &'a str,
+    value: &'a str,
+}
+
+// 独立生命周期：两个字段引用的数据可以有不同的生命周期
+struct IndependentLifetimes<'a, 'b> {
+    key: &'a str,
+    value: &'b str,
+}
+
+fn main() {
+    let key = String::from("name");
+    let value = String::from("Alice");
+
+    // 共享生命周期：key 和 value 必须都活着
+    let shared = SharedLifetime {
+        key: &key,
+        value: &value,
+    };
+    println!("{}: {}", shared.key, shared.value);
+
+    // 独立生命周期：更灵活
+    let independent;
+    {
+        let temp_value = String::from("temporary");
+        independent = IndependentLifetimes {
+            key: &key, // key 活得更久
+            value: &temp_value,
+        };
+        println!("{}: {}", independent.key, independent.value);
+    }
+    // independent 不能在这里使用，因为 temp_value 已结束
+}
+```
+
+## 🏗️ impl 块中的生命周期
+
+### 方法定义
+
+```rust
+struct TextAnalyzer<'a> {
+    text: &'a str,
+}
+
+impl<'a> TextAnalyzer<'a> {
+    fn new(text: &'a str) -> Self {
+        TextAnalyzer { text }
+    }
+
+    // 返回值的生命周期与 self 绑定（省略规则第三条）
+    fn first_word(&self) -> &str {
+        self.text.split_whitespace()
+            .next()
+            .unwrap_or("")
+    }
+
+    fn word_count(&self) -> usize {
+        self.text.split_whitespace().count()
+    }
+
+    fn contains(&self, keyword: &str) -> bool {
+        self.text.contains(keyword)
+    }
+
+    // 返回引用到原始文本的切片
+    fn lines(&self) -> Vec<&'a str> {
+        self.text.lines().collect()
+    }
+
+    fn nth_word(&self, n: usize) -> Option<&'a str> {
+        self.text.split_whitespace().nth(n)
+    }
+}
+
+fn main() {
+    let content = String::from("Rust is a systems programming language\nthat runs fast");
+    let analyzer = TextAnalyzer::new(&content);
+
+    println!("First word: {}", analyzer.first_word());
+    println!("Word count: {}", analyzer.word_count());
+    println!("Contains 'Rust': {}", analyzer.contains("Rust"));
+    println!("Lines: {:?}", analyzer.lines());
+    println!("3rd word: {:?}", analyzer.nth_word(2));
+}
+```
+
+### 方法返回 &self 的生命周期
+
+```rust
+struct Config<'a> {
+    name: &'a str,
+    values: Vec<i32>,
+}
+
+impl<'a> Config<'a> {
+    fn new(name: &'a str) -> Self {
+        Config { name, values: Vec::new() }
+    }
+
+    // 返回 &self 的方法：返回值生命周期与 self 绑定
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    // 链式调用：返回 &mut self
+    fn add_value(&mut self, value: i32) -> &mut Self {
+        self.values.push(value);
+        self
+    }
+
+    fn display(&self) {
+        println!("Config '{}': {:?}", self.name, self.values);
+    }
+}
+
+fn main() {
+    let label = String::from("production");
+    let mut config = Config::new(&label);
+
+    config.add_value(1).add_value(2).add_value(3);
+    config.display();
+
+    println!("Config name: {}", config.name());
+}
+```
+
+## 💡 拥有数据 vs 借用数据的选择
+
+### 何时使用引用字段
+
+```rust
+// 借用数据的结构体：轻量级，适合临时"视图"
+struct LogEntry<'a> {
+    level: &'a str,
+    message: &'a str,
+    timestamp: u64,
+}
+
+// 拥有数据的结构体：独立，适合长期存储
+struct OwnedLogEntry {
+    level: String,
+    message: String,
+    timestamp: u64,
+}
+
+fn analyze_log(entry: &LogEntry) -> String {
+    format!("[{}] {} (at {})", entry.level, entry.message, entry.timestamp)
+}
+
+fn main() {
+    // 引用版本：零拷贝，但受限于数据的生命周期
+    let level = "ERROR";
+    let message = "Connection failed";
+    let entry = LogEntry {
+        level,
+        message,
+        timestamp: 1714000000,
+    };
+    println!("{}", analyze_log(&entry));
+
+    // 拥有版本：独立于原始数据
+    let owned = OwnedLogEntry {
+        level: level.to_string(),
+        message: message.to_string(),
+        timestamp: 1714000000,
+    };
+    println!("[{}] {}", owned.level, owned.message);
+}
+```
+
+| 特性 | 借用字段 `&'a T` | 拥有字段 `T` |
+|------|----------------|-------------|
+| 内存开销 | 仅存指针（8 字节） | 存储完整数据 |
+| 生命周期约束 | 受源数据约束 | 无约束 |
+| 创建开销 | 零拷贝 | 可能需要 clone |
+| 适用场景 | 临时视图、解析结果 | 长期存储、跨线程 |
+| 灵活性 | 低（受限于源数据） | 高（完全独立） |
+
+## 📝 实际应用示例
+
+### 零拷贝解析器
+
+```rust
+#[derive(Debug)]
+struct HttpRequest<'a> {
+    method: &'a str,
+    path: &'a str,
+    version: &'a str,
+    headers: Vec<(&'a str, &'a str)>,
+}
+
+fn parse_request(raw: &str) -> Option<HttpRequest> {
+    let mut lines = raw.lines();
+
+    // 解析请求行
+    let request_line = lines.next()?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next()?;
+    let path = parts.next()?;
+    let version = parts.next()?;
+
+    // 解析头部
+    let mut headers = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some(colon_pos) = line.find(':') {
+            let key = line[..colon_pos].trim();
+            let value = line[colon_pos + 1..].trim();
+            headers.push((key, value));
+        }
+    }
+
+    Some(HttpRequest { method, path, version, headers })
+}
+
+fn main() {
+    let raw_request = "GET /api/users HTTP/1.1\nHost: example.com\nAccept: application/json\n\n";
+
+    if let Some(request) = parse_request(raw_request) {
+        println!("Method: {}", request.method);
+        println!("Path: {}", request.path);
+        println!("Version: {}", request.version);
+        for (key, value) in &request.headers {
+            println!("  {}: {}", key, value);
+        }
+    }
+}
+```
+
+### 带引用的迭代器
+
+```rust
+struct WordIterator<'a> {
+    text: &'a str,
+    position: usize,
+}
+
+impl<'a> WordIterator<'a> {
+    fn new(text: &'a str) -> Self {
+        WordIterator { text, position: 0 }
+    }
+}
+
+impl<'a> Iterator for WordIterator<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let remaining = &self.text[self.position..];
+
+        // 跳过前导空白
+        let start_offset = remaining
+            .char_indices()
+            .find(|(_, c)| !c.is_whitespace())
+            .map(|(i, _)| i)?;
+
+        let word_start = self.position + start_offset;
+        let word_remaining = &self.text[word_start..];
+
+        // 找到单词结尾
+        let word_len = word_remaining
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(i, _)| i)
+            .unwrap_or(word_remaining.len());
+
+        self.position = word_start + word_len;
+        Some(&self.text[word_start..self.position])
+    }
+}
+
+fn main() {
+    let text = "  hello   beautiful   world  ";
+    let words: Vec<&str> = WordIterator::new(text).collect();
+    println!("Words: {:?}", words);
+
+    // 也可以用 for 循环
+    for (index, word) in WordIterator::new(text).enumerate() {
+        println!("  {}: '{}'", index, word);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **生命周期标注语法**：结构体生命周期使用相同的标注语法
+- **函数签名中的生命周期**：impl 方法与独立函数的生命周期标注
+- **生命周期省略规则**：方法中的省略规则简化了标注
 
 ## 📝 学习检查点
 
-- [ ] 理解结构体中的生命周期的核心概念
-- [ ] 能够在实际项目中应用结构体中的生命周期
+- [ ] 能够为持有引用字段的结构体正确标注生命周期
+- [ ] 理解结构体实例不能比其引用的数据活得更久
+- [ ] 掌握 impl 块中生命周期参数的写法
+- [ ] 能够根据场景选择借用字段还是拥有字段
+- [ ] 会实现零拷贝的解析器和迭代器
+
+## 🚀 下一步
+
+→ [生命周期省略规则](./05-lifetime-elision-rules)

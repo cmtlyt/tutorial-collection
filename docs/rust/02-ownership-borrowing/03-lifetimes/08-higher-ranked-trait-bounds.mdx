@@ -1,17 +1,366 @@
 # 高阶 trait bound（HRTB）
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解生命周期中的「高阶 trait bound（HRTB）」相关知识。
+高阶 trait bound（Higher-Ranked Trait Bounds, HRTB）使用 `for<'a>` 语法，表示一个 trait bound 对**所有可能的生命周期**都成立。HRTB 最常见于接受闭包或函数指针作为参数的场景，当闭包需要处理任意生命周期的引用时就需要用到。虽然这是一个高级特性，但理解它有助于掌握 Rust 类型系统中生命周期的完整图景。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 问题引入
+
+### 为什么需要 HRTB
+
+考虑一个接受闭包的函数，闭包需要处理任意生命周期的引用：
+
+```rust
+// 这个函数接受一个闭包，闭包对 &str 进行处理
+// 但这里的 &str 的生命周期是什么？
+fn apply_to_string<F>(text: &str, func: F) -> String
+where
+    F: Fn(&str) -> String, // 这里的 &str 的生命周期被隐式处理
+{
+    func(text)
+}
+
+fn main() {
+    let result = apply_to_string("hello world", |s| s.to_uppercase());
+    println!("{}", result);
+}
+```
+
+在上面的代码中，编译器使用了隐式的 HRTB：`Fn(&str) -> String` 实际上等价于 `for<'a> Fn(&'a str) -> String`。这意味着闭包必须能处理**任意**生命周期的 `&str`。
+
+## 🔍 for<'a> 语法
+
+### 显式的 HRTB
+
+```rust
+// 隐式 HRTB（编译器自动推断）
+fn process_implicit<F>(func: F) -> String
+where
+    F: Fn(&str) -> String,
+{
+    let data = String::from("hello");
+    func(&data)
+}
+
+// 显式 HRTB（含义完全相同）
+fn process_explicit<F>(func: F) -> String
+where
+    F: for<'a> Fn(&'a str) -> String,
+{
+    let data = String::from("hello");
+    func(&data)
+}
+
+fn main() {
+    let upper = process_implicit(|s| s.to_uppercase());
+    println!("{}", upper);
+
+    let upper = process_explicit(|s| s.to_uppercase());
+    println!("{}", upper);
+}
+```
+
+### HRTB vs 普通生命周期参数
+
+```rust
+// 普通生命周期参数：闭包只处理特定生命周期 'a 的引用
+fn with_specific_lifetime<'a, F>(text: &'a str, func: F) -> &'a str
+where
+    F: Fn(&'a str) -> &'a str,
+{
+    func(text)
+}
+
+// HRTB：闭包可以处理任意生命周期的引用
+fn with_any_lifetime<F>(func: F) -> String
+where
+    F: for<'a> Fn(&'a str) -> String,
+{
+    let owned = String::from("dynamic");
+    func(&owned) // 传入函数内部创建的临时引用
+}
+
+fn main() {
+    let text = String::from("hello");
+    let result = with_specific_lifetime(&text, |s| &s[..3]);
+    println!("Specific: {}", result);
+
+    let result = with_any_lifetime(|s| format!("processed: {}", s));
+    println!("Any: {}", result);
+}
+```
+
+关键区别：
+
+| 特性 | 普通生命周期 `F: Fn(&'a str)` | HRTB `F: for<'a> Fn(&'a str)` |
+|------|----------------------------|------------------------------|
+| 生命周期确定时机 | 函数调用时由调用者确定 | 闭包调用时由函数内部确定 |
+| 灵活性 | 闭包绑定到特定生命周期 | 闭包可处理任意生命周期 |
+| 常见场景 | 返回输入引用的一部分 | 处理函数内部创建的临时数据 |
+
+## 📊 HRTB 的常见场景
+
+### 场景一：闭包处理临时数据
+
+```rust
+struct Processor {
+    prefix: String,
+}
+
+impl Processor {
+    fn new(prefix: &str) -> Self {
+        Processor { prefix: prefix.to_string() }
+    }
+
+    // 闭包需要处理在方法内部创建的临时字符串
+    fn process_items<F>(&self, items: &[String], func: F) -> Vec<String>
+    where
+        F: for<'a> Fn(&'a str) -> String,
+    {
+        items.iter()
+            .map(|item| {
+                let prefixed = format!("{}{}", self.prefix, item);
+                func(&prefixed) // prefixed 是临时值，生命周期在每次迭代中不同
+            })
+            .collect()
+    }
+}
+
+fn main() {
+    let processor = Processor::new("[LOG] ");
+    let items = vec![
+        String::from("start"),
+        String::from("processing"),
+        String::from("done"),
+    ];
+
+    let results = processor.process_items(&items, |s| s.to_uppercase());
+    for result in &results {
+        println!("{}", result);
+    }
+}
+```
+
+### 场景二：Fn trait 对象
+
+```rust
+// 使用 HRTB 定义可以处理任意生命周期引用的 trait 对象
+fn apply_transforms(text: &str, transforms: &[Box<dyn for<'a> Fn(&'a str) -> String>]) -> String {
+    let mut result = text.to_string();
+    for transform in transforms {
+        result = transform(&result);
+    }
+    result
+}
+
+fn main() {
+    let transforms: Vec<Box<dyn for<'a> Fn(&'a str) -> String>> = vec![
+        Box::new(|s: &str| s.trim().to_string()),
+        Box::new(|s: &str| s.to_uppercase()),
+        Box::new(|s: &str| format!("[{}]", s)),
+    ];
+
+    let result = apply_transforms("  hello world  ", &transforms);
+    println!("{}", result); // "[HELLO WORLD]"
+}
+```
+
+### 场景三：自定义 trait 中使用
+
+```rust
+// 定义一个 trait，方法接受任意生命周期的引用
+trait Transformer {
+    fn transform(&self, input: &str) -> String;
+}
+
+struct UpperCase;
+struct Prefix {
+    prefix: String,
+}
+
+impl Transformer for UpperCase {
+    fn transform(&self, input: &str) -> String {
+        input.to_uppercase()
+    }
+}
+
+impl Transformer for Prefix {
+    fn transform(&self, input: &str) -> String {
+        format!("{}{}", self.prefix, input)
+    }
+}
+
+fn chain_transform(input: &str, transformers: &[&dyn Transformer]) -> String {
+    let mut result = input.to_string();
+    for transformer in transformers {
+        result = transformer.transform(&result);
+    }
+    result
+}
+
+fn main() {
+    let upper = UpperCase;
+    let prefix = Prefix { prefix: ">>> ".to_string() };
+
+    let transformers: Vec<&dyn Transformer> = vec![&upper, &prefix];
+    let result = chain_transform("hello", &transformers);
+    println!("{}", result); // ">>> HELLO"
+}
+```
+
+## 💡 何时需要显式 HRTB
+
+大多数情况下编译器会自动推断 HRTB，你很少需要显式写 `for<'a>`。需要显式标注的场景主要有：
+
+```rust
+// 场景一：作为类型别名
+type StringProcessor = Box<dyn for<'a> Fn(&'a str) -> String>;
+
+// 场景二：存储在结构体中
+struct Pipeline {
+    steps: Vec<Box<dyn for<'a> Fn(&'a str) -> String>>,
+}
+
+impl Pipeline {
+    fn new() -> Self {
+        Pipeline { steps: Vec::new() }
+    }
+
+    fn add_step<F>(&mut self, step: F)
+    where
+        F: for<'a> Fn(&'a str) -> String + 'static,
+    {
+        self.steps.push(Box::new(step));
+    }
+
+    fn execute(&self, input: &str) -> String {
+        let mut result = input.to_string();
+        for step in &self.steps {
+            result = step(&result);
+        }
+        result
+    }
+}
+
+fn main() {
+    let mut pipeline = Pipeline::new();
+    pipeline.add_step(|s: &str| s.trim().to_string());
+    pipeline.add_step(|s: &str| s.to_lowercase());
+    pipeline.add_step(|s: &str| format!("result: {}", s));
+
+    let output = pipeline.execute("  HELLO WORLD  ");
+    println!("{}", output);
+}
+```
+
+## ⚠️ HRTB 与普通生命周期的选择
+
+### 选择指南
+
+```rust
+// 如果闭包需要返回输入的一部分（引用） → 使用普通生命周期
+fn filter_lines<'a, F>(text: &'a str, predicate: F) -> Vec<&'a str>
+where
+    F: Fn(&str) -> bool,
+{
+    text.lines().filter(|line| predicate(line)).collect()
+}
+
+// 如果闭包返回拥有所有权的值 → 通常自动推断（隐式 HRTB）
+fn map_lines<F>(text: &str, mapper: F) -> Vec<String>
+where
+    F: Fn(&str) -> String,
+{
+    text.lines().map(|line| mapper(line)).collect()
+}
+
+fn main() {
+    let text = "hello\nworld\nrust\nprogramming";
+
+    let long_lines = filter_lines(text, |line| line.len() > 4);
+    println!("Long lines: {:?}", long_lines);
+
+    let upper_lines = map_lines(text, |line| line.to_uppercase());
+    println!("Upper lines: {:?}", upper_lines);
+}
+```
+
+| 场景 | 推荐方式 |
+|------|---------|
+| 闭包返回输入的子引用 | 普通生命周期参数 `'a` |
+| 闭包返回拥有所有权的值 | 隐式 HRTB（自动推断） |
+| 闭包存储在结构体/trait 对象中 | 显式 `for<'a>` |
+| 简单的闭包参数 | 让编译器推断（无需显式标注） |
+
+## 📝 实际应用示例
+
+### 可组合的文本处理管道
+
+```rust
+struct TextPipeline {
+    name: String,
+    transforms: Vec<Box<dyn for<'a> Fn(&'a str) -> String>>,
+}
+
+impl TextPipeline {
+    fn new(name: &str) -> Self {
+        TextPipeline {
+            name: name.to_string(),
+            transforms: Vec::new(),
+        }
+    }
+
+    fn then<F>(mut self, transform: F) -> Self
+    where
+        F: for<'a> Fn(&'a str) -> String + 'static,
+    {
+        self.transforms.push(Box::new(transform));
+        self
+    }
+
+    fn run(&self, input: &str) -> String {
+        let mut result = input.to_string();
+        for (index, transform) in self.transforms.iter().enumerate() {
+            result = transform(&result);
+            println!("  Step {}: '{}'", index + 1, result);
+        }
+        result
+    }
+}
+
+fn main() {
+    let pipeline = TextPipeline::new("cleanup")
+        .then(|s: &str| s.trim().to_string())
+        .then(|s: &str| s.to_lowercase())
+        .then(|s: &str| {
+            s.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .then(|s: &str| format!("\"{}\"", s));
+
+    println!("Pipeline: {}", pipeline.name);
+    let result = pipeline.run("  Hello    Beautiful   WORLD  ");
+    println!("Final: {}", result);
+}
+```
+
+## 🔗 相关概念
+
+- **生命周期子类型**：HRTB 与生命周期子类型关系密切
+- **Fn / FnMut / FnOnce trait**：HRTB 最常用于闭包 trait bound
+- **trait 对象**：`dyn for<'a> Fn(...)` 是 HRTB 的典型使用场景
 
 ## 📝 学习检查点
 
-- [ ] 理解高阶 trait bound（HRTB）的核心概念
-- [ ] 能够在实际项目中应用高阶 trait bound（HRTB）
+- [ ] 理解 `for<'a>` 语法表示"对所有可能的生命周期"
+- [ ] 知道大多数闭包参数中的 HRTB 是隐式推断的
+- [ ] 了解何时需要显式标注 `for<'a>`（trait 对象、类型别名、结构体字段）
+- [ ] 能够区分普通生命周期参数和 HRTB 的使用场景
+
+## 🚀 下一步
+
+→ [结构体与枚举 - 总览](../../03-type-system-traits/01-structs-enums/01-structs-enums-overview)

@@ -1,17 +1,327 @@
 # 移动语义
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解所有权系统中的「移动语义」相关知识。
+移动语义（Move Semantics）是 Rust 所有权系统的核心机制。当一个值从一个变量赋给另一个变量时，默认行为是**移动**——所有权从旧变量转移到新变量，旧变量随即失效。这与 C++ 的拷贝语义或 JavaScript 的引用语义截然不同，它让 Rust 在不使用垃圾回收的前提下保证内存安全。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 什么是移动
+
+### 赋值时的移动
+
+```rust
+fn main() {
+    let s1 = String::from("hello");
+    let s2 = s1; // s1 的所有权移动到 s2
+
+    // s1 不再有效
+    // println!("{}", s1); // 编译错误：value used here after move
+    println!("{}", s2); // 正确
+}
+```
+
+移动发生时，Rust 做了以下事情：
+1. 将 `s1` 的栈上数据（指针、长度、容量）复制到 `s2`
+2. 将 `s1` 标记为无效
+3. **不会**复制堆上的实际数据
+
+### 内存视角
+
+```
+移动前：
+s1 → [ptr, len: 5, cap: 5] → 堆上 "hello"
+
+移动后：
+s1 → (无效)
+s2 → [ptr, len: 5, cap: 5] → 堆上 "hello"（同一块内存）
+```
+
+这确保了每块堆内存只有一个所有者，避免了重复释放。
+
+## 🔍 发生移动的场景
+
+### 变量赋值
+
+```rust
+fn main() {
+    let v1 = vec![1, 2, 3];
+    let v2 = v1; // 移动
+
+    // v1 不再可用
+    println!("{:?}", v2);
+}
+```
+
+### 函数参数传递
+
+```rust
+fn print_vector(v: Vec<i32>) {
+    println!("{:?}", v);
+    // v 在函数结束时被 drop
+}
+
+fn main() {
+    let numbers = vec![10, 20, 30];
+    print_vector(numbers); // numbers 的所有权移动到函数参数 v
+
+    // numbers 不再可用
+    // println!("{:?}", numbers); // 错误
+}
+```
+
+### 函数返回值
+
+```rust
+fn create_list() -> Vec<i32> {
+    let list = vec![1, 2, 3, 4, 5];
+    list // 所有权从 list 移动到调用者
+}
+
+fn main() {
+    let my_list = create_list(); // 接收所有权
+    println!("{:?}", my_list);
+}
+```
+
+### 模式匹配和解构
+
+```rust
+fn main() {
+    let pair = (String::from("key"), String::from("value"));
+
+    // 解构时，每个字段的所有权分别移动
+    let (key, value) = pair;
+    // pair 不再可用
+    println!("key={}, value={}", key, value);
+}
+```
+
+### 集合操作
+
+```rust
+fn main() {
+    let names = vec![
+        String::from("Alice"),
+        String::from("Bob"),
+        String::from("Charlie"),
+    ];
+
+    // for 循环消费所有权
+    for name in names {
+        println!("Hello, {}!", name);
+    }
+
+    // names 不再可用（所有元素已被移出）
+    // println!("{:?}", names); // 错误
+}
+```
+
+## ⚠️ 部分移动
+
+当结构体或元组的部分字段被移出时，会发生**部分移动（Partial Move）**，整个变量不再可用，但未移动的字段仍可单独访问：
+
+```rust
+fn main() {
+    let person = (String::from("Alice"), 30);
+
+    // 只移动第一个元素
+    let name = person.0;
+
+    // person 整体不可用
+    // println!("{:?}", person); // 错误
+
+    // 但未移动的字段可以通过引用访问
+    println!("Name: {}", name);
+    println!("Age: {}", person.1); // 仍然可用（i32 是 Copy 类型）
+}
+```
+
+```rust
+struct User {
+    name: String,
+    age: u32,
+    active: bool,
+}
+
+fn main() {
+    let user = User {
+        name: String::from("Bob"),
+        age: 25,
+        active: true,
+    };
+
+    let user_name = user.name; // 移出 name 字段
+
+    // user 整体不可用
+    // println!("{}", user.name); // 错误：name 已被移出
+
+    // 但 Copy 类型的字段仍可访问
+    println!("Name: {}", user_name);
+    println!("Age: {}", user.age);
+    println!("Active: {}", user.active);
+}
+```
+
+## 🔄 移动 vs 浅拷贝
+
+Rust 的移动和其他语言的浅拷贝看起来类似（都只复制栈上数据），但关键区别在于：**移动后原变量失效**。
+
+| 特性 | Rust 移动 | C++ 浅拷贝 | Python 赋值 |
+|------|----------|-----------|------------|
+| 栈数据复制 | ✅ | ✅ | ✅（引用计数+1） |
+| 堆数据复制 | ❌ | ❌ | ❌ |
+| 原变量有效 | ❌ | ✅ | ✅ |
+| 内存安全保证 | 编译期 | 无（需手动管理） | 运行时 GC |
+
+## 💡 避免不必要的移动
+
+### 使用引用替代移动
+
+```rust
+// 不好：获取所有权后再返回，很笨重
+fn length_bad(s: String) -> (String, usize) {
+    let len = s.len();
+    (s, len)
+}
+
+// 好：使用引用，不转移所有权
+fn length_good(s: &String) -> usize {
+    s.len()
+}
+
+fn main() {
+    let text = String::from("hello world");
+
+    // 使用引用：text 仍然可用
+    let len = length_good(&text);
+    println!("'{}' has {} characters", text, len);
+}
+```
+
+### 使用 clone 显式复制
+
+当确实需要两份独立的数据时，使用 `clone()`：
+
+```rust
+fn main() {
+    let original = String::from("hello");
+    let cloned = original.clone(); // 深拷贝：复制堆上的数据
+
+    // 两个变量都有效，各自拥有独立的数据
+    println!("original: {}", original);
+    println!("cloned: {}", cloned);
+}
+```
+
+## 📝 实际应用示例
+
+### 构建器模式中的所有权链
+
+```rust
+struct RequestBuilder {
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+}
+
+impl RequestBuilder {
+    fn new(url: &str) -> Self {
+        RequestBuilder {
+            url: url.to_string(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+        }
+    }
+
+    // 每个方法获取 self 的所有权并返回，形成链式调用
+    fn method(mut self, method: &str) -> Self {
+        self.method = method.to_string();
+        self
+    }
+
+    fn header(mut self, key: &str, value: &str) -> Self {
+        self.headers.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    fn build(self) -> String {
+        let headers_str: String = self.headers
+            .iter()
+            .map(|(key, value)| format!("  {}: {}", key, value))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        format!("{} {}\nHeaders:\n{}", self.method, self.url, headers_str)
+    }
+}
+
+fn main() {
+    let request = RequestBuilder::new("https://api.example.com/users")
+        .method("POST")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "Bearer token123")
+        .build();
+
+    println!("{}", request);
+}
+```
+
+### 所有权转移实现资源独占
+
+```rust
+struct DatabaseConnection {
+    connection_string: String,
+    is_open: bool,
+}
+
+impl DatabaseConnection {
+    fn open(connection_string: &str) -> Self {
+        println!("Opening connection to {}", connection_string);
+        DatabaseConnection {
+            connection_string: connection_string.to_string(),
+            is_open: true,
+        }
+    }
+
+    fn query(&self, sql: &str) -> Vec<String> {
+        println!("Executing: {}", sql);
+        vec!["row1".to_string(), "row2".to_string()]
+    }
+
+    fn close(mut self) {
+        // 获取所有权 → 调用后连接不可再用
+        println!("Closing connection to {}", self.connection_string);
+        self.is_open = false;
+    }
+}
+
+fn main() {
+    let conn = DatabaseConnection::open("postgres://localhost/mydb");
+    let results = conn.query("SELECT * FROM users");
+    println!("Results: {:?}", results);
+
+    conn.close(); // conn 的所有权被移走
+
+    // conn 不再可用，防止对已关闭连接的误操作
+    // conn.query("SELECT 1"); // 错误
+}
+```
+
+## 🔗 相关概念
+
+- **所有权规则**：移动语义是所有权规则的直接体现
+- **Copy 与 Clone trait**：某些类型不会发生移动而是复制
+- **引用与借用**：避免移动的替代方案
 
 ## 📝 学习检查点
 
-- [ ] 理解移动语义的核心概念
-- [ ] 能够在实际项目中应用移动语义
+- [ ] 理解移动语义的本质：栈数据复制 + 原变量失效
+- [ ] 能够识别所有发生移动的场景（赋值、传参、返回值、解构）
+- [ ] 理解部分移动的行为
+- [ ] 知道如何使用引用和 clone 避免不必要的移动
+
+## 🚀 下一步
+
+→ [Copy 与 Clone trait](./04-copy-clone-traits)

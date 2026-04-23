@@ -1,17 +1,285 @@
 # 生命周期标注语法
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解生命周期中的「生命周期标注语法」相关知识。
+生命周期标注（Lifetime Annotation）是 Rust 中用来描述引用有效期的语法。生命周期本身并不改变引用实际活多久，它只是告诉编译器多个引用之间的**关系**——哪些引用必须同时有效，哪些引用的有效期更长。当编译器无法自动推断引用的生命周期关系时，就需要开发者通过标注来提供这些信息。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本语法
+
+### 生命周期参数
+
+生命周期参数以单引号 `'` 开头，通常使用短小的小写字母命名：
+
+```rust
+// 'a 是生命周期参数
+// &'a str 表示：一个具有生命周期 'a 的字符串切片引用
+fn example<'a>(text: &'a str) -> &'a str {
+    text
+}
+
+fn main() {
+    let result;
+    let text = String::from("hello world");
+    result = example(&text);
+    println!("{}", result);
+}
+```
+
+### 命名约定
+
+| 参数 | 使用场景 |
+|------|---------|
+| `'a` | 最常用的生命周期名称 |
+| `'b`, `'c` | 多个生命周期时使用 |
+| `'input`, `'output` | 语义化命名（少见但合法） |
+| `'static` | 特殊生命周期，表示整个程序运行期间 |
+| `'_` | 匿名生命周期（让编译器自行推断） |
+
+### 标注位置
+
+```rust
+// 引用参数的生命周期
+fn with_ref<'a>(r: &'a i32) -> &'a i32 {
+    r
+}
+
+// 可变引用的生命周期
+fn with_mut_ref<'a>(r: &'a mut i32) -> &'a mut i32 {
+    r
+}
+
+// 多个生命周期参数
+fn multi_lifetime<'a, 'b>(first: &'a str, second: &'b str) -> &'a str {
+    // 返回值使用 'a，说明返回值和 first 的生命周期绑定
+    first
+}
+
+fn main() {
+    let x = 42;
+    let result = with_ref(&x);
+    println!("{}", result);
+
+    let first = String::from("hello");
+    let second = String::from("world");
+    let chosen = multi_lifetime(&first, &second);
+    println!("{}", chosen);
+}
+```
+
+## 🔍 为什么需要生命周期标注
+
+### 编译器无法推断的情况
+
+```rust
+// ❌ 编译错误：编译器不知道返回值的生命周期与哪个参数关联
+// fn longest(x: &str, y: &str) -> &str {
+//     if x.len() > y.len() { x } else { y }
+// }
+
+// ✅ 添加生命周期标注：告诉编译器返回值的生命周期
+// 与两个参数中较短的那个一致
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() > y.len() { x } else { y }
+}
+
+fn main() {
+    let string1 = String::from("long string");
+    let result;
+    {
+        let string2 = String::from("xyz");
+        result = longest(string1.as_str(), string2.as_str());
+        println!("Longest: {}", result);
+    }
+    // 如果 result 在这里使用，编译器会报错
+    // 因为 string2 已经离开作用域
+}
+```
+
+### 生命周期标注的含义
+
+生命周期标注**不会**改变引用实际存活的时间，它只是描述关系：
+
+```rust
+// 'a 表示：返回值至少和 x、y 中生命周期较短的那个一样长
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() > y.len() { x } else { y }
+}
+
+fn main() {
+    let string1 = String::from("hello");    // string1 的生命周期更长
+
+    {
+        let string2 = String::from("hi");   // string2 的生命周期更短
+        // 'a 被绑定到 string2 的生命周期（较短的那个）
+        let result = longest(&string1, &string2);
+        println!("{}", result); // OK：result 在 string2 的生命周期内使用
+    }
+    // result 不能在这里使用，因为 'a 绑定的是 string2 的生命周期
+}
+```
+
+## 📊 不同标注方式的含义
+
+### 共享生命周期
+
+```rust
+// x 和 y 共享同一个生命周期 'a
+// 返回值的生命周期也是 'a
+// 含义：返回值的有效期 ≤ min(x的有效期, y的有效期)
+fn pick<'a>(x: &'a str, y: &'a str, choose_first: bool) -> &'a str {
+    if choose_first { x } else { y }
+}
+
+fn main() {
+    let a = String::from("alpha");
+    let b = String::from("beta");
+    let result = pick(&a, &b, true);
+    println!("{}", result);
+}
+```
+
+### 独立生命周期
+
+```rust
+// x 和 y 有不同的生命周期
+// 返回值只与 x 绑定
+fn first_only<'a, 'b>(x: &'a str, _y: &'b str) -> &'a str {
+    x // 返回值与 x 的生命周期绑定
+}
+
+fn main() {
+    let result;
+    let x = String::from("hello");
+    {
+        let y = String::from("world");
+        result = first_only(&x, &y);
+        // y 离开作用域没关系，因为返回值不依赖 y
+    }
+    println!("{}", result); // OK：result 只依赖 x
+}
+```
+
+### 只标注需要关联的参数
+
+```rust
+// 返回值只与 text 相关，separator 不需要标注
+fn first_word<'a>(text: &'a str, separator: &str) -> &'a str {
+    match text.find(separator) {
+        Some(pos) => &text[..pos],
+        None => text,
+    }
+}
+
+fn main() {
+    let text = String::from("hello world");
+    let word = first_word(&text, " ");
+    println!("First word: {}", word);
+}
+```
+
+## 💡 思维模型
+
+理解生命周期标注的关键思维模型：
+
+```rust
+// 标注 'a 的含义可以理解为一个"合约"：
+// - 调用者保证：传入的引用在 'a 期间有效
+// - 函数保证：返回的引用在 'a 期间有效
+// - 编译器验证：'a 是所有相关引用有效期的交集
+
+fn contract<'a>(input: &'a str) -> &'a str {
+    // 函数签名是一个合约：
+    // "给我一个至少活 'a 长的引用，我返回一个也至少活 'a 长的引用"
+    &input[0..input.len().min(5)]
+}
+
+fn main() {
+    let data = String::from("hello world");
+    let result = contract(&data);
+    println!("{}", result);
+}
+```
+
+## 📝 实际应用示例
+
+### 从多个输入中选择
+
+```rust
+fn most_relevant<'a>(title: &'a str, description: &'a str, keyword: &str) -> &'a str {
+    if title.contains(keyword) {
+        title
+    } else if description.contains(keyword) {
+        description
+    } else {
+        title // 默认返回标题
+    }
+}
+
+fn main() {
+    let title = String::from("Rust Programming Guide");
+    let description = String::from("A comprehensive tutorial for learning Rust");
+
+    let relevant = most_relevant(&title, &description, "tutorial");
+    println!("Most relevant: {}", relevant);
+
+    let relevant = most_relevant(&title, &description, "Rust");
+    println!("Most relevant: {}", relevant);
+}
+```
+
+### 返回输入的子集
+
+```rust
+fn trim_prefix<'a>(text: &'a str, prefix: &str) -> &'a str {
+    if text.starts_with(prefix) {
+        &text[prefix.len()..]
+    } else {
+        text
+    }
+}
+
+fn extract_domain<'a>(url: &'a str) -> &'a str {
+    let without_protocol = if let Some(pos) = url.find("://") {
+        &url[pos + 3..]
+    } else {
+        url
+    };
+
+    if let Some(pos) = without_protocol.find('/') {
+        &without_protocol[..pos]
+    } else {
+        without_protocol
+    }
+}
+
+fn main() {
+    let prefixed = "prefix_hello_world";
+    println!("Trimmed: {}", trim_prefix(prefixed, "prefix_"));
+
+    let url = "https://www.example.com/path/to/page";
+    println!("Domain: {}", extract_domain(url));
+
+    let simple_url = "example.com";
+    println!("Domain: {}", extract_domain(simple_url));
+}
+```
+
+## 🔗 相关概念
+
+- **函数签名中的生命周期**：生命周期标注在函数中的具体应用
+- **结构体中的生命周期**：持有引用的结构体必须标注生命周期
+- **生命周期省略规则**：编译器自动推断生命周期的规则
 
 ## 📝 学习检查点
 
-- [ ] 理解生命周期标注语法的核心概念
-- [ ] 能够在实际项目中应用生命周期标注语法
+- [ ] 掌握 `'a` 生命周期参数的语法
+- [ ] 理解生命周期标注描述的是引用之间的关系，而非改变生命周期
+- [ ] 能够为有多个引用参数的函数添加正确的生命周期标注
+- [ ] 理解共享生命周期 vs 独立生命周期的区别
+
+## 🚀 下一步
+
+→ [函数签名中的生命周期](./03-function-lifetime-signatures)

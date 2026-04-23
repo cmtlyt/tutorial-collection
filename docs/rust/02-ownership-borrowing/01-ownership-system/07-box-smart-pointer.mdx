@@ -1,17 +1,353 @@
 # Box 智能指针
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解所有权系统中的「Box 智能指针」相关知识。
+`Box<T>` 是 Rust 中最简单的智能指针，它将数据分配在堆上，而在栈上保存一个指向堆数据的指针。`Box` 拥有其指向数据的所有权，当 `Box` 离开作用域时，堆上的数据会被自动释放。`Box` 在需要已知大小的类型（如递归类型）、转移大型数据的所有权、以及 trait 对象等场景中非常有用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本使用
+
+### 在堆上分配值
+
+```rust
+fn main() {
+    // 在堆上分配一个 i32
+    let boxed_value = Box::new(42);
+    println!("Boxed value: {}", boxed_value);
+
+    // 解引用访问内部值
+    let inner = *boxed_value;
+    println!("Inner value: {}", inner);
+}
+```
+
+### 内存布局
+
+```rust
+use std::mem::size_of_val;
+
+fn main() {
+    let stack_value: i32 = 42;
+    let boxed_value: Box<i32> = Box::new(42);
+
+    // Box<i32> 在栈上只占一个指针的大小（8 字节）
+    println!("i32 on stack: {} bytes", size_of_val(&stack_value));       // 4
+    println!("Box<i32> on stack: {} bytes", size_of_val(&boxed_value));  // 8
+
+    // 但 i32 的值本身存储在堆上
+    println!("Value: {}", boxed_value);
+}
+```
+
+```
+栈                   堆
+┌──────────┐        ┌──────┐
+│ ptr ─────│───────→│  42  │
+└──────────┘        └──────┘
+ 8 bytes              4 bytes
+```
+
+## 🔍 使用场景
+
+### 场景一：递归类型
+
+递归类型的大小在编译期无法确定，必须使用 `Box` 间接引用：
+
+```rust
+// 错误：编译器无法计算 List 的大小
+// enum List {
+//     Cons(i32, List),  // List 包含 List → 无限大小
+//     Nil,
+// }
+
+// 正确：使用 Box 使大小确定
+#[derive(Debug)]
+enum List {
+    Cons(i32, Box<List>), // Box<List> 大小固定为一个指针
+    Nil,
+}
+
+use List::{Cons, Nil};
+
+fn main() {
+    // 构造链表：1 → 2 → 3 → Nil
+    let list = Cons(1,
+        Box::new(Cons(2,
+            Box::new(Cons(3,
+                Box::new(Nil))))));
+
+    println!("{:?}", list);
+    print_list(&list);
+}
+
+fn print_list(list: &List) {
+    match list {
+        Cons(value, next) => {
+            print!("{} → ", value);
+            print_list(next);
+        }
+        Nil => println!("Nil"),
+    }
+}
+```
+
+### 场景二：转移大型数据的所有权
+
+将大型数据装箱后，移动只复制一个指针而不是整个数据：
+
+```rust
+fn main() {
+    // 大型数组在栈上
+    let large_array = [0u8; 10000];
+
+    // 直接移动需要复制 10000 字节
+    // let moved = large_array; // 复制 10000 字节
+
+    // 装箱后移动只复制 8 字节（一个指针）
+    let boxed = Box::new([0u8; 10000]);
+    let moved = boxed; // 仅复制指针（8 字节）
+
+    println!("Moved {} bytes of data via pointer", moved.len());
+}
+```
+
+### 场景三：trait 对象
+
+`Box<dyn Trait>` 用于在运行时实现多态：
+
+```rust
+trait Animal {
+    fn name(&self) -> &str;
+    fn speak(&self) -> String;
+}
+
+struct Dog {
+    name: String,
+}
+
+impl Animal for Dog {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn speak(&self) -> String {
+        format!("{} says: Woof!", self.name)
+    }
+}
+
+struct Cat {
+    name: String,
+}
+
+impl Animal for Cat {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn speak(&self) -> String {
+        format!("{} says: Meow!", self.name)
+    }
+}
+
+fn create_animal(animal_type: &str, name: &str) -> Box<dyn Animal> {
+    match animal_type {
+        "dog" => Box::new(Dog { name: name.to_string() }),
+        "cat" => Box::new(Cat { name: name.to_string() }),
+        _ => Box::new(Dog { name: name.to_string() }),
+    }
+}
+
+fn main() {
+    let animals: Vec<Box<dyn Animal>> = vec![
+        create_animal("dog", "Buddy"),
+        create_animal("cat", "Whiskers"),
+        create_animal("dog", "Max"),
+    ];
+
+    for animal in &animals {
+        println!("{}", animal.speak());
+    }
+}
+```
+
+## 🔄 Box 与所有权
+
+### Box 拥有堆上数据的所有权
+
+```rust
+fn main() {
+    let boxed = Box::new(String::from("hello"));
+
+    // 移动 Box 会转移所有权
+    let moved = boxed;
+    // println!("{}", boxed); // 错误：boxed 已被移动
+
+    // 解引用移动：从 Box 中取出值
+    let unboxed: String = *moved;
+    // println!("{}", moved); // 错误：moved 已被解引用移动
+    println!("Unboxed: {}", unboxed);
+}
+```
+
+### Box 的自动解引用
+
+Rust 的 `Deref` trait 让 `Box<T>` 在很多场景下可以透明地当作 `T` 来使用：
+
+```rust
+fn print_length(s: &str) {
+    println!("Length: {}", s.len());
+}
+
+fn main() {
+    let boxed_string = Box::new(String::from("hello world"));
+
+    // Box<String> → String → &str（自动解引用链）
+    print_length(&boxed_string);
+
+    // 直接调用 String 的方法
+    println!("Uppercase: {}", boxed_string.to_uppercase());
+    println!("Contains 'world': {}", boxed_string.contains("world"));
+}
+```
+
+## 📝 实际应用示例
+
+### 二叉树
+
+```rust
+#[derive(Debug)]
+struct TreeNode {
+    value: i32,
+    left: Option<Box<TreeNode>>,
+    right: Option<Box<TreeNode>>,
+}
+
+impl TreeNode {
+    fn new(value: i32) -> Self {
+        TreeNode {
+            value,
+            left: None,
+            right: None,
+        }
+    }
+
+    fn insert(&mut self, new_value: i32) {
+        if new_value < self.value {
+            match &mut self.left {
+                Some(left) => left.insert(new_value),
+                None => self.left = Some(Box::new(TreeNode::new(new_value))),
+            }
+        } else if new_value > self.value {
+            match &mut self.right {
+                Some(right) => right.insert(new_value),
+                None => self.right = Some(Box::new(TreeNode::new(new_value))),
+            }
+        }
+    }
+
+    fn contains(&self, target: i32) -> bool {
+        if target == self.value {
+            true
+        } else if target < self.value {
+            self.left.as_ref().map_or(false, |left| left.contains(target))
+        } else {
+            self.right.as_ref().map_or(false, |right| right.contains(target))
+        }
+    }
+
+    fn in_order(&self) -> Vec<i32> {
+        let mut result = Vec::new();
+        if let Some(left) = &self.left {
+            result.extend(left.in_order());
+        }
+        result.push(self.value);
+        if let Some(right) = &self.right {
+            result.extend(right.in_order());
+        }
+        result
+    }
+}
+
+fn main() {
+    let mut tree = TreeNode::new(5);
+    tree.insert(3);
+    tree.insert(7);
+    tree.insert(1);
+    tree.insert(4);
+    tree.insert(6);
+    tree.insert(8);
+
+    println!("In-order: {:?}", tree.in_order());
+    println!("Contains 4: {}", tree.contains(4));
+    println!("Contains 9: {}", tree.contains(9));
+}
+```
+
+### 命令模式
+
+```rust
+trait Command {
+    fn execute(&self) -> String;
+    fn description(&self) -> &str;
+}
+
+struct PrintCommand {
+    message: String,
+}
+
+impl Command for PrintCommand {
+    fn execute(&self) -> String {
+        format!("Printed: {}", self.message)
+    }
+
+    fn description(&self) -> &str {
+        "Print a message"
+    }
+}
+
+struct CalculateCommand {
+    a: f64,
+    b: f64,
+}
+
+impl Command for CalculateCommand {
+    fn execute(&self) -> String {
+        format!("{} + {} = {}", self.a, self.b, self.a + self.b)
+    }
+
+    fn description(&self) -> &str {
+        "Calculate sum"
+    }
+}
+
+fn main() {
+    let commands: Vec<Box<dyn Command>> = vec![
+        Box::new(PrintCommand { message: "Hello!".to_string() }),
+        Box::new(CalculateCommand { a: 3.14, b: 2.72 }),
+        Box::new(PrintCommand { message: "Done!".to_string() }),
+    ];
+
+    for (index, cmd) in commands.iter().enumerate() {
+        println!("[{}] {} → {}", index + 1, cmd.description(), cmd.execute());
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **栈与堆分配**：Box 是显式堆分配的主要方式
+- **Drop trait**：Box 离开作用域时自动释放堆内存
+- **trait 对象**：`Box<dyn Trait>` 实现运行时多态
 
 ## 📝 学习检查点
 
-- [ ] 理解Box 智能指针的核心概念
-- [ ] 能够在实际项目中应用Box 智能指针
+- [ ] 理解 Box 的内存布局（栈上指针 + 堆上数据）
+- [ ] 知道 Box 的三个主要使用场景：递归类型、大型数据转移、trait 对象
+- [ ] 能够使用 Box 构建递归数据结构
+- [ ] 理解 Box 的所有权语义和自动解引用
+
+## 🚀 下一步
+
+→ [内存释放时机（Drop）](./08-drop-memory-release)

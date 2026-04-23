@@ -1,17 +1,400 @@
 # Drop 与内存释放
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解所有权系统中的「Drop 与内存释放」相关知识。
+`Drop` trait 是 Rust 所有权系统的"善后机制"。当一个值离开作用域时，Rust 会自动调用它的 `drop` 方法来释放资源。这不仅包括内存释放，还可以用于关闭文件句柄、释放锁、断开网络连接等清理工作。`Drop` 类似于其他语言中的析构函数，但 Rust 保证它一定会被调用且只调用一次。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Drop 的基本机制
+
+### 自动调用 drop
+
+```rust
+struct MyResource {
+    name: String,
+}
+
+impl Drop for MyResource {
+    fn drop(&mut self) {
+        println!("Dropping resource: {}", self.name);
+    }
+}
+
+fn main() {
+    let r1 = MyResource { name: String::from("first") };
+    let r2 = MyResource { name: String::from("second") };
+    let r3 = MyResource { name: String::from("third") };
+
+    println!("Resources created");
+    // 函数结束时，变量按照声明的**逆序**被 drop
+} // 输出顺序：third → second → first
+```
+
+### Drop 顺序
+
+Rust 中 drop 的顺序遵循明确的规则：
+
+```rust
+struct Named {
+    name: String,
+}
+
+impl Drop for Named {
+    fn drop(&mut self) {
+        println!("  Dropping: {}", self.name);
+    }
+}
+
+fn main() {
+    println!("=== Variables: reverse declaration order ===");
+    let a = Named { name: String::from("a (first declared)") };
+    let b = Named { name: String::from("b (second declared)") };
+
+    println!("=== Struct fields: declaration order ===");
+    let _pair = (
+        Named { name: String::from("tuple.0") },
+        Named { name: String::from("tuple.1") },
+    );
+
+    println!("--- Leaving scope ---");
+}
+```
+
+| 场景 | Drop 顺序 |
+|------|----------|
+| 局部变量 | 声明的**逆序**（后声明的先 drop） |
+| 结构体字段 | 声明的**正序**（先声明的先 drop） |
+| 元组元素 | 索引**正序**（0 先于 1） |
+| Vec 元素 | 索引**正序**（前面的先 drop） |
+
+## 🔍 实现 Drop trait
+
+### 自定义资源清理
+
+```rust
+struct FileHandle {
+    filename: String,
+    is_open: bool,
+}
+
+impl FileHandle {
+    fn open(filename: &str) -> Self {
+        println!("Opening file: {}", filename);
+        FileHandle {
+            filename: filename.to_string(),
+            is_open: true,
+        }
+    }
+
+    fn write(&self, content: &str) {
+        if self.is_open {
+            println!("Writing to {}: {}", self.filename, content);
+        }
+    }
+}
+
+impl Drop for FileHandle {
+    fn drop(&mut self) {
+        if self.is_open {
+            println!("Closing file: {}", self.filename);
+            self.is_open = false;
+        }
+    }
+}
+
+fn main() {
+    let file = FileHandle::open("data.txt");
+    file.write("hello world");
+    println!("About to leave scope...");
+} // file 在此自动关闭
+```
+
+### 嵌套结构的 Drop
+
+```rust
+struct Inner {
+    id: u32,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        println!("  Dropping Inner({})", self.id);
+    }
+}
+
+struct Outer {
+    name: String,
+    inner: Inner,
+}
+
+impl Drop for Outer {
+    fn drop(&mut self) {
+        println!("Dropping Outer({})", self.name);
+        // Inner 的 drop 会在 Outer 的 drop 之后自动调用
+    }
+}
+
+fn main() {
+    let _item = Outer {
+        name: String::from("container"),
+        inner: Inner { id: 42 },
+    };
+    println!("About to leave scope...");
+}
+// 输出：
+// About to leave scope...
+// Dropping Outer(container)
+//   Dropping Inner(42)
+```
+
+## ⚡ 提前释放：std::mem::drop
+
+### 不能手动调用 drop 方法
+
+```rust
+struct Resource {
+    name: String,
+}
+
+impl Drop for Resource {
+    fn drop(&mut self) {
+        println!("Dropping: {}", self.name);
+    }
+}
+
+fn main() {
+    let r = Resource { name: String::from("test") };
+
+    // 不能直接调用 drop 方法
+    // r.drop(); // 编译错误：explicit destructor calls not allowed
+
+    // 使用 std::mem::drop 函数提前释放
+    drop(r);
+    println!("Resource has been dropped");
+
+    // r 已被释放，不可再使用
+    // println!("{}", r.name); // 错误
+}
+```
+
+### drop 函数的实现
+
+`std::mem::drop` 的实现非常简单——它获取值的所有权，然后什么都不做。函数结束后值离开作用域，自动调用 Drop trait：
+
+```rust
+// 标准库中 drop 的实现就是这么简单：
+// fn drop<T>(_x: T) {}
+
+fn main() {
+    let data = vec![1, 2, 3];
+    println!("Before drop: {:?}", data);
+
+    drop(data); // 等价于 { let _temp = data; } —— 让值立即离开作用域
+    println!("After drop");
+}
+```
+
+### 提前释放的典型场景
+
+```rust
+use std::collections::HashMap;
+
+struct CacheEntry {
+    key: String,
+    data: Vec<u8>,
+}
+
+impl Drop for CacheEntry {
+    fn drop(&mut self) {
+        println!("Evicting cache entry: {} ({} bytes)", self.key, self.data.len());
+    }
+}
+
+fn main() {
+    let mut cache: HashMap<String, CacheEntry> = HashMap::new();
+
+    // 填充缓存
+    for i in 0..5 {
+        let key = format!("key_{}", i);
+        cache.insert(key.clone(), CacheEntry {
+            key: key.clone(),
+            data: vec![0; 1000 * (i + 1)],
+        });
+    }
+
+    println!("Cache size: {} entries", cache.len());
+
+    // 提前释放不需要的缓存条目以节省内存
+    if let Some(entry) = cache.remove("key_4") {
+        println!("Removed largest entry: {} bytes", entry.data.len());
+        drop(entry); // 立即释放内存
+    }
+
+    println!("Cache size after eviction: {} entries", cache.len());
+}
+```
+
+## 🚫 Drop 与 Copy 互斥
+
+实现了 `Drop` 的类型**不能**实现 `Copy`，因为 Copy 的按位复制会导致同一资源被 drop 两次：
+
+```rust
+// 这段代码无法编译：
+// #[derive(Copy, Clone)]
+// struct BadType {
+//     data: String, // String 实现了 Drop，不能 Copy
+// }
+
+// 正确：使用 Clone 代替
+#[derive(Clone)]
+struct GoodType {
+    data: String,
+}
+
+impl Drop for GoodType {
+    fn drop(&mut self) {
+        println!("Dropping: {}", self.data);
+    }
+}
+
+fn main() {
+    let a = GoodType { data: String::from("hello") };
+    let b = a.clone(); // 显式深拷贝，各自独立
+    println!("a: {}, b: {}", a.data, b.data);
+} // a 和 b 各自被 drop 一次，安全
+```
+
+## 📝 实际应用示例
+
+### 连接池管理
+
+```rust
+struct Connection {
+    id: u32,
+    active: bool,
+}
+
+impl Connection {
+    fn new(id: u32) -> Self {
+        println!("  Connection {} established", id);
+        Connection { id, active: true }
+    }
+
+    fn execute(&self, query: &str) -> String {
+        format!("Connection {}: executed '{}'", self.id, query)
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        println!("  Connection {} closed", self.id);
+        self.active = false;
+    }
+}
+
+struct ConnectionPool {
+    connections: Vec<Connection>,
+    pool_name: String,
+}
+
+impl ConnectionPool {
+    fn new(name: &str, size: u32) -> Self {
+        println!("Creating pool '{}' with {} connections:", name, size);
+        let connections = (0..size).map(|id| Connection::new(id)).collect();
+        ConnectionPool {
+            connections,
+            pool_name: name.to_string(),
+        }
+    }
+
+    fn execute_on(&self, conn_id: usize, query: &str) -> String {
+        self.connections[conn_id].execute(query)
+    }
+}
+
+impl Drop for ConnectionPool {
+    fn drop(&mut self) {
+        println!("Shutting down pool '{}':", self.pool_name);
+        // connections 中的每个 Connection 会自动 drop
+    }
+}
+
+fn main() {
+    let pool = ConnectionPool::new("main_pool", 3);
+
+    let result = pool.execute_on(0, "SELECT * FROM users");
+    println!("{}", result);
+
+    let result = pool.execute_on(1, "INSERT INTO logs VALUES(...)");
+    println!("{}", result);
+
+    println!("--- About to exit ---");
+} // pool drop → 每个 connection drop
+```
+
+### RAII 锁守卫
+
+```rust
+struct MutexGuard<'a> {
+    name: &'a str,
+    locked: bool,
+}
+
+impl<'a> MutexGuard<'a> {
+    fn acquire(name: &'a str) -> Self {
+        println!("🔒 Lock acquired: {}", name);
+        MutexGuard { name, locked: true }
+    }
+
+    fn access(&self) -> &str {
+        if self.locked {
+            "Protected data"
+        } else {
+            "Lock not held!"
+        }
+    }
+}
+
+impl<'a> Drop for MutexGuard<'a> {
+    fn drop(&mut self) {
+        println!("🔓 Lock released: {}", self.name);
+        self.locked = false;
+    }
+}
+
+fn critical_section() {
+    let guard = MutexGuard::acquire("database");
+    println!("Data: {}", guard.access());
+
+    // 做一些工作...
+    println!("Working with protected data...");
+
+    // guard 在函数结束时自动释放锁
+}
+
+fn main() {
+    println!("Before critical section");
+    critical_section();
+    println!("After critical section — lock is released");
+}
+```
+
+## 🔗 相关概念
+
+- **所有权规则**：Drop 是"所有者离开作用域时值被丢弃"这条规则的实现机制
+- **Box 智能指针**：Box 实现了 Drop 来释放堆内存
+- **Copy 与 Clone trait**：实现 Drop 的类型不能实现 Copy
 
 ## 📝 学习检查点
 
-- [ ] 理解Drop 与内存释放的核心概念
-- [ ] 能够在实际项目中应用Drop 与内存释放
+- [ ] 理解 Drop trait 的自动调用机制和 drop 顺序
+- [ ] 能够为自定义类型实现 Drop trait
+- [ ] 知道如何使用 `std::mem::drop` 提前释放资源
+- [ ] 理解 Drop 和 Copy 互斥的原因
+- [ ] 能够运用 RAII 模式管理资源
+
+## 🚀 下一步
+
+→ [引用与借用 - 总览](../02-references-borrowing/01-references-borrowing-overview)

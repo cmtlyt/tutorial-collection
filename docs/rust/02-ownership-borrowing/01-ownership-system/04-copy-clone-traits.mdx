@@ -1,17 +1,309 @@
 # Copy 与 Clone trait
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解所有权系统中的「Copy 与 Clone trait」相关知识。
+在 Rust 中，赋值和传参的默认行为是**移动**。但有些类型在赋值时会自动进行**按位复制**而非移动，这就是 `Copy` trait 的作用。而 `Clone` trait 则提供了**显式深拷贝**的能力。理解这两个 trait 的区别和适用场景，是掌握 Rust 所有权系统的关键。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 Copy trait
+
+### Copy 的行为
+
+实现了 `Copy` trait 的类型在赋值时会自动进行按位复制，原变量仍然有效：
+
+```rust
+fn main() {
+    let x: i32 = 42;
+    let y = x; // 按位复制，不是移动
+
+    // x 和 y 都有效，各自持有独立的值
+    println!("x = {}, y = {}", x, y);
+
+    let a = true;
+    let b = a; // bool 也是 Copy 类型
+    println!("a = {}, b = {}", a, b);
+}
+```
+
+### 默认实现 Copy 的类型
+
+| 类型 | 示例 |
+|------|------|
+| 所有整数类型 | `i8`, `i16`, `i32`, `i64`, `i128`, `isize`, `u8`...`usize` |
+| 所有浮点类型 | `f32`, `f64` |
+| 布尔类型 | `bool` |
+| 字符类型 | `char` |
+| 元组（所有元素都是 Copy） | `(i32, f64)`, `(bool, char)` |
+| 固定大小数组（元素是 Copy） | `[i32; 5]`, `[bool; 3]` |
+| 不可变引用 | `&T` |
+
+### 不实现 Copy 的类型
+
+```rust
+fn main() {
+    // String 不是 Copy —— 它在堆上分配内存
+    let s1 = String::from("hello");
+    let s2 = s1; // 移动，不是复制
+    // println!("{}", s1); // 错误：s1 已被移动
+
+    // Vec 不是 Copy
+    let v1 = vec![1, 2, 3];
+    let v2 = v1; // 移动
+    // println!("{:?}", v1); // 错误
+
+    // Box 不是 Copy
+    let b1 = Box::new(42);
+    let b2 = b1; // 移动
+    // println!("{}", b1); // 错误
+}
+```
+
+### 为自定义类型实现 Copy
+
+使用 `derive` 宏可以自动实现 `Copy`，但前提是所有字段都实现了 `Copy`：
+
+```rust
+#[derive(Debug, Copy, Clone)] // Copy 要求同时实现 Clone
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct Color {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+fn main() {
+    let p1 = Point { x: 1.0, y: 2.0 };
+    let p2 = p1; // 复制，不是移动
+    println!("p1 = {:?}, p2 = {:?}", p1, p2);
+
+    let red = Color { r: 255, g: 0, b: 0 };
+    print_color(red);
+    println!("Color is still: {:?}", red); // red 仍然有效
+}
+
+fn print_color(c: Color) {
+    println!("RGB({}, {}, {})", c.r, c.g, c.b);
+}
+```
+
+### 不能实现 Copy 的情况
+
+如果结构体中包含非 Copy 类型的字段，就不能 derive Copy：
+
+```rust
+#[derive(Debug, Clone)]
+struct User {
+    name: String, // String 不是 Copy
+    age: u32,
+}
+
+// 下面这行会编译失败：
+// #[derive(Copy, Clone)]
+// struct BadUser {
+//     name: String, // 错误：String 没有实现 Copy
+// }
+
+fn main() {
+    let u1 = User {
+        name: String::from("Alice"),
+        age: 30,
+    };
+    let u2 = u1.clone(); // 必须显式 clone
+    println!("u1 = {:?}", u1);
+    println!("u2 = {:?}", u2);
+}
+```
+
+## 🔄 Clone trait
+
+### Clone 的行为
+
+`Clone` 提供了 `clone()` 方法，用于显式创建值的深拷贝：
+
+```rust
+fn main() {
+    let s1 = String::from("hello");
+    let s2 = s1.clone(); // 显式深拷贝：堆上的数据也被复制
+
+    // s1 和 s2 都有效，指向不同的堆内存
+    println!("s1 = {}, s2 = {}", s1, s2);
+
+    let v1 = vec![1, 2, 3];
+    let v2 = v1.clone(); // 深拷贝整个 Vec 及其元素
+    println!("v1 = {:?}, v2 = {:?}", v1, v2);
+}
+```
+
+### 自定义 Clone 实现
+
+通常使用 `derive` 自动生成 `Clone`，但也可以手动实现以自定义复制行为：
+
+```rust
+#[derive(Debug)]
+struct Config {
+    name: String,
+    values: Vec<i32>,
+    version: u32,
+}
+
+impl Clone for Config {
+    fn clone(&self) -> Self {
+        println!("Cloning config '{}'", self.name);
+        Config {
+            name: self.name.clone(),
+            values: self.values.clone(),
+            version: self.version, // u32 是 Copy，直接复制
+        }
+    }
+}
+
+fn main() {
+    let config1 = Config {
+        name: String::from("production"),
+        values: vec![1, 2, 3],
+        version: 1,
+    };
+
+    let config2 = config1.clone();
+    println!("config1 = {:?}", config1);
+    println!("config2 = {:?}", config2);
+}
+```
+
+## 📊 Copy vs Clone 对比
+
+| 特性 | Copy | Clone |
+|------|------|-------|
+| 触发方式 | 隐式（赋值、传参自动触发） | 显式（调用 `.clone()`） |
+| 复制方式 | 按位复制（浅拷贝） | 可自定义（通常是深拷贝） |
+| 性能 | 总是很快（固定大小的栈数据） | 可能较慢（涉及堆分配） |
+| 前提条件 | 所有字段都是 Copy | 所有字段都是 Clone |
+| 依赖关系 | Copy 要求必须实现 Clone | Clone 不要求实现 Copy |
+| 适用类型 | 小型、栈上分配的简单类型 | 任何需要复制的类型 |
+
+```rust
+#[derive(Debug, Clone)]
+struct HeavyData {
+    buffer: Vec<u8>,
+    name: String,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct LightData {
+    x: i32,
+    y: i32,
+}
+
+fn main() {
+    // Copy 类型：隐式、快速
+    let light1 = LightData { x: 1, y: 2 };
+    let light2 = light1; // 自动复制
+    println!("{:?} {:?}", light1, light2);
+
+    // Clone 类型：显式、可能有开销
+    let heavy1 = HeavyData {
+        buffer: vec![0; 1000],
+        name: String::from("large data"),
+    };
+    let heavy2 = heavy1.clone(); // 必须显式调用
+    println!("heavy1.name = {}", heavy1.name);
+    println!("heavy2.name = {}", heavy2.name);
+}
+```
+
+## 💡 何时使用 Copy vs Clone
+
+### 适合 Copy 的场景
+
+```rust
+// 坐标点：小型、纯数据
+#[derive(Debug, Copy, Clone)]
+struct Vec2 {
+    x: f32,
+    y: f32,
+}
+
+// 枚举状态：没有堆数据
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+fn move_point(point: Vec2, direction: Direction, distance: f32) -> Vec2 {
+    match direction {
+        Direction::Up => Vec2 { x: point.x, y: point.y + distance },
+        Direction::Down => Vec2 { x: point.x, y: point.y - distance },
+        Direction::Left => Vec2 { x: point.x - distance, y: point.y },
+        Direction::Right => Vec2 { x: point.x + distance, y: point.y },
+    }
+}
+
+fn main() {
+    let start = Vec2 { x: 0.0, y: 0.0 };
+    let direction = Direction::Up;
+
+    // start 和 direction 都是 Copy，传参后仍可使用
+    let end = move_point(start, direction, 5.0);
+    println!("Start: {:?}, End: {:?}", start, end);
+    println!("Direction: {:?}", direction);
+}
+```
+
+### 适合 Clone 的场景
+
+```rust
+#[derive(Debug, Clone)]
+struct Document {
+    title: String,
+    content: String,
+    tags: Vec<String>,
+}
+
+impl Document {
+    fn create_draft(&self) -> Document {
+        let mut draft = self.clone();
+        draft.title = format!("[DRAFT] {}", draft.title);
+        draft
+    }
+}
+
+fn main() {
+    let original = Document {
+        title: String::from("Rust Guide"),
+        content: String::from("Learn Rust step by step"),
+        tags: vec![String::from("rust"), String::from("tutorial")],
+    };
+
+    let draft = original.create_draft();
+
+    println!("Original: {:?}", original);
+    println!("Draft: {:?}", draft);
+}
+```
+
+## 🔗 相关概念
+
+- **移动语义**：非 Copy 类型赋值时的默认行为
+- **所有权规则**：Copy 和 Clone 是所有权规则的补充机制
+- **栈与堆**：Copy 类型通常在栈上，Clone 涉及堆上数据的复制
 
 ## 📝 学习检查点
 
-- [ ] 理解Copy 与 Clone trait的核心概念
-- [ ] 能够在实际项目中应用Copy 与 Clone trait
+- [ ] 知道哪些内置类型默认实现了 Copy
+- [ ] 理解 Copy 是隐式的按位复制，Clone 是显式的深拷贝
+- [ ] 知道为自定义类型 derive Copy 的前提条件
+- [ ] 能够根据场景选择使用 Copy 还是 Clone
+
+## 🚀 下一步
+
+→ [栈与堆分配](./05-stack-heap-allocation)

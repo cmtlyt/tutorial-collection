@@ -1,17 +1,338 @@
 # String 与 &str 的内存布局
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解所有权系统中的「String 与 &str 的内存布局」相关知识。
+`String` 和 `&str` 是 Rust 中最常用的两种字符串类型。它们看起来都是"字符串"，但在内存布局、所有权和使用场景上截然不同。`String` 是一个拥有所有权的、可增长的、堆分配的 UTF-8 字符串；`&str` 是一个不可变的字符串切片引用，不拥有数据。理解它们的内存布局有助于写出高效且正确的 Rust 代码。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 String 的内存布局
+
+### 内部结构
+
+`String` 在栈上存储三个字段，实际的字符数据存储在堆上：
+
+```rust
+use std::mem::size_of;
+
+fn main() {
+    let s = String::from("hello");
+
+    // String 在栈上占 24 字节（3 个 usize）
+    println!("String size on stack: {} bytes", size_of::<String>());
+
+    // 堆上存储的实际内容
+    println!("Content: {}", s);
+    println!("Length: {}", s.len());           // 字符串的字节长度
+    println!("Capacity: {}", s.capacity());     // 堆上分配的总容量
+    println!("Pointer: {:p}", s.as_ptr());     // 指向堆数据的指针
+}
+```
+
+```
+栈                              堆
+┌────────────────────┐         ┌─────────────────┐
+│ ptr ───────────────│────────→│ h  e  l  l  o   │
+│ len: 5             │         └─────────────────┘
+│ capacity: 5        │
+└────────────────────┘
+```
+
+### 动态增长
+
+`String` 的容量可以动态增长，当内容超过容量时会重新分配更大的堆内存：
+
+```rust
+fn main() {
+    let mut s = String::new();
+    println!("Empty - len: {}, capacity: {}, ptr: {:p}",
+        s.len(), s.capacity(), s.as_ptr());
+
+    s.push_str("hello");
+    println!("After 'hello' - len: {}, capacity: {}, ptr: {:p}",
+        s.len(), s.capacity(), s.as_ptr());
+
+    s.push_str(" world");
+    println!("After ' world' - len: {}, capacity: {}, ptr: {:p}",
+        s.len(), s.capacity(), s.as_ptr());
+
+    s.push_str("! this is a longer string");
+    println!("After more text - len: {}, capacity: {}, ptr: {:p}",
+        s.len(), s.capacity(), s.as_ptr());
+    // 注意：当容量不足时，ptr 可能会改变（堆内存重新分配）
+}
+```
+
+### 预分配容量
+
+如果已知字符串的大致大小，可以用 `with_capacity` 减少重分配次数：
+
+```rust
+fn main() {
+    // 预分配 100 字节的容量
+    let mut s = String::with_capacity(100);
+    println!("Capacity: {}", s.capacity()); // 至少 100
+
+    for i in 0..20 {
+        s.push_str(&format!("item{} ", i));
+    }
+
+    println!("Final - len: {}, capacity: {}", s.len(), s.capacity());
+    println!("Content: {}", s);
+}
+```
+
+## 🔍 &str 的内存布局
+
+### 内部结构
+
+`&str` 是一个**胖指针（fat pointer）**，由两部分组成：
+
+```rust
+use std::mem::size_of;
+
+fn main() {
+    // &str 在栈上占 16 字节（2 个 usize：指针 + 长度）
+    println!("&str size: {} bytes", size_of::<&str>());
+
+    let s: &str = "hello";
+    println!("Content: {}", s);
+    println!("Length: {}", s.len());
+    println!("Pointer: {:p}", s.as_ptr());
+}
+```
+
+```
+栈                          只读数据段（或堆）
+┌────────────────────┐     ┌─────────────────┐
+│ ptr ───────────────│────→│ h  e  l  l  o   │
+│ len: 5             │     └─────────────────┘
+└────────────────────┘
+（注意：没有 capacity 字段）
+```
+
+### 字符串字面量
+
+字符串字面量的类型是 `&'static str`，数据存储在程序的只读数据段中：
+
+```rust
+fn main() {
+    // 字符串字面量：数据在编译时嵌入二进制文件
+    let literal: &'static str = "I live in the binary";
+    println!("{}", literal);
+
+    // 这个引用在整个程序运行期间都有效
+    let another: &str = "me too";
+    println!("{}", another);
+}
+```
+
+### 从 String 到 &str
+
+`&str` 可以是 String 的一个切片，指向 String 的堆数据：
+
+```rust
+fn main() {
+    let owned = String::from("hello world");
+
+    // 获取整个 String 的切片
+    let slice: &str = &owned;
+    println!("Full slice: {}", slice);
+
+    // 获取部分切片
+    let hello: &str = &owned[0..5];
+    let world: &str = &owned[6..11];
+    println!("Parts: '{}' and '{}'", hello, world);
+}
+```
+
+```
+栈                              堆
+┌────────────────────┐         ┌──────────────────────┐
+│ owned:             │         │                      │
+│   ptr ─────────────│────────→│ h e l l o   w o r l d│
+│   len: 11          │         │ ↑         ↑         ↑│
+│   capacity: 11     │         └──────────────────────┘
+├────────────────────┤              │         │
+│ hello:             │              │         │
+│   ptr ─────────────│──────────────┘         │
+│   len: 5           │                        │
+├────────────────────┤                        │
+│ world:             │                        │
+│   ptr ─────────────│────────────────────────┘
+│   len: 5           │
+└────────────────────┘
+```
+
+## 📊 String vs &str 对比
+
+| 特性 | `String` | `&str` |
+|------|----------|--------|
+| 所有权 | 拥有数据 | 借用数据 |
+| 栈上大小 | 24 字节（ptr+len+cap） | 16 字节（ptr+len） |
+| 数据存储位置 | 堆 | 堆、栈或只读数据段 |
+| 可变性 | 可变（`mut`） | 不可变 |
+| 可增长 | ✅ | ❌ |
+| 生命周期 | 由所有者控制 | 受借用规则约束 |
+
+## 🔄 相互转换
+
+```rust
+fn main() {
+    // &str → String
+    let str_slice: &str = "hello";
+    let string1: String = str_slice.to_string();
+    let string2: String = String::from(str_slice);
+    let string3: String = str_slice.to_owned();
+
+    // String → &str
+    let owned: String = String::from("world");
+    let borrowed: &str = &owned;          // 自动解引用
+    let borrowed2: &str = owned.as_str(); // 显式转换
+
+    println!("{} {} {} {} {}", string1, string2, string3, borrowed, borrowed2);
+}
+```
+
+## 💡 函数参数的最佳实践
+
+### 优先使用 &str 作为参数类型
+
+```rust
+// 好：接受 &str，String 和 &str 都可以传入
+fn greet(name: &str) {
+    println!("Hello, {}!", name);
+}
+
+// 不好：接受 String，强制调用者转移所有权或 clone
+fn greet_owned(name: String) {
+    println!("Hello, {}!", name);
+}
+
+fn main() {
+    let owned = String::from("Alice");
+    let literal = "Bob";
+
+    // &str 参数：两种类型都能传
+    greet(&owned);   // String 自动转为 &str
+    greet(literal);  // &str 直接传
+
+    // String 参数：字面量需要转换
+    greet_owned(owned);             // 移动所有权
+    greet_owned(literal.to_string()); // 需要额外分配
+}
+```
+
+### 返回值使用 String
+
+```rust
+// 好：返回 String（拥有数据的所有权）
+fn build_greeting(name: &str) -> String {
+    format!("Hello, {}! Welcome to Rust.", name)
+}
+
+fn main() {
+    let greeting = build_greeting("Alice");
+    println!("{}", greeting);
+}
+```
+
+## 🔤 UTF-8 编码
+
+Rust 的字符串始终是有效的 UTF-8，这意味着字符串的字节长度和字符数可能不同：
+
+```rust
+fn main() {
+    let ascii = "Hello";
+    println!("'{}': {} bytes, {} chars", ascii, ascii.len(), ascii.chars().count());
+
+    let chinese = "你好世界";
+    println!("'{}': {} bytes, {} chars", chinese, chinese.len(), chinese.chars().count());
+
+    let emoji = "Hello 🌍";
+    println!("'{}': {} bytes, {} chars", emoji, emoji.len(), emoji.chars().count());
+
+    // 按字节索引可能会在字符中间切割（编译错误或 panic）
+    let s = "你好";
+    // let bad = &s[0..1]; // panic：不在字符边界上
+    let good = &s[0..3]; // 正确：一个中文字符占 3 个 UTF-8 字节
+    println!("First char by bytes: {}", good);
+
+    // 安全的方式：按字符遍历
+    for (index, ch) in s.char_indices() {
+        println!("Index {}: '{}'", index, ch);
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 高效的字符串处理
+
+```rust
+struct LogEntry {
+    level: String,
+    message: String,
+}
+
+impl LogEntry {
+    fn new(level: &str, message: &str) -> Self {
+        LogEntry {
+            level: level.to_uppercase(),
+            message: message.to_string(),
+        }
+    }
+
+    fn format(&self) -> String {
+        format!("[{}] {}", self.level, self.message)
+    }
+
+    fn contains_keyword(&self, keyword: &str) -> bool {
+        self.message.contains(keyword)
+    }
+}
+
+fn filter_logs<'a>(logs: &'a [LogEntry], keyword: &str) -> Vec<&'a LogEntry> {
+    logs.iter()
+        .filter(|log| log.contains_keyword(keyword))
+        .collect()
+}
+
+fn main() {
+    let logs = vec![
+        LogEntry::new("info", "Server started on port 8080"),
+        LogEntry::new("error", "Database connection failed"),
+        LogEntry::new("info", "User login successful"),
+        LogEntry::new("error", "Database timeout occurred"),
+    ];
+
+    for log in &logs {
+        println!("{}", log.format());
+    }
+
+    println!("\nDatabase-related logs:");
+    let db_logs = filter_logs(&logs, "Database");
+    for log in db_logs {
+        println!("  {}", log.format());
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **栈与堆分配**：String 和 &str 的存储位置差异
+- **所有权规则**：String 拥有所有权，&str 借用数据
+- **切片引用**：&str 是字符串切片的一种
 
 ## 📝 学习检查点
 
-- [ ] 理解String 与 &str 的内存布局的核心概念
-- [ ] 能够在实际项目中应用String 与 &str 的内存布局
+- [ ] 能够画出 String 和 &str 的内存布局图
+- [ ] 理解 String 的动态增长和容量机制
+- [ ] 知道 String 和 &str 之间的相互转换方法
+- [ ] 掌握函数参数优先使用 &str 的最佳实践
+- [ ] 理解 UTF-8 编码对字符串索引的影响
+
+## 🚀 下一步
+
+→ [Box 智能指针](./07-box-smart-pointer)

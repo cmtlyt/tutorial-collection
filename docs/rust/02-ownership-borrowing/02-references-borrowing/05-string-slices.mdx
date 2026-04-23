@@ -1,17 +1,317 @@
 # 字符串切片（&str）
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解引用与借用中的「字符串切片（&str）」相关知识。
+字符串切片（`&str`）是对字符串数据中连续 UTF-8 字节序列的引用。它不拥有数据的所有权，是 Rust 中最常用的字符串类型之一。字符串切片本质上是一个**胖指针**，包含一个指向数据起始位置的指针和一个长度。理解字符串切片的使用对于编写高效且惯用的 Rust 代码至关重要。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本语法
+
+### 创建字符串切片
+
+```rust
+fn main() {
+    let full_string = String::from("hello world");
+
+    // 从 String 创建切片
+    let hello: &str = &full_string[0..5];
+    let world: &str = &full_string[6..11];
+    let full: &str = &full_string[..];
+
+    println!("hello: {}", hello);
+    println!("world: {}", world);
+    println!("full: {}", full);
+
+    // 字符串字面量本身就是 &str
+    let literal: &str = "I am a string slice";
+    println!("{}", literal);
+}
+```
+
+### 范围语法
+
+```rust
+fn main() {
+    let text = String::from("Rust Programming");
+
+    // 各种范围写法
+    let from_start = &text[..4];    // "Rust"（从 0 开始）
+    let to_end = &text[5..];        // "Programming"（到末尾）
+    let middle = &text[5..12];      // "Program"
+    let full = &text[..];           // "Rust Programming"（整个字符串）
+
+    println!("{} | {} | {} | {}", from_start, to_end, middle, full);
+}
+```
+
+## 🔍 &str vs String 切片
+
+### 字面量与切片
+
+```rust
+fn main() {
+    // 字符串字面量：编译时嵌入二进制，类型是 &'static str
+    let literal: &'static str = "hello";
+
+    // 从 String 获取的切片：指向堆内存
+    let owned = String::from("hello");
+    let slice: &str = &owned;
+
+    // 两者使用方式相同
+    println!("literal: {}, slice: {}", literal, slice);
+    println!("Equal: {}", literal == slice);
+}
+```
+
+### 切片作为函数参数
+
+```rust
+// 接受 &str 是最灵活的选择：String 和字面量都能传入
+fn count_vowels(text: &str) -> usize {
+    text.chars()
+        .filter(|c| "aeiouAEIOU".contains(*c))
+        .count()
+}
+
+fn starts_with_upper(text: &str) -> bool {
+    text.chars().next().map_or(false, |c| c.is_uppercase())
+}
+
+fn main() {
+    let owned = String::from("Hello World");
+    let literal = "Another Example";
+
+    // String 自动解引用为 &str
+    println!("'{}' has {} vowels", owned, count_vowels(&owned));
+    // &str 直接传入
+    println!("'{}' has {} vowels", literal, count_vowels(literal));
+
+    println!("'{}' starts with upper: {}", owned, starts_with_upper(&owned));
+    println!("'{}' starts with upper: {}", literal, starts_with_upper(literal));
+}
+```
+
+## ⚠️ UTF-8 与切片边界
+
+### 字节索引而非字符索引
+
+字符串切片使用**字节索引**，必须在有效的 UTF-8 字符边界上切割：
+
+```rust
+fn main() {
+    let text = "Hello, 世界!";
+
+    // ASCII 字符：每个占 1 字节
+    let hello = &text[0..5]; // "Hello"
+    println!("ASCII slice: {}", hello);
+
+    // 中文字符：每个占 3 字节
+    let world = &text[7..13]; // "世界"
+    println!("Chinese slice: {}", world);
+
+    // ❌ 在字符中间切割会 panic
+    // let bad = &text[7..8]; // panic: byte index 8 is not a char boundary
+
+    // 安全的方式：按字符操作
+    let third_char: char = text.chars().nth(2).unwrap();
+    println!("Third char: {}", third_char);
+
+    // 获取前 N 个字符的安全函数
+    let first_three: String = text.chars().take(3).collect();
+    println!("First 3 chars: {}", first_three);
+}
+```
+
+### 安全的字符串切割
+
+```rust
+fn safe_substring(text: &str, start: usize, end: usize) -> &str {
+    let mut char_indices = text.char_indices();
+
+    let start_byte = char_indices.clone()
+        .nth(start)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+
+    let end_byte = char_indices
+        .nth(end)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+
+    &text[start_byte..end_byte]
+}
+
+fn main() {
+    let text = "Hello, 世界! 🌍";
+
+    println!("Chars 0-5: '{}'", safe_substring(text, 0, 5));
+    println!("Chars 7-9: '{}'", safe_substring(text, 7, 9));
+    println!("Chars 0-11: '{}'", safe_substring(text, 0, 11));
+}
+```
+
+## 🔄 常用字符串切片操作
+
+### 搜索与分割
+
+```rust
+fn main() {
+    let text = "one,two,three,four,five";
+
+    // 分割
+    let parts: Vec<&str> = text.split(',').collect();
+    println!("Parts: {:?}", parts);
+
+    // 查找
+    if let Some(position) = text.find("three") {
+        println!("'three' found at byte index {}", position);
+        let after_three = &text[position..];
+        println!("From 'three' onwards: {}", after_three);
+    }
+
+    // 是否包含
+    println!("Contains 'two': {}", text.contains("two"));
+
+    // 前缀和后缀
+    println!("Starts with 'one': {}", text.starts_with("one"));
+    println!("Ends with 'five': {}", text.ends_with("five"));
+}
+```
+
+### 修剪与替换
+
+```rust
+fn main() {
+    let padded = "  hello world  ";
+
+    // trim 返回 &str（不分配新内存）
+    let trimmed: &str = padded.trim();
+    println!("Trimmed: '{}'", trimmed);
+
+    let left_trimmed: &str = padded.trim_start();
+    let right_trimmed: &str = padded.trim_end();
+    println!("Left: '{}', Right: '{}'", left_trimmed, right_trimmed);
+
+    // replace 返回新的 String（需要分配内存）
+    let replaced: String = trimmed.replace("world", "Rust");
+    println!("Replaced: '{}'", replaced);
+
+    // to_uppercase / to_lowercase 也返回新的 String
+    let upper: String = trimmed.to_uppercase();
+    println!("Upper: '{}'", upper);
+}
+```
+
+### 迭代
+
+```rust
+fn main() {
+    let text = "Rust is awesome";
+
+    // 按字符迭代
+    print!("Chars: ");
+    for ch in text.chars() {
+        print!("[{}]", ch);
+    }
+    println!();
+
+    // 按单词迭代
+    for (index, word) in text.split_whitespace().enumerate() {
+        println!("Word {}: {}", index, word);
+    }
+
+    // 按行迭代
+    let multiline = "line 1\nline 2\nline 3";
+    for (line_num, line) in multiline.lines().enumerate() {
+        println!("{}: {}", line_num + 1, line);
+    }
+}
+```
+
+## 📝 实际应用示例
+
+### 解析 CSV 行
+
+```rust
+fn parse_csv_line(line: &str) -> Vec<&str> {
+    line.split(',')
+        .map(|field| field.trim())
+        .collect()
+}
+
+fn find_column<'a>(headers: &[&str], data: &[&'a str], column_name: &str) -> Option<&'a str> {
+    headers.iter()
+        .position(|&h| h == column_name)
+        .and_then(|index| data.get(index).copied())
+}
+
+fn main() {
+    let csv = "name, age, city\nAlice, 30, Beijing\nBob, 25, Shanghai";
+    let mut lines = csv.lines();
+
+    let headers = parse_csv_line(lines.next().unwrap());
+    println!("Headers: {:?}", headers);
+
+    for line in lines {
+        let fields = parse_csv_line(line);
+        if let Some(name) = find_column(&headers, &fields, "name") {
+            if let Some(city) = find_column(&headers, &fields, "city") {
+                println!("{} lives in {}", name, city);
+            }
+        }
+    }
+}
+```
+
+### 路径解析
+
+```rust
+fn file_extension(path: &str) -> Option<&str> {
+    path.rsplit('.').next()
+        .filter(|ext| !ext.contains('/') && !ext.contains('\\'))
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(path)
+}
+
+fn parent_directory(path: &str) -> Option<&str> {
+    path.rfind(|c: char| c == '/' || c == '\\')
+        .map(|pos| &path[..pos])
+}
+
+fn main() {
+    let path = "/home/user/documents/report.pdf";
+
+    println!("Full path: {}", path);
+    println!("File name: {}", file_name(path));
+    println!("Extension: {:?}", file_extension(path));
+    println!("Parent: {:?}", parent_directory(path));
+
+    let no_ext = "/home/user/Makefile";
+    println!("\nFile: {}", file_name(no_ext));
+    println!("Extension: {:?}", file_extension(no_ext));
+}
+```
+
+## 🔗 相关概念
+
+- **String 与 &str 的内存布局**：切片的底层实现
+- **数组切片**：`&[T]` 与 `&str` 有相似的切片机制
+- **借用规则**：字符串切片遵循相同的借用规则
 
 ## 📝 学习检查点
 
-- [ ] 理解字符串切片（&str）的核心概念
-- [ ] 能够在实际项目中应用字符串切片（&str）
+- [ ] 理解 `&str` 是一个胖指针（指针 + 长度）
+- [ ] 掌握字符串切片的范围语法
+- [ ] 知道 UTF-8 编码对切片边界的影响
+- [ ] 能够使用常用的字符串切片方法进行文本处理
+- [ ] 理解函数参数优先使用 `&str` 的原因
+
+## 🚀 下一步
+
+→ [数组切片](./06-array-slices)

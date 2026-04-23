@@ -1,17 +1,260 @@
-# 栈分配与堆分配
+# 栈与堆分配
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解所有权系统中的「栈分配与堆分配」相关知识。
+理解栈（Stack）和堆（Heap）是掌握 Rust 所有权系统的基础。Rust 中变量的存储位置直接影响了性能和所有权行为——栈上分配速度快但大小固定，堆上分配灵活但有额外开销。Rust 的类型系统和所有权机制让你对内存分配拥有精确的控制力。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 栈与堆的基本概念
+
+### 栈（Stack）
+
+栈是一种后进先出（LIFO）的数据结构，分配和释放速度极快：
+
+- **分配方式**：移动栈指针，几乎零开销
+- **数据要求**：编译时大小已知且固定
+- **释放时机**：函数返回时自动弹出
+- **典型数据**：整数、浮点数、布尔值、固定大小数组、元组
+
+```rust
+fn main() {
+    // 以下变量全部在栈上分配
+    let integer: i32 = 42;           // 4 字节
+    let float: f64 = 3.14;           // 8 字节
+    let boolean: bool = true;        // 1 字节
+    let character: char = 'A';       // 4 字节
+    let array: [i32; 3] = [1, 2, 3]; // 12 字节
+    let tuple: (i32, bool) = (10, false); // 5 字节（可能有对齐填充）
+
+    println!("{}, {}, {}, {}, {:?}, {:?}",
+        integer, float, boolean, character, array, tuple);
+}
+```
+
+### 堆（Heap）
+
+堆是一块灵活的内存区域，适合存储大小不确定或动态变化的数据：
+
+- **分配方式**：通过分配器查找空闲内存，有一定开销
+- **数据要求**：大小可以动态变化
+- **释放时机**：由所有者离开作用域时触发 drop
+- **典型数据**：String、Vec、Box、HashMap
+
+```rust
+fn main() {
+    // 以下变量在堆上分配数据（栈上存储指针/元数据）
+    let string = String::from("hello");     // 堆上存 "hello"
+    let vector = vec![1, 2, 3, 4, 5];       // 堆上存数组元素
+    let boxed = Box::new(100);               // 堆上存 100
+
+    println!("{}, {:?}, {}", string, vector, boxed);
+}
+```
+
+## 🔍 内存布局详解
+
+### 栈上变量的布局
+
+```
+栈（高地址 → 低地址）
+┌──────────────────┐
+│  array[2] = 3    │  ← 后声明的变量在低地址
+│  array[1] = 2    │
+│  array[0] = 1    │
+│  float = 3.14    │
+│  integer = 42    │  ← 先声明的变量在高地址
+└──────────────────┘
+```
+
+### 堆上变量的布局
+
+```
+栈                          堆
+┌─────────────────────┐     ┌───────────────────┐
+│ string:             │     │                   │
+│   ptr ──────────────│────→│ h e l l o         │
+│   len: 5            │     └───────────────────┘
+│   capacity: 5       │
+├─────────────────────┤     ┌───────────────────┐
+│ vector:             │     │                   │
+│   ptr ──────────────│────→│ 1  2  3  4  5     │
+│   len: 5            │     └───────────────────┘
+│   capacity: 5       │
+└─────────────────────┘
+```
+
+### 验证大小
+
+```rust
+use std::mem::size_of;
+use std::mem::size_of_val;
+
+fn main() {
+    // 编译时类型大小
+    println!("i32: {} bytes", size_of::<i32>());           // 4
+    println!("f64: {} bytes", size_of::<f64>());           // 8
+    println!("bool: {} bytes", size_of::<bool>());         // 1
+    println!("char: {} bytes", size_of::<char>());         // 4
+    println!("[i32; 5]: {} bytes", size_of::<[i32; 5]>()); // 20
+
+    // String 在栈上的大小（指针+长度+容量）
+    println!("String: {} bytes", size_of::<String>());     // 24（3个usize）
+    println!("Vec<i32>: {} bytes", size_of::<Vec<i32>>()); // 24
+
+    // 运行时值的栈上大小
+    let s = String::from("hello world");
+    println!("s on stack: {} bytes", size_of_val(&s));     // 24（不含堆数据）
+}
+```
+
+## 📊 栈与堆的性能对比
+
+| 特性 | 栈 | 堆 |
+|------|----|----|
+| 分配速度 | 极快（移动指针） | 较慢（查找空闲块） |
+| 释放速度 | 极快（弹出帧） | 较慢（归还分配器） |
+| 内存局部性 | 好（连续内存） | 差（可能分散） |
+| 大小限制 | 固定、编译期已知 | 动态、运行时决定 |
+| 生存期 | 跟随函数调用 | 跟随所有者 |
+| 线程安全 | 天然安全（每线程独立） | 需额外保证 |
+
+```rust
+use std::time::Instant;
+
+fn stack_allocation() {
+    let start = Instant::now();
+    for _ in 0..1_000_000 {
+        let _x: [i32; 100] = [0; 100]; // 栈分配
+    }
+    println!("Stack: {:?}", start.elapsed());
+}
+
+fn heap_allocation() {
+    let start = Instant::now();
+    for _ in 0..1_000_000 {
+        let _x: Vec<i32> = vec![0; 100]; // 堆分配
+    }
+    println!("Heap: {:?}", start.elapsed());
+}
+
+fn main() {
+    stack_allocation();
+    heap_allocation();
+}
+```
+
+## 💡 所有权与内存分配的关系
+
+### 栈上类型（Copy）
+
+```rust
+fn main() {
+    let a: i32 = 10;
+    let b = a; // 按位复制（栈上数据复制很廉价）
+
+    // a 和 b 是完全独立的值
+    println!("a = {}, b = {}", a, b);
+}
+```
+
+### 堆上类型（Move）
+
+```rust
+fn main() {
+    let s1 = String::from("hello");
+    let s2 = s1; // 移动：栈上的 (ptr, len, cap) 复制，堆数据不复制
+
+    // s1 失效，避免两个变量指向同一块堆内存
+    // println!("{}", s1); // 错误
+    println!("{}", s2);
+}
+```
+
+### 为什么 String 不是 Copy
+
+如果 String 允许 Copy（按位复制），两个变量会指向同一块堆内存。当它们都离开作用域时，同一块内存会被释放两次（double free），导致未定义行为：
+
+```
+如果 String 是 Copy（危险！）：
+s1 → [ptr, len, cap] ──┐
+                        ├──→ 堆上 "hello"
+s2 → [ptr, len, cap] ──┘
+
+当 s1 和 s2 离开作用域 → 两次 free 同一块内存 → 未定义行为！
+```
+
+## 📝 实际应用示例
+
+### 选择合适的存储策略
+
+```rust
+// 小型固定数据 → 栈分配
+#[derive(Debug, Copy, Clone)]
+struct Pixel {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+
+// 动态大小数据 → 堆分配
+#[derive(Debug, Clone)]
+struct Image {
+    width: u32,
+    height: u32,
+    pixels: Vec<Pixel>, // 像素数据在堆上
+}
+
+impl Image {
+    fn new(width: u32, height: u32, fill: Pixel) -> Self {
+        let pixel_count = (width * height) as usize;
+        Image {
+            width,
+            height,
+            pixels: vec![fill; pixel_count],
+        }
+    }
+
+    fn get_pixel(&self, x: u32, y: u32) -> Pixel {
+        let index = (y * self.width + x) as usize;
+        self.pixels[index] // Pixel 是 Copy，直接复制返回
+    }
+
+    fn set_pixel(&mut self, x: u32, y: u32, pixel: Pixel) {
+        let index = (y * self.width + x) as usize;
+        self.pixels[index] = pixel;
+    }
+}
+
+fn main() {
+    let white = Pixel { r: 255, g: 255, b: 255, a: 255 };
+    let red = Pixel { r: 255, g: 0, b: 0, a: 255 };
+
+    let mut img = Image::new(100, 100, white);
+    img.set_pixel(50, 50, red);
+
+    let center = img.get_pixel(50, 50);
+    println!("Center pixel: {:?}", center);
+    println!("Image size: {}x{}, total pixels: {}",
+        img.width, img.height, img.pixels.len());
+}
+```
+
+## 🔗 相关概念
+
+- **String 与 &str 的内存布局**：堆分配的典型案例
+- **Box 智能指针**：显式堆分配的方式
+- **Copy 与 Clone trait**：栈类型和堆类型的复制行为差异
 
 ## 📝 学习检查点
 
-- [ ] 理解栈分配与堆分配的核心概念
-- [ ] 能够在实际项目中应用栈分配与堆分配
+- [ ] 理解栈和堆的区别及各自的适用场景
+- [ ] 能够画出 String 和 Vec 的内存布局图
+- [ ] 理解为什么堆上类型默认是 Move 而非 Copy
+- [ ] 知道如何使用 `std::mem::size_of` 查看类型大小
+
+## 🚀 下一步
+
+→ [String 与 &str 的内存布局](./06-string-memory-layout)

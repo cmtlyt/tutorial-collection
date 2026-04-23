@@ -1,17 +1,302 @@
 # 'static 生命周期
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解生命周期中的「'static 生命周期」相关知识。
+`'static` 是 Rust 中一个特殊的生命周期，表示引用可以在**整个程序运行期间**保持有效。它是所有生命周期中最长的，任何 `'static` 引用都不会成为悬垂引用。`'static` 最常见于字符串字面量和全局常量，但也经常出现在 trait bound 中，表示类型不包含非 `'static` 的引用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 'static 引用
+
+### 字符串字面量
+
+所有字符串字面量的类型都是 `&'static str`，因为它们的数据直接嵌入在编译后的二进制文件中：
+
+```rust
+fn main() {
+    // 字符串字面量的完整类型是 &'static str
+    let s: &'static str = "I live forever";
+    println!("{}", s);
+
+    // 通常省略 'static 标注
+    let s2: &str = "Me too";
+    println!("{}", s2);
+
+    // 字面量在整个程序运行期间有效
+    let reference = get_static_str();
+    println!("{}", reference);
+}
+
+fn get_static_str() -> &'static str {
+    "This string lives in the binary" // 安全：数据永远不会被释放
+}
+```
+
+### 全局常量
+
+```rust
+// 常量的引用也是 'static
+const MAX_SIZE: usize = 1024;
+static APP_NAME: &str = "MyApp";
+static VERSION: &str = "1.0.0";
+
+fn app_info() -> &'static str {
+    APP_NAME
+}
+
+fn main() {
+    println!("{} v{}", app_info(), VERSION);
+    println!("Max size: {}", MAX_SIZE);
+}
+```
+
+### 使用 Box::leak 创建 'static 引用
+
+可以通过泄露内存（有意不释放）来在运行时创建 `'static` 引用：
+
+```rust
+fn create_static_string(content: &str) -> &'static str {
+    // Box::leak 故意泄露内存，使数据永远不被释放
+    // 返回的引用因此是 'static 的
+    let boxed = Box::new(content.to_string());
+    Box::leak(boxed)
+}
+
+fn main() {
+    let dynamic_static = create_static_string("created at runtime");
+    println!("{}", dynamic_static);
+    // 注意：这块内存永远不会被释放（除非程序结束）
+}
+```
+
+:::warning Box::leak 的使用场景
+`Box::leak` 会导致内存泄漏，应仅用于程序初始化时创建全局数据等特殊场景，不要在循环或频繁调用的代码中使用。
 :::
+
+## 🔍 'static 作为 trait bound
+
+### T: 'static 的含义
+
+`T: 'static` 表示类型 `T` **可以**活到程序结束（而不是**必须**活到程序结束）。具体来说，它意味着 `T` 不包含任何非 `'static` 的引用：
+
+```rust
+use std::fmt::Display;
+
+// T: 'static 表示 T 不包含短生命周期的引用
+fn print_static<T: Display + 'static>(value: T) {
+    println!("Static value: {}", value);
+}
+
+fn main() {
+    // i32 实现了 'static（它没有任何引用）
+    print_static(42);
+
+    // String 实现了 'static（它拥有数据的所有权，没有引用）
+    print_static(String::from("hello"));
+
+    // Vec<i32> 实现了 'static
+    // print_static(vec![1, 2, 3]); // 需要 Display trait
+
+    // &'static str 满足 'static bound
+    print_static("literal");
+
+    // ❌ 带非 'static 引用的类型不满足
+    // let local = String::from("local");
+    // let reference: &str = &local;
+    // print_static(reference); // 错误：reference 的生命周期不是 'static
+}
+```
+
+### 线程和 'static
+
+线程闭包通常要求 `'static`，因为线程可能比创建它的作用域活得更久：
+
+```rust
+use std::thread;
+
+fn main() {
+    // ✅ move 闭包获取所有权：String 是 'static
+    let data = String::from("hello from thread");
+    let handle = thread::spawn(move || {
+        println!("{}", data);
+    });
+    handle.join().unwrap();
+
+    // ✅ 'static 引用可以安全地跨线程
+    let handle = thread::spawn(|| {
+        let message: &'static str = "static string";
+        println!("{}", message);
+    });
+    handle.join().unwrap();
+
+    // ❌ 非 'static 引用不能传入线程
+    // let local = String::from("local");
+    // let reference = &local;
+    // thread::spawn(|| {
+    //     println!("{}", reference); // 错误
+    // });
+}
+```
+
+## 📊 'static 的两层含义
+
+| 上下文 | 含义 | 示例 |
+|--------|------|------|
+| `&'static T` | 引用的数据在整个程序期间有效 | `&'static str`，字符串字面量 |
+| `T: 'static` | 类型不包含非 'static 引用（可以是拥有所有权的值） | `String`, `i32`, `Vec<u8>` |
+
+```rust
+fn demonstrate() {
+    // &'static str：引用指向永远有效的数据
+    let literal: &'static str = "forever";
+
+    // String 满足 T: 'static（拥有数据，没有引用）
+    let owned: String = String::from("owned");
+
+    // &String 不满足 T: 'static（它是一个临时引用）
+    let _reference: &String = &owned;
+
+    println!("{} {}", literal, owned);
+}
+
+fn main() {
+    demonstrate();
+}
+```
+
+## ⚠️ 常见误解
+
+### 误解一：'static 意味着活到程序结束
+
+`T: 'static` 不代表值必须活到程序结束，只是说它**可以**活到那么久。拥有所有权的值（如 `String`）满足 `'static`，但它们照样可以在任何时候被 drop：
+
+```rust
+fn takes_static<T: 'static>(value: T) {
+    // value 虽然满足 'static，但在这里就被 drop 了
+    drop(value);
+    println!("Value has been dropped");
+}
+
+fn main() {
+    let s = String::from("I satisfy 'static but I won't live forever");
+    takes_static(s);
+    // s 已经被 drop 了
+}
+```
+
+### 误解二：所有 &str 都是 'static
+
+只有字符串字面量是 `&'static str`，从 `String` 创建的切片不是：
+
+```rust
+fn requires_static(s: &'static str) {
+    println!("{}", s);
+}
+
+fn main() {
+    // ✅ 字面量是 'static
+    requires_static("I'm static");
+
+    // ❌ 从 String 创建的切片不是 'static
+    // let owned = String::from("not static");
+    // requires_static(&owned); // 错误
+}
+```
+
+## 📝 实际应用示例
+
+### 全局配置
+
+```rust
+struct AppConfig {
+    name: &'static str,
+    version: &'static str,
+    features: &'static [&'static str],
+}
+
+static CONFIG: AppConfig = AppConfig {
+    name: "MyApplication",
+    version: "2.0.0",
+    features: &["auth", "logging", "metrics"],
+};
+
+fn print_config(config: &AppConfig) {
+    println!("App: {} v{}", config.name, config.version);
+    println!("Features:");
+    for feature in config.features {
+        println!("  - {}", feature);
+    }
+}
+
+fn main() {
+    print_config(&CONFIG);
+}
+```
+
+### 错误消息
+
+```rust
+#[derive(Debug)]
+struct AppError {
+    message: &'static str,
+    code: u32,
+}
+
+impl AppError {
+    fn not_found() -> Self {
+        AppError { message: "Resource not found", code: 404 }
+    }
+
+    fn unauthorized() -> Self {
+        AppError { message: "Authentication required", code: 401 }
+    }
+
+    fn internal() -> Self {
+        AppError { message: "Internal server error", code: 500 }
+    }
+}
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Error {}: {}", self.code, self.message)
+    }
+}
+
+fn process_request(path: &str) -> Result<String, AppError> {
+    match path {
+        "/api/users" => Ok("User list".to_string()),
+        "/api/admin" => Err(AppError::unauthorized()),
+        _ => Err(AppError::not_found()),
+    }
+}
+
+fn main() {
+    let paths = ["/api/users", "/api/admin", "/api/unknown"];
+
+    for path in paths {
+        match process_request(path) {
+            Ok(response) => println!("{}: {}", path, response),
+            Err(error) => println!("{}: {}", path, error),
+        }
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **生命周期标注语法**：`'static` 是生命周期参数的特殊值
+- **生命周期子类型**：`'static` 是所有生命周期的子类型
+- **线程与并发**：线程闭包的 `'static` 要求
 
 ## 📝 学习检查点
 
-- [ ] 理解'static 生命周期的核心概念
-- [ ] 能够在实际项目中应用'static 生命周期
+- [ ] 理解 `&'static T` 和 `T: 'static` 的区别
+- [ ] 知道字符串字面量是 `&'static str` 的原因
+- [ ] 理解为什么 `String` 满足 `T: 'static`（拥有数据，无引用）
+- [ ] 了解 `'static` 在线程中的作用
+- [ ] 避免对 `'static` 的常见误解
+
+## 🚀 下一步
+
+→ [生命周期子类型](./07-lifetime-subtyping)

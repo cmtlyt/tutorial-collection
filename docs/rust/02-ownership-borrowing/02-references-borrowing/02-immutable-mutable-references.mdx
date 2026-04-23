@@ -1,17 +1,329 @@
 # 不可变引用与可变引用
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解引用与借用中的「不可变引用与可变引用」相关知识。
+引用（Reference）允许你在不获取所有权的情况下访问数据。Rust 提供两种引用：**不可变引用（`&T`）** 和 **可变引用（`&mut T`）**。不可变引用允许读取数据但不能修改，可变引用允许读取和修改数据。引用的核心价值在于避免不必要的所有权转移，同时通过编译期检查保证内存安全。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 不可变引用（&T）
+
+### 基本语法
+
+```rust
+fn main() {
+    let message = String::from("hello world");
+
+    // 创建不可变引用
+    let reference: &String = &message;
+
+    // 通过引用读取数据
+    println!("Reference: {}", reference);
+    println!("Original: {}", message); // 原始变量仍然有效
+}
+```
+
+### 作为函数参数
+
+使用引用传参称为**借用（Borrowing）**——函数借用了数据但不拥有它：
+
+```rust
+// 接受不可变引用：只读访问，不获取所有权
+fn calculate_length(s: &String) -> usize {
+    s.len()
+    // s 离开作用域，但因为不拥有所有权，不会 drop 数据
+}
+
+fn first_word(s: &String) -> &str {
+    let bytes = s.as_bytes();
+    for (i, &byte) in bytes.iter().enumerate() {
+        if byte == b' ' {
+            return &s[0..i];
+        }
+    }
+    &s[..]
+}
+
+fn main() {
+    let text = String::from("hello world");
+
+    // 传递引用，text 的所有权不会转移
+    let len = calculate_length(&text);
+    let word = first_word(&text);
+
+    println!("'{}' has {} characters", text, len);
+    println!("First word: {}", word);
+}
+```
+
+### 多个不可变引用
+
+可以同时存在多个不可变引用，因为只读访问是安全的：
+
+```rust
+fn main() {
+    let data = String::from("shared data");
+
+    let ref1 = &data;
+    let ref2 = &data;
+    let ref3 = &data;
+
+    // 多个不可变引用可以同时存在
+    println!("ref1: {}, ref2: {}, ref3: {}", ref1, ref2, ref3);
+}
+```
+
+## 🔄 可变引用（&mut T）
+
+### 基本语法
+
+```rust
+fn main() {
+    // 变量本身必须是 mut 的，才能创建可变引用
+    let mut message = String::from("hello");
+
+    // 创建可变引用
+    let reference: &mut String = &mut message;
+
+    // 通过可变引用修改数据
+    reference.push_str(" world");
+    println!("Modified: {}", reference);
+}
+```
+
+### 作为函数参数
+
+```rust
+fn append_greeting(text: &mut String, name: &str) {
+    text.push_str(", ");
+    text.push_str(name);
+    text.push('!');
+}
+
+fn to_uppercase_in_place(text: &mut String) {
+    *text = text.to_uppercase();
+}
+
+fn main() {
+    let mut greeting = String::from("Hello");
+
+    append_greeting(&mut greeting, "Alice");
+    println!("{}", greeting); // "Hello, Alice!"
+
+    to_uppercase_in_place(&mut greeting);
+    println!("{}", greeting); // "HELLO, ALICE!"
+}
+```
+
+### 可变引用的唯一性
+
+在同一作用域中，同一数据只能有**一个**可变引用：
+
+```rust
+fn main() {
+    let mut data = String::from("hello");
+
+    let ref1 = &mut data;
+    // let ref2 = &mut data; // 错误：不能同时存在两个可变引用
+
+    ref1.push_str(" world");
+    println!("{}", ref1);
+
+    // ref1 不再使用后，可以创建新的可变引用
+    let ref2 = &mut data;
+    ref2.push_str("!");
+    println!("{}", ref2);
+}
+```
+
+## ⚠️ 不可变引用与可变引用不能共存
+
+在同一时刻，不能同时拥有不可变引用和可变引用：
+
+```rust
+fn main() {
+    let mut text = String::from("hello");
+
+    let immutable_ref = &text;
+    // let mutable_ref = &mut text; // 错误：不可变引用还在使用时不能创建可变引用
+
+    println!("Immutable: {}", immutable_ref);
+    // immutable_ref 的最后一次使用在此处
+
+    // 不可变引用不再使用后，可以创建可变引用
+    let mutable_ref = &mut text;
+    mutable_ref.push_str(" world");
+    println!("Mutable: {}", mutable_ref);
+}
+```
+
+:::tip NLL（Non-Lexical Lifetimes）
+Rust 的借用检查器使用 NLL，引用的生命周期在**最后一次使用**的位置结束，而不是在作用域末尾。这使得上面的代码是合法的。
 :::
+
+## 📊 引用规则总结
+
+| 规则 | 说明 |
+|------|------|
+| 不可变引用可以同时有多个 | `&T` 只能读取，多个读取者是安全的 |
+| 可变引用同时只能有一个 | `&mut T` 可以修改，必须独占 |
+| 不可变和可变引用不能共存 | 有读取者时不能修改，修改时不能有读取者 |
+| 引用必须始终有效 | 不能创建悬垂引用 |
+
+## 🔍 解引用
+
+### 自动解引用
+
+Rust 在大多数场景下会自动解引用，让引用的使用和直接使用值一样自然：
+
+```rust
+fn main() {
+    let value = String::from("hello");
+    let reference = &value;
+
+    // 自动解引用：调用方法时不需要显式 *
+    println!("Length: {}", reference.len()); // 等价于 (*reference).len()
+    println!("Uppercase: {}", reference.to_uppercase());
+
+    // 比较时也会自动解引用
+    let other = String::from("hello");
+    println!("Equal: {}", reference == &other); // 比较内容，不是地址
+}
+```
+
+### 手动解引用
+
+有时需要手动使用 `*` 来解引用：
+
+```rust
+fn main() {
+    let x = 5;
+    let y = &x;
+
+    // 需要显式解引用才能用于数值运算
+    assert_eq!(5, *y);
+
+    let mut value = 10;
+    let reference = &mut value;
+    *reference += 5; // 通过可变引用修改值
+    println!("value = {}", *reference); // 15
+}
+```
+
+## 📝 实际应用示例
+
+### 使用引用避免所有权问题
+
+```rust
+struct Student {
+    name: String,
+    scores: Vec<u32>,
+}
+
+impl Student {
+    fn new(name: &str, scores: Vec<u32>) -> Self {
+        Student {
+            name: name.to_string(),
+            scores,
+        }
+    }
+
+    // 不可变引用方法：只读取数据
+    fn average(&self) -> f64 {
+        if self.scores.is_empty() {
+            return 0.0;
+        }
+        let sum: u32 = self.scores.iter().sum();
+        sum as f64 / self.scores.len() as f64
+    }
+
+    fn highest_score(&self) -> Option<u32> {
+        self.scores.iter().copied().max()
+    }
+
+    // 可变引用方法：修改数据
+    fn add_score(&mut self, score: u32) {
+        self.scores.push(score);
+    }
+
+    fn curve_scores(&mut self, bonus: u32) {
+        for score in &mut self.scores {
+            *score = (*score + bonus).min(100);
+        }
+    }
+}
+
+fn print_report(student: &Student) {
+    println!("Student: {}", student.name);
+    println!("  Scores: {:?}", student.scores);
+    println!("  Average: {:.1}", student.average());
+    if let Some(highest) = student.highest_score() {
+        println!("  Highest: {}", highest);
+    }
+}
+
+fn main() {
+    let mut student = Student::new("Alice", vec![85, 92, 78, 90]);
+
+    print_report(&student); // 不可变借用
+
+    student.add_score(95);  // 可变借用
+    student.curve_scores(3); // 可变借用
+
+    print_report(&student); // 再次不可变借用
+}
+```
+
+### 引用与集合
+
+```rust
+fn find_longest<'a>(items: &'a [String]) -> Option<&'a str> {
+    items.iter()
+        .max_by_key(|item| item.len())
+        .map(|item| item.as_str())
+}
+
+fn count_containing(items: &[String], keyword: &str) -> usize {
+    items.iter()
+        .filter(|item| item.contains(keyword))
+        .count()
+}
+
+fn main() {
+    let words = vec![
+        String::from("apple"),
+        String::from("banana"),
+        String::from("cherry"),
+        String::from("dragonfruit"),
+        String::from("elderberry"),
+    ];
+
+    if let Some(longest) = find_longest(&words) {
+        println!("Longest word: {}", longest);
+    }
+
+    let count = count_containing(&words, "an");
+    println!("Words containing 'an': {}", count);
+
+    // words 仍然有效
+    println!("All words: {:?}", words);
+}
+```
+
+## 🔗 相关概念
+
+- **借用规则**：不可变引用和可变引用的详细规则
+- **悬垂引用防护**：编译器如何防止引用指向无效数据
+- **生命周期**：引用的有效期标注
 
 ## 📝 学习检查点
 
-- [ ] 理解不可变引用与可变引用的核心概念
-- [ ] 能够在实际项目中应用不可变引用与可变引用
+- [ ] 理解不可变引用（`&T`）和可变引用（`&mut T`）的区别
+- [ ] 知道不可变引用可以同时有多个，可变引用只能有一个
+- [ ] 理解 NLL 让引用在最后一次使用后即结束
+- [ ] 能够在函数参数中正确使用引用避免所有权转移
+
+## 🚀 下一步
+
+→ [借用规则](./03-borrowing-rules)

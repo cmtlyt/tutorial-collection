@@ -1,17 +1,325 @@
 # 借用规则
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解引用与借用中的「借用规则」相关知识。
+Rust 的借用规则是一组在编译期强制执行的约束，用于在不使用垃圾回收的前提下保证内存安全和防止数据竞争。核心原则是：**在任意给定时刻，要么只有一个可变引用，要么有任意数量的不可变引用，二者不能同时存在**。这些规则看似严格，实则是 Rust 安全保证的基石。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 两条核心规则
+
+### 规则一：多个不可变引用 OR 一个可变引用
+
+```rust
+fn main() {
+    let mut data = vec![1, 2, 3];
+
+    // ✅ 合法：多个不可变引用
+    {
+        let r1 = &data;
+        let r2 = &data;
+        let r3 = &data;
+        println!("{:?} {:?} {:?}", r1, r2, r3);
+    }
+
+    // ✅ 合法：一个可变引用
+    {
+        let r_mut = &mut data;
+        r_mut.push(4);
+        println!("{:?}", r_mut);
+    }
+
+    // ❌ 非法：可变引用与不可变引用共存
+    // {
+    //     let r1 = &data;
+    //     let r_mut = &mut data; // 错误
+    //     println!("{} {}", r1[0], r_mut[0]);
+    // }
+
+    // ❌ 非法：两个可变引用
+    // {
+    //     let r1 = &mut data;
+    //     let r2 = &mut data; // 错误
+    //     r1.push(5);
+    //     r2.push(6);
+    // }
+}
+```
+
+### 规则二：引用必须始终有效
+
+引用不能比它指向的数据活得更久：
+
+```rust
+// ❌ 非法：返回局部变量的引用
+// fn dangling() -> &String {
+//     let s = String::from("hello");
+//     &s // s 在函数结束后被 drop，引用变成悬垂引用
+// }
+
+// ✅ 合法：返回拥有所有权的值
+fn not_dangling() -> String {
+    let s = String::from("hello");
+    s // 移动所有权给调用者
+}
+
+fn main() {
+    let result = not_dangling();
+    println!("{}", result);
+}
+```
+
+## 🔍 借用检查器的工作原理
+
+### NLL（Non-Lexical Lifetimes）
+
+Rust 的借用检查器使用 NLL，引用的生命周期在最后一次使用处结束，而非在作用域末尾：
+
+```rust
+fn main() {
+    let mut text = String::from("hello");
+
+    let r1 = &text;
+    let r2 = &text;
+    println!("{} and {}", r1, r2);
+    // r1 和 r2 的生命周期到此结束（最后一次使用）
+
+    // 此时可以创建可变引用，因为不可变引用已经结束
+    let r3 = &mut text;
+    r3.push_str(" world");
+    println!("{}", r3);
+}
+```
+
+### 生命周期的重叠检测
+
+```rust
+fn main() {
+    let mut numbers = vec![1, 2, 3];
+
+    // 情况一：生命周期不重叠 ✅
+    let first = &numbers[0];
+    println!("First: {}", first);
+    // first 生命周期结束
+    numbers.push(4); // 可变借用，OK
+
+    // 情况二：生命周期重叠 ❌
+    // let first = &numbers[0];
+    // numbers.push(5);         // 错误：不可变引用还活着
+    // println!("First: {}", first);
+}
+```
+
+## ⚠️ 常见违反借用规则的场景
+
+### 在迭代中修改集合
+
+```rust
+fn main() {
+    let mut items = vec![1, 2, 3, 4, 5];
+
+    // ❌ 错误：在迭代（不可变借用）时修改集合
+    // for item in &items {
+    //     if *item > 3 {
+    //         items.push(*item * 2); // 错误：不可变借用期间不能可变借用
+    //     }
+    // }
+
+    // ✅ 正确：先收集需要的信息，再修改
+    let new_items: Vec<i32> = items.iter()
+        .filter(|&&x| x > 3)
+        .map(|&x| x * 2)
+        .collect();
+    items.extend(new_items);
+    println!("{:?}", items);
+}
+```
+
+### HashMap 的读改冲突
+
+```rust
+use std::collections::HashMap;
+
+fn main() {
+    let mut scores: HashMap<String, i32> = HashMap::new();
+    scores.insert("Alice".to_string(), 90);
+    scores.insert("Bob".to_string(), 85);
+
+    // ❌ 错误：在读取（不可变借用）时尝试插入（可变借用）
+    // let alice_score = scores.get("Alice");
+    // scores.insert("Charlie".to_string(), 95); // 错误
+    // println!("{:?}", alice_score);
+
+    // ✅ 正确：先完成读取，再修改
+    let alice_score = scores.get("Alice").copied();
+    scores.insert("Charlie".to_string(), 95);
+    println!("Alice: {:?}", alice_score);
+
+    // ✅ 正确：使用 entry API
+    scores.entry("David".to_string()).or_insert(88);
+    println!("{:?}", scores);
+}
+```
+
+### 结构体字段的部分借用
+
+```rust
+struct Player {
+    name: String,
+    health: i32,
+    score: u32,
+}
+
+impl Player {
+    // ❌ 这样的设计会有借用冲突
+    // fn update_and_print(&mut self) {
+    //     let name = &self.name; // 不可变借用 self.name
+    //     self.score += 1;       // 可变借用 self（冲突！）
+    //     println!("{}: score={}", name, self.score);
+    // }
+
+    // ✅ Rust 支持对不同字段的独立借用
+    fn update_and_print(&mut self) {
+        // 直接借用不同的字段，编译器知道它们互不重叠
+        let name = &self.name;
+        let score = &mut self.score;
+        *score += 1;
+        println!("{}: score={}", name, score);
+    }
+}
+
+fn main() {
+    let mut player = Player {
+        name: String::from("Alice"),
+        health: 100,
+        score: 0,
+    };
+
+    player.update_and_print();
+    player.update_and_print();
+}
+```
+
+## 💡 借用规则的设计动机
+
+### 防止数据竞争
+
+借用规则在编译期消除了数据竞争的三个必要条件中的至少一个：
+
+| 数据竞争条件 | 借用规则如何防止 |
+|-------------|---------------|
+| 多个指针同时访问同一数据 | 可变引用独占 |
+| 至少一个指针在写入 | 写入时不允许其他引用 |
+| 没有同步机制 | 编译期静态检查替代运行时同步 |
+
+```rust
+// 如果没有借用规则，这段代码可能导致数据竞争
+fn main() {
+    let mut data = vec![1, 2, 3];
+
+    // 借用规则确保这种情况不会发生：
+    // 线程A 读取 data[0] 的同时，线程B 在 push 导致重新分配
+
+    // 安全的做法：
+    let snapshot: Vec<i32> = data.clone();
+    data.push(4);
+    println!("snapshot: {:?}", snapshot);
+    println!("current: {:?}", data);
+}
+```
+
+### 防止迭代器失效
+
+```rust
+fn main() {
+    let mut names = vec![
+        String::from("Alice"),
+        String::from("Bob"),
+        String::from("Charlie"),
+    ];
+
+    // 借用规则阻止了在迭代时修改集合（迭代器失效问题）
+    // 安全的方式：使用 retain 过滤
+    names.retain(|name| name.len() > 3);
+    println!("Filtered: {:?}", names);
+
+    // 安全的方式：收集索引后修改
+    let indices_to_uppercase: Vec<usize> = names.iter()
+        .enumerate()
+        .filter(|(_, name)| name.starts_with('A'))
+        .map(|(i, _)| i)
+        .collect();
+
+    for i in indices_to_uppercase {
+        names[i] = names[i].to_uppercase();
+    }
+    println!("Modified: {:?}", names);
+}
+```
+
+## 📝 实际应用示例
+
+### 安全的缓存模式
+
+```rust
+use std::collections::HashMap;
+
+struct WordCounter {
+    text: String,
+    cache: HashMap<String, usize>,
+}
+
+impl WordCounter {
+    fn new(text: &str) -> Self {
+        WordCounter {
+            text: text.to_string(),
+            cache: HashMap::new(),
+        }
+    }
+
+    fn count_word(&mut self, word: &str) -> usize {
+        // 先检查缓存
+        if let Some(&count) = self.cache.get(word) {
+            return count;
+        }
+
+        // 计算结果
+        let count = self.text
+            .split_whitespace()
+            .filter(|w| w.to_lowercase() == word.to_lowercase())
+            .count();
+
+        // 存入缓存
+        self.cache.insert(word.to_string(), count);
+        count
+    }
+}
+
+fn main() {
+    let mut counter = WordCounter::new(
+        "the quick brown fox jumps over the lazy dog the fox"
+    );
+
+    println!("'the' appears {} times", counter.count_word("the"));
+    println!("'fox' appears {} times", counter.count_word("fox"));
+    println!("'cat' appears {} times", counter.count_word("cat"));
+}
+```
+
+## 🔗 相关概念
+
+- **不可变引用与可变引用**：借用规则约束的两种引用类型
+- **悬垂引用防护**：借用规则的重要推论
+- **生命周期**：引用有效期的显式标注
 
 ## 📝 学习检查点
 
-- [ ] 理解借用规则的核心概念
-- [ ] 能够在实际项目中应用借用规则
+- [ ] 能够背诵借用规则：多个 `&T` 或一个 `&mut T`
+- [ ] 理解 NLL 让引用在最后一次使用处结束
+- [ ] 知道常见的借用冲突场景（迭代中修改、HashMap 读改）
+- [ ] 理解借用规则如何在编译期防止数据竞争
+
+## 🚀 下一步
+
+→ [悬垂引用防护](./04-dangling-reference-protection)

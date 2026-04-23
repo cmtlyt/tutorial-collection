@@ -1,17 +1,307 @@
 # 悬垂引用防护
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解引用与借用中的「悬垂引用防护」相关知识。
+悬垂引用（Dangling Reference）是指引用指向的数据已经被释放或失效，但引用本身仍然存在。在 C/C++ 中，悬垂指针是内存安全漏洞的重灾区。Rust 通过借用检查器（Borrow Checker）在编译期彻底杜绝了悬垂引用的可能性——如果代码中存在任何可能产生悬垂引用的路径，编译器会直接拒绝编译。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 什么是悬垂引用
+
+### 经典的悬垂引用场景
+
+```rust
+// ❌ 编译错误：函数返回局部变量的引用
+// fn create_dangling() -> &String {
+//     let s = String::from("hello");
+//     &s // s 在函数返回后被释放，引用指向无效内存
+// }
+
+// ✅ 正确做法：返回拥有所有权的值
+fn create_safe() -> String {
+    let s = String::from("hello");
+    s // 移动所有权给调用者，数据不会被释放
+}
+
+fn main() {
+    let result = create_safe();
+    println!("{}", result);
+}
+```
+
+### 编译器的错误信息
+
+当你尝试创建悬垂引用时，编译器会给出清晰的错误提示：
+
+```rust
+// 尝试编译这段代码会看到：
+// error[E0106]: missing lifetime specifier
+// this function's return type contains a borrowed value,
+// but there is no value for it to be borrowed from
+
+// fn dangling() -> &String {
+//     let s = String::from("hello");
+//     &s
+// }
+//
+// 编译器明确告诉你：返回了一个借用值，但没有可借用的来源
+
+fn main() {
+    println!("Rust prevents dangling references at compile time!");
+}
+```
+
+## 🔍 编译器防护的场景
+
+### 场景一：引用超出数据作用域
+
+```rust
+fn main() {
+    let reference;
+
+    {
+        let value = String::from("temporary");
+        reference = &value;
+        // value 在这里离开作用域被 drop
+    }
+
+    // ❌ reference 指向已释放的内存
+    // println!("{}", reference); // 编译错误：value does not live long enough
+}
+```
+
+```rust
+// ✅ 正确做法：确保数据的生命周期足够长
+fn main() {
+    let value = String::from("long-lived");
+    let reference;
+
+    {
+        reference = &value; // value 在外层作用域，活得够久
+    }
+
+    println!("{}", reference); // OK：value 仍然有效
+}
+```
+
+### 场景二：集合重分配导致引用失效
+
+```rust
+fn main() {
+    let mut numbers = vec![1, 2, 3];
+
+    // ❌ push 可能导致 Vec 重新分配内存，使之前的引用失效
+    // let first = &numbers[0];
+    // numbers.push(4);         // 可能触发重分配
+    // println!("{}", first);   // 编译错误
+
+    // ✅ 正确做法一：先完成引用的使用
+    let first = numbers[0]; // 复制值（i32 是 Copy）
+    numbers.push(4);
+    println!("first: {}, all: {:?}", first, numbers);
+
+    // ✅ 正确做法二：预分配容量避免重分配
+    let mut data = Vec::with_capacity(10);
+    data.extend_from_slice(&[1, 2, 3]);
+    // 在容量范围内 push 不会导致重分配
+}
+```
+
+### 场景三：条件分支中的生命周期不一致
+
+```rust
+// ❌ 编译错误：两个分支返回的引用生命周期不同
+// fn pick_longer(use_first: bool) -> &str {
+//     let first = String::from("hello");
+//     let second = String::from("world");
+//     if use_first { &first } else { &second }
+//     // first 和 second 在函数结束时被 drop
+// }
+
+// ✅ 正确做法：从参数中借用，确保数据在外部存活
+fn pick_longer<'a>(first: &'a str, second: &'a str, use_first: bool) -> &'a str {
+    if use_first { first } else { second }
+}
+
+fn main() {
+    let first = String::from("hello");
+    let second = String::from("world");
+    let result = pick_longer(&first, &second, true);
+    println!("{}", result);
+}
+```
+
+### 场景四：闭包捕获局部变量
+
+```rust
+// ❌ 编译错误：闭包捕获了局部变量的引用
+// fn create_printer() -> impl Fn() {
+//     let message = String::from("hello");
+//     || println!("{}", message) // 闭包借用 message，但 message 将被 drop
+// }
+
+// ✅ 正确做法：使用 move 闭包获取所有权
+fn create_printer() -> impl Fn() {
+    let message = String::from("hello");
+    move || println!("{}", message) // 移动 message 到闭包中
+}
+
+fn main() {
+    let printer = create_printer();
+    printer();
+    printer();
+}
+```
+
+## 📊 悬垂引用 vs 安全引用
+
+| 模式 | 问题 | 解决方案 |
+|------|------|---------|
+| 返回局部变量引用 | 数据在函数结束时释放 | 返回拥有所有权的值 |
+| 引用超出数据作用域 | 数据先于引用被 drop | 确保数据活得更久 |
+| 集合修改后使用旧引用 | 重分配可能使指针失效 | 先完成读取，再修改 |
+| 闭包借用局部变量 | 闭包可能超出数据作用域 | 使用 `move` 闭包 |
+
+## 💡 常见的修复模式
+
+### 模式一：所有权转移替代借用
+
+```rust
+// 问题：想从函数内部返回引用
+// 解决：返回拥有所有权的值
+
+fn generate_greeting(name: &str) -> String {
+    // 返回 String 而不是 &str
+    format!("Hello, {}! Welcome aboard.", name)
+}
+
+fn build_error_message(code: u32, details: &str) -> String {
+    format!("Error {}: {}", code, details)
+}
+
+fn main() {
+    let greeting = generate_greeting("Alice");
+    let error = build_error_message(404, "Page not found");
+    println!("{}", greeting);
+    println!("{}", error);
+}
+```
+
+### 模式二：延长数据的生命周期
+
+```rust
+fn main() {
+    // 问题：引用活得比数据久
+    // 解决：把数据移到更外层的作用域
+
+    let result;
+    let data = String::from("important data");
+    {
+        result = &data; // data 在外层作用域，可以安全借用
+        println!("Inside block: {}", result);
+    }
+    println!("Outside block: {}", result);
+}
+```
+
+### 模式三：Clone 替代借用
+
+```rust
+fn main() {
+    let mut names = vec![String::from("Alice"), String::from("Bob")];
+
+    // 如果需要在修改集合的同时使用元素值
+    let first_name = names[0].clone(); // 克隆值，不再依赖引用
+    names.push(String::from("Charlie"));
+    println!("First: {}, All: {:?}", first_name, names);
+}
+```
+
+## 📝 实际应用示例
+
+### 安全的字符串解析
+
+```rust
+struct ParsedConfig {
+    host: String,
+    port: u16,
+    database: String,
+}
+
+// 从连接字符串解析配置
+// 返回拥有所有权的结构体，避免悬垂引用
+fn parse_connection_string(conn_str: &str) -> Result<ParsedConfig, String> {
+    let parts: Vec<&str> = conn_str.split("://").collect();
+    if parts.len() != 2 {
+        return Err("Invalid connection string format".to_string());
+    }
+
+    let rest = parts[1];
+    let segments: Vec<&str> = rest.split('/').collect();
+    if segments.len() != 2 {
+        return Err("Missing database name".to_string());
+    }
+
+    let host_port: Vec<&str> = segments[0].split(':').collect();
+    let host = host_port[0].to_string(); // 转为 String，拥有所有权
+    let port = host_port.get(1)
+        .unwrap_or(&"5432")
+        .parse::<u16>()
+        .map_err(|e| format!("Invalid port: {}", e))?;
+    let database = segments[1].to_string();
+
+    Ok(ParsedConfig { host, port, database })
+}
+
+fn main() {
+    match parse_connection_string("postgres://localhost:5432/mydb") {
+        Ok(config) => {
+            println!("Host: {}", config.host);
+            println!("Port: {}", config.port);
+            println!("Database: {}", config.database);
+        }
+        Err(error) => println!("Parse error: {}", error),
+    }
+}
+```
+
+### 安全的迭代器组合
+
+```rust
+fn process_data(data: &[i32]) -> Vec<String> {
+    // 所有中间结果都是拥有所有权的值，没有悬垂引用风险
+    data.iter()
+        .filter(|&&x| x > 0)
+        .map(|&x| x * 2)
+        .enumerate()
+        .map(|(index, value)| format!("[{}] {}", index, value))
+        .collect()
+}
+
+fn main() {
+    let numbers = vec![-3, -1, 0, 2, 5, -4, 8, 1];
+    let results = process_data(&numbers);
+
+    for result in &results {
+        println!("{}", result);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **借用规则**：悬垂引用防护是借用规则的重要推论
+- **生命周期**：显式标注帮助编译器验证引用的有效性
+- **所有权规则**：理解所有权转移是避免悬垂引用的基础
 
 ## 📝 学习检查点
 
-- [ ] 理解悬垂引用防护的核心概念
-- [ ] 能够在实际项目中应用悬垂引用防护
+- [ ] 理解什么是悬垂引用以及它的危害
+- [ ] 知道 Rust 编译器在哪些场景下会检测到悬垂引用
+- [ ] 掌握常见的修复模式：所有权转移、延长生命周期、Clone
+- [ ] 能够识别代码中潜在的悬垂引用问题并修复
+
+## 🚀 下一步
+
+→ [字符串切片](./05-string-slices)

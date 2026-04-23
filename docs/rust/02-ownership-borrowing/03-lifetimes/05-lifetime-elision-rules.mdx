@@ -1,17 +1,341 @@
 # 生命周期省略规则
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解生命周期中的「生命周期省略规则」相关知识。
+Rust 的生命周期省略规则（Lifetime Elision Rules）让编译器在常见场景下自动推断引用的生命周期，使你无需每次都手动标注。这些规则覆盖了大部分日常编码场景，只有当编译器无法通过这些规则确定所有引用的生命周期时，才需要你显式标注。理解这些规则能帮助你判断何时需要标注、何时可以省略。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 三条省略规则
+
+编译器按顺序应用三条规则来推断生命周期。如果应用完三条规则后，仍有引用的生命周期无法确定，编译器会报错。
+
+### 规则一：每个引用参数获得独立的生命周期
+
+编译器为函数签名中每个引用参数分配一个独立的生命周期参数：
+
+```rust
+// 你写的代码：
+fn foo(x: &str) {}
+fn bar(x: &str, y: &str) {}
+
+// 编译器在规则一后理解为：
+// fn foo<'a>(x: &'a str) {}
+// fn bar<'a, 'b>(x: &'a str, y: &'b str) {}
+
+fn main() {
+    foo("hello");
+    bar("hello", "world");
+}
+```
+
+### 规则二：单一输入生命周期 → 输出使用相同生命周期
+
+如果只有一个输入生命周期参数，那么所有输出引用使用该生命周期：
+
+```rust
+// 你写的代码：
+fn first_word(s: &str) -> &str {
+    s.split_whitespace().next().unwrap_or("")
+}
+
+// 编译器在规则一和规则二后理解为：
+// fn first_word<'a>(s: &'a str) -> &'a str
+
+fn trim_end(s: &str) -> &str {
+    s.trim_end()
+}
+
+// 编译器理解为：
+// fn trim_end<'a>(s: &'a str) -> &'a str
+
+fn main() {
+    let text = String::from("hello world  ");
+    println!("First word: {}", first_word(&text));
+    println!("Trimmed: '{}'", trim_end(&text));
+}
+```
+
+### 规则三：方法中的 &self / &mut self
+
+如果参数中有 `&self` 或 `&mut self`，那么所有输出引用使用 `self` 的生命周期：
+
+```rust
+struct Book {
+    title: String,
+    author: String,
+    pages: Vec<String>,
+}
+
+impl Book {
+    // 你写的代码：
+    fn title(&self) -> &str {
+        &self.title
+    }
+
+    // 编译器在规则三后理解为：
+    // fn title<'a>(&'a self) -> &'a str
+
+    fn author(&self) -> &str {
+        &self.author
+    }
+
+    fn first_page(&self) -> Option<&str> {
+        self.pages.first().map(|p| p.as_str())
+    }
+
+    // 即使有其他引用参数，返回值也默认绑定 self
+    fn find_page(&self, _keyword: &str) -> Option<&str> {
+        self.pages.iter()
+            .find(|p| p.contains(_keyword))
+            .map(|p| p.as_str())
+    }
+}
+
+fn main() {
+    let book = Book {
+        title: String::from("The Rust Book"),
+        author: String::from("Steve Klabnik"),
+        pages: vec![
+            String::from("Chapter 1: Getting Started"),
+            String::from("Chapter 2: Ownership"),
+        ],
+    };
+
+    println!("Title: {}", book.title());
+    println!("Author: {}", book.author());
+    println!("First page: {:?}", book.first_page());
+    println!("Found: {:?}", book.find_page("Ownership"));
+}
+```
+
+## 🔍 规则应用过程详解
+
+### 示例一：单参数函数（规则一 + 规则二 → 完成）
+
+```rust
+// 原始签名
+fn longest_word(text: &str) -> &str {
+    text.split_whitespace()
+        .max_by_key(|w| w.len())
+        .unwrap_or("")
+}
+
+// 规则一：fn longest_word<'a>(text: &'a str) -> &str
+// 规则二：fn longest_word<'a>(text: &'a str) -> &'a str  ← 完成！
+
+fn main() {
+    let sentence = String::from("I love Rust programming");
+    let word = longest_word(&sentence);
+    println!("Longest word: {}", word);
+}
+```
+
+### 示例二：多参数函数（规则一 → 无法完成 → 需要手动标注）
+
+```rust
+// 原始签名（编译错误）
+// fn longest(x: &str, y: &str) -> &str {
+//     if x.len() > y.len() { x } else { y }
+// }
+
+// 规则一：fn longest<'a, 'b>(x: &'a str, y: &'b str) -> &str
+// 规则二：不适用（有两个输入生命周期）
+// 规则三：不适用（没有 self）
+// 结果：输出引用的生命周期无法确定 → 编译错误
+
+// 必须手动标注
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() > y.len() { x } else { y }
+}
+
+fn main() {
+    let a = String::from("long");
+    let b = String::from("longer");
+    println!("Longest: {}", longest(&a, &b));
+}
+```
+
+### 示例三：方法（规则一 + 规则三 → 完成）
+
+```rust
+struct Message {
+    content: String,
+}
+
+impl Message {
+    // 原始签名
+    fn excerpt(&self, max_len: usize) -> &str {
+        if self.content.len() <= max_len {
+            &self.content
+        } else {
+            &self.content[..max_len]
+        }
+    }
+
+    // 规则一：fn excerpt<'a, 'b>(&'a self, max_len: usize) -> &str
+    // 规则三：fn excerpt<'a>(&'a self, max_len: usize) -> &'a str  ← 完成！
+}
+
+fn main() {
+    let msg = Message {
+        content: String::from("This is a very long message that needs truncation"),
+    };
+    println!("Excerpt: {}", msg.excerpt(20));
+}
+```
+
+## 📊 省略规则总结
+
+| 场景 | 适用规则 | 是否需要手动标注 | 示例 |
+|------|---------|----------------|------|
+| 单输入引用 → 返回引用 | 规则一 + 规则二 | ❌ 不需要 | `fn f(s: &str) -> &str` |
+| 多输入引用 → 返回引用 | 规则一（不够） | ✅ 需要 | `fn f(a: &str, b: &str) -> &str` |
+| `&self` → 返回引用 | 规则一 + 规则三 | ❌ 不需要 | `fn f(&self) -> &str` |
+| `&self` + 其他引用 → 返回引用 | 规则一 + 规则三 | ❌ 不需要 | `fn f(&self, s: &str) -> &str` |
+| 无引用返回值 | 规则一 | ❌ 不需要 | `fn f(s: &str) -> usize` |
+| 无引用参数 | 不适用 | ❌ 不需要 | `fn f(x: i32) -> i32` |
+
+## 💡 何时需要手动标注
+
+### 需要标注的典型场景
+
+```rust
+// 场景一：多个引用参数，返回引用
+fn pick<'a>(x: &'a str, y: &'a str, first: bool) -> &'a str {
+    if first { x } else { y }
+}
+
+// 场景二：结构体持有引用
+struct Wrapper<'a> {
+    data: &'a str,
+}
+
+// 场景三：返回的引用不来自 self
+struct Container {
+    items: Vec<String>,
+}
+
+impl Container {
+    // 这里返回值来自 self.items，规则三自动处理
+    fn first(&self) -> Option<&str> {
+        self.items.first().map(|s| s.as_str())
+    }
+}
+
+fn main() {
+    let result = pick("hello", "world", true);
+    println!("{}", result);
+
+    let text = String::from("wrapped");
+    let wrapper = Wrapper { data: &text };
+    println!("{}", wrapper.data);
+
+    let container = Container {
+        items: vec![String::from("first"), String::from("second")],
+    };
+    println!("{:?}", container.first());
+}
+```
+
+### 不需要标注的场景
+
+```rust
+// 所有这些函数的生命周期都能自动推断
+
+fn len(s: &str) -> usize {
+    s.len()
+}
+
+fn first_char(s: &str) -> Option<char> {
+    s.chars().next()
+}
+
+fn trim(s: &str) -> &str {
+    s.trim()
+}
+
+fn identity(s: &str) -> &str {
+    s
+}
+
+fn main() {
+    let text = "  hello  ";
+    println!("Length: {}", len(text));
+    println!("First char: {:?}", first_char(text));
+    println!("Trimmed: '{}'", trim(text));
+    println!("Identity: '{}'", identity(text));
+}
+```
+
+## 📝 实际应用示例
+
+### 利用省略规则简化 API
+
+```rust
+struct Database {
+    users: Vec<(String, String)>, // (name, email)
+}
+
+impl Database {
+    fn new() -> Self {
+        Database {
+            users: vec![
+                ("Alice".to_string(), "alice@example.com".to_string()),
+                ("Bob".to_string(), "bob@example.com".to_string()),
+                ("Charlie".to_string(), "charlie@example.com".to_string()),
+            ],
+        }
+    }
+
+    // 以下所有方法都不需要手动标注生命周期（规则三）
+
+    fn find_user(&self, name: &str) -> Option<(&str, &str)> {
+        self.users.iter()
+            .find(|(n, _)| n == name)
+            .map(|(n, e)| (n.as_str(), e.as_str()))
+    }
+
+    fn all_names(&self) -> Vec<&str> {
+        self.users.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    fn all_emails(&self) -> Vec<&str> {
+        self.users.iter().map(|(_, e)| e.as_str()).collect()
+    }
+
+    fn user_count(&self) -> usize {
+        self.users.len()
+    }
+}
+
+fn main() {
+    let db = Database::new();
+
+    println!("Users: {:?}", db.all_names());
+    println!("Emails: {:?}", db.all_emails());
+    println!("Count: {}", db.user_count());
+
+    if let Some((name, email)) = db.find_user("Bob") {
+        println!("Found: {} <{}>", name, email);
+    }
+}
+```
+
+## 🔗 相关概念
+
+- **生命周期标注语法**：省略规则适用时可省略的标注
+- **函数签名中的生命周期**：需要手动标注的情况
+- **'static 生命周期**：特殊的生命周期，不受省略规则影响
 
 ## 📝 学习检查点
 
-- [ ] 理解生命周期省略规则的核心概念
-- [ ] 能够在实际项目中应用生命周期省略规则
+- [ ] 能够背诵和解释三条生命周期省略规则
+- [ ] 能够判断一个函数签名是否需要手动标注生命周期
+- [ ] 理解编译器应用省略规则的顺序和逻辑
+- [ ] 知道 `&self` 方法的返回值默认绑定 self 的生命周期
+
+## 🚀 下一步
+
+→ ['static 生命周期](./06-static-lifetime)

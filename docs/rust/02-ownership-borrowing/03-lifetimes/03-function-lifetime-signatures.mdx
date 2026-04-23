@@ -1,17 +1,355 @@
 # 函数签名中的生命周期
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解生命周期中的「函数签名中的生命周期」相关知识。
+当函数接受引用参数并返回引用时，编译器需要知道返回的引用与哪个输入参数的生命周期关联。在大多数简单情况下编译器可以自动推断，但在涉及多个引用参数时，你需要显式标注生命周期来告诉编译器这些关系。正确标注函数签名中的生命周期是编写安全 Rust 代码的关键技能。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 基本规则
+
+### 返回值必须关联输入
+
+函数返回的引用**必须**来自某个输入引用参数。不能返回函数内部创建的局部变量的引用：
+
+```rust
+// ✅ 返回输入的引用
+fn first<'a>(items: &'a [String]) -> &'a str {
+    &items[0]
+}
+
+// ❌ 不能返回局部变量的引用
+// fn dangling<'a>() -> &'a str {
+//     let s = String::from("hello");
+//     &s // 错误：s 在函数结束后被 drop
+// }
+
+// ✅ 如果要返回新创建的数据，返回拥有所有权的值
+fn create() -> String {
+    String::from("hello")
+}
+
+fn main() {
+    let items = vec![String::from("alpha"), String::from("beta")];
+    let result = first(&items);
+    println!("First: {}", result);
+
+    let owned = create();
+    println!("Created: {}", owned);
+}
+```
+
+### 单个引用参数
+
+```rust
+// 只有一个引用参数时，返回值的生命周期自动绑定到该参数
+// 以下两种写法等价：
+fn identity_explicit<'a>(s: &'a str) -> &'a str {
+    s
+}
+
+// 编译器自动推断（生命周期省略）
+fn identity_implicit(s: &str) -> &str {
+    s
+}
+
+fn get_first_word(text: &str) -> &str {
+    text.split_whitespace()
+        .next()
+        .unwrap_or("")
+}
+
+fn main() {
+    let text = String::from("hello world");
+    println!("{}", identity_explicit(&text));
+    println!("{}", identity_implicit(&text));
+    println!("{}", get_first_word(&text));
+}
+```
+
+### 多个引用参数
+
+```rust
+// 多个引用参数时，必须显式标注返回值关联哪个
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() > y.len() { x } else { y }
+}
+
+// 返回值只与第一个参数关联
+fn with_default<'a>(value: &'a str, _default: &str) -> &'a str {
+    if value.is_empty() {
+        // 注意：这里不能返回 _default，因为返回值的生命周期绑定的是 'a
+        // 只能返回 value 或从 value 派生的引用
+        value
+    } else {
+        value
+    }
+}
+
+// 正确的写法：两个参数都标注相同的生命周期
+fn with_fallback<'a>(value: &'a str, default: &'a str) -> &'a str {
+    if value.is_empty() {
+        default
+    } else {
+        value
+    }
+}
+
+fn main() {
+    let a = String::from("long string");
+    let b = String::from("short");
+
+    let result = longest(&a, &b);
+    println!("Longest: {}", result);
+
+    let result = with_fallback("", "fallback");
+    println!("With fallback: {}", result);
+}
+```
+
+## 🔍 常见签名模式
+
+### 模式一：过滤和转换
+
+```rust
+fn filter_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    if text.starts_with(prefix) {
+        Some(&text[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+fn split_first<'a>(text: &'a str, delimiter: char) -> (&'a str, Option<&'a str>) {
+    match text.find(delimiter) {
+        Some(pos) => (&text[..pos], Some(&text[pos + delimiter.len_utf8()..])),
+        None => (text, None),
+    }
+}
+
+fn main() {
+    let url = "https://example.com/path";
+    if let Some(rest) = filter_prefix(url, "https://") {
+        println!("After protocol: {}", rest);
+    }
+
+    let pair = "key=value";
+    let (key, value) = split_first(pair, '=');
+    println!("Key: {}, Value: {:?}", key, value);
+}
+```
+
+### 模式二：从集合中选择
+
+```rust
+fn find_by_prefix<'a>(items: &'a [String], prefix: &str) -> Vec<&'a str> {
+    items.iter()
+        .filter(|item| item.starts_with(prefix))
+        .map(|item| item.as_str())
+        .collect()
+}
+
+fn max_by_length<'a>(items: &'a [String]) -> Option<&'a str> {
+    items.iter()
+        .max_by_key(|item| item.len())
+        .map(|item| item.as_str())
+}
+
+fn main() {
+    let items = vec![
+        String::from("apple"),
+        String::from("apricot"),
+        String::from("banana"),
+        String::from("avocado"),
+    ];
+
+    let a_items = find_by_prefix(&items, "a");
+    println!("Items starting with 'a': {:?}", a_items);
+
+    if let Some(longest) = max_by_length(&items) {
+        println!("Longest: {}", longest);
+    }
+}
+```
+
+### 模式三：多个不同生命周期
+
+```rust
+// 两个参数有不同的生命周期要求
+fn announce_and_return<'a, 'b>(announcement: &'b str, data: &'a str) -> &'a str {
+    println!("Announcement: {}", announcement);
+    data // 返回值只与 data 关联
+}
+
+fn main() {
+    let data = String::from("important data");
+    let result;
+
+    {
+        let announcement = String::from("Processing...");
+        result = announce_and_return(&announcement, &data);
+        // announcement 可以在此处结束生命周期
+    }
+
+    // result 仍然有效，因为它绑定的是 data 的生命周期
+    println!("Result: {}", result);
+}
+```
+
+## ⚠️ 常见错误
+
+### 返回值不能与输入无关
+
+```rust
+// ❌ 编译错误：返回值来自局部变量，不能与任何输入生命周期关联
+// fn broken<'a>(x: &'a str) -> &'a str {
+//     let s = String::from("created inside");
+//     &s // 错误：返回局部变量的引用
+// }
+
+// ✅ 返回拥有所有权的值
+fn fixed(x: &str) -> String {
+    format!("processed: {}", x)
+}
+
+fn main() {
+    let input = "hello";
+    let result = fixed(input);
+    println!("{}", result);
+}
+```
+
+### 生命周期约束过紧
+
+```rust
+// 过紧的约束：两个参数绑定同一生命周期，但实际只需要一个
+// fn overly_constrained<'a>(config: &'a str, data: &'a str) -> &'a str {
+//     data // 只返回 data，config 的生命周期无关
+// }
+
+// 更好：分离生命周期，只约束真正需要的
+fn better<'a>(config: &str, data: &'a str) -> &'a str {
+    println!("Config: {}", config);
+    data
+}
+
+fn main() {
+    let data = String::from("persistent");
+    let result;
+    {
+        let config = String::from("temporary config");
+        result = better(&config, &data);
+    }
+    // 因为 config 的生命周期与返回值无关，这里可以正常使用
+    println!("{}", result);
+}
+```
+
+## 📝 实际应用示例
+
+### 解析器
+
+```rust
+struct Parser<'input> {
+    text: &'input str,
+    position: usize,
+}
+
+impl<'input> Parser<'input> {
+    fn new(text: &'input str) -> Self {
+        Parser { text, position: 0 }
+    }
+
+    fn remaining(&self) -> &'input str {
+        &self.text[self.position..]
+    }
+
+    fn take_while<F>(&mut self, predicate: F) -> &'input str
+    where
+        F: Fn(char) -> bool,
+    {
+        let start = self.position;
+        let remaining = &self.text[self.position..];
+
+        let end_offset = remaining
+            .char_indices()
+            .find(|(_, c)| !predicate(*c))
+            .map(|(i, _)| i)
+            .unwrap_or(remaining.len());
+
+        self.position += end_offset;
+        &self.text[start..self.position]
+    }
+
+    fn skip_whitespace(&mut self) {
+        self.take_while(|c| c.is_whitespace());
+    }
+
+    fn take_word(&mut self) -> &'input str {
+        self.skip_whitespace();
+        self.take_while(|c| c.is_alphanumeric() || c == '_')
+    }
+}
+
+fn main() {
+    let input = "  hello   world  rust_lang  ";
+    let mut parser = Parser::new(input);
+
+    let word1 = parser.take_word();
+    let word2 = parser.take_word();
+    let word3 = parser.take_word();
+
+    println!("Word 1: '{}'", word1);
+    println!("Word 2: '{}'", word2);
+    println!("Word 3: '{}'", word3);
+    println!("Remaining: '{}'", parser.remaining());
+}
+```
+
+### 配置查找
+
+```rust
+fn find_value<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    entries.iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+fn find_value_or_default<'a>(
+    entries: &'a [(String, String)],
+    key: &str,
+    default: &'a str,
+) -> &'a str {
+    find_value(entries, key).unwrap_or(default)
+}
+
+fn main() {
+    let config = vec![
+        (String::from("host"), String::from("localhost")),
+        (String::from("port"), String::from("8080")),
+        (String::from("debug"), String::from("true")),
+    ];
+
+    println!("host: {}", find_value_or_default(&config, "host", "0.0.0.0"));
+    println!("port: {}", find_value_or_default(&config, "port", "3000"));
+    println!("timeout: {}", find_value_or_default(&config, "timeout", "30"));
+}
+```
+
+## 🔗 相关概念
+
+- **生命周期标注语法**：标注的基本语法和命名约定
+- **结构体中的生命周期**：将生命周期应用于数据结构
+- **生命周期省略规则**：编译器自动推断的情况
 
 ## 📝 学习检查点
 
-- [ ] 理解函数签名中的生命周期的核心概念
-- [ ] 能够在实际项目中应用函数签名中的生命周期
+- [ ] 理解返回引用必须来自某个输入引用参数
+- [ ] 能够正确标注涉及多个引用参数的函数签名
+- [ ] 知道何时使用共享生命周期，何时使用独立生命周期
+- [ ] 能够避免生命周期约束过紧的问题
+
+## 🚀 下一步
+
+→ [结构体中的生命周期](./04-struct-lifetimes)

@@ -1,17 +1,216 @@
 # 所有权规则
 
-> **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **版本**：v1.1  
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解所有权系统中的「所有权规则」相关知识。
+所有权（Ownership）是 Rust 管理内存的核心机制。与使用垃圾回收（GC）的语言不同，Rust 通过一套编译期的所有权规则来保证内存安全，无需运行时开销。理解这三条规则是掌握 Rust 的第一步。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 三条核心规则
+
+### 规则一：每个值有且仅有一个所有者
+
+Rust 中的每一个值都有一个变量作为它的**所有者（owner）**。在任意时刻，一个值只能有一个所有者：
+
+```rust
+fn main() {
+    // s1 是字符串 "hello" 的所有者
+    let s1 = String::from("hello");
+
+    // 所有权从 s1 转移到 s2，s1 不再是所有者
+    let s2 = s1;
+
+    // println!("{}", s1); // 错误：s1 已经不再拥有该值
+    println!("{}", s2); // 正确：s2 是当前所有者
+}
+```
+
+### 规则二：同一时刻只能有一个所有者
+
+一个值不能同时被两个变量拥有。当我们将值赋给另一个变量时，所有权会**移动（move）**：
+
+```rust
+fn main() {
+    let name = String::from("Alice");
+
+    // 将 name 传递给函数，所有权转移到函数参数
+    greet(name);
+
+    // println!("{}", name); // 错误：name 的所有权已经转移到 greet 函数中
+}
+
+fn greet(person: String) {
+    // person 现在是这个 String 的所有者
+    println!("Hello, {}!", person);
+    // person 在函数结束时离开作用域，String 被释放
+}
+```
+
+### 规则三：所有者离开作用域时值被丢弃
+
+当拥有值的变量离开其作用域时，Rust 会自动调用 `drop` 函数释放该值占用的内存：
+
+```rust
+fn main() {
+    {
+        let s = String::from("scoped value");
+        println!("{}", s);
+        // s 在这个花括号结束时离开作用域
+    } // ← Rust 在此处自动调用 drop(s)，释放内存
+
+    // println!("{}", s); // 错误：s 已不在作用域中
+}
+```
+
+## 🔍 作用域与所有权
+
+### 变量作用域
+
+变量的作用域从声明处开始，到当前代码块（`{}`）结束为止：
+
+```rust
+fn main() {
+    // outer 的作用域从这里开始
+    let outer = String::from("outer");
+
+    {
+        // inner 的作用域从这里开始
+        let inner = String::from("inner");
+        println!("inner: {}", inner);
+        println!("outer: {}", outer); // 可以访问外层变量
+    } // inner 在此处被 drop
+
+    println!("outer: {}", outer); // outer 仍然有效
+    // println!("inner: {}", inner); // 错误：inner 已经不在作用域中
+} // outer 在此处被 drop
+```
+
+### 函数与所有权转移
+
+将值传递给函数会转移所有权，从函数返回值也会转移所有权：
+
+```rust
+fn main() {
+    let s1 = create_string();       // create_string 将返回值的所有权转移给 s1
+    let s2 = String::from("world");
+    let s3 = take_and_return(s2);   // s2 的所有权移入函数，返回值的所有权给 s3
+
+    println!("s1 = {}", s1);
+    // println!("s2 = {}", s2);     // 错误：s2 的所有权已转移
+    println!("s3 = {}", s3);
+}
+
+fn create_string() -> String {
+    let s = String::from("hello");
+    s // 返回 s，所有权转移给调用者
+}
+
+fn take_and_return(text: String) -> String {
+    println!("Got: {}", text);
+    text // 将所有权返回给调用者
+}
+```
+
+## 📊 所有权转移场景总结
+
+| 操作 | 所有权变化 | 示例 |
+|------|-----------|------|
+| 变量赋值 | 从旧变量移动到新变量 | `let s2 = s1;` |
+| 函数参数传递 | 从调用者移动到函数参数 | `foo(s)` |
+| 函数返回值 | 从函数移动到调用者 | `let s = foo();` |
+| 离开作用域 | 值被自动丢弃 | `}` |
+
+## 💡 为什么需要所有权
+
+### 与其他语言的对比
+
+```rust
+// Rust 的做法：编译期检查所有权，零运行时开销
+fn main() {
+    let data = vec![1, 2, 3];
+    process(data);
+    // data 已被移走，不会出现悬垂指针或重复释放
+}
+
+fn process(values: Vec<i32>) {
+    for value in &values {
+        println!("{}", value);
+    }
+    // values 在此处被自动释放，且只释放一次
+}
+```
+
+所有权系统在编译期防止了三类常见的内存问题：
+
+| 问题 | 说明 | Rust 如何防止 |
+|------|------|-------------|
+| **悬垂指针** | 引用已释放的内存 | 编译器跟踪所有权，确保引用始终有效 |
+| **重复释放** | 同一内存被释放两次 | 只有一个所有者，只释放一次 |
+| **内存泄漏** | 分配的内存未释放 | 离开作用域自动 drop |
+
+## 📝 实际应用示例
+
+### 通过返回值传回所有权
+
+当函数需要使用一个值但调用者还需要继续使用时，可以通过返回值传回所有权：
+
+```rust
+fn main() {
+    let mut message = String::from("hello");
+    message = add_exclamation(message);
+    println!("{}", message); // "hello!"
+
+    message = make_uppercase(message);
+    println!("{}", message); // "HELLO!"
+}
+
+fn add_exclamation(mut text: String) -> String {
+    text.push('!');
+    text
+}
+
+fn make_uppercase(text: String) -> String {
+    text.to_uppercase()
+}
+```
+
+### 使用元组返回多个值
+
+```rust
+fn main() {
+    let name = String::from("Alice");
+    let greeting = String::from("Hello");
+
+    let (name, greeting, message) = combine(name, greeting);
+    println!("{}", message);
+    println!("Name is still: {}", name);
+    println!("Greeting is still: {}", greeting);
+}
+
+fn combine(name: String, greeting: String) -> (String, String, String) {
+    let message = format!("{}, {}!", greeting, name);
+    (name, greeting, message) // 返回所有权和新生成的值
+}
+```
+
+:::tip 更优雅的方式
+频繁地通过返回值传回所有权会让代码变得繁琐。在后续章节中，你将学到**引用与借用**，它们允许你在不转移所有权的情况下访问数据。
 :::
+
+## 🔗 相关概念
+
+- **移动语义**：所有权转移的具体机制
+- **Copy 与 Clone trait**：某些类型可以复制而不是移动
+- **引用与借用**：不转移所有权的情况下访问数据
 
 ## 📝 学习检查点
 
-- [ ] 理解所有权规则的核心概念
-- [ ] 能够在实际项目中应用所有权规则
+- [ ] 能够背诵和解释所有权的三条核心规则
+- [ ] 理解变量赋值和函数传参时的所有权转移
+- [ ] 知道为什么 Rust 的所有权系统能防止内存安全问题
+- [ ] 能够通过返回值传回所有权
+
+## 🚀 下一步
+
+→ [移动语义](./03-move-semantics)
