@@ -1,17 +1,410 @@
 # LSP 实现
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「LSP 实现」相关知识。
+LSP（Language Server Protocol，语言服务器协议）是由 Microsoft 提出的标准化协议，用于在编辑器/IDE 和语言服务器之间通信。语言服务器负责提供代码补全、跳转定义、悬停提示、诊断等智能功能。Rust 因其出色的性能和类型安全性，非常适合实现 LSP 服务器。rust-analyzer 本身就是用 Rust 编写的优秀 LSP 实现典范。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心概念
 
-## 📝 学习检查点
+- **语言服务器**：独立进程，通过 JSON-RPC 与编辑器通信
+- **编辑器无关**：一个语言服务器可被所有支持 LSP 的编辑器使用
+- **协议标准化**：定义了请求/响应格式、通知类型、能力协商等
 
-- [ ] 理解LSP 实现的核心概念
-- [ ] 能够在实际项目中应用LSP 实现
+## 🎯 LSP 工作架构
+
+```
+LSP 通信架构
+┌──────────────────┐          ┌──────────────────────┐
+│  编辑器 / IDE     │          │  语言服务器 (Rust)     │
+│  (VS Code,       │  JSON-RPC │                      │
+│   Neovim,        │ ◄───────► │  - 解析源代码         │
+│   Emacs, ...)    │  stdin/   │  - 类型检查           │
+│                  │  stdout   │  - 代码补全           │
+│  ┌────────────┐  │  或 TCP   │  - 诊断（错误/警告）  │
+│  │ LSP Client │  │          │  - 跳转定义           │
+│  └────────────┘  │          │  - 重命名             │
+└──────────────────┘          └──────────────────────┘
+
+通信流程：
+1. 编辑器启动语言服务器进程
+2. initialize 请求：协商双方能力
+3. initialized 通知：初始化完成
+4. textDocument/didOpen：编辑器打开文件
+5. textDocument/completion：请求代码补全
+6. textDocument/publishDiagnostics：服务器推送诊断
+7. shutdown + exit：关闭语言服务器
+```
+
+## 🔑 快速上手
+
+### 项目配置
+
+```toml
+# Cargo.toml
+[package]
+name = "my-language-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+```
+
+### 基本 LSP 服务器
+
+```rust
+use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::*;
+use tower_lsp::{Client, LanguageServer, LspService, Server};
+use std::sync::Mutex;
+use std::collections::HashMap;
+
+/// 语言服务器状态
+struct MyLanguageServer {
+    client: Client,
+    documents: Mutex<HashMap<Url, String>>,
+}
+
+impl MyLanguageServer {
+    fn new(client: Client) -> Self {
+        Self {
+            client,
+            documents: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+#[tower_lsp::async_trait]
+impl LanguageServer for MyLanguageServer {
+    /// 初始化：声明服务器能力
+    async fn initialize(&self, _params: InitializeParams) -> Result<InitializeResult> {
+        Ok(InitializeResult {
+            capabilities: ServerCapabilities {
+                // 文档同步方式：全量同步
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                    TextDocumentSyncKind::FULL,
+                )),
+                // 代码补全
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".into(), ":".into()]),
+                    ..Default::default()
+                }),
+                // 悬停提示
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                // 跳转定义
+                definition_provider: Some(OneOf::Left(true)),
+                ..Default::default()
+            },
+            server_info: Some(ServerInfo {
+                name: "My Language Server".into(),
+                version: Some("0.1.0".into()),
+            }),
+        })
+    }
+
+    async fn initialized(&self, _params: InitializedParams) {
+        self.client
+            .log_message(MessageType::INFO, "语言服务器已初始化")
+            .await;
+    }
+
+    /// 文件打开
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let uri = params.text_document.uri.clone();
+        let text = params.text_document.text.clone();
+
+        // 存储文档内容
+        self.documents.lock().unwrap().insert(uri.clone(), text.clone());
+
+        // 分析并发送诊断
+        let diagnostics = analyze_document(&text);
+        self.client
+            .publish_diagnostics(uri, diagnostics, None)
+            .await;
+    }
+
+    /// 文件内容变更
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let uri = params.text_document.uri.clone();
+
+        if let Some(change) = params.content_changes.into_iter().last() {
+            let text = change.text;
+            self.documents.lock().unwrap().insert(uri.clone(), text.clone());
+
+            let diagnostics = analyze_document(&text);
+            self.client
+                .publish_diagnostics(uri, diagnostics, None)
+                .await;
+        }
+    }
+
+    /// 代码补全
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let _position = params.text_document_position.position;
+
+        let items = vec![
+            CompletionItem {
+                label: "println!".into(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some("打印并换行".into()),
+                insert_text: Some(r#"println!("$1");"#.into()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "let".into(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("变量绑定".into()),
+                insert_text: Some("let $1 = $2;".into()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "fn".into(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("函数定义".into()),
+                insert_text: Some("fn $1($2) {\n    $3\n}".into()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            },
+        ];
+
+        Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    /// 悬停提示
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let documents = self.documents.lock().unwrap();
+        if let Some(text) = documents.get(uri) {
+            let word = get_word_at_position(text, position);
+            if let Some(word) = word {
+                let info = get_hover_info(&word);
+                if let Some(info) = info {
+                    return Ok(Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: info,
+                        }),
+                        range: None,
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// 分析文档，生成诊断信息
+fn analyze_document(text: &str) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for (line_number, line) in text.lines().enumerate() {
+        // 示例规则：检测 TODO 注释
+        if let Some(col) = line.find("TODO") {
+            diagnostics.push(Diagnostic {
+                range: Range {
+                    start: Position {
+                        line: line_number as u32,
+                        character: col as u32,
+                    },
+                    end: Position {
+                        line: line_number as u32,
+                        character: (col + 4) as u32,
+                    },
+                },
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("my-lsp".into()),
+                message: "发现 TODO 注释，请处理后移除".into(),
+                ..Default::default()
+            });
+        }
+
+        // 示例规则：检测过长的行
+        if line.len() > 100 {
+            diagnostics.push(Diagnostic {
+                range: Range {
+                    start: Position {
+                        line: line_number as u32,
+                        character: 100,
+                    },
+                    end: Position {
+                        line: line_number as u32,
+                        character: line.len() as u32,
+                    },
+                },
+                severity: Some(DiagnosticSeverity::INFORMATION),
+                source: Some("my-lsp".into()),
+                message: format!("行长度 {} 超过建议的 100 字符", line.len()),
+                ..Default::default()
+            });
+        }
+    }
+
+    diagnostics
+}
+
+/// 获取光标位置的单词
+fn get_word_at_position(text: &str, position: Position) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let line = lines.get(position.line as usize)?;
+    let col = position.character as usize;
+
+    if col >= line.len() {
+        return None;
+    }
+
+    let chars: Vec<char> = line.chars().collect();
+    let mut start = col;
+    let mut end = col;
+
+    while start > 0 && chars[start - 1].is_alphanumeric() || (start > 0 && chars[start - 1] == '_') {
+        start -= 1;
+    }
+    while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+        end += 1;
+    }
+
+    Some(chars[start..end].iter().collect())
+}
+
+/// 获取悬停提示信息
+fn get_hover_info(word: &str) -> Option<String> {
+    match word {
+        "fn" => Some("**fn** - 函数定义关键字\n\n```rust\nfn name(params) -> ReturnType { body }\n```".into()),
+        "let" => Some("**let** - 变量绑定关键字\n\n```rust\nlet x = value;\nlet mut x = value; // 可变绑定\n```".into()),
+        "struct" => Some("**struct** - 结构体定义关键字\n\n```rust\nstruct Name { field: Type }\n```".into()),
+        "impl" => Some("**impl** - 实现块关键字\n\n```rust\nimpl Type { ... }\nimpl Trait for Type { ... }\n```".into()),
+        _ => None,
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+
+    let (service, socket) = LspService::new(|client| MyLanguageServer::new(client));
+    Server::new(stdin, stdout, socket).serve(service).await;
+}
+```
+
+## 🔑 Rust LSP 生态中的典范
+
+```
+Rust 编写的 LSP 实现
+├── rust-analyzer        — Rust 语言的 LSP 服务器
+│   ├── 增量解析和分析
+│   ├── 完整的类型推导
+│   ├── 智能重构
+│   └── 约 20 万行 Rust 代码
+├── taplo                — TOML 语言的 LSP 服务器
+├── typos-lsp            — 拼写检查 LSP
+├── texlab               — LaTeX LSP 服务器
+└── sqls                 — SQL LSP 服务器
+```
+
+### rust-analyzer 的架构模式
+
+```rust
+fn describe_rust_analyzer_architecture() {
+    println!("=== rust-analyzer 架构亮点 ===\n");
+
+    println!("1. 增量计算 (salsa):");
+    println!("   - 基于查询的增量计算框架");
+    println!("   - 只重新计算受变更影响的部分");
+    println!("   - 大幅提升响应速度\n");
+
+    println!("2. 虚拟文件系统 (vfs):");
+    println!("   - 抽象文件系统，支持内存中的文件");
+    println!("   - 文件变更通过通知传递\n");
+
+    println!("3. 语义模型分层:");
+    println!("   - Syntax Tree (CST) → HIR → Type Information");
+    println!("   - 每一层可独立缓存和增量更新\n");
+
+    println!("4. 取消机制:");
+    println!("   - 当用户输入新字符时，自动取消过时的分析任务");
+    println!("   - 保证编辑器始终响应迅速");
+}
+
+fn main() {
+    describe_rust_analyzer_architecture();
+}
+```
+
+## 🔑 LSP 核心消息类型
+
+```rust
+fn describe_lsp_messages() {
+    println!("=== LSP 核心消息类型 ===\n");
+
+    println!("请求（Request）- 需要响应:");
+    println!("  textDocument/completion     代码补全");
+    println!("  textDocument/hover          悬停提示");
+    println!("  textDocument/definition     跳转定义");
+    println!("  textDocument/references     查找引用");
+    println!("  textDocument/rename         重命名");
+    println!("  textDocument/formatting     代码格式化");
+    println!("  textDocument/codeAction     代码操作（快速修复）");
+    println!("  textDocument/signatureHelp  函数签名提示\n");
+
+    println!("通知（Notification）- 无需响应:");
+    println!("  textDocument/didOpen        文件打开");
+    println!("  textDocument/didChange      文件变更");
+    println!("  textDocument/didSave        文件保存");
+    println!("  textDocument/didClose       文件关闭");
+    println!("  textDocument/publishDiagnostics  发布诊断\n");
+
+    println!("生命周期:");
+    println!("  initialize    → 协商能力");
+    println!("  initialized   → 初始化完成");
+    println!("  shutdown      → 准备关闭");
+    println!("  exit          → 退出进程");
+}
+
+fn main() {
+    describe_lsp_messages();
+}
+```
+
+## 📊 LSP 服务器库对比
+
+| 库 | 特点 | 适用场景 |
+|---|------|---------|
+| tower-lsp | 基于 tower 的异步 LSP 框架 | 新项目首选 |
+| lsp-server | rust-analyzer 使用的底层库 | 需要更多控制 |
+| lsp-types | LSP 协议类型定义 | 所有 LSP 项目 |
+
+## 🔗 相关资源
+
+- [LSP 规范](https://microsoft.github.io/language-server-protocol/)
+- [tower-lsp 仓库](https://github.com/ebkalderon/tower-lsp)
+- [rust-analyzer 源码](https://github.com/rust-lang/rust-analyzer)
+- [LSP 规范 JSON 定义](https://github.com/microsoft/language-server-protocol)
+
+## ✅ 学习检查点
+
+- [ ] 理解 LSP 的客户端-服务器通信架构
+- [ ] 能够使用 tower-lsp 搭建基础 LSP 服务器
+- [ ] 掌握文档同步、代码补全、诊断推送的实现方式
+- [ ] 了解 rust-analyzer 的增量计算架构思路
+- [ ] 知道 LSP 核心消息类型（请求 vs 通知）
+
+## 🚀 下一步
+
+→ [构建系统与代码分析工具](./15-build-systems-code-analysis)

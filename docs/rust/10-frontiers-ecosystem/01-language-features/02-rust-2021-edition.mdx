@@ -1,17 +1,393 @@
 # Rust 2021 Edition
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解语言新特性中的「Rust 2021 Edition」相关知识。
+Rust 2021 Edition 于 2021 年 10 月随 Rust 1.56.0 发布，是 Rust 的第三个 Edition（继 2015 和 2018 之后）。2021 Edition 相对于 2018 Edition 做了更为精细和聚焦的改进，主要集中在闭包捕获优化、新增 prelude 内容、保留新语法等方面。这些改变虽然看似不大，但在实际开发中能显著提升编码体验。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🎯 Edition 迁移机制
+
+在深入具体特性之前，先了解 Rust 的 Edition 迁移方式：
+
+```toml
+# Cargo.toml 中指定 Edition
+[package]
+name = "my-project"
+version = "0.1.0"
+edition = "2021"
+```
+
+使用 `cargo fix` 自动迁移：
+
+```bash
+# 自动将代码迁移到 2021 Edition
+cargo fix --edition
+
+# 迁移后更新 Cargo.toml 中的 edition 字段
+# edition = "2018" → edition = "2021"
+```
+
+:::tip
+不同 Edition 的 crate 可以互相依赖，编译器会自动处理兼容性。你无需等所有依赖都升级到同一 Edition。
 :::
 
-## 📝 学习检查点
+## 🔑 闭包的不相交捕获（Disjoint Capture）
 
-- [ ] 理解Rust 2021 Edition的核心概念
-- [ ] 能够在实际项目中应用Rust 2021 Edition
+### 2018 Edition 的问题
+
+在 2018 Edition 中，闭包会捕获整个变量，即使只使用了变量的某个字段：
+
+```rust
+// Rust 2018: 闭包捕获整个结构体
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn main() {
+    let point = Point { x: 1, y: 2 };
+
+    // 在 2018 Edition 中，这个闭包捕获了整个 point
+    // 即使只使用了 point.x
+    let use_x = || println!("x = {}", point.x);
+
+    // 在 2018 Edition 中，这行会报错：point 已被借用
+    // let use_y = || println!("y = {}", point.y);
+
+    use_x();
+}
+```
+
+### 2021 Edition 的改进
+
+2021 Edition 中闭包只捕获实际使用的字段，允许对同一结构体的不同字段进行独立借用：
+
+```rust
+// Rust 2021: 闭包只捕获需要的字段
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn main() {
+    let point = Point { x: 1, y: 2 };
+
+    // 2021 Edition 中只捕获 point.x
+    let use_x = || println!("x = {}", point.x);
+
+    // 这在 2021 Edition 中是合法的，因为 point.y 没被第一个闭包捕获
+    let use_y = || println!("y = {}", point.y);
+
+    use_x();
+    use_y();
+}
+```
+
+### 对 Drop 顺序的影响
+
+不相交捕获会改变字段的 Drop 顺序。在某些情况下，你可能需要显式捕获整个变量：
+
+```rust
+use std::sync::Mutex;
+
+struct State {
+    lock: Mutex<Vec<i32>>,
+    name: String,
+}
+
+fn main() {
+    let state = State {
+        lock: Mutex::new(vec![1, 2, 3]),
+        name: String::from("example"),
+    };
+
+    let closure = || {
+        // 2021 Edition 只捕获 state.lock
+        // 如果需要确保 state 整体在闭包结束后才 Drop，
+        // 可以添加 let _ = &state; 来强制捕获整个变量
+        let _guard = state.lock.lock().unwrap();
+        println!("locked");
+    };
+
+    closure();
+    println!("name: {}", state.name); // 2021 Edition 中合法
+}
+```
+
+## 🔑 新增 Prelude 内容
+
+2021 Edition 在 prelude 中新增了三个 trait：
+
+```rust
+// 2021 Edition prelude 新增内容：
+// - std::convert::TryInto
+// - std::convert::TryFrom
+// - std::iter::FromIterator
+
+fn main() {
+    // TryInto 和 TryFrom 不再需要手动 use
+    let value: i32 = 42;
+    let byte: u8 = value.try_into().expect("值超出 u8 范围");
+    println!("byte: {byte}");
+
+    // FromIterator 也已在 prelude 中
+    let numbers: Vec<i32> = (1..=5).collect();
+    println!("numbers: {numbers:?}");
+
+    // TryFrom 用法
+    let big_number: i64 = 1000;
+    match u8::try_from(big_number) {
+        Ok(val) => println!("转换成功: {val}"),
+        Err(err) => println!("转换失败: {err}"),
+    }
+}
+```
+
+## 🔑 数组的 IntoIterator
+
+在 2021 Edition 中，数组 `[T; N]` 实现了 `IntoIterator`，可以直接在 `for` 循环中按值迭代：
+
+```rust
+fn main() {
+    let scores = [85, 92, 78, 96, 88];
+
+    // 2021 Edition: 直接按值迭代数组
+    for score in scores {
+        println!("分数: {score}");
+    }
+
+    // 也可以使用 into_iter() 获得拥有所有权的迭代器
+    let names = [String::from("Alice"), String::from("Bob")];
+    for name in names {
+        // name 是 String 而不是 &String
+        println!("Hello, {name}!");
+    }
+
+    // 对比 2018 Edition 中的写法
+    let values = [1, 2, 3];
+    // 2018: for v in values.iter() { ... }    // v 是 &i32
+    // 2021: for v in values { ... }           // v 是 i32
+    for value in values {
+        println!("{value}");
+    }
+}
+```
+
+## 🔑 新的闭包 trait 推断规则
+
+2021 Edition 优化了闭包的 `Fn`/`FnMut`/`FnOnce` trait 推断，使其更加精确：
+
+```rust
+fn main() {
+    let mut count = 0;
+
+    // 闭包的 trait 推断更精确
+    let mut increment = || {
+        count += 1;
+        println!("count = {count}");
+    };
+
+    increment(); // count = 1
+    increment(); // count = 2
+
+    // 在 2021 Edition 中，编译器更好地推断闭包是否实现了 Fn/FnMut/FnOnce
+    let greeting = String::from("Hello");
+    let greet = move || {
+        // move 闭包可以更精确地决定哪些字段需要 move
+        println!("{greeting}");
+    };
+    greet();
+}
+```
+
+## 🔑 `or` 模式（Or Patterns）
+
+2021 Edition 扩展了 `|` 模式在更多位置的使用：
+
+```rust
+fn classify_number(number: i32) -> &'static str {
+    match number {
+        // or 模式在嵌套位置使用
+        Some(1 | 2 | 3) if matches!(Some(number), Some(1 | 2 | 3)) => "小数字",
+        _ => "其他",
+    }
+}
+
+fn main() {
+    let values = vec![1, 5, 2, 8, 3];
+
+    for value in values {
+        // let 语句中使用 or 模式
+        let description = match value {
+            1 | 2 | 3 => "小",
+            4 | 5 | 6 => "中",
+            _ => "大",
+        };
+        println!("{value} 是{description}数字");
+    }
+
+    // if let 中使用 or 模式
+    let status_code = 404;
+    if let 400 | 404 | 500 = status_code {
+        println!("常见的 HTTP 错误码: {status_code}");
+    }
+
+    // while let 中使用 or 模式
+    let mut stack = vec![Some(1), None, Some(2), Some(3), None];
+    while let Some(Some(1) | Some(2)) = stack.pop() {
+        println!("弹出了 1 或 2");
+    }
+}
+```
+
+## 🔑 保留语法（Reserved Syntax）
+
+2021 Edition 为未来语言特性保留了一些语法，避免后续引入时产生破坏性变更：
+
+```rust
+fn main() {
+    // 保留 ident#string、ident"string"、ident'c' 语法
+    // 用于未来可能的前缀语法扩展
+
+    // 2021 Edition 中，以下是合法的格式化字符串前缀：
+    let name = "World";
+    println!("Hello, {name}!"); // 格式化字符串在 1.58+ 中可用
+
+    // 保留的语法使得未来可以引入类似以下特性：
+    // c"..." - C 风格字符串字面量 (已在 Rust 1.77 稳定)
+    // b"..." - 字节字符串 (已存在)
+    // r"..." - 原始字符串 (已存在)
+
+    // C 字符串字面量示例（Rust 1.77+）
+    let c_string: &core::ffi::CStr = c"Hello from C string";
+    println!("C string: {:?}", c_string);
+}
+```
+
+## 🔑 Cargo 特性解析器 v2
+
+2021 Edition 将 Cargo 的特性解析器（feature resolver）默认设为 v2，避免构建脚本和 proc-macro 依赖的特性合并问题：
+
+```toml
+# 在 2018 Edition 中需要手动启用
+[package]
+edition = "2018"
+resolver = "2"
+
+# 在 2021 Edition 中自动启用
+[package]
+edition = "2021"
+# resolver = "2" 是默认值
+```
+
+```rust
+// 特性解析器 v2 的好处:
+// 1. 平台特定的依赖特性不会在所有平台上激活
+// 2. 构建脚本(build-dependencies)和 proc-macro 的特性不会与普通依赖合并
+// 3. dev-dependencies 的特性不会在 cargo build 中激活
+
+// 示例 Cargo.toml
+// [dependencies]
+// serde = { version = "1", features = ["derive"] }
+//
+// [build-dependencies]
+// serde = { version = "1" }
+// # 在 v2 中，build-dependencies 的 serde 不会自动获得 "derive" 特性
+```
+
+## 🔑 panic 宏的格式化
+
+2021 Edition 中 `panic!` 宏的行为与 `println!` 一致，支持格式化字符串：
+
+```rust
+fn divide(numerator: f64, denominator: f64) -> f64 {
+    if denominator == 0.0 {
+        // 2021 Edition: panic! 支持格式化字符串
+        panic!("除数不能为零，分子为 {numerator}");
+    }
+    numerator / denominator
+}
+
+fn main() {
+    let result = divide(10.0, 3.0);
+    println!("10 / 3 = {result:.2}");
+
+    // 2018 Edition 中 panic!("message: {}", value) 是把整个字符串当作 message
+    // 2021 Edition 中会正确格式化
+
+    // assert! 系列宏也支持自定义消息格式化
+    let age = 25;
+    assert!(age >= 18, "年龄 {age} 不满足最低要求 18 岁");
+    println!("年龄验证通过");
+}
+```
+
+## 📝 实际迁移示例
+
+### 从 2018 迁移到 2021
+
+```bash
+# 步骤 1: 确保代码在当前 Edition 下编译通过
+cargo build
+
+# 步骤 2: 运行自动迁移工具
+cargo fix --edition
+
+# 步骤 3: 更新 Cargo.toml
+# edition = "2018" → edition = "2021"
+
+# 步骤 4: 验证迁移结果
+cargo build
+cargo test
+```
+
+### 常见迁移注意事项
+
+```rust
+use std::sync::Mutex;
+
+struct Resource {
+    data: Mutex<Vec<String>>,
+    metadata: String,
+}
+
+fn main() {
+    let resource = Resource {
+        data: Mutex::new(vec!["item1".into()]),
+        metadata: String::from("example"),
+    };
+
+    // 迁移注意：不相交捕获可能改变 Drop 顺序
+    // 如果依赖整个结构体的 Drop 顺序，需要显式引用
+    let process = || {
+        let _ = &resource; // 显式捕获整个 resource（如需保持原有 Drop 顺序）
+        let guard = resource.data.lock().unwrap();
+        println!("数据: {:?}", *guard);
+    };
+    process();
+
+    // 不相交捕获的好处：可以同时借用不同字段
+    let show_meta = || println!("metadata: {}", resource.metadata);
+    show_meta();
+}
+```
+
+## 🔗 相关资源
+
+- [Rust 2021 Edition 官方指南](https://doc.rust-lang.org/edition-guide/rust-2021/index.html)
+- [RFC 3085: Edition 2021](https://rust-lang.github.io/rfcs/3085-edition-2021.html)
+- [Rust 2021 发布博客](https://blog.rust-lang.org/2021/10/21/Rust-1.56.0.html)
+
+## ✅ 学习检查点
+
+- [ ] 理解闭包不相交捕获的工作方式及其对 Drop 顺序的影响
+- [ ] 了解 2021 prelude 新增的 TryInto、TryFrom、FromIterator
+- [ ] 掌握数组 IntoIterator 的变化
+- [ ] 理解 Cargo 特性解析器 v2 的改进
+- [ ] 能够使用 `cargo fix --edition` 迁移代码
+
+## 🚀 下一步
+
+→ [Rust 2024 Edition](./03-rust-2024-edition)

@@ -1,17 +1,363 @@
 # async 闭包
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解语言新特性中的「async 闭包」相关知识。
+async 闭包是 Rust 1.85（2025 年 2 月）稳定的重要特性（RFC 3668）。在此之前，要在闭包中使用异步操作只能返回一个 async 块，这在借用语义和 trait 约束上存在不少问题。async 闭包通过引入 `async || { ... }` 语法和 `AsyncFn`/`AsyncFnMut`/`AsyncFnOnce` trait 家族，让异步闭包成为一等公民，使用体验与同步闭包一致。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🔑 传统方案的问题
 
-## 📝 学习检查点
+### 返回 async 块的闭包
 
-- [ ] 理解async 闭包的核心概念
-- [ ] 能够在实际项目中应用async 闭包
+在 async 闭包稳定之前，唯一的方式是在闭包中返回一个 async 块：
+
+```rust
+use std::future::Future;
+
+// 传统方案：闭包返回 async 块
+fn with_async_block() -> impl Fn(i32) -> impl Future<Output = i32> {
+    |x| async move { x * 2 }
+}
+
+#[tokio::main]
+async fn main() {
+    let doubler = with_async_block();
+    let result = doubler(21).await;
+    println!("结果: {result}");
+}
+```
+
+### 借用问题
+
+返回 async 块的闭包无法借用闭包捕获的变量，因为 async 块的生命周期独立于闭包：
+
+```rust
+// 这段代码无法编译（不使用 async 闭包时）
+// fn problematic() {
+//     let data = vec![1, 2, 3];
+//
+//     // 闭包捕获 &data，但 async 块需要 'static
+//     let processor = |index: usize| async {
+//         // 错误：async 块无法借用闭包捕获的 data
+//         data[index]
+//     };
+// }
+
+// 传统解决方案：使用 move 和 clone
+fn workaround() {
+    let data = vec![1, 2, 3];
+
+    let processor = {
+        let data = data.clone();
+        move |index: usize| {
+            let data = data.clone(); // 每次调用都 clone
+            async move { data[index] }
+        }
+    };
+
+    // 需要异步运行时来 await
+    let _ = processor;
+    println!("传统方案需要额外的 clone 开销");
+}
+
+fn main() {
+    workaround();
+}
+```
+
+## 🔑 async 闭包语法
+
+### 基本用法
+
+```rust
+#[tokio::main]
+async fn main() {
+    // async 闭包：使用 async || 语法
+    let greet = async |name: &str| {
+        format!("Hello, {name}!")
+    };
+
+    let message = greet("Rust").await;
+    println!("{message}");
+
+    // 带 move 的 async 闭包
+    let prefix = String::from("Hi");
+    let greet_with_prefix = async move |name: &str| {
+        format!("{prefix}, {name}!")
+    };
+
+    println!("{}", greet_with_prefix("World").await);
+}
+```
+
+### 解决借用问题
+
+async 闭包的核心优势在于其返回的 Future 可以借用闭包捕获的变量：
+
+```rust
+#[tokio::main]
+async fn main() {
+    let data = vec![10, 20, 30, 40, 50];
+
+    // async 闭包可以借用 data，无需 clone
+    let get_item = async |index: usize| -> Option<i32> {
+        if index < data.len() {
+            Some(data[index])
+        } else {
+            None
+        }
+    };
+
+    // 多次调用，共享同一个 data 引用
+    for i in 0..6 {
+        match get_item(i).await {
+            Some(value) => println!("data[{i}] = {value}"),
+            None => println!("data[{i}] = 越界"),
+        }
+    }
+
+    // data 仍然可用
+    println!("data 长度: {}", data.len());
+}
+```
+
+## 🔑 AsyncFn trait 家族
+
+async 闭包引入了三个新 trait，与同步闭包的 `Fn`/`FnMut`/`FnOnce` 对应：
+
+```rust
+use std::future::Future;
+
+// AsyncFn: 可以多次调用，通过共享引用捕获
+// AsyncFnMut: 可以多次调用，通过可变引用捕获
+// AsyncFnOnce: 只能调用一次，获取捕获变量的所有权
+
+// 使用 AsyncFn 作为参数约束
+async fn apply_async<F>(callback: F, value: i32) -> i32
+where
+    F: AsyncFn(i32) -> i32,
+{
+    callback(value).await
+}
+
+// 使用 AsyncFnMut 作为参数约束
+async fn apply_mut_async<F>(mut callback: F, values: &[i32])
+where
+    F: AsyncFnMut(i32),
+{
+    for &value in values {
+        callback(value).await;
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    // AsyncFn 示例
+    let doubler = async |x: i32| x * 2;
+    let result = apply_async(doubler, 21).await;
+    println!("AsyncFn 结果: {result}");
+
+    // AsyncFnMut 示例
+    let mut sum = 0;
+    let accumulator = async |x: i32| {
+        sum += x;
+        println!("累计: {sum}");
+    };
+    apply_mut_async(accumulator, &[1, 2, 3, 4, 5]).await;
+}
+```
+
+### AsyncFn vs Fn + Future
+
+```rust
+use std::future::Future;
+
+// 旧写法：使用 Fn 返回 Future
+async fn retry_old<F, Fut, T>(operation: F, max_retries: usize) -> Option<T>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    for attempt in 0..max_retries {
+        match operation().await {
+            Ok(value) => return Some(value),
+            Err(err) => println!("尝试 {}: 失败 - {err}", attempt + 1),
+        }
+    }
+    None
+}
+
+// 新写法：使用 AsyncFn（更简洁）
+async fn retry_new<F, T>(operation: F, max_retries: usize) -> Option<T>
+where
+    F: AsyncFn() -> Result<T, String>,
+{
+    for attempt in 0..max_retries {
+        match operation().await {
+            Ok(value) => return Some(value),
+            Err(err) => println!("尝试 {}: 失败 - {err}", attempt + 1),
+        }
+    }
+    None
+}
+
+#[tokio::main]
+async fn main() {
+    let mut call_count = 0;
+
+    // 模拟一个可能失败的操作
+    let flaky_operation = async || -> Result<String, String> {
+        call_count += 1;
+        if call_count < 3 {
+            Err(format!("第 {call_count} 次调用失败"))
+        } else {
+            Ok("成功!".into())
+        }
+    };
+
+    if let Some(result) = retry_new(flaky_operation, 5).await {
+        println!("最终结果: {result}");
+    }
+}
+```
+
+## 🔑 实际应用场景
+
+### 异步中间件模式
+
+```rust
+use std::future::Future;
+
+struct Request {
+    path: String,
+    method: String,
+}
+
+struct Response {
+    status: u16,
+    body: String,
+}
+
+impl Response {
+    fn ok(body: impl Into<String>) -> Self {
+        Self {
+            status: 200,
+            body: body.into(),
+        }
+    }
+
+    fn not_found() -> Self {
+        Self {
+            status: 404,
+            body: "Not Found".into(),
+        }
+    }
+}
+
+// 使用 AsyncFn 定义中间件
+async fn with_logging<F>(handler: F, request: &Request) -> Response
+where
+    F: AsyncFn(&Request) -> Response,
+{
+    println!("[LOG] {} {}", request.method, request.path);
+    let response = handler(request).await;
+    println!("[LOG] 响应状态: {}", response.status);
+    response
+}
+
+#[tokio::main]
+async fn main() {
+    let handler = async |req: &Request| -> Response {
+        match req.path.as_str() {
+            "/" => Response::ok("Welcome!"),
+            "/api/status" => Response::ok(r#"{"status": "ok"}"#),
+            _ => Response::not_found(),
+        }
+    };
+
+    let requests = vec![
+        Request { path: "/".into(), method: "GET".into() },
+        Request { path: "/api/status".into(), method: "GET".into() },
+        Request { path: "/unknown".into(), method: "POST".into() },
+    ];
+
+    for request in &requests {
+        let response = with_logging(&handler, request).await;
+        println!("  Body: {}\n", response.body);
+    }
+}
+```
+
+### 异步事件处理
+
+```rust
+use std::collections::HashMap;
+
+type EventName = String;
+
+struct AsyncEventBus {
+    handlers: HashMap<EventName, Vec<Box<dyn Fn(String) -> std::pin::Pin<Box<dyn Future<Output = ()> + '_>> + Send + Sync>>>,
+}
+
+// 简化版事件系统
+async fn process_events<F>(events: &[(&str, &str)], handler: F)
+where
+    F: AsyncFn(&str, &str),
+{
+    for (event_name, payload) in events {
+        handler(event_name, payload).await;
+    }
+}
+
+use std::future::Future;
+
+#[tokio::main]
+async fn main() {
+    let mut log = Vec::new();
+
+    let event_handler = async |event: &str, payload: &str| {
+        let entry = format!("[{event}] {payload}");
+        println!("处理事件: {entry}");
+        log.push(entry);
+    };
+
+    let events = vec![
+        ("user.login", "alice"),
+        ("user.action", "view_dashboard"),
+        ("user.logout", "alice"),
+    ];
+
+    process_events(&events, event_handler).await;
+    println!("\n事件日志: {log:?}");
+}
+```
+
+## 📊 async 闭包 vs 传统方案对比
+
+| 特性 | 返回 async 块的闭包 | async 闭包 |
+|------|-------------------|-----------|
+| 语法 | `\|\| async { ... }` | `async \|\| { ... }` |
+| 借用捕获变量 | ❌ 无法在 Future 中借用 | ✅ Future 可以借用 |
+| trait 约束 | `Fn() -> impl Future` | `AsyncFn()` |
+| 多次调用 | ✅ 需要 clone 数据 | ✅ 直接借用 |
+| 稳定版本 | 一直可用 | Rust 1.85+ |
+
+## 🔗 相关资源
+
+- [RFC 3668: Async Closures](https://rust-lang.github.io/rfcs/3668-async-closures.html)
+- [Rust 1.85.0 发布公告](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+- [Async Closures Reddit 讨论](https://www.reddit.com/r/rust/comments/1hd3ivt/async_closures_stabilized/)
+
+## ✅ 学习检查点
+
+- [ ] 理解传统闭包返回 async 块的借用限制
+- [ ] 掌握 `async || { ... }` 语法
+- [ ] 了解 `AsyncFn`/`AsyncFnMut`/`AsyncFnOnce` trait 家族
+- [ ] 能够使用 async 闭包简化异步回调代码
+- [ ] 理解 async 闭包如何解决 Future 借用捕获变量的问题
+
+## 🚀 下一步
+
+→ [生成器（Generators / Coroutines）](./07-generators-coroutines)

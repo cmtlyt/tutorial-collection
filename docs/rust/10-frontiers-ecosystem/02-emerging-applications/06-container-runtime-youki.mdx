@@ -1,17 +1,285 @@
 # 容器运行时 youki
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「容器运行时 youki」相关知识。
+[youki](https://github.com/youki-dev/youki) 是一个用 Rust 编写的 OCI（Open Container Initiative）兼容的容器运行时，可以作为 [runc](https://github.com/opencontainers/runc)（Go 实现）的替代品。youki 已通过 OCI 运行时规范的全部集成测试，并被列为 OCI Runtime 规范的参考实现之一。它的核心目标是提供比 runc 更快的启动速度和更低的内存占用，同时利用 Rust 的内存安全特性降低容器逃逸等安全风险。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心优势
 
-## 📝 学习检查点
+- **OCI 兼容**：完全兼容 OCI Runtime Spec，可直接替换 runc
+- **性能更优**：启动速度更快，内存占用更低
+- **安全性**：Rust 内存安全消除了 C/Go 中常见的缓冲区溢出、UAF 等漏洞
+- **cgroup v2 支持**：原生支持 cgroup v1 和 v2
+- **可集成**：可与 Docker、Podman、containerd 等高层运行时配合使用
 
-- [ ] 理解容器运行时 youki的核心概念
-- [ ] 能够在实际项目中应用容器运行时 youki
+## 🎯 容器运行时的分层架构
+
+```
+容器运行时架构
+┌────────────────────────────────────────────┐
+│  用户工具层                                 │
+│  Docker CLI / Podman / nerdctl              │
+├────────────────────────────────────────────┤
+│  高层运行时（High-Level Runtime）           │
+│  containerd / CRI-O                         │
+│  - 镜像管理、容器生命周期、网络、存储        │
+├────────────────────────────────────────────┤
+│  低层运行时（Low-Level Runtime）← youki     │
+│  runc / youki / crun                        │
+│  - 创建 Linux namespace                    │
+│  - 设置 cgroups 资源限制                    │
+│  - 执行容器进程                             │
+├────────────────────────────────────────────┤
+│  Linux 内核                                 │
+│  namespaces / cgroups / seccomp / capabilities│
+└────────────────────────────────────────────┘
+```
+
+youki 工作在**低层运行时**这一层，负责直接与 Linux 内核交互，创建和管理容器的隔离环境。
+
+## 🔑 容器创建流程
+
+### youki 的容器生命周期
+
+```
+容器生命周期状态机
+┌─────────┐    create    ┌─────────┐    start    ┌─────────┐
+│ 不存在   │ ──────────→ │ Created │ ──────────→ │ Running │
+└─────────┘              └─────────┘              └────┬────┘
+                                                       │
+                              ┌─────────┐    stop      │
+                              │ Stopped │ ←────────────┘
+                              └────┬────┘
+                                   │ delete
+                              ┌────▼────┐
+                              │ 不存在   │
+                              └─────────┘
+```
+
+### 创建容器的核心步骤
+
+```rust
+// youki 创建容器的核心流程（概念展示）
+// 实际 youki 源码位于 crates/libcontainer
+
+use std::path::PathBuf;
+
+/// OCI 容器配置的简化表示
+struct ContainerConfig {
+    /// 根文件系统路径
+    rootfs: PathBuf,
+    /// 进程命令
+    command: Vec<String>,
+    /// Linux namespace 配置
+    namespaces: Vec<NamespaceType>,
+    /// cgroup 资源限制
+    resources: ResourceLimits,
+}
+
+#[derive(Debug)]
+enum NamespaceType {
+    Pid,     // 进程隔离
+    Net,     // 网络隔离
+    Mnt,     // 文件系统挂载隔离
+    Uts,     // 主机名隔离
+    Ipc,     // 进程间通信隔离
+    User,    // 用户 ID 隔离
+    Cgroup,  // cgroup 隔离
+}
+
+struct ResourceLimits {
+    memory_limit_bytes: Option<u64>,
+    cpu_shares: Option<u64>,
+    pids_limit: Option<i64>,
+}
+
+/// 容器创建流程（概念展示）
+fn create_container(config: &ContainerConfig) -> Result<u32, String> {
+    // 步骤 1: 创建 Linux namespaces
+    println!("1. 创建 namespaces: {:?}", config.namespaces);
+
+    // 步骤 2: 设置 cgroup 资源限制
+    if let Some(mem) = config.resources.memory_limit_bytes {
+        println!("2. 设置内存限制: {} MB", mem / 1024 / 1024);
+    }
+    if let Some(cpu) = config.resources.cpu_shares {
+        println!("   设置 CPU shares: {cpu}");
+    }
+    if let Some(pids) = config.resources.pids_limit {
+        println!("   设置 PID 限制: {pids}");
+    }
+
+    // 步骤 3: 设置根文件系统（pivot_root）
+    println!("3. 挂载根文件系统: {:?}", config.rootfs);
+
+    // 步骤 4: 设置 seccomp 系统调用过滤
+    println!("4. 配置 seccomp 过滤规则");
+
+    // 步骤 5: 设置 capabilities
+    println!("5. 配置 Linux capabilities");
+
+    // 步骤 6: 执行容器进程
+    println!("6. 执行容器命令: {:?}", config.command);
+
+    Ok(12345) // 返回容器进程 PID
+}
+
+fn main() {
+    let config = ContainerConfig {
+        rootfs: PathBuf::from("/var/lib/containers/rootfs"),
+        command: vec!["sh".into(), "-c".into(), "echo hello".into()],
+        namespaces: vec![
+            NamespaceType::Pid,
+            NamespaceType::Net,
+            NamespaceType::Mnt,
+            NamespaceType::Uts,
+            NamespaceType::Ipc,
+        ],
+        resources: ResourceLimits {
+            memory_limit_bytes: Some(256 * 1024 * 1024), // 256 MB
+            cpu_shares: Some(1024),
+            pids_limit: Some(100),
+        },
+    };
+
+    match create_container(&config) {
+        Ok(pid) => println!("\n容器进程 PID: {pid}"),
+        Err(err) => println!("创建失败: {err}"),
+    }
+}
+```
+
+## 🔑 使用 youki 替换 runc
+
+### 在 Docker 中使用
+
+```bash
+# 安装 youki
+# 从 GitHub releases 下载预编译二进制
+# 或从源码编译
+git clone https://github.com/youki-dev/youki.git
+cd youki
+make build  # 需要 Rust 工具链
+
+# 配置 Docker 使用 youki
+# 编辑 /etc/docker/daemon.json
+cat > /etc/docker/daemon.json << 'EOF'
+{
+  "runtimes": {
+    "youki": {
+      "path": "/usr/local/bin/youki"
+    }
+  },
+  "default-runtime": "youki"
+}
+EOF
+
+# 重启 Docker
+sudo systemctl restart docker
+
+# 使用 youki 运行容器
+docker run --runtime youki -it ubuntu:latest echo "Hello from youki!"
+```
+
+### 在 Podman 中使用
+
+```bash
+# Podman 直接支持指定 OCI 运行时
+podman run --runtime /usr/local/bin/youki -it ubuntu:latest echo "Hello from youki!"
+```
+
+## 🔑 youki 的 Rust 技术栈
+
+```
+youki 项目结构
+├── crates/
+│   ├── libcontainer/       # 核心容器操作库
+│   │   ├── src/
+│   │   │   ├── container/  # 容器生命周期管理
+│   │   │   ├── process/    # 进程创建和管理
+│   │   │   ├── namespaces/ # Linux namespace 操作
+│   │   │   ├── cgroups/    # cgroup v1/v2 管理
+│   │   │   └── seccomp/    # 系统调用过滤
+│   │   └── Cargo.toml
+│   ├── libcgroups/         # cgroup 操作抽象层
+│   ├── liboci-cli/         # OCI CLI 参数解析
+│   └── libseccomp/         # seccomp 安全过滤
+├── src/                    # youki 可执行文件入口
+└── Cargo.toml
+```
+
+### 关键 Rust 依赖
+
+```rust
+// youki 使用的核心 Rust 技术：
+
+// 1. nix - 安全的 Unix API 封装
+// 用于 clone、unshare、setns 等系统调用
+fn demonstrate_nix_usage() {
+    // nix 将裸系统调用封装为类型安全的 Rust API
+    // 例如设置主机名：
+    // nix::unistd::sethostname("container-hostname")
+    println!("nix: 类型安全的 Unix 系统调用封装");
+}
+
+// 2. caps - Linux capabilities 管理
+fn demonstrate_capabilities() {
+    // 容器通常只授予必要的 capabilities
+    // 而不是完整的 root 权限
+    let essential_caps = vec![
+        "CAP_NET_BIND_SERVICE",  // 绑定特权端口
+        "CAP_SYS_CHROOT",       // chroot
+        "CAP_SETUID",           // 设置 UID
+        "CAP_SETGID",           // 设置 GID
+    ];
+    println!("容器默认 capabilities: {essential_caps:?}");
+}
+
+// 3. oci-spec - OCI 规范的 Rust 类型定义
+fn demonstrate_oci_spec() {
+    // oci-spec crate 提供了 OCI Runtime Spec 的 Rust 类型
+    // 可以直接反序列化 config.json
+    println!("oci-spec: OCI 规范的 Rust 类型定义");
+    println!("  支持反序列化 config.json");
+    println!("  类型安全的配置处理");
+}
+
+fn main() {
+    demonstrate_nix_usage();
+    demonstrate_capabilities();
+    demonstrate_oci_spec();
+}
+```
+
+## 📊 youki vs runc 对比
+
+| 特性 | youki (Rust) | runc (Go) | crun (C) |
+|------|-------------|-----------|----------|
+| 语言 | Rust | Go | C |
+| 内存安全 | ✅ 编译期保证 | ✅ GC 管理 | ❌ 手动管理 |
+| 启动速度 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| 内存占用 | ~2 MB | ~12 MB | ~1 MB |
+| cgroup v2 | ✅ | ✅ | ✅ |
+| rootless | ✅ | ✅ | ✅ |
+| 生态成熟度 | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+
+## 🔗 相关资源
+
+- [youki GitHub 仓库](https://github.com/youki-dev/youki)
+- [OCI Runtime Specification](https://github.com/opencontainers/runtime-spec)
+- [youki 设计文档](https://github.com/youki-dev/youki/blob/main/docs/src/developer/basics/youki.md)
+
+## ✅ 学习检查点
+
+- [ ] 理解容器运行时的分层架构（高层 vs 低层运行时）
+- [ ] 了解 youki 在容器创建时执行的核心步骤（namespace、cgroup、seccomp）
+- [ ] 知道如何在 Docker/Podman 中配置使用 youki
+- [ ] 理解 youki 相比 runc 的优势（内存安全、启动速度、内存占用）
+- [ ] 了解 youki 项目的 Rust 技术栈
+
+## 🚀 下一步
+
+→ [网络代理 linkerd2-proxy](./07-network-proxy-linkerd)

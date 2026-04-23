@@ -1,17 +1,318 @@
 # tokenizers 分词器
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「tokenizers 分词器」相关知识。
+[tokenizers](https://github.com/huggingface/tokenizers) 是 Hugging Face 开源的高性能分词器库，核心实现完全使用 Rust 编写，并通过 PyO3 提供 Python 绑定。它能在 20 秒内处理 1GB 文本，是 Hugging Face Transformers 库中所有"Fast"分词器的底层引擎。对于 Rust 开发者来说，可以直接使用原生 Rust API 进行高效的文本分词。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心特点
 
-## 📝 学习检查点
+- **极致性能**：Rust 原生实现，利用并行化加速
+- **模块化管道**：Normalizer → Pre-tokenizer → Model → Post-processor → Decoder
+- **多种分词算法**：BPE、WordPiece、Unigram、SentencePiece
+- **训练能力**：支持从语料库训练自定义分词器
+- **跨语言**：Rust 核心 + Python/Node.js 绑定
 
-- [ ] 理解tokenizers 分词器的核心概念
-- [ ] 能够在实际项目中应用tokenizers 分词器
+## 🎯 快速上手
+
+### 项目配置
+
+```toml
+# Cargo.toml
+[package]
+name = "tokenizer-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokenizers = "0.21"
+anyhow = "1"
+```
+
+### 加载预训练分词器
+
+```rust
+use tokenizers::Tokenizer;
+use anyhow::Result;
+
+fn main() -> Result<()> {
+    // 从 Hugging Face Hub 加载（需要网络）
+    // let tokenizer = Tokenizer::from_pretrained("bert-base-uncased", None)?;
+
+    // 从本地文件加载
+    // let tokenizer = Tokenizer::from_file("tokenizer.json")?;
+
+    // 演示：使用内置的 BPE 分词器
+    use tokenizers::models::bpe::BPE;
+    use tokenizers::pre_tokenizers::whitespace::Whitespace;
+
+    let mut tokenizer = Tokenizer::new(BPE::default());
+    tokenizer.with_pre_tokenizer(Some(Whitespace {}));
+
+    // 编码文本
+    let encoding = tokenizer.encode("Hello, Rust tokenizers!", false)?;
+
+    println!("Tokens: {:?}", encoding.get_tokens());
+    println!("Token IDs: {:?}", encoding.get_ids());
+    println!("Attention Mask: {:?}", encoding.get_attention_mask());
+
+    Ok(())
+}
+```
+
+### 分词管道详解
+
+```rust
+use tokenizers::Tokenizer;
+use tokenizers::models::bpe::{BPE, BpeBuilder};
+use tokenizers::normalizers::{Sequence as NormSequence, Lowercase, StripAccents};
+use tokenizers::pre_tokenizers::whitespace::Whitespace;
+use tokenizers::processors::template::TemplateProcessing;
+use anyhow::Result;
+
+fn main() -> Result<()> {
+    // 分词管道的五个阶段
+
+    // 1. Normalizer - 文本标准化
+    //    - 转小写、去重音符、Unicode 标准化等
+    let normalizer = NormSequence::new(vec![
+        Box::new(Lowercase),
+        Box::new(StripAccents),
+    ]);
+
+    // 2. Pre-tokenizer - 预分词
+    //    - 在空白处、标点处分割文本
+    let pre_tokenizer = Whitespace {};
+
+    // 3. Model - 核心分词模型
+    //    - BPE、WordPiece、Unigram 等算法
+    let model = BPE::default();
+
+    // 4. Post-processor - 后处理
+    //    - 添加特殊 token（如 [CLS]、[SEP]）
+
+    // 5. Decoder - 解码器
+    //    - 将 token ID 序列还原为文本
+
+    // 组装分词器
+    let mut tokenizer = Tokenizer::new(model);
+    tokenizer.with_normalizer(Some(normalizer));
+    tokenizer.with_pre_tokenizer(Some(pre_tokenizer));
+
+    let text = "Hello World! This is a Rust tokenizer.";
+    let encoding = tokenizer.encode(text, false)?;
+
+    println!("原文: {text}");
+    println!("Tokens: {:?}", encoding.get_tokens());
+    println!("IDs: {:?}", encoding.get_ids());
+
+    // 偏移量映射（token 到原文的位置对应）
+    let offsets = encoding.get_offsets();
+    for (i, (token, (start, end))) in encoding.get_tokens().iter().zip(offsets).enumerate() {
+        println!("  Token[{i}]: '{token}' -> 原文位置 [{start}..{end}]");
+    }
+
+    Ok(())
+}
+```
+
+## 🔑 分词算法
+
+### BPE（Byte-Pair Encoding）
+
+```rust
+use tokenizers::Tokenizer;
+use tokenizers::models::bpe::BPE;
+use tokenizers::pre_tokenizers::byte_level::ByteLevel;
+use tokenizers::decoders::byte_level::ByteLevel as ByteLevelDecoder;
+use anyhow::Result;
+
+fn main() -> Result<()> {
+    // BPE 是 GPT 系列模型使用的分词算法
+    // 核心思想：从字符级别开始，反复合并最常见的相邻 token 对
+
+    // 使用字节级 BPE（类似 GPT-2）
+    let model = BPE::default();
+    let mut tokenizer = Tokenizer::new(model);
+    tokenizer.with_pre_tokenizer(Some(ByteLevel::default()));
+    tokenizer.with_decoder(Some(ByteLevelDecoder::default()));
+
+    let text = "Rust is blazingly fast!";
+    let encoding = tokenizer.encode(text, false)?;
+
+    println!("BPE 分词结果:");
+    println!("  原文: {text}");
+    println!("  Tokens: {:?}", encoding.get_tokens());
+    println!("  IDs: {:?}", encoding.get_ids());
+
+    // BPE 的特点：
+    // - 从字符开始逐步合并频繁出现的对
+    // - 可以处理任意未见过的单词（分解为子词）
+    // - GPT-2/3/4、LLaMA 等模型使用此算法
+
+    Ok(())
+}
+```
+
+### WordPiece
+
+```rust
+use tokenizers::Tokenizer;
+use tokenizers::models::wordpiece::{WordPiece, WordPieceBuilder};
+use tokenizers::pre_tokenizers::whitespace::Whitespace;
+use anyhow::Result;
+
+fn main() -> Result<()> {
+    // WordPiece 是 BERT 使用的分词算法
+    // 类似 BPE，但选择合并对的策略不同：
+    // 选择使语言模型似然最大化的合并
+
+    let model = WordPiece::default();
+    let mut tokenizer = Tokenizer::new(model);
+    tokenizer.with_pre_tokenizer(Some(Whitespace {}));
+
+    let text = "unbelievable performance";
+    let encoding = tokenizer.encode(text, false)?;
+
+    println!("WordPiece 分词结果:");
+    println!("  原文: {text}");
+    println!("  Tokens: {:?}", encoding.get_tokens());
+
+    // WordPiece 特点：
+    // - 子词以 ## 前缀标记（如 "un", "##believ", "##able"）
+    // - BERT、DistilBERT 等模型使用此算法
+
+    Ok(())
+}
+```
+
+## 🔑 批量编码与性能
+
+```rust
+use tokenizers::Tokenizer;
+use tokenizers::models::bpe::BPE;
+use tokenizers::pre_tokenizers::whitespace::Whitespace;
+use anyhow::Result;
+use std::time::Instant;
+
+fn main() -> Result<()> {
+    let mut tokenizer = Tokenizer::new(BPE::default());
+    tokenizer.with_pre_tokenizer(Some(Whitespace {}));
+
+    // 准备批量数据
+    let sentences: Vec<String> = (0..1000)
+        .map(|i| format!("This is sentence number {} for batch encoding test.", i))
+        .collect();
+
+    let sentence_refs: Vec<&str> = sentences.iter().map(|s| s.as_str()).collect();
+
+    // 批量编码（自动并行化）
+    let start = Instant::now();
+    let encodings = tokenizer.encode_batch(sentence_refs, false)?;
+    let elapsed = start.elapsed();
+
+    println!("批量编码 {} 条文本", encodings.len());
+    println!("耗时: {elapsed:?}");
+    println!("第一条 tokens: {:?}", encodings[0].get_tokens());
+    println!("第一条 IDs: {:?}", encodings[0].get_ids());
+
+    // Padding（填充到相同长度）
+    // tokenizer.with_padding(Some(PaddingParams::default()));
+
+    // Truncation（截断到最大长度）
+    // tokenizer.with_truncation(Some(TruncationParams {
+    //     max_length: 128,
+    //     ..Default::default()
+    // }))?;
+
+    Ok(())
+}
+```
+
+## 🔑 训练自定义分词器
+
+```rust
+use tokenizers::Tokenizer;
+use tokenizers::models::bpe::{BPE, BpeTrainerBuilder};
+use tokenizers::pre_tokenizers::whitespace::Whitespace;
+use tokenizers::normalizers::Lowercase;
+use anyhow::Result;
+
+fn main() -> Result<()> {
+    // 从零训练一个 BPE 分词器
+    let mut tokenizer = Tokenizer::new(BPE::default());
+    tokenizer.with_normalizer(Some(Lowercase));
+    tokenizer.with_pre_tokenizer(Some(Whitespace {}));
+
+    // 配置训练器
+    let trainer = BpeTrainerBuilder::new()
+        .vocab_size(1000)
+        .min_frequency(2)
+        .special_tokens(vec![
+            tokenizers::AddedToken::from("[UNK]", true),
+            tokenizers::AddedToken::from("[CLS]", true),
+            tokenizers::AddedToken::from("[SEP]", true),
+            tokenizers::AddedToken::from("[PAD]", true),
+            tokenizers::AddedToken::from("[MASK]", true),
+        ])
+        .build();
+
+    // 从文件训练
+    // tokenizer.train_from_files(&trainer, vec!["corpus.txt"])?;
+
+    // 从内存数据训练
+    let training_data = vec![
+        "rust is a systems programming language",
+        "rust focuses on safety concurrency and performance",
+        "the rust compiler catches many bugs at compile time",
+        "cargo is the rust package manager and build system",
+        "traits in rust are similar to interfaces in other languages",
+    ];
+
+    // 模拟：直接使用文件训练更为常见
+    // tokenizer.train_from_iterator(&trainer, training_data.into_iter())?;
+
+    // 保存训练好的分词器
+    // tokenizer.save("custom-tokenizer.json", true)?;
+
+    println!("分词器训练配置:");
+    println!("  词汇表大小: 1000");
+    println!("  最小频率: 2");
+    println!("  特殊 tokens: [UNK], [CLS], [SEP], [PAD], [MASK]");
+
+    // 使用未训练的分词器演示基本流程
+    let encoding = tokenizer.encode("hello world", false)?;
+    println!("编码示例 tokens: {:?}", encoding.get_tokens());
+
+    Ok(())
+}
+```
+
+## 📊 分词算法对比
+
+| 算法 | 使用模型 | 子词标记 | 特点 |
+|------|---------|---------|------|
+| BPE | GPT-2/3/4, LLaMA | 无特殊前缀 | 贪心合并频繁对 |
+| WordPiece | BERT, DistilBERT | `##` 前缀 | 最大化似然合并 |
+| Unigram | T5, ALBERT | 无特殊前缀 | 概率模型，自底向上裁剪 |
+| SentencePiece | 多种模型 | `▁` 空格标记 | 语言无关，直接处理原始文本 |
+
+## 🔗 相关资源
+
+- [tokenizers GitHub 仓库](https://github.com/huggingface/tokenizers)
+- [Hugging Face tokenizers 文档](https://huggingface.co/docs/tokenizers/index)
+- [tokenizers Rust API 文档](https://docs.rs/tokenizers)
+
+## ✅ 学习检查点
+
+- [ ] 理解分词管道的五个阶段（Normalizer → Pre-tokenizer → Model → Post-processor → Decoder）
+- [ ] 了解 BPE、WordPiece、Unigram 分词算法的区别
+- [ ] 能够加载和使用预训练分词器
+- [ ] 了解批量编码和并行化处理
+- [ ] 知道如何训练自定义分词器
+
+## 🚀 下一步
+
+→ [llama.cpp Rust 绑定](./05-llama-cpp-rust-bindings)

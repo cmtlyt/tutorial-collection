@@ -1,17 +1,449 @@
 # Kubernetes Operator
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「Kubernetes Operator」相关知识。
+Kubernetes Operator 是一种将运维知识编码到软件中的模式，通过自定义资源（CRD）和控制器（Controller）来自动化复杂应用的管理。[kube-rs](https://github.com/kube-rs/kube) 是 Rust 生态中最成熟的 Kubernetes 客户端库，提供了构建 Operator 所需的完整工具链——包括 API 客户端、CRD derive 宏、控制器运行时（controller-rs）和可观测性集成。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 为什么用 Rust 写 Operator
 
-## 📝 学习检查点
+- **低资源占用**：Operator 以 sidecar 或独立部署运行，Rust 的低内存占用优势显著
+- **高可靠性**：Rust 的类型系统和所有权模型减少了运行时错误
+- **快速启动**：无 GC 暂停，适合需要快速响应的调谐循环
+- **生产验证**：MetalBear（mirrord）、Linkerd 等项目在生产环境使用 kube-rs
 
-- [ ] 理解Kubernetes Operator的核心概念
-- [ ] 能够在实际项目中应用Kubernetes Operator
+## 🎯 Operator 模式概述
+
+```
+Kubernetes Operator 工作模式
+┌─────────────────────────────────────────────┐
+│  Kubernetes API Server                       │
+│  ┌────────────────────────────────────────┐  │
+│  │  Custom Resource Definitions (CRD)     │  │
+│  │  - MyApp (kind)                        │  │
+│  │  - replicas, image, config...          │  │
+│  └────────────┬───────────────────────────┘  │
+│               │ Watch 事件                    │
+│               ▼                              │
+│  ┌────────────────────────────────────────┐  │
+│  │  Operator Controller (Rust)            │  │
+│  │  ┌──────────────────────────────────┐  │  │
+│  │  │  调谐循环（Reconcile Loop）      │  │  │
+│  │  │  1. 观察: 监听 CRD 变更事件      │  │  │
+│  │  │  2. 分析: 对比期望状态与实际状态  │  │  │
+│  │  │  3. 行动: 创建/更新/删除资源      │  │  │
+│  │  └──────────────────────────────────┘  │  │
+│  └────────────────────────────────────────┘  │
+│               │ 创建/更新                     │
+│               ▼                              │
+│  ┌────────────────────────────────────────┐  │
+│  │  Kubernetes 资源                       │  │
+│  │  Deployment, Service, ConfigMap...     │  │
+│  └────────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+```
+
+## 🔑 快速上手
+
+### 项目配置
+
+```toml
+# Cargo.toml
+[package]
+name = "my-operator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kube = { version = "0.98", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.23", features = ["latest"] }
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+```
+
+### 定义自定义资源（CRD）
+
+```rust
+use kube::CustomResource;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// 自定义资源：WebApp
+/// kube derive 宏会自动生成 CRD 定义和 Kubernetes 类型
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "apps.example.com",
+    version = "v1",
+    kind = "WebApp",
+    namespaced,
+    status = "WebAppStatus",
+    printcolumn = r#"{"name":"Replicas", "type":"integer", "jsonPath":".spec.replicas"}"#,
+    printcolumn = r#"{"name":"Image", "type":"string", "jsonPath":".spec.image"}"#
+)]
+pub struct WebAppSpec {
+    /// 副本数
+    pub replicas: i32,
+    /// 容器镜像
+    pub image: String,
+    /// 容器端口
+    pub port: i32,
+    /// 环境变量
+    #[serde(default)]
+    pub env: Vec<EnvVar>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+pub struct EnvVar {
+    pub name: String,
+    pub value: String,
+}
+
+/// 资源状态
+#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+pub struct WebAppStatus {
+    pub ready_replicas: i32,
+    pub conditions: Vec<Condition>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+pub struct Condition {
+    pub condition_type: String,
+    pub status: String,
+    pub message: String,
+}
+
+fn main() {
+    // 生成 CRD YAML（可用于 kubectl apply）
+    let crd = serde_json::to_string_pretty(
+        &WebApp::crd()
+    ).unwrap();
+    println!("生成的 CRD 定义:\n{crd}");
+}
+```
+
+### 实现控制器
+
+```rust
+use std::sync::Arc;
+use kube::{
+    Api, Client, ResourceExt,
+    runtime::controller::{Action, Controller},
+};
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::Service;
+use futures::StreamExt;
+use std::time::Duration;
+use tracing::{info, warn, error};
+
+// 引用前面定义的 CRD 类型
+// use crate::{WebApp, WebAppSpec};
+
+/// 控制器错误类型
+#[derive(Debug, thiserror::Error)]
+enum ControllerError {
+    #[error("Kubernetes API 错误: {0}")]
+    KubeError(#[from] kube::Error),
+    #[error("序列化错误: {0}")]
+    SerializationError(#[from] serde_json::Error),
+    #[error("缺少对象引用")]
+    MissingObjectRef,
+}
+
+/// 共享的控制器上下文
+struct ControllerContext {
+    client: Client,
+}
+
+/// 核心调谐函数
+async fn reconcile(
+    webapp: Arc<WebApp>,
+    ctx: Arc<ControllerContext>,
+) -> Result<Action, ControllerError> {
+    let name = webapp.name_any();
+    let namespace = webapp.namespace().unwrap_or_default();
+    let client = &ctx.client;
+
+    info!("调谐 WebApp: {name} (namespace: {namespace})");
+
+    // 1. 确保 Deployment 存在且配置正确
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
+    match deployments.get(&name).await {
+        Ok(existing) => {
+            info!("Deployment {name} 已存在，检查是否需要更新");
+            // 对比期望状态和实际状态，需要时执行更新
+        }
+        Err(kube::Error::Api(err)) if err.code == 404 => {
+            info!("Deployment {name} 不存在，创建新的");
+            // 创建 Deployment
+        }
+        Err(err) => return Err(err.into()),
+    }
+
+    // 2. 确保 Service 存在
+    let services: Api<Service> = Api::namespaced(client.clone(), &namespace);
+    match services.get(&name).await {
+        Ok(_) => info!("Service {name} 已存在"),
+        Err(kube::Error::Api(err)) if err.code == 404 => {
+            info!("Service {name} 不存在，创建新的");
+            // 创建 Service
+        }
+        Err(err) => return Err(err.into()),
+    }
+
+    // 3. 更新状态
+    info!("WebApp {name} 调谐完成");
+
+    // 返回下一次调谐的间隔
+    Ok(Action::requeue(Duration::from_secs(300)))
+}
+
+/// 错误处理策略
+fn error_policy(
+    webapp: Arc<WebApp>,
+    error: &ControllerError,
+    _ctx: Arc<ControllerContext>,
+) -> Action {
+    let name = webapp.name_any();
+    warn!("WebApp {name} 调谐失败: {error}");
+    // 指数退避重试
+    Action::requeue(Duration::from_secs(30))
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    // 创建 Kubernetes 客户端
+    let client = Client::try_default().await?;
+    let webapps: Api<WebApp> = Api::all(client.clone());
+
+    let context = Arc::new(ControllerContext { client: client.clone() });
+
+    info!("启动 WebApp Operator");
+
+    // 启动控制器
+    Controller::new(webapps, Default::default())
+        // 监听关联资源的变更
+        .owns(
+            Api::<Deployment>::all(client.clone()),
+            Default::default(),
+        )
+        .owns(
+            Api::<Service>::all(client.clone()),
+            Default::default(),
+        )
+        .run(reconcile, error_policy, context)
+        .for_each(|result| async move {
+            match result {
+                Ok(object) => info!("调谐成功: {:?}", object),
+                Err(err) => error!("调谐错误: {:?}", err),
+            }
+        })
+        .await;
+
+    Ok(())
+}
+```
+
+### 构建 Deployment 资源
+
+```rust
+use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
+use k8s_openapi::api::core::v1::{
+    Container, ContainerPort, PodSpec, PodTemplateSpec,
+};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use std::collections::BTreeMap;
+
+fn build_deployment(
+    name: &str,
+    namespace: &str,
+    image: &str,
+    replicas: i32,
+    port: i32,
+) -> Deployment {
+    let labels: BTreeMap<String, String> = BTreeMap::from([
+        ("app".into(), name.into()),
+        ("managed-by".into(), "webapp-operator".into()),
+    ]);
+
+    Deployment {
+        metadata: ObjectMeta {
+            name: Some(name.into()),
+            namespace: Some(namespace.into()),
+            labels: Some(labels.clone()),
+            ..Default::default()
+        },
+        spec: Some(DeploymentSpec {
+            replicas: Some(replicas),
+            selector: LabelSelector {
+                match_labels: Some(labels.clone()),
+                ..Default::default()
+            },
+            template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(labels),
+                    ..Default::default()
+                }),
+                spec: Some(PodSpec {
+                    containers: vec![Container {
+                        name: name.into(),
+                        image: Some(image.into()),
+                        ports: Some(vec![ContainerPort {
+                            container_port: port,
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+            },
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn main() {
+    let deployment = build_deployment(
+        "my-webapp",
+        "default",
+        "nginx:1.25",
+        3,
+        80,
+    );
+
+    let yaml = serde_json::to_string_pretty(&deployment).unwrap();
+    println!("生成的 Deployment:\n{yaml}");
+}
+```
+
+## 🔑 Operator 生命周期管理
+
+```rust
+use std::time::Duration;
+
+/// Operator 调谐结果
+enum ReconcileResult {
+    /// 成功，指定时间后重新检查
+    Requeue(Duration),
+    /// 成功，无需重新检查（等待下一次事件触发）
+    Done,
+    /// 失败，指数退避重试
+    RetryWithBackoff(Duration),
+}
+
+/// Finalizer 模式：确保资源删除时执行清理
+fn demonstrate_finalizer_pattern() {
+    println!("Finalizer 模式:");
+    println!("  1. 资源创建时添加 finalizer 标记");
+    println!("  2. 资源删除时，K8s 不会立即删除，而是设置 deletionTimestamp");
+    println!("  3. Operator 检测到 deletionTimestamp 后执行清理逻辑");
+    println!("  4. 清理完成后移除 finalizer 标记");
+    println!("  5. K8s 确认所有 finalizer 移除后真正删除资源");
+}
+
+/// Owner Reference 模式：自动级联删除
+fn demonstrate_owner_reference() {
+    println!("\nOwner Reference 模式:");
+    println!("  1. 创建子资源（Deployment/Service）时设置 ownerReference");
+    println!("  2. 指向自定义资源（WebApp）");
+    println!("  3. 当 WebApp 被删除时，子资源自动级联删除");
+    println!("  4. 子资源变更时自动触发父资源的调谐");
+}
+
+/// 状态管理模式
+fn demonstrate_status_pattern() {
+    println!("\n状态管理模式:");
+    println!("  1. 每次调谐结束后更新 .status 字段");
+    println!("  2. 使用 conditions 记录资源的各种状态");
+    println!("  3. 状态变更不触发新的调谐（避免无限循环）");
+    println!("  4. 使用 status subresource 独立更新状态");
+}
+
+fn main() {
+    demonstrate_finalizer_pattern();
+    demonstrate_owner_reference();
+    demonstrate_status_pattern();
+}
+```
+
+## 🔑 kube-rs 核心 API
+
+```rust
+use std::collections::BTreeMap;
+
+/// kube-rs 提供的核心抽象
+fn demonstrate_kube_api() {
+    println!("=== kube-rs 核心 API ===\n");
+
+    // 1. Client - Kubernetes API 客户端
+    println!("1. Client:");
+    println!("   - Client::try_default() 自动读取 kubeconfig 或 in-cluster 配置");
+    println!("   - 支持所有 Kubernetes API 操作\n");
+
+    // 2. Api<T> - 类型安全的资源操作
+    println!("2. Api<T>:");
+    println!("   - Api::namespaced(client, ns) 命名空间级别");
+    println!("   - Api::all(client) 集群级别");
+    println!("   - .get(name) / .list(params) / .create(resource)");
+    println!("   - .patch(name, patch) / .delete(name)\n");
+
+    // 3. Controller - 控制器运行时
+    println!("3. Controller:");
+    println!("   - Controller::new(api, config) 创建控制器");
+    println!("   - .owns(api, config) 监听子资源");
+    println!("   - .watches(api, config, mapper) 监听关联资源");
+    println!("   - .run(reconcile, error_policy, ctx) 启动运行\n");
+
+    // 4. CustomResource derive - CRD 代码生成
+    println!("4. CustomResource derive:");
+    println!("   - 自动生成 CRD schema");
+    println!("   - 自动生成 Kubernetes 类型定义");
+    println!("   - 支持 status subresource");
+    println!("   - 支持 printcolumn 配置");
+}
+
+fn main() {
+    demonstrate_kube_api();
+}
+```
+
+## 📊 Rust Operator vs Go Operator 对比
+
+| 特性 | kube-rs (Rust) | operator-sdk (Go) |
+|------|---------------|-------------------|
+| 内存占用 | ~5-10 MB | ~30-50 MB |
+| 启动时间 | ~100ms | ~500ms |
+| 类型安全 | ✅ 编译期检查 | 部分（运行时错误） |
+| CRD 生成 | derive 宏 | controller-gen |
+| 生态成熟度 | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| 学习曲线 | 较陡 | 较平缓 |
+| 生产案例 | MetalBear、Linkerd | Prometheus Operator 等 |
+
+## 🔗 相关资源
+
+- [kube-rs GitHub 仓库](https://github.com/kube-rs/kube)
+- [kube-rs 文档](https://docs.rs/kube)
+- [controller-rs 参考实现](https://github.com/kube-rs/controller-rs)
+- [Kubernetes Operator 模式](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
+
+## ✅ 学习检查点
+
+- [ ] 理解 Kubernetes Operator 模式（CRD + Controller + 调谐循环）
+- [ ] 能够使用 kube-rs 的 `CustomResource` derive 宏定义 CRD
+- [ ] 掌握控制器的调谐函数结构和错误处理策略
+- [ ] 了解 Finalizer 和 Owner Reference 模式
+- [ ] 理解 Rust Operator 相比 Go Operator 的优劣
+
+## 🚀 下一步
+
+→ [Bevy 游戏引擎](./10-bevy-game-engine)

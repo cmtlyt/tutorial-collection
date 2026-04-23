@@ -1,17 +1,303 @@
 # burn 深度学习框架
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「burn 深度学习框架」相关知识。
+[Burn](https://github.com/tracel-ai/burn) 是一个用 Rust 构建的新一代深度学习框架，目标是同时覆盖**模型训练**和**推理**。与专注推理的 candle 不同，Burn 提供了完整的自动微分（Autodiff）支持、多后端抽象、模块化设计，并追求类似 PyTorch 的开发体验。Burn 的独特之处在于其后端抽象层——同一份模型代码可以无缝切换在 CPU、CUDA、WebGPU、甚至 WASM 上运行。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心特点
 
-## 📝 学习检查点
+- **多后端架构**：支持 WGPU（WebGPU）、CUDA（通过 CubeCL）、NdArray（CPU）、LibTorch、Candle 等后端
+- **自动微分**：内置自动微分引擎，支持模型训练
+- **模块系统**：类似 PyTorch 的 `nn.Module`，使用 derive 宏简化模型定义
+- **序列化**：内置模型保存/加载，支持跨后端迁移
+- **类型安全**：利用 Rust 类型系统在编译期捕获张量维度错误
 
-- [ ] 理解burn 深度学习框架的核心概念
-- [ ] 能够在实际项目中应用burn 深度学习框架
+## 🎯 快速上手
+
+### 项目配置
+
+```toml
+# Cargo.toml
+[package]
+name = "burn-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+burn = { version = "0.16", features = ["train", "wgpu"] }
+```
+
+### 张量基础操作
+
+```rust
+use burn::tensor::{Tensor, backend::Backend};
+use burn::backend::Wgpu;
+
+type MyBackend = Wgpu;
+
+fn tensor_basics() {
+    let device = Default::default();
+
+    // 创建张量
+    let a: Tensor<MyBackend, 2> = Tensor::from_floats([[1.0, 2.0], [3.0, 4.0]], &device);
+    let b: Tensor<MyBackend, 2> = Tensor::from_floats([[5.0, 6.0], [7.0, 8.0]], &device);
+
+    // 基本运算
+    let sum = a.clone() + b.clone();
+    let product = a.clone().matmul(b.clone());
+
+    println!("A + B = {:?}", sum.to_data());
+    println!("A × B = {:?}", product.to_data());
+
+    // 创建特殊张量
+    let zeros: Tensor<MyBackend, 2> = Tensor::zeros([3, 4], &device);
+    let ones: Tensor<MyBackend, 2> = Tensor::ones([3, 4], &device);
+    let random: Tensor<MyBackend, 2> = Tensor::random([3, 4], burn::tensor::Distribution::Default, &device);
+
+    println!("Zeros 形状: {:?}", zeros.shape());
+    println!("Ones 形状: {:?}", ones.shape());
+    println!("Random 形状: {:?}", random.shape());
+
+    // 激活函数
+    let activated = burn::tensor::activation::relu(a);
+    println!("ReLU: {:?}", activated.to_data());
+}
+
+fn main() {
+    tensor_basics();
+}
+```
+
+### 定义神经网络模型
+
+```rust
+use burn::nn::{Linear, LinearConfig, Relu};
+use burn::module::Module;
+use burn::tensor::{Tensor, backend::Backend};
+use burn::config::Config;
+use burn::backend::NdArray;
+
+// 使用 derive 宏定义模型
+#[derive(Module, Debug)]
+struct SimpleClassifier<B: Backend> {
+    linear1: Linear<B>,
+    linear2: Linear<B>,
+    output: Linear<B>,
+    activation: Relu,
+}
+
+// 模型配置（用于初始化）
+#[derive(Config)]
+struct SimpleClassifierConfig {
+    input_dim: usize,
+    hidden_dim: usize,
+    output_dim: usize,
+}
+
+impl SimpleClassifierConfig {
+    fn init<B: Backend>(&self, device: &B::Device) -> SimpleClassifier<B> {
+        SimpleClassifier {
+            linear1: LinearConfig::new(self.input_dim, self.hidden_dim).init(device),
+            linear2: LinearConfig::new(self.hidden_dim, self.hidden_dim).init(device),
+            output: LinearConfig::new(self.hidden_dim, self.output_dim).init(device),
+            activation: Relu::new(),
+        }
+    }
+}
+
+impl<B: Backend> SimpleClassifier<B> {
+    fn forward(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
+        let hidden = self.linear1.forward(input);
+        let hidden = self.activation.forward(hidden);
+        let hidden = self.linear2.forward(hidden);
+        let hidden = self.activation.forward(hidden);
+        self.output.forward(hidden)
+    }
+}
+
+fn main() {
+    type MyBackend = NdArray;
+    let device = Default::default();
+
+    // 使用配置创建模型
+    let config = SimpleClassifierConfig::new(4, 16, 3);
+    let model = config.init::<MyBackend>(&device);
+
+    // 前向传播
+    let input: Tensor<MyBackend, 2> = Tensor::random([2, 4], burn::tensor::Distribution::Default, &device);
+    let output = model.forward(input.clone());
+
+    println!("输入形状: {:?}", input.shape());
+    println!("输出形状: {:?}", output.shape());
+    println!("输出: {:?}", output.to_data());
+}
+```
+
+## 🔑 后端切换
+
+Burn 最大的特色是后端抽象——只需改变类型参数即可切换计算后端：
+
+```rust
+use burn::tensor::{Tensor, backend::Backend};
+use burn::backend::{NdArray, Wgpu};
+
+// 通用计算函数，对所有后端都适用
+fn compute_similarity<B: Backend>(query: Tensor<B, 2>, keys: Tensor<B, 2>) -> Tensor<B, 2> {
+    let keys_t = keys.transpose();
+    let scores = query.matmul(keys_t);
+    burn::tensor::activation::softmax(scores, 1)
+}
+
+fn main() {
+    // 使用 NdArray 后端（纯 CPU）
+    {
+        type B = NdArray;
+        let device = Default::default();
+        let query: Tensor<B, 2> = Tensor::random([1, 64], burn::tensor::Distribution::Default, &device);
+        let keys: Tensor<B, 2> = Tensor::random([10, 64], burn::tensor::Distribution::Default, &device);
+        let similarity = compute_similarity(query, keys);
+        println!("[NdArray] 相似度形状: {:?}", similarity.shape());
+    }
+
+    // 切换到 WGPU 后端（GPU 加速），只需改变类型参数
+    // {
+    //     type B = Wgpu;
+    //     let device = Default::default();
+    //     let query: Tensor<B, 2> = Tensor::random([1, 64], burn::tensor::Distribution::Default, &device);
+    //     let keys: Tensor<B, 2> = Tensor::random([10, 64], burn::tensor::Distribution::Default, &device);
+    //     let similarity = compute_similarity(query, keys);
+    //     println!("[WGPU] 相似度形状: {:?}", similarity.shape());
+    // }
+
+    println!("同一份代码通过类型参数即可切换后端");
+}
+```
+
+## 🔑 模型训练
+
+Burn 提供了完整的训练基础设施：
+
+```rust
+use burn::nn::{Linear, LinearConfig, Relu};
+use burn::module::Module;
+use burn::tensor::{Tensor, backend::{Backend, AutodiffBackend}, Int};
+use burn::config::Config;
+use burn::backend::{NdArray, Autodiff};
+use burn::optim::{SgdConfig, GradientsParams, Optimizer};
+
+#[derive(Module, Debug)]
+struct MnistModel<B: Backend> {
+    linear1: Linear<B>,
+    linear2: Linear<B>,
+    activation: Relu,
+}
+
+#[derive(Config)]
+struct MnistModelConfig {
+    #[config(default = 784)]
+    input_dim: usize,
+    #[config(default = 128)]
+    hidden_dim: usize,
+    #[config(default = 10)]
+    output_dim: usize,
+}
+
+impl MnistModelConfig {
+    fn init<B: Backend>(&self, device: &B::Device) -> MnistModel<B> {
+        MnistModel {
+            linear1: LinearConfig::new(self.input_dim, self.hidden_dim).init(device),
+            linear2: LinearConfig::new(self.hidden_dim, self.output_dim).init(device),
+            activation: Relu::new(),
+        }
+    }
+}
+
+impl<B: Backend> MnistModel<B> {
+    fn forward(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
+        let hidden = self.linear1.forward(input);
+        let hidden = self.activation.forward(hidden);
+        self.linear2.forward(hidden)
+    }
+}
+
+fn train_step<B: AutodiffBackend>(
+    model: MnistModel<B>,
+    optimizer: &mut impl Optimizer<MnistModel<B>, B>,
+    input: Tensor<B, 2>,
+    targets: Tensor<B, 1, Int>,
+) -> (MnistModel<B>, f32) {
+    // 前向传播
+    let logits = model.forward(input);
+
+    // 计算交叉熵损失
+    let loss = burn::tensor::loss::cross_entropy_with_logits(logits, targets);
+    let loss_value = loss.clone().into_data().as_slice::<f32>().unwrap()[0];
+
+    // 反向传播
+    let grads = loss.backward();
+    let grad_params = GradientsParams::from_grads(grads, &model);
+
+    // 更新参数
+    let model = optimizer.step(0.01, model, grad_params);
+
+    (model, loss_value)
+}
+
+fn main() {
+    type TrainBackend = Autodiff<NdArray>;
+    let device = Default::default();
+
+    let config = MnistModelConfig::new();
+    let model = config.init::<TrainBackend>(&device);
+    let mut optimizer = SgdConfig::new().init();
+
+    // 模拟训练数据
+    let input: Tensor<TrainBackend, 2> = Tensor::random(
+        [32, 784],
+        burn::tensor::Distribution::Default,
+        &device,
+    );
+    let targets: Tensor<TrainBackend, 1, Int> = Tensor::from_ints(
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1],
+        &device,
+    );
+
+    let (model, loss) = train_step(model, &mut optimizer, input, targets);
+    println!("训练损失: {loss:.4}");
+    println!("模型参数数量: {}", model.num_params());
+}
+```
+
+## 📊 Burn vs candle 对比
+
+| 特性 | Burn | candle |
+|------|------|--------|
+| 定位 | 训练 + 推理 | 推理为主 |
+| 自动微分 | ✅ 内置 | ❌ 不支持 |
+| 后端支持 | WGPU、CUDA、NdArray、LibTorch 等 | CPU、CUDA |
+| API 风格 | 类似 PyTorch nn.Module | 类似 PyTorch 张量 |
+| 类型安全 | ✅ 编译期维度检查 | 运行时检查 |
+| WASM 支持 | ✅（通过 WGPU） | ✅ |
+| 预训练模型 | 较少 | 丰富（Hugging Face 生态） |
+
+## 🔗 相关资源
+
+- [Burn GitHub 仓库](https://github.com/tracel-ai/burn)
+- [Burn 官方文档](https://burn.dev/)
+- [Burn 官方指南](https://burn.dev/book/)
+- [Burn crates.io](https://crates.io/crates/burn)
+
+## ✅ 学习检查点
+
+- [ ] 理解 Burn 的多后端架构设计
+- [ ] 能够使用 `#[derive(Module)]` 定义神经网络模型
+- [ ] 了解如何通过类型参数切换后端
+- [ ] 掌握 Burn 自动微分和训练循环的基本流程
+- [ ] 理解 Burn 和 candle 各自的适用场景
+
+## 🚀 下一步
+
+→ [tokenizers 分词器](./04-tokenizers)

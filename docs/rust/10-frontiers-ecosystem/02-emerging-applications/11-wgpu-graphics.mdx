@@ -1,17 +1,383 @@
 # wgpu 图形库
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「wgpu 图形库」相关知识。
+[wgpu](https://github.com/gfx-rs/wgpu) 是一个基于 WebGPU 标准的跨平台图形库，用 Rust 编写。它提供了安全且符合人体工程学的 GPU 编程 API，可在 Vulkan、Metal、DX12、OpenGL 等多种图形后端上运行，同时也能编译为 WebAssembly 在浏览器中通过 WebGPU API 运行。wgpu 是 Firefox 浏览器 WebGPU 实现的核心，也是 Bevy 游戏引擎的渲染后端。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心特点
 
-## 📝 学习检查点
+- **WebGPU 标准**：遵循 W3C WebGPU 规范，API 设计面向未来
+- **跨平台**：自动适配 Vulkan、Metal、DX12、OpenGL ES、WebGPU
+- **安全封装**：所有 GPU 操作都经过验证，避免未定义行为
+- **Rust 原生**：完全用 Rust 编写，同时提供 C/C++ 绑定（wgpu-native）
 
-- [ ] 理解wgpu 图形库的核心概念
-- [ ] 能够在实际项目中应用wgpu 图形库
+## 🎯 快速上手
+
+### 项目配置
+
+```toml
+# Cargo.toml
+[package]
+name = "wgpu-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wgpu = "24"
+winit = "0.30"
+pollster = "0.4"
+env_logger = "0.11"
+```
+
+### GPU 初始化
+
+```rust
+use wgpu;
+
+fn main() {
+    // 初始化日志
+    env_logger::init();
+
+    // 使用 pollster 阻塞运行异步代码
+    pollster::block_on(run());
+}
+
+async fn run() {
+    // 1. 创建 Instance（GPU 入口点）
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(), // 自动选择可用后端
+        ..Default::default()
+    });
+
+    // 2. 请求 Adapter（物理 GPU）
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })
+        .await
+        .expect("无法找到合适的 GPU");
+
+    println!("GPU: {}", adapter.get_info().name);
+    println!("后端: {:?}", adapter.get_info().backend);
+
+    // 3. 请求 Device 和 Queue（逻辑设备和命令队列）
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("Main Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            ..Default::default()
+        }, None)
+        .await
+        .expect("无法创建 GPU 设备");
+
+    println!("GPU 设备创建成功");
+    println!("最大纹理尺寸: {}", device.limits().max_texture_dimension_2d);
+}
+```
+
+## 🔑 渲染管线概念
+
+### WebGPU 渲染流程
+
+```
+GPU 渲染管线
+┌──────────────────────────────────────────┐
+│  CPU 端                                  │
+│  1. 创建 Buffer（顶点/索引/Uniform）     │
+│  2. 创建 Texture 和 Sampler             │
+│  3. 创建 Shader Module（WGSL）           │
+│  4. 创建 Render Pipeline                │
+│  5. 录制 Render Pass（Command Encoder）  │
+│  6. 提交 Command Buffer 到 Queue        │
+├──────────────────────────────────────────┤
+│  GPU 端                                  │
+│  ┌──────────┐                            │
+│  │ 顶点着色器│ → 变换顶点位置            │
+│  └────┬─────┘                            │
+│       ▼                                  │
+│  ┌──────────┐                            │
+│  │ 光栅化    │ → 将三角形转为片元         │
+│  └────┬─────┘                            │
+│       ▼                                  │
+│  ┌──────────┐                            │
+│  │ 片元着色器│ → 计算每个像素颜色         │
+│  └────┬─────┘                            │
+│       ▼                                  │
+│  ┌──────────┐                            │
+│  │ 帧缓冲区  │ → 输出到屏幕              │
+│  └──────────┘                            │
+└──────────────────────────────────────────┘
+```
+
+### WGSL 着色器
+
+wgpu 使用 WGSL（WebGPU Shading Language）编写着色器：
+
+```rust
+// 着色器代码（WGSL）通常写在单独的 .wgsl 文件中
+// 这里作为字符串嵌入
+
+const SHADER_SOURCE: &str = r#"
+// 顶点着色器输出 / 片元着色器输入
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec3<f32>,
+};
+
+// 顶点着色器
+@vertex
+fn vs_main(
+    @location(0) position: vec2<f32>,
+    @location(1) color: vec3<f32>,
+) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = vec4<f32>(position, 0.0, 1.0);
+    output.color = color;
+    return output;
+}
+
+// 片元着色器
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(input.color, 1.0);
+}
+"#;
+
+fn main() {
+    println!("WGSL 着色器示例:");
+    println!("{SHADER_SOURCE}");
+    println!("WGSL 特点:");
+    println!("  - WebGPU 标准着色器语言");
+    println!("  - 类似 Rust 的语法风格");
+    println!("  - 强类型，编译期检查");
+    println!("  - 支持顶点、片元、计算着色器");
+}
+```
+
+### 创建渲染管线
+
+```rust
+use wgpu;
+
+async fn create_render_pipeline() {
+    let instance = wgpu::Instance::new(&Default::default());
+    let adapter = instance
+        .request_adapter(&Default::default())
+        .await
+        .unwrap();
+    let (device, _queue) = adapter
+        .request_device(&Default::default(), None)
+        .await
+        .unwrap();
+
+    // 编译着色器
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Shader"),
+        source: wgpu::ShaderSource::Wgsl(r#"
+            @vertex
+            fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {
+                var positions = array<vec2<f32>, 3>(
+                    vec2<f32>(0.0, 0.5),
+                    vec2<f32>(-0.5, -0.5),
+                    vec2<f32>(0.5, -0.5),
+                );
+                return vec4<f32>(positions[idx], 0.0, 1.0);
+            }
+
+            @fragment
+            fn fs_main() -> @location(0) vec4<f32> {
+                return vec4<f32>(1.0, 0.5, 0.2, 1.0);
+            }
+        "#.into()),
+    });
+
+    // 创建管线布局
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Pipeline Layout"),
+        bind_group_layouts: &[],
+        push_constant_ranges: &[],
+    });
+
+    // 创建渲染管线
+    let _render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Render Pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
+    println!("渲染管线创建成功");
+}
+
+fn main() {
+    pollster::block_on(create_render_pipeline());
+}
+```
+
+## 🔑 计算着色器（Compute Shader）
+
+wgpu 也支持通用 GPU 计算：
+
+```rust
+use wgpu;
+use wgpu::util::DeviceExt;
+
+async fn gpu_compute() {
+    let instance = wgpu::Instance::new(&Default::default());
+    let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+    let (device, queue) = adapter.request_device(&Default::default(), None).await.unwrap();
+
+    // 计算着色器：将每个元素乘以 2
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Compute Shader"),
+        source: wgpu::ShaderSource::Wgsl(r#"
+            @group(0) @binding(0)
+            var<storage, read_write> data: array<f32>;
+
+            @compute @workgroup_size(64)
+            fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+                let index = id.x;
+                if (index < arrayLength(&data)) {
+                    data[index] = data[index] * 2.0;
+                }
+            }
+        "#.into()),
+    });
+
+    // 输入数据
+    let input_data: Vec<f32> = (0..256).map(|i| i as f32).collect();
+    let buffer_size = (input_data.len() * std::mem::size_of::<f32>()) as u64;
+
+    // 创建 GPU Buffer
+    let storage_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Storage Buffer"),
+        contents: bytemuck::cast_slice(&input_data),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+
+    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Staging Buffer"),
+        size: buffer_size,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    // 创建 Bind Group
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Bind Group Layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Bind Group"),
+        layout: &bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: storage_buffer.as_entire_binding(),
+        }],
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Compute Pipeline Layout"),
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
+    });
+
+    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Compute Pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    // 录制并提交命令
+    let mut encoder = device.create_command_encoder(&Default::default());
+
+    {
+        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+        compute_pass.set_pipeline(&compute_pipeline);
+        compute_pass.set_bind_group(0, &bind_group, &[]);
+        compute_pass.dispatch_workgroups((input_data.len() as u32 + 63) / 64, 1, 1);
+    }
+
+    encoder.copy_buffer_to_buffer(&storage_buffer, 0, &staging_buffer, 0, buffer_size);
+    queue.submit(Some(encoder.finish()));
+
+    println!("GPU 计算完成");
+    println!("输入前 5 个: {:?}", &input_data[..5]);
+    println!("预期输出前 5 个: [0.0, 2.0, 4.0, 6.0, 8.0]");
+}
+
+fn main() {
+    pollster::block_on(gpu_compute());
+}
+```
+
+## 📊 wgpu 后端映射
+
+| 平台 | 图形后端 | 说明 |
+|------|---------|------|
+| Windows | Vulkan / DX12 | 优先 Vulkan |
+| macOS | Metal | 唯一后端 |
+| Linux | Vulkan | 需要驱动支持 |
+| Android | Vulkan / OpenGL ES | 回退到 GLES |
+| iOS | Metal | 唯一后端 |
+| Web | WebGPU | 浏览器原生支持 |
+
+## 🔗 相关资源
+
+- [wgpu GitHub 仓库](https://github.com/gfx-rs/wgpu)
+- [Learn Wgpu 教程](https://sotrh.github.io/learn-wgpu/)
+- [WebGPU 规范](https://www.w3.org/TR/webgpu/)
+- [WGSL 规范](https://www.w3.org/TR/WGSL/)
+
+## ✅ 学习检查点
+
+- [ ] 理解 GPU 渲染管线的各个阶段
+- [ ] 了解 wgpu 初始化流程（Instance → Adapter → Device → Queue）
+- [ ] 能够编写基础的 WGSL 着色器
+- [ ] 了解计算着色器的使用方式
+- [ ] 理解 wgpu 的跨平台后端映射
+
+## 🚀 下一步
+
+→ [Nannou 创意编程](./12-nannou-creative-coding)

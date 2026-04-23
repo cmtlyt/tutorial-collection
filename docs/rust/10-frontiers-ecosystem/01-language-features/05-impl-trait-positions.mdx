@@ -1,17 +1,375 @@
 # impl Trait 在更多位置
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解语言新特性中的「impl Trait 在更多位置」相关知识。
+`impl Trait` 是 Rust 中一种简洁的类型抽象语法，允许你在不指定具体类型的情况下描述某个类型满足的 trait 约束。最初 `impl Trait` 只能用在函数参数和返回值位置，但 Rust 一直在扩展它的使用范围——包括 trait 方法返回值（RPITIT）、关联类型位置（ATPIT）、类型别名（TAIT）等。本节将全面介绍这些扩展及其实际应用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🔑 回顾：基础 impl Trait 用法
+
+### 参数位置（APIT）
+
+`impl Trait` 在参数位置（Argument Position Impl Trait）等价于泛型参数，是一种语法糖：
+
+```rust
+// 使用 impl Trait 简化泛型参数
+fn print_items(items: impl Iterator<Item = i32>) {
+    for item in items {
+        println!("{item}");
+    }
+}
+
+// 等价于显式泛型写法
+fn print_items_generic<I: Iterator<Item = i32>>(items: I) {
+    for item in items {
+        println!("{item}");
+    }
+}
+
+fn main() {
+    let numbers = vec![1, 2, 3];
+    print_items(numbers.into_iter());
+    print_items_generic([4, 5, 6].into_iter());
+}
+```
+
+### 返回值位置（RPIT）
+
+`impl Trait` 在返回值位置表示返回某个实现了指定 trait 的具体类型（由编译器推断）：
+
+```rust
+fn make_counter(start: i32) -> impl Iterator<Item = i32> {
+    let mut current = start;
+    std::iter::from_fn(move || {
+        let value = current;
+        current += 1;
+        Some(value)
+    })
+}
+
+fn make_greeting(name: &str) -> impl std::fmt::Display + '_ {
+    format!("Hello, {name}!")
+}
+
+fn main() {
+    let counter: Vec<i32> = make_counter(1).take(5).collect();
+    println!("计数: {counter:?}");
+
+    let greeting = make_greeting("Rust");
+    println!("{greeting}");
+}
+```
+
+## 🔑 Trait 方法返回值中的 impl Trait（RPITIT）
+
+### 背景
+
+在 Rust 1.75（2023 年 12 月）中稳定，RPITIT（Return Position Impl Trait In Traits）允许在 trait 方法的返回值位置使用 `impl Trait`：
+
+```rust
+trait TextProcessor {
+    fn words(&self) -> impl Iterator<Item = &str>;
+    fn lines(&self) -> impl Iterator<Item = &str>;
+}
+
+struct Document {
+    content: String,
+}
+
+impl TextProcessor for Document {
+    fn words(&self) -> impl Iterator<Item = &str> {
+        self.content.split_whitespace()
+    }
+
+    fn lines(&self) -> impl Iterator<Item = &str> {
+        self.content.lines()
+    }
+}
+
+fn process(processor: &impl TextProcessor) {
+    let word_count = processor.words().count();
+    let line_count = processor.lines().count();
+    println!("单词数: {word_count}, 行数: {line_count}");
+}
+
+fn main() {
+    let doc = Document {
+        content: String::from("Hello World\nRust is great\nLet's learn"),
+    };
+    process(&doc);
+
+    for word in doc.words() {
+        print!("[{word}] ");
+    }
+    println!();
+}
+```
+
+### RPITIT vs 关联类型
+
+```rust
+// 方式一：使用 RPITIT（更简洁）
+trait DataSource {
+    fn fetch_all(&self) -> impl Iterator<Item = String>;
+}
+
+// 方式二：使用关联类型（更灵活，调用方可以引用具体类型）
+trait DataSourceWithType {
+    type ItemIter: Iterator<Item = String>;
+    fn fetch_all(&self) -> Self::ItemIter;
+}
+
+struct InMemorySource {
+    data: Vec<String>,
+}
+
+impl DataSource for InMemorySource {
+    fn fetch_all(&self) -> impl Iterator<Item = String> {
+        self.data.clone().into_iter()
+    }
+}
+
+impl DataSourceWithType for InMemorySource {
+    type ItemIter = std::vec::IntoIter<String>;
+    fn fetch_all(&self) -> Self::ItemIter {
+        self.data.clone().into_iter()
+    }
+}
+
+fn main() {
+    let source = InMemorySource {
+        data: vec!["Alice".into(), "Bob".into(), "Charlie".into()],
+    };
+
+    // 使用 RPITIT 版本
+    let names: Vec<String> = DataSource::fetch_all(&source).collect();
+    println!("RPITIT: {names:?}");
+
+    // 使用关联类型版本
+    let names: Vec<String> = DataSourceWithType::fetch_all(&source).collect();
+    println!("关联类型: {names:?}");
+}
+```
+
+### RPITIT 的限制
+
+```rust
+// RPITIT 返回的类型是不透明的（opaque type）
+// 调用方无法知道具体类型，只知道它实现了指定的 trait
+
+trait Processor {
+    fn process(&self) -> impl std::fmt::Display;
+}
+
+struct NumberProcessor(i32);
+struct StringProcessor(String);
+
+impl Processor for NumberProcessor {
+    fn process(&self) -> impl std::fmt::Display {
+        self.0 * 2
+    }
+}
+
+impl Processor for StringProcessor {
+    fn process(&self) -> impl std::fmt::Display {
+        format!("处理: {}", self.0)
+    }
+}
+
+// 注意：RPITIT 不能用于 dyn Trait
+// fn use_dyn(p: &dyn Processor) { ... } // 编译错误
+
+// 但可以用于静态分发
+fn use_static(p: &impl Processor) {
+    println!("结果: {}", p.process());
+}
+
+fn main() {
+    let num = NumberProcessor(21);
+    let text = StringProcessor("hello".into());
+
+    use_static(&num);
+    use_static(&text);
+}
+```
+
+## 🔑 async fn in Traits
+
+RPITIT 使得 `async fn` 可以直接在 trait 方法中使用（Rust 1.75 稳定）：
+
+```rust
+use std::collections::HashMap;
+
+trait KeyValueStore {
+    async fn get(&self, key: &str) -> Option<String>;
+    async fn set(&mut self, key: String, value: String);
+    async fn delete(&mut self, key: &str) -> bool;
+}
+
+struct InMemoryStore {
+    data: HashMap<String, String>,
+}
+
+impl InMemoryStore {
+    fn new() -> Self {
+        Self {
+            data: HashMap::new(),
+        }
+    }
+}
+
+impl KeyValueStore for InMemoryStore {
+    async fn get(&self, key: &str) -> Option<String> {
+        // 模拟异步操作
+        self.data.get(key).cloned()
+    }
+
+    async fn set(&mut self, key: String, value: String) {
+        self.data.insert(key, value);
+    }
+
+    async fn delete(&mut self, key: &str) -> bool {
+        self.data.remove(key).is_some()
+    }
+}
+
+async fn demo_store(store: &mut impl KeyValueStore) {
+    store.set("name".into(), "Rust".into()).await;
+    store.set("version".into(), "2024".into()).await;
+
+    if let Some(name) = store.get("name").await {
+        println!("name = {name}");
+    }
+
+    let deleted = store.delete("version").await;
+    println!("删除 version: {deleted}");
+}
+
+fn main() {
+    // 简化演示，实际使用需要异步运行时
+    let mut store = InMemoryStore::new();
+    store.data.insert("name".into(), "Rust".into());
+    println!("store 包含 {} 个条目", store.data.len());
+}
+```
+
+## 🔑 关联类型位置的 impl Trait（ATPIT）
+
+ATPIT（Associated Type Position Impl Trait）允许在实现关联类型时使用 `impl Trait`，而不需要拼写出具体的类型名称。此特性在 Rust 1.87（2025 年 7 月）稳定：
+
+```rust
+trait Container {
+    type Iter<'a>: Iterator<Item = &'a str> where Self: 'a;
+    fn items(&self) -> Self::Iter<'_>;
+}
+
+struct WordList {
+    words: Vec<String>,
+}
+
+impl Container for WordList {
+    // ATPIT: 使用 impl Iterator 而不需要写出完整的迭代器类型
+    type Iter<'a> = impl Iterator<Item = &'a str>;
+
+    fn items(&self) -> Self::Iter<'_> {
+        self.words.iter().map(|s| s.as_str())
+    }
+}
+
+fn print_container(container: &impl Container) {
+    for item in container.items() {
+        println!("- {item}");
+    }
+}
+
+fn main() {
+    let list = WordList {
+        words: vec!["hello".into(), "world".into(), "rust".into()],
+    };
+    print_container(&list);
+}
+```
+
+:::tip
+ATPIT 需要 nightly 编译器或 Rust 1.87+。在此之前你可以使用 `Box<dyn Iterator>` 作为替代方案。
 :::
 
-## 📝 学习检查点
+## 🔑 类型别名中的 impl Trait（TAIT）
 
-- [ ] 理解impl Trait 在更多位置的核心概念
-- [ ] 能够在实际项目中应用impl Trait 在更多位置
+TAIT（Type Alias Impl Trait）允许在类型别名中使用 `impl Trait`，目前仍在 nightly 中实验：
+
+```rust
+// TAIT 目前需要 nightly 和特性门控
+// #![feature(type_alias_impl_trait)]
+
+// type Counter = impl Iterator<Item = i32>;
+//
+// fn make_counter() -> Counter {
+//     (0..).map(|x| x * 2)
+// }
+
+// 稳定版替代方案：使用具体类型或 Box<dyn>
+fn make_counter() -> Box<dyn Iterator<Item = i32>> {
+    Box::new((0..).map(|x| x * 2))
+}
+
+// 另一个替代方案：使用命名的新类型包装
+struct EvenNumbers {
+    current: i32,
+}
+
+impl EvenNumbers {
+    fn new() -> Self {
+        Self { current: 0 }
+    }
+}
+
+impl Iterator for EvenNumbers {
+    type Item = i32;
+    fn next(&mut self) -> Option<Self::Item> {
+        let value = self.current;
+        self.current += 2;
+        Some(value)
+    }
+}
+
+fn main() {
+    // Box<dyn> 方案
+    let counter: Vec<i32> = make_counter().take(5).collect();
+    println!("Box<dyn>: {counter:?}");
+
+    // 新类型方案（零成本抽象）
+    let evens: Vec<i32> = EvenNumbers::new().take(5).collect();
+    println!("新类型: {evens:?}");
+}
+```
+
+## 📊 impl Trait 位置总结
+
+| 位置 | 语法示例 | 稳定状态 | 说明 |
+|------|---------|---------|------|
+| 参数（APIT） | `fn f(x: impl Trait)` | ✅ 稳定 | 等价于泛型参数 |
+| 返回值（RPIT） | `fn f() -> impl Trait` | ✅ 稳定 | 不透明返回类型 |
+| Trait 返回值（RPITIT） | `trait T { fn f() -> impl Trait; }` | ✅ 1.75 | 支持 async fn in traits |
+| 关联类型（ATPIT） | `type Assoc = impl Trait;` | ✅ 1.87 | 在 impl 块中使用 |
+| 类型别名（TAIT） | `type Alias = impl Trait;` | 🔬 nightly | 模块级别的不透明类型 |
+
+## 🔗 相关资源
+
+- [RFC 1522: APIT 和 RPIT](https://rust-lang.github.io/rfcs/1522-conservative-impl-trait.html)
+- [RFC 3425: RPITIT](https://rust-lang.github.io/rfcs/3425-return-position-impl-trait-in-traits.html)
+- [impl Trait 进展追踪](https://rust-lang.github.io/rust-project-goals/2024h2/ATPIT.html)
+
+## ✅ 学习检查点
+
+- [ ] 理解 `impl Trait` 在参数和返回值位置的区别
+- [ ] 掌握 RPITIT 在 trait 方法中的使用方式
+- [ ] 了解 async fn in traits 的工作原理
+- [ ] 理解 ATPIT 和 TAIT 的区别及各自的稳定状态
+- [ ] 能够根据场景选择 `impl Trait`、关联类型或 `dyn Trait`
+
+## 🚀 下一步
+
+→ [async 闭包](./06-async-closures)

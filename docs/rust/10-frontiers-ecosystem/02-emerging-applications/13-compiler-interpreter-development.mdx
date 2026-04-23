@@ -1,17 +1,564 @@
 # 编译器与解释器开发
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「编译器与解释器开发」相关知识。
+Rust 凭借强大的模式匹配、代数数据类型（枚举）、零成本抽象和出色的性能，成为编写编译器与解释器的理想语言。从 Rust 编译器自身（rustc）到众多新兴编程语言和工具（如 SWC、Deno、Ruff、Oxc、Biome 等），Rust 在编译器/解释器领域已有大量成功实践。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### Rust 在此领域的优势
 
-## 📝 学习检查点
+- **枚举 + 模式匹配**：天然适合表示 AST 节点和 Token 类型
+- **所有权系统**：编译器中的 AST 遍历和转换天然受益于所有权模型
+- **性能**：编译器需要处理大量文本和数据结构，Rust 的零开销抽象至关重要
+- **生态**：丰富的解析器库（nom、pest、logos、chumsky 等）
 
-- [ ] 理解编译器与解释器开发的核心概念
-- [ ] 能够在实际项目中应用编译器与解释器开发
+## 🎯 编译器/解释器的基本架构
+
+```
+编译器/解释器管线
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+│ 源代码    │ →  │ 词法分析  │ →  │ 语法分析  │ →  │ 语义分析  │ →  │ 代码生成  │
+│ Source   │    │ Lexer    │    │ Parser   │    │ Analyzer │    │ Codegen  │
+│          │    │ → Tokens │    │ → AST    │    │ → IR     │    │ → Output │
+└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
+```
+
+## 🔑 词法分析（Lexer）
+
+将源代码文本分割为 Token 序列：
+
+```rust
+/// Token 类型
+#[derive(Debug, Clone, PartialEq)]
+enum TokenKind {
+    // 字面量
+    Integer(i64),
+    Float(f64),
+    StringLiteral(String),
+    Boolean(bool),
+
+    // 标识符和关键字
+    Identifier(String),
+    Let,
+    Fn,
+    If,
+    Else,
+    Return,
+
+    // 运算符
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Assign,
+    Equal,
+    NotEqual,
+
+    // 分隔符
+    LeftParen,
+    RightParen,
+    LeftBrace,
+    RightBrace,
+    Comma,
+    Semicolon,
+
+    // 特殊
+    Eof,
+}
+
+/// 带位置信息的 Token
+#[derive(Debug, Clone)]
+struct Token {
+    kind: TokenKind,
+    span: Span,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    start: usize,
+    end: usize,
+    line: usize,
+}
+
+/// 词法分析器
+struct Lexer {
+    source: Vec<char>,
+    position: usize,
+    line: usize,
+}
+
+impl Lexer {
+    fn new(source: &str) -> Self {
+        Self {
+            source: source.chars().collect(),
+            position: 0,
+            line: 1,
+        }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.source.get(self.position).copied()
+    }
+
+    fn advance(&mut self) -> Option<char> {
+        let ch = self.source.get(self.position).copied();
+        if ch == Some('\n') {
+            self.line += 1;
+        }
+        self.position += 1;
+        ch
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(ch) = self.peek() {
+            if ch.is_whitespace() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn read_number(&mut self) -> TokenKind {
+        let start = self.position;
+        let mut is_float = false;
+
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_digit() {
+                self.advance();
+            } else if ch == '.' && !is_float {
+                is_float = true;
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let text: String = self.source[start..self.position].iter().collect();
+        if is_float {
+            TokenKind::Float(text.parse().unwrap())
+        } else {
+            TokenKind::Integer(text.parse().unwrap())
+        }
+    }
+
+    fn read_identifier(&mut self) -> TokenKind {
+        let start = self.position;
+        while let Some(ch) = self.peek() {
+            if ch.is_alphanumeric() || ch == '_' {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let text: String = self.source[start..self.position].iter().collect();
+        match text.as_str() {
+            "let" => TokenKind::Let,
+            "fn" => TokenKind::Fn,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "return" => TokenKind::Return,
+            "true" => TokenKind::Boolean(true),
+            "false" => TokenKind::Boolean(false),
+            _ => TokenKind::Identifier(text),
+        }
+    }
+
+    fn read_string(&mut self) -> TokenKind {
+        self.advance(); // 跳过开头的引号
+        let start = self.position;
+        while let Some(ch) = self.peek() {
+            if ch == '"' {
+                break;
+            }
+            self.advance();
+        }
+        let text: String = self.source[start..self.position].iter().collect();
+        self.advance(); // 跳过结尾的引号
+        TokenKind::StringLiteral(text)
+    }
+
+    fn next_token(&mut self) -> Token {
+        self.skip_whitespace();
+        let start = self.position;
+        let line = self.line;
+
+        let kind = match self.peek() {
+            None => TokenKind::Eof,
+            Some(ch) => match ch {
+                '0'..='9' => self.read_number(),
+                'a'..='z' | 'A'..='Z' | '_' => self.read_identifier(),
+                '"' => self.read_string(),
+                '+' => { self.advance(); TokenKind::Plus }
+                '-' => { self.advance(); TokenKind::Minus }
+                '*' => { self.advance(); TokenKind::Star }
+                '/' => { self.advance(); TokenKind::Slash }
+                '=' => {
+                    self.advance();
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        TokenKind::Equal
+                    } else {
+                        TokenKind::Assign
+                    }
+                }
+                '!' => {
+                    self.advance();
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        TokenKind::NotEqual
+                    } else {
+                        panic!("预期 '=' 在 '!' 之后")
+                    }
+                }
+                '(' => { self.advance(); TokenKind::LeftParen }
+                ')' => { self.advance(); TokenKind::RightParen }
+                '{' => { self.advance(); TokenKind::LeftBrace }
+                '}' => { self.advance(); TokenKind::RightBrace }
+                ',' => { self.advance(); TokenKind::Comma }
+                ';' => { self.advance(); TokenKind::Semicolon }
+                _ => panic!("未知字符: '{ch}' (行 {line})"),
+            },
+        };
+
+        Token {
+            kind,
+            span: Span {
+                start,
+                end: self.position,
+                line,
+            },
+        }
+    }
+
+    fn tokenize(&mut self) -> Vec<Token> {
+        let mut tokens = Vec::new();
+        loop {
+            let token = self.next_token();
+            let is_eof = token.kind == TokenKind::Eof;
+            tokens.push(token);
+            if is_eof {
+                break;
+            }
+        }
+        tokens
+    }
+}
+
+fn main() {
+    let source = r#"
+        let x = 42;
+        let y = x + 8;
+        fn add(a, b) {
+            return a + b;
+        }
+    "#;
+
+    let mut lexer = Lexer::new(source);
+    let tokens = lexer.tokenize();
+
+    println!("词法分析结果 ({} 个 token):", tokens.len());
+    for token in &tokens {
+        println!("  行{}: {:?}", token.span.line, token.kind);
+    }
+}
+```
+
+## 🔑 语法分析（Parser）
+
+将 Token 序列构建为抽象语法树（AST）：
+
+```rust
+/// AST 节点定义
+#[derive(Debug, Clone)]
+enum Expression {
+    Integer(i64),
+    Float(f64),
+    StringLiteral(String),
+    Boolean(bool),
+    Identifier(String),
+    BinaryOp {
+        left: Box<Expression>,
+        operator: BinaryOperator,
+        right: Box<Expression>,
+    },
+    FunctionCall {
+        name: String,
+        arguments: Vec<Expression>,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Equal,
+    NotEqual,
+}
+
+#[derive(Debug, Clone)]
+enum Statement {
+    Let {
+        name: String,
+        value: Expression,
+    },
+    Return(Expression),
+    ExpressionStatement(Expression),
+    FunctionDef {
+        name: String,
+        parameters: Vec<String>,
+        body: Vec<Statement>,
+    },
+    If {
+        condition: Expression,
+        then_branch: Vec<Statement>,
+        else_branch: Option<Vec<Statement>>,
+    },
+}
+
+/// 程序 = 语句列表
+#[derive(Debug)]
+struct Program {
+    statements: Vec<Statement>,
+}
+
+fn main() {
+    // 演示 AST 构建结果
+    let ast = Program {
+        statements: vec![
+            Statement::Let {
+                name: "x".into(),
+                value: Expression::Integer(42),
+            },
+            Statement::Let {
+                name: "y".into(),
+                value: Expression::BinaryOp {
+                    left: Box::new(Expression::Identifier("x".into())),
+                    operator: BinaryOperator::Add,
+                    right: Box::new(Expression::Integer(8)),
+                },
+            },
+            Statement::FunctionDef {
+                name: "add".into(),
+                parameters: vec!["a".into(), "b".into()],
+                body: vec![Statement::Return(Expression::BinaryOp {
+                    left: Box::new(Expression::Identifier("a".into())),
+                    operator: BinaryOperator::Add,
+                    right: Box::new(Expression::Identifier("b".into())),
+                })],
+            },
+        ],
+    };
+
+    println!("AST 结构:");
+    for (i, stmt) in ast.statements.iter().enumerate() {
+        println!("  语句[{i}]: {stmt:#?}");
+    }
+}
+```
+
+## 🔑 求值器（Tree-Walking Interpreter）
+
+最简单的解释器方式——直接遍历 AST 执行：
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+enum Value {
+    Integer(i64),
+    Float(f64),
+    StringVal(String),
+    Boolean(bool),
+    Null,
+}
+
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Integer(n) => write!(f, "{n}"),
+            Value::Float(n) => write!(f, "{n}"),
+            Value::StringVal(s) => write!(f, "{s}"),
+            Value::Boolean(b) => write!(f, "{b}"),
+            Value::Null => write!(f, "null"),
+        }
+    }
+}
+
+/// 简单的环境（变量作用域）
+struct Environment {
+    variables: HashMap<String, Value>,
+}
+
+impl Environment {
+    fn new() -> Self {
+        Self {
+            variables: HashMap::new(),
+        }
+    }
+
+    fn set(&mut self, name: impl Into<String>, value: Value) {
+        self.variables.insert(name.into(), value);
+    }
+
+    fn get(&self, name: &str) -> Option<&Value> {
+        self.variables.get(name)
+    }
+}
+
+/// 简单的算术求值器
+fn eval_arithmetic(left: &Value, op: &str, right: &Value) -> Value {
+    match (left, right) {
+        (Value::Integer(a), Value::Integer(b)) => match op {
+            "+" => Value::Integer(a + b),
+            "-" => Value::Integer(a - b),
+            "*" => Value::Integer(a * b),
+            "/" => {
+                if *b == 0 {
+                    panic!("除零错误");
+                }
+                Value::Integer(a / b)
+            }
+            "==" => Value::Boolean(a == b),
+            "!=" => Value::Boolean(a != b),
+            _ => panic!("未知运算符: {op}"),
+        },
+        (Value::Float(a), Value::Float(b)) => match op {
+            "+" => Value::Float(a + b),
+            "-" => Value::Float(a - b),
+            "*" => Value::Float(a * b),
+            "/" => Value::Float(a / b),
+            _ => panic!("未知运算符: {op}"),
+        },
+        (Value::StringVal(a), Value::StringVal(b)) if op == "+" => {
+            Value::StringVal(format!("{a}{b}"))
+        }
+        _ => panic!("类型不匹配的运算"),
+    }
+}
+
+fn main() {
+    let mut env = Environment::new();
+
+    // 模拟执行 let x = 42;
+    env.set("x", Value::Integer(42));
+    println!("let x = 42;");
+
+    // 模拟执行 let y = x + 8;
+    let x_val = env.get("x").unwrap().clone();
+    let result = eval_arithmetic(&x_val, "+", &Value::Integer(8));
+    env.set("y", result);
+    println!("let y = x + 8;");
+
+    // 模拟执行 let greeting = "Hello" + " " + "World";
+    let hello = Value::StringVal("Hello".into());
+    let space = Value::StringVal(" ".into());
+    let world = Value::StringVal("World".into());
+    let temp = eval_arithmetic(&hello, "+", &space);
+    let greeting = eval_arithmetic(&temp, "+", &world);
+    env.set("greeting", greeting);
+    println!(r#"let greeting = "Hello" + " " + "World";"#);
+
+    // 输出所有变量
+    println!("\n--- 环境变量 ---");
+    for (name, value) in &env.variables {
+        println!("  {name} = {value}");
+    }
+
+    // 演示算术运算
+    println!("\n--- 算术运算测试 ---");
+    let tests = vec![
+        (Value::Integer(10), "+", Value::Integer(3)),
+        (Value::Integer(10), "-", Value::Integer(3)),
+        (Value::Integer(10), "*", Value::Integer(3)),
+        (Value::Integer(10), "/", Value::Integer(3)),
+        (Value::Integer(10), "==", Value::Integer(10)),
+        (Value::Integer(10), "!=", Value::Integer(3)),
+    ];
+
+    for (left, op, right) in &tests {
+        let result = eval_arithmetic(left, op, right);
+        println!("  {left} {op} {right} = {result}");
+    }
+}
+```
+
+## 🔑 Rust 编写的知名编译器/解释器
+
+```
+Rust 编写的知名项目
+├── 前端工具链
+│   ├── SWC          — JavaScript/TypeScript 编译器（替代 Babel）
+│   ├── Oxc          — JavaScript 解析器和 linter
+│   ├── Biome        — Web 工具链（格式化 + lint）
+│   ├── Ruff         — Python linter（比 Pylint 快 10-100x）
+│   └── Rspack       — Webpack 兼容的打包器
+├── 运行时
+│   ├── Deno         — JavaScript/TypeScript 运行时
+│   └── Wasmer       — WebAssembly 运行时
+├── 编程语言
+│   ├── rustc        — Rust 编译器自身
+│   ├── Gleam        — 面向 Erlang VM 的函数式语言
+│   └── Roc          — 面向应用的函数式语言
+└── 查询语言
+    ├── DataFusion   — SQL 查询引擎
+    └── Polars       — DataFrame 库（自带表达式语言）
+```
+
+## 🔑 常用解析器库
+
+```rust
+fn main() {
+    println!("=== Rust 解析器库对比 ===\n");
+
+    println!("1. logos (词法分析):");
+    println!("   - 基于 derive 宏的零分配词法分析器");
+    println!("   - 极致性能，适合 Token 生成");
+    println!("   - 不处理语法分析\n");
+
+    println!("2. pest (PEG 解析):");
+    println!("   - 基于 PEG 文法的解析器生成器");
+    println!("   - 文法定义写在 .pest 文件中");
+    println!("   - 自动生成解析器代码\n");
+
+    println!("3. nom (组合子解析):");
+    println!("   - 函数式组合子风格的解析器库");
+    println!("   - 适合二进制协议和结构化数据");
+    println!("   - 零拷贝解析\n");
+
+    println!("4. chumsky (组合子 + 错误恢复):");
+    println!("   - 现代组合子解析器库");
+    println!("   - 出色的错误报告和恢复能力");
+    println!("   - 适合编程语言解析\n");
+
+    println!("5. tree-sitter (增量解析):");
+    println!("   - 增量解析框架（C 核心 + Rust 绑定）");
+    println!("   - 适合编辑器中的实时语法高亮");
+    println!("   - 支持多种语言文法");
+}
+```
+
+## 🔗 相关资源
+
+- [Crafting Interpreters](https://craftinginterpreters.com/)（经典编译器教材）
+- [Writing an Interpreter in Rust](https://interpreterbook.com/)
+- [logos 词法分析器](https://github.com/maciejhirsz/logos)
+- [chumsky 解析器](https://github.com/zesterer/chumsky)
+- [pest PEG 解析器](https://github.com/pest-parser/pest)
+
+## ✅ 学习检查点
+
+- [ ] 理解编译器管线的各个阶段（词法分析 → 语法分析 → 语义分析 → 代码生成）
+- [ ] 能够用 Rust 枚举定义 Token 和 AST 节点类型
+- [ ] 掌握手写词法分析器的基本实现
+- [ ] 了解 Tree-Walking 解释器的工作方式
+- [ ] 知道 Rust 生态中常用的解析器库及其适用场景
+
+## 🚀 下一步
+
+→ [LSP 实现](./14-lsp-implementation)

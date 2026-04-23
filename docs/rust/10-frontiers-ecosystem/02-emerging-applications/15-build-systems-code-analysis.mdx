@@ -1,17 +1,457 @@
 # 构建系统与代码分析工具
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「构建系统与代码分析工具」相关知识。
+Rust 在构建系统和代码分析工具领域取得了显著成功。以 SWC、Rspack、Oxc、Biome、Ruff 为代表的新一代开发工具，用 Rust 重写了原本用 JavaScript/Python 实现的工具链，获得了 10 倍甚至 100 倍的性能提升。这类工具的共同特点是需要处理大量源代码文本、进行复杂的语法分析和转换——正是 Rust 性能优势的最佳发挥场景。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### Rust 在此领域的优势
 
-## 📝 学习检查点
+- **极致性能**：比 JavaScript/Python 工具快 10-100 倍
+- **并行处理**：利用多核 CPU 并行分析多个文件
+- **低内存占用**：处理大型代码库时内存占用可控
+- **可编译为 WASM**：可在浏览器和 Node.js 中运行
+- **与 Node.js 生态集成**：通过 napi-rs 提供 Node.js 绑定
 
-- [ ] 理解构建系统与代码分析工具的核心概念
-- [ ] 能够在实际项目中应用构建系统与代码分析工具
+## 🎯 Rust 构建工具全景
+
+```
+Rust 编写的前端/开发工具
+├── 打包器 (Bundler)
+│   ├── Rspack       — Webpack 兼容的高性能打包器
+│   ├── Rolldown     — Rollup 的 Rust 重写（Vite 下一代打包器）
+│   └── Turbopack    — Vercel 的增量打包器
+├── 编译器 / 转译器
+│   ├── SWC          — JavaScript/TypeScript 编译器
+│   └── Oxc          — JavaScript 工具链集合
+├── 代码质量
+│   ├── Biome        — 格式化 + lint（替代 Prettier + ESLint）
+│   ├── Oxlint       — Oxc 的 linter（替代 ESLint）
+│   ├── Ruff         — Python linter（替代 Pylint/Flake8）
+│   └── dprint       — 可插拔的代码格式化器
+├── 包管理
+│   └── orogene      — Node.js 包管理器
+└── 文档 / 静态站点
+    └── Rspress      — 基于 Rspack 的文档框架
+```
+
+## 🔑 SWC：JavaScript/TypeScript 编译器
+
+SWC（Speedy Web Compiler）是用 Rust 编写的 JavaScript/TypeScript 编译器，可替代 Babel 进行语法转换，速度提升约 20-70 倍：
+
+```rust
+// SWC 的核心架构概念
+
+/// SWC 处理流程
+/// 1. 解析（Parse）：源代码 → AST
+/// 2. 转换（Transform）：AST → AST（应用插件/转换规则）
+/// 3. 生成（Emit）：AST → 目标代码 + SourceMap
+
+fn describe_swc_architecture() {
+    println!("=== SWC 架构 ===\n");
+
+    println!("核心模块:");
+    println!("  swc_ecma_parser  — ECMAScript/TypeScript 解析器");
+    println!("  swc_ecma_ast     — AST 节点类型定义");
+    println!("  swc_ecma_visit   — AST 访问者模式（Visitor）");
+    println!("  swc_ecma_transforms — 内置转换（JSX、TypeScript、ES 降级等）");
+    println!("  swc_ecma_codegen — 代码生成（AST → 源码）");
+    println!();
+
+    println!("性能优化:");
+    println!("  - 使用 string interning 减少字符串分配");
+    println!("  - 并行处理多个文件");
+    println!("  - 增量解析支持");
+    println!("  - 通过 napi-rs 提供 Node.js 绑定");
+    println!();
+
+    println!("使用场景:");
+    println!("  - Next.js 的默认编译器");
+    println!("  - Deno 的 TypeScript 编译");
+    println!("  - Rspack/Turbopack 的代码转换层");
+}
+
+fn main() {
+    describe_swc_architecture();
+}
+```
+
+### SWC 访问者模式
+
+```rust
+/// SWC 使用 Visitor 模式进行 AST 转换
+/// 以下是简化的概念展示
+
+#[derive(Debug)]
+enum JsExpression {
+    Number(f64),
+    String(String),
+    Identifier(String),
+    BinaryOp {
+        left: Box<JsExpression>,
+        op: String,
+        right: Box<JsExpression>,
+    },
+    Call {
+        callee: String,
+        args: Vec<JsExpression>,
+    },
+}
+
+/// AST 访问者 trait
+trait Visitor {
+    fn visit_expression(&mut self, expr: &mut JsExpression) {
+        match expr {
+            JsExpression::BinaryOp { left, right, .. } => {
+                self.visit_expression(left);
+                self.visit_expression(right);
+            }
+            JsExpression::Call { args, .. } => {
+                for arg in args {
+                    self.visit_expression(arg);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 示例转换：将 console.log 替换为自定义 logger
+struct ConsoleLogTransformer;
+
+impl Visitor for ConsoleLogTransformer {
+    fn visit_expression(&mut self, expr: &mut JsExpression) {
+        if let JsExpression::Call { callee, args } = expr {
+            if callee == "console.log" {
+                *callee = "customLogger.info".to_string();
+            }
+            for arg in args {
+                self.visit_expression(arg);
+            }
+        }
+    }
+}
+
+/// 示例转换：常量折叠（编译期计算常量表达式）
+struct ConstantFolder;
+
+impl Visitor for ConstantFolder {
+    fn visit_expression(&mut self, expr: &mut JsExpression) {
+        // 先递归处理子表达式
+        if let JsExpression::BinaryOp { left, right, .. } = expr {
+            self.visit_expression(left);
+            self.visit_expression(right);
+        }
+
+        // 尝试折叠常量
+        let folded = match expr {
+            JsExpression::BinaryOp { left, op, right } => {
+                if let (JsExpression::Number(a), JsExpression::Number(b)) =
+                    (left.as_ref(), right.as_ref())
+                {
+                    match op.as_str() {
+                        "+" => Some(JsExpression::Number(a + b)),
+                        "-" => Some(JsExpression::Number(a - b)),
+                        "*" => Some(JsExpression::Number(a * b)),
+                        "/" if *b != 0.0 => Some(JsExpression::Number(a / b)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(new_expr) = folded {
+            *expr = new_expr;
+        }
+    }
+}
+
+fn main() {
+    // console.log("hello")
+    let mut expr1 = JsExpression::Call {
+        callee: "console.log".into(),
+        args: vec![JsExpression::String("hello".into())],
+    };
+
+    let mut transformer = ConsoleLogTransformer;
+    transformer.visit_expression(&mut expr1);
+    println!("转换后: {expr1:?}");
+
+    // 2 + 3 * 4 → 常量折叠
+    let mut expr2 = JsExpression::BinaryOp {
+        left: Box::new(JsExpression::Number(2.0)),
+        op: "+".into(),
+        right: Box::new(JsExpression::BinaryOp {
+            left: Box::new(JsExpression::Number(3.0)),
+            op: "*".into(),
+            right: Box::new(JsExpression::Number(4.0)),
+        }),
+    };
+
+    let mut folder = ConstantFolder;
+    folder.visit_expression(&mut expr2);
+    println!("常量折叠: {expr2:?}");
+}
+```
+
+## 🔑 代码分析工具模式
+
+### Lint 规则实现
+
+```rust
+/// 简化的 Lint 规则引擎
+
+#[derive(Debug)]
+struct LintDiagnostic {
+    rule: String,
+    message: String,
+    severity: Severity,
+    line: usize,
+    column: usize,
+    fix: Option<Fix>,
+}
+
+#[derive(Debug)]
+enum Severity {
+    Error,
+    Warning,
+    Info,
+}
+
+#[derive(Debug)]
+struct Fix {
+    description: String,
+    replacement: String,
+    range: (usize, usize),
+}
+
+/// Lint 规则 trait
+trait LintRule {
+    fn name(&self) -> &str;
+    fn check_line(&self, line: &str, line_number: usize) -> Vec<LintDiagnostic>;
+}
+
+/// 规则：禁止使用 var（JavaScript）
+struct NoVar;
+
+impl LintRule for NoVar {
+    fn name(&self) -> &str {
+        "no-var"
+    }
+
+    fn check_line(&self, line: &str, line_number: usize) -> Vec<LintDiagnostic> {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("var ") {
+            let col = line.len() - trimmed.len();
+            vec![LintDiagnostic {
+                rule: self.name().into(),
+                message: "使用 'let' 或 'const' 代替 'var'".into(),
+                severity: Severity::Warning,
+                line: line_number,
+                column: col,
+                fix: Some(Fix {
+                    description: "替换为 let".into(),
+                    replacement: line.replacen("var ", "let ", 1),
+                    range: (col, col + 3),
+                }),
+            }]
+        } else {
+            vec![]
+        }
+    }
+}
+
+/// 规则：行尾无多余空格
+struct NoTrailingSpaces;
+
+impl LintRule for NoTrailingSpaces {
+    fn name(&self) -> &str {
+        "no-trailing-spaces"
+    }
+
+    fn check_line(&self, line: &str, line_number: usize) -> Vec<LintDiagnostic> {
+        if line != line.trim_end() && !line.trim().is_empty() {
+            vec![LintDiagnostic {
+                rule: self.name().into(),
+                message: "行尾存在多余空格".into(),
+                severity: Severity::Warning,
+                line: line_number,
+                column: line.trim_end().len(),
+                fix: Some(Fix {
+                    description: "移除尾部空格".into(),
+                    replacement: line.trim_end().to_string(),
+                    range: (line.trim_end().len(), line.len()),
+                }),
+            }]
+        } else {
+            vec![]
+        }
+    }
+}
+
+/// 规则：禁止 debugger 语句
+struct NoDebugger;
+
+impl LintRule for NoDebugger {
+    fn name(&self) -> &str {
+        "no-debugger"
+    }
+
+    fn check_line(&self, line: &str, line_number: usize) -> Vec<LintDiagnostic> {
+        if line.trim() == "debugger;" || line.trim() == "debugger" {
+            vec![LintDiagnostic {
+                rule: self.name().into(),
+                message: "禁止使用 debugger 语句".into(),
+                severity: Severity::Error,
+                line: line_number,
+                column: line.len() - line.trim_start().len(),
+                fix: Some(Fix {
+                    description: "删除 debugger 语句".into(),
+                    replacement: String::new(),
+                    range: (0, line.len()),
+                }),
+            }]
+        } else {
+            vec![]
+        }
+    }
+}
+
+/// Lint 引擎
+struct LintEngine {
+    rules: Vec<Box<dyn LintRule>>,
+}
+
+impl LintEngine {
+    fn new() -> Self {
+        Self { rules: Vec::new() }
+    }
+
+    fn add_rule(&mut self, rule: Box<dyn LintRule>) {
+        self.rules.push(rule);
+    }
+
+    fn lint(&self, source: &str) -> Vec<LintDiagnostic> {
+        let mut diagnostics = Vec::new();
+
+        for (line_number, line) in source.lines().enumerate() {
+            for rule in &self.rules {
+                diagnostics.extend(rule.check_line(line, line_number + 1));
+            }
+        }
+
+        diagnostics
+    }
+}
+
+fn main() {
+    let mut engine = LintEngine::new();
+    engine.add_rule(Box::new(NoVar));
+    engine.add_rule(Box::new(NoTrailingSpaces));
+    engine.add_rule(Box::new(NoDebugger));
+
+    let source = r#"var name = "hello";
+let count = 42;   
+const PI = 3.14;
+debugger;
+var result = name + count;
+"#;
+
+    println!("源代码:");
+    for (i, line) in source.lines().enumerate() {
+        println!("  {}: {line}", i + 1);
+    }
+
+    let diagnostics = engine.lint(source);
+    println!("\n诊断结果 ({} 个问题):", diagnostics.len());
+    for diag in &diagnostics {
+        let severity = match diag.severity {
+            Severity::Error => "错误",
+            Severity::Warning => "警告",
+            Severity::Info => "提示",
+        };
+        println!(
+            "  [{severity}] 行{}:{} [{}] {}",
+            diag.line, diag.column, diag.rule, diag.message
+        );
+        if let Some(ref fix) = diag.fix {
+            println!("    修复: {}", fix.description);
+        }
+    }
+}
+```
+
+## 🔑 与 Node.js 集成（napi-rs）
+
+Rust 工具通过 napi-rs 提供 Node.js 绑定，实现无缝集成：
+
+```rust
+// 使用 napi-rs 将 Rust 函数暴露给 Node.js
+// 需要 napi 和 napi-derive 依赖
+
+// #[napi]
+// fn transform_code(source: String, filename: String) -> Result<TransformOutput> {
+//     let ast = parse(&source, &filename)?;
+//     let transformed = apply_transforms(ast)?;
+//     let output = generate(transformed)?;
+//     Ok(TransformOutput {
+//         code: output.code,
+//         map: output.source_map,
+//     })
+// }
+
+// Node.js 端使用：
+// const { transformCode } = require('./my-rust-tool');
+// const result = transformCode(source, 'input.ts');
+
+fn main() {
+    println!("napi-rs 集成模式:");
+    println!("  1. Rust 端使用 #[napi] 宏标记导出函数");
+    println!("  2. napi-rs 自动生成 TypeScript 类型定义");
+    println!("  3. Node.js 端直接 require 使用");
+    println!("  4. 零序列化开销（直接操作 V8 值）");
+    println!();
+    println!("典型案例:");
+    println!("  - SWC: @swc/core npm 包");
+    println!("  - Rspack: @rspack/core npm 包");
+    println!("  - Oxc: oxlint npm 包");
+    println!("  - Biome: @biomejs/biome npm 包");
+}
+```
+
+## 📊 性能对比
+
+| 工具 | Rust 版本 | 对标工具 | 性能提升 |
+|------|----------|---------|---------|
+| SWC | swc | Babel | ~20-70x |
+| Rspack | rspack | Webpack | ~5-10x |
+| Oxlint | oxlint | ESLint | ~50-100x |
+| Biome | biome | Prettier + ESLint | ~25x |
+| Ruff | ruff | Pylint/Flake8 | ~10-100x |
+| dprint | dprint | Prettier | ~30x |
+
+## 🔗 相关资源
+
+- [SWC 官网](https://swc.rs/)
+- [Rspack 官网](https://rspack.dev/)
+- [Oxc 项目](https://oxc-project.github.io/)
+- [Biome 官网](https://biomejs.dev/)
+- [Ruff 文档](https://docs.astral.sh/ruff/)
+- [napi-rs 文档](https://napi.rs/)
+
+## ✅ 学习检查点
+
+- [ ] 了解 Rust 在前端/开发工具链领域的应用全景
+- [ ] 理解 SWC 的解析-转换-生成架构
+- [ ] 掌握 AST 访问者模式（Visitor Pattern）的实现思路
+- [ ] 能够实现简单的 Lint 规则
+- [ ] 了解 napi-rs 将 Rust 工具集成到 Node.js 生态的方式
+
+## 🚀 下一步
+
+→ [社区与贡献](../03-community-contribution/01-community-contribution-overview)

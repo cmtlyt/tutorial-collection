@@ -1,17 +1,408 @@
 # Bevy 游戏引擎
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「Bevy 游戏引擎」相关知识。
+[Bevy](https://bevyengine.org/) 是一个用 Rust 编写的数据驱动游戏引擎，基于 ECS（Entity Component System）架构设计。Bevy 以极简的 API、强大的并行调度系统和模块化的插件架构著称，是 Rust 游戏开发生态中最活跃的开源项目之一。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心特点
 
-## 📝 学习检查点
+- **ECS 架构**：实体-组件-系统模式，数据与逻辑分离，利于缓存和并行
+- **并行调度**：系统自动并行执行，充分利用多核 CPU
+- **插件系统**：所有功能（渲染、音频、UI、输入等）都以插件形式组织
+- **热重载**：支持资源热重载，加快开发迭代
+- **跨平台**：支持 Windows、macOS、Linux、Web（WASM）、iOS、Android
 
-- [ ] 理解Bevy 游戏引擎的核心概念
-- [ ] 能够在实际项目中应用Bevy 游戏引擎
+## 🎯 快速上手
+
+### 项目配置
+
+```toml
+# Cargo.toml
+[package]
+name = "bevy-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = "0.15"
+
+# 开发模式下启用动态链接加速编译
+# [features]
+# default = ["bevy/dynamic_linking"]
+```
+
+### Hello Bevy
+
+```rust
+use bevy::prelude::*;
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins) // 添加默认插件（窗口、渲染、输入等）
+        .add_systems(Startup, setup)  // 启动时运行一次
+        .add_systems(Update, greet)   // 每帧运行
+        .run();
+}
+
+fn setup(mut commands: Commands) {
+    // 生成一个带有 Name 组件的实体
+    commands.spawn(Name::new("Bevy Player"));
+    commands.spawn(Name::new("Rust NPC"));
+    println!("游戏世界初始化完成");
+}
+
+fn greet(query: Query<&Name>) {
+    for name in &query {
+        println!("Hello, {}!", name);
+    }
+}
+```
+
+## 🔑 ECS 核心概念
+
+### Entity（实体）
+
+实体是 ECS 中的唯一标识符，本身不包含任何数据：
+
+```rust
+use bevy::prelude::*;
+
+fn spawn_entities(mut commands: Commands) {
+    // 实体只是一个 ID，通过组件赋予其属性
+    let player = commands.spawn_empty().id();
+    println!("创建了实体: {player:?}");
+
+    // 通常在创建时就附加组件
+    commands.spawn((
+        Name::new("Player"),
+        Transform::default(),
+    ));
+}
+```
+
+### Component（组件）
+
+组件是纯数据，通过 derive 宏标记：
+
+```rust
+use bevy::prelude::*;
+
+// 定义组件（纯数据，无逻辑）
+#[derive(Component)]
+struct Health(f32);
+
+#[derive(Component)]
+struct Speed(f32);
+
+#[derive(Component)]
+struct Player;
+
+#[derive(Component)]
+struct Enemy;
+
+#[derive(Component)]
+struct Position {
+    x: f32,
+    y: f32,
+}
+
+fn spawn_game_entities(mut commands: Commands) {
+    // 玩家实体
+    commands.spawn((
+        Player,
+        Health(100.0),
+        Speed(5.0),
+        Position { x: 0.0, y: 0.0 },
+        Name::new("Hero"),
+    ));
+
+    // 敌人实体
+    for i in 0..3 {
+        commands.spawn((
+            Enemy,
+            Health(50.0),
+            Speed(2.0),
+            Position {
+                x: (i as f32) * 10.0,
+                y: 5.0,
+            },
+            Name::new(format!("Goblin {i}")),
+        ));
+    }
+}
+```
+
+### System（系统）
+
+系统是操作组件数据的函数，通过查询（Query）访问实体和组件：
+
+```rust
+use bevy::prelude::*;
+
+#[derive(Component)]
+struct Health(f32);
+
+#[derive(Component)]
+struct Speed(f32);
+
+#[derive(Component)]
+struct Position { x: f32, y: f32 }
+
+#[derive(Component)]
+struct Player;
+
+#[derive(Component)]
+struct Enemy;
+
+// 系统：移动所有有 Speed 和 Position 的实体
+fn movement_system(
+    time: Res<Time>,
+    mut query: Query<(&Speed, &mut Position)>,
+) {
+    for (speed, mut position) in &mut query {
+        position.x += speed.0 * time.delta_secs();
+    }
+}
+
+// 系统：只查询玩家
+fn player_system(query: Query<(&Position, &Health), With<Player>>) {
+    for (position, health) in &query {
+        println!(
+            "玩家位置: ({:.1}, {:.1}), 生命值: {}",
+            position.x, position.y, health.0
+        );
+    }
+}
+
+// 系统：查询敌人（排除玩家）
+fn enemy_system(query: Query<(&Name, &Health), (With<Enemy>, Without<Player>)>) {
+    for (name, health) in &query {
+        println!("敌人 {}: HP={}", name, health.0);
+    }
+}
+
+// 系统：处理伤害事件
+fn damage_system(mut query: Query<(&Name, &mut Health)>) {
+    for (name, mut health) in &mut query {
+        if health.0 > 10.0 {
+            health.0 -= 0.1; // 模拟每帧微量伤害
+        }
+    }
+}
+
+fn main() {
+    App::new()
+        .add_plugins(MinimalPlugins) // 不启用窗口和渲染
+        .add_systems(Startup, |mut commands: Commands| {
+            commands.spawn((Player, Health(100.0), Speed(5.0), Position { x: 0.0, y: 0.0 }, Name::new("Hero")));
+            commands.spawn((Enemy, Health(50.0), Speed(2.0), Position { x: 10.0, y: 5.0 }, Name::new("Goblin")));
+        })
+        .add_systems(Update, (
+            movement_system,
+            player_system,
+            enemy_system,
+            damage_system,
+        ))
+        .run();
+}
+```
+
+## 🔑 资源（Resources）
+
+全局共享数据使用 Resource：
+
+```rust
+use bevy::prelude::*;
+
+// 全局游戏状态
+#[derive(Resource)]
+struct GameScore {
+    points: u32,
+    level: u32,
+}
+
+#[derive(Resource)]
+struct GameConfig {
+    difficulty: f32,
+    max_enemies: usize,
+}
+
+fn setup_resources(mut commands: Commands) {
+    commands.insert_resource(GameScore { points: 0, level: 1 });
+    commands.insert_resource(GameConfig {
+        difficulty: 1.0,
+        max_enemies: 10,
+    });
+}
+
+// 系统中通过 Res<T> 读取、ResMut<T> 修改
+fn scoring_system(
+    mut score: ResMut<GameScore>,
+    config: Res<GameConfig>,
+) {
+    score.points += (10.0 * config.difficulty) as u32;
+    if score.points >= 100 * score.level {
+        score.level += 1;
+        println!("升级！等级: {}, 分数: {}", score.level, score.points);
+    }
+}
+```
+
+## 🔑 事件系统
+
+```rust
+use bevy::prelude::*;
+
+// 定义自定义事件
+#[derive(Event)]
+struct CollisionEvent {
+    entity_a: Entity,
+    entity_b: Entity,
+    damage: f32,
+}
+
+#[derive(Event)]
+struct ScoreEvent(u32);
+
+// 发送事件
+fn detect_collisions(mut collision_events: EventWriter<CollisionEvent>) {
+    // 模拟碰撞检测
+    // 实际游戏中会检测实体间的碰撞
+    // collision_events.send(CollisionEvent {
+    //     entity_a: entity1,
+    //     entity_b: entity2,
+    //     damage: 10.0,
+    // });
+}
+
+// 接收事件
+fn handle_collisions(mut events: EventReader<CollisionEvent>) {
+    for event in events.read() {
+        println!(
+            "碰撞: {:?} 与 {:?}, 伤害: {}",
+            event.entity_a, event.entity_b, event.damage
+        );
+    }
+}
+
+fn main() {
+    App::new()
+        .add_plugins(MinimalPlugins)
+        .add_event::<CollisionEvent>()
+        .add_event::<ScoreEvent>()
+        .add_systems(Update, (detect_collisions, handle_collisions).chain())
+        .run();
+}
+```
+
+## 🔑 插件系统
+
+```rust
+use bevy::prelude::*;
+
+// 自定义插件：封装相关功能
+struct CombatPlugin;
+
+#[derive(Component)]
+struct CombatHealth(f32);
+
+#[derive(Component)]
+struct AttackPower(f32);
+
+#[derive(Event)]
+struct AttackEvent {
+    attacker: Entity,
+    target: Entity,
+}
+
+impl Plugin for CombatPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_event::<AttackEvent>()
+            .add_systems(Update, (
+                process_attacks,
+                remove_dead_entities,
+            ).chain());
+    }
+}
+
+fn process_attacks(
+    mut events: EventReader<AttackEvent>,
+    attack_query: Query<&AttackPower>,
+    mut health_query: Query<&mut CombatHealth>,
+) {
+    for event in events.read() {
+        if let Ok(power) = attack_query.get(event.attacker) {
+            if let Ok(mut health) = health_query.get_mut(event.target) {
+                health.0 -= power.0;
+                println!("攻击造成 {} 伤害，剩余 HP: {}", power.0, health.0);
+            }
+        }
+    }
+}
+
+fn remove_dead_entities(
+    mut commands: Commands,
+    query: Query<(Entity, &CombatHealth, &Name)>,
+) {
+    for (entity, health, name) in &query {
+        if health.0 <= 0.0 {
+            println!("{} 已被击败！", name);
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+fn main() {
+    App::new()
+        .add_plugins(MinimalPlugins)
+        .add_plugins(CombatPlugin) // 添加战斗插件
+        .run();
+}
+```
+
+## 📊 Bevy 生态概览
+
+```
+Bevy 模块和生态
+├── 核心引擎
+│   ├── bevy_ecs      — ECS 框架
+│   ├── bevy_app      — 应用框架和插件系统
+│   ├── bevy_asset     — 资源加载和管理
+│   └── bevy_tasks     — 异步任务调度
+├── 渲染
+│   ├── bevy_render    — 渲染管线（基于 wgpu）
+│   ├── bevy_sprite    — 2D 精灵渲染
+│   ├── bevy_pbr       — PBR 3D 渲染
+│   └── bevy_ui        — UI 系统
+├── 输入/输出
+│   ├── bevy_input     — 键盘/鼠标/手柄输入
+│   ├── bevy_audio     — 音频播放
+│   └── bevy_window    — 窗口管理
+└── 社区生态
+    ├── bevy_rapier     — 物理引擎（Rapier 集成）
+    ├── bevy_egui       — egui UI 集成
+    ├── bevy_prototype_lyon — 2D 矢量图形
+    └── bevy_hanabi     — 粒子系统
+```
+
+## 🔗 相关资源
+
+- [Bevy 官网](https://bevyengine.org/)
+- [Bevy GitHub 仓库](https://github.com/bevyengine/bevy)
+- [Bevy 官方示例](https://bevyengine.org/examples/)
+- [Bevy Cheat Book](https://bevy-cheatbook.github.io/)
+
+## ✅ 学习检查点
+
+- [ ] 理解 ECS 架构中 Entity、Component、System 的角色
+- [ ] 能够定义组件和编写系统函数
+- [ ] 掌握 Query 的过滤器用法（With、Without）
+- [ ] 了解 Resource 和 Event 的使用方式
+- [ ] 能够编写自定义 Plugin 组织游戏功能
+
+## 🚀 下一步
+
+→ [wgpu 图形库](./11-wgpu-graphics)

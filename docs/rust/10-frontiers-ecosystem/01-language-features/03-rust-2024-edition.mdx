@@ -1,17 +1,389 @@
 # Rust 2024 Edition
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解语言新特性中的「Rust 2024 Edition」相关知识。
+Rust 2024 Edition 于 2025 年 2 月随 Rust 1.85.0 发布，是继 2021 Edition 之后的又一次重要迭代。2024 Edition 的改进涵盖了 RPIT 生命周期捕获规则、临时变量作用域、`unsafe extern` 块、`let` 链（let chains）以及模式匹配中的保留语法等方面，旨在让 Rust 更安全、更一致。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+## 🎯 迁移到 2024 Edition
 
-## 📝 学习检查点
+```bash
+# 确保使用 Rust 1.85.0 或更高版本
+rustup update stable
 
-- [ ] 理解Rust 2024 Edition的核心概念
-- [ ] 能够在实际项目中应用Rust 2024 Edition
+# 自动迁移
+cargo fix --edition
+
+# 更新 Cargo.toml
+# edition = "2021" → edition = "2024"
+
+# 验证迁移结果
+cargo build
+cargo test
+```
+
+```toml
+[package]
+name = "my-project"
+version = "0.1.0"
+edition = "2024"
+```
+
+## 🔑 RPIT 生命周期捕获规则
+
+### 变更说明
+
+在 2024 Edition 中，返回位置的 `impl Trait`（RPIT）默认捕获所有输入生命周期参数，无需显式标注 `+ '_`：
+
+```rust
+// 2021 Edition: 需要显式声明生命周期捕获
+// fn parse_name<'a>(input: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+//     input.split_whitespace()
+// }
+
+// 2024 Edition: 自动捕获所有输入生命周期
+fn parse_name(input: &str) -> impl Iterator<Item = &str> {
+    input.split_whitespace()
+}
+
+fn main() {
+    let text = String::from("Alice Bob Charlie");
+    let names: Vec<&str> = parse_name(&text).collect();
+    println!("解析的名字: {names:?}");
+}
+```
+
+### 使用 `use<>` 精确控制捕获
+
+如果需要限制捕获的参数，可以使用新的 `use<>` 语法：
+
+```rust
+// 明确指定只捕获生命周期 'a，不捕获类型参数 T
+fn filter_items<'a, T>(items: &'a [T], predicate: fn(&T) -> bool) -> impl Iterator<Item = &'a T> + use<'a, T> {
+    items.iter().filter(move |item| predicate(item))
+}
+
+fn main() {
+    let numbers = vec![1, 2, 3, 4, 5];
+    let evens: Vec<&i32> = filter_items(&numbers, |n| *n % 2 == 0).collect();
+    println!("偶数: {evens:?}");
+}
+```
+
+## 🔑 临时变量作用域变更
+
+### if let 临时变量作用域
+
+2024 Edition 缩短了 `if let` 和 `match` 中临时变量的生命周期，减少不必要的借用延长：
+
+```rust
+use std::sync::Mutex;
+
+fn main() {
+    let counter = Mutex::new(0);
+
+    // 2024 Edition: Mutex 的锁在 if let 的条件求值结束后即释放
+    if let Ok(value) = counter.lock().unwrap().checked_add(1).ok_or("overflow") {
+        println!("新值: {value}");
+        // 在 2024 Edition 中，锁已在此处释放
+        // 可以安全地再次获取锁
+    }
+
+    // 直接修改
+    *counter.lock().unwrap() = 42;
+    println!("最终值: {}", counter.lock().unwrap());
+}
+```
+
+### 尾部表达式临时变量
+
+2024 Edition 也调整了块尾部表达式中临时值的 Drop 时机：
+
+```rust
+fn main() {
+    let result = {
+        let temp = String::from("hello");
+        // 2024 Edition 中，临时值的 Drop 行为更加可预测
+        temp.len()
+    };
+    println!("长度: {result}");
+}
+```
+
+## 🔑 unsafe extern 块
+
+2024 Edition 要求 `extern` 块必须标记为 `unsafe`，使外部函数声明的不安全性更加明确：
+
+```rust
+// 2024 Edition: extern 块必须标记 unsafe
+unsafe extern "C" {
+    fn abs(input: i32) -> i32;
+    fn strlen(s: *const std::ffi::c_char) -> usize;
+}
+
+// 可以对单个函数标记 safe，表示调用该函数是安全的
+unsafe extern "C" {
+    safe fn abs(input: i32) -> i32;
+}
+
+fn main() {
+    // 标记为 safe 的 extern 函数可以直接调用
+    let absolute = abs(-42);
+    println!("|-42| = {absolute}");
+
+    // 未标记 safe 的 extern 函数仍需 unsafe 块
+    let c_string = c"Hello";
+    let length = unsafe { strlen(c_string.as_ptr()) };
+    println!("C 字符串长度: {length}");
+}
+```
+
+## 🔑 unsafe 属性
+
+某些属性（如 `#[no_mangle]` 和 `#[export_name]`）在 2024 Edition 中需要放在 `unsafe(...)` 包装中：
+
+```rust
+// 2024 Edition: unsafe 属性需要显式标记
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+#[unsafe(export_name = "custom_multiply")]
+pub fn multiply(a: i32, b: i32) -> i32 {
+    a * b
+}
+
+fn main() {
+    let sum = rust_add(3, 4);
+    let product = multiply(5, 6);
+    println!("{sum}, {product}");
+}
+```
+
+## 🔑 let 链（Let Chains）
+
+2024 Edition 稳定了 let 链特性，允许在 `if` 和 `while` 条件中组合多个 `let` 模式匹配：
+
+```rust
+#[derive(Debug)]
+struct User {
+    name: String,
+    email: Option<String>,
+    age: Option<u32>,
+}
+
+fn process_user(user: &User) {
+    // let 链：在一个 if 表达式中组合多个条件
+    if let Some(ref email) = user.email
+        && let Some(age) = user.age
+        && age >= 18
+        && email.contains('@')
+    {
+        println!("有效成年用户: {} ({}), 年龄: {}", user.name, email, age);
+    } else {
+        println!("用户 {} 信息不完整或未满 18 岁", user.name);
+    }
+}
+
+fn find_valid_config(configs: &[Option<(String, Option<i32>)>]) -> Option<String> {
+    for config in configs {
+        // while/for 中的 let 链
+        if let Some((ref name, Some(value))) = config
+            && value > &0
+            && name.starts_with("prod")
+        {
+            return Some(format!("{name}={value}"));
+        }
+    }
+    None
+}
+
+fn main() {
+    let users = vec![
+        User {
+            name: "Alice".into(),
+            email: Some("alice@example.com".into()),
+            age: Some(25),
+        },
+        User {
+            name: "Bob".into(),
+            email: None,
+            age: Some(30),
+        },
+        User {
+            name: "Charlie".into(),
+            email: Some("charlie@example.com".into()),
+            age: Some(16),
+        },
+    ];
+
+    for user in &users {
+        process_user(user);
+    }
+
+    let configs = vec![
+        Some(("dev-db".into(), Some(5432))),
+        Some(("prod-cache".into(), Some(6379))),
+        None,
+    ];
+    if let Some(config) = find_valid_config(&configs) {
+        println!("找到有效配置: {config}");
+    }
+}
+```
+
+## 🔑 模式匹配中的保留语法
+
+2024 Edition 对模式匹配中的范围语法做了更严格的要求：
+
+```rust
+fn main() {
+    let value = 5;
+
+    // 2024 Edition: 必须使用 ..= 表示闭区间范围模式
+    match value {
+        1..=3 => println!("小数字"),
+        4..=6 => println!("中等数字"),
+        7..=9 => println!("大数字"),
+        _ => println!("其他"),
+    }
+
+    // 2024 Edition: 生成器关键字 gen 被保留
+    // 不能再将 gen 用作标识符（变量名、函数名等）
+    // let gen = 42; // 编译错误
+    let generator_value = 42; // 使用其他名称代替
+    println!("值: {generator_value}");
+}
+```
+
+## 🔑 `never` 类型回退（Never Type Fallback）
+
+2024 Edition 将 `!`（never 类型）在类型回退时的行为从回退为 `()` 改为回退为 `!`：
+
+```rust
+fn main() {
+    // 在不确定类型的上下文中，! 类型的回退行为有所变化
+    // 2021: 回退为 ()
+    // 2024: 回退为 !
+
+    // 实际影响的场景比较少见，大多数代码不受影响
+    let result: Result<i32, String> = Ok(42);
+    match result {
+        Ok(value) => println!("成功: {value}"),
+        Err(err) => panic!("错误: {err}"),
+    }
+}
+```
+
+## 🔑 Cargo 变更
+
+### doctest 合并编译
+
+2024 Edition 中，`cargo test` 会将同一 crate 的多个文档测试合并为一次编译，大幅提升文档测试速度：
+
+```rust
+/// 加法函数
+///
+/// ```
+/// assert_eq!(add(1, 2), 3);
+/// ```
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+/// 乘法函数
+///
+/// ```
+/// assert_eq!(multiply(3, 4), 12);
+/// ```
+pub fn multiply(a: i32, b: i32) -> i32 {
+    a * b
+}
+
+fn main() {
+    println!("{}", add(1, 2));
+    println!("{}", multiply(3, 4));
+}
+```
+
+### 依赖版本要求
+
+2024 Edition 的 Cargo 对依赖版本有更严格的要求，默认需要 MSRV（最小支持 Rust 版本）兼容。
+
+## 📝 实际迁移示例
+
+### 迁移前后对比
+
+```rust
+// === 2021 Edition 写法 ===
+
+// 需要显式 + '_
+// fn get_words<'a>(text: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+//     text.split_whitespace()
+// }
+
+// extern 块不需要 unsafe
+// extern "C" {
+//     fn abs(input: i32) -> i32;
+// }
+
+// no_mangle 不需要 unsafe 包装
+// #[no_mangle]
+// pub fn exported_fn() {}
+
+// === 2024 Edition 写法 ===
+
+// 自动捕获生命周期
+fn get_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split_whitespace()
+}
+
+// extern 块需要 unsafe 标记
+unsafe extern "C" {
+    safe fn abs(input: i32) -> i32;
+}
+
+// no_mangle 需要 unsafe 包装
+#[unsafe(no_mangle)]
+pub fn exported_fn() -> i32 {
+    42
+}
+
+fn main() {
+    let text = "Rust 2024 Edition is great";
+    let words: Vec<&str> = get_words(text).collect();
+    println!("单词: {words:?}");
+
+    let absolute = abs(-10);
+    println!("绝对值: {absolute}");
+
+    // let 链特性
+    let config: Option<(&str, i32)> = Some(("host", 8080));
+    if let Some((key, value)) = config
+        && value > 0
+    {
+        println!("配置: {key} = {value}");
+    }
+}
+```
+
+## 🔗 相关资源
+
+- [Rust 2024 Edition 官方指南](https://doc.rust-lang.org/edition-guide/rust-2024/index.html)
+- [Rust 1.85.0 发布公告](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+- [Rust 2024 Edition 全部破坏性变更汇总（Reddit）](https://www.reddit.com/r/rust/comments/1ix87qe/rust_edition_2024_annotated_a_summary_of_all/)
+
+## ✅ 学习检查点
+
+- [ ] 理解 RPIT 生命周期捕获规则的变化和 `use<>` 语法
+- [ ] 掌握 `unsafe extern` 块和 `unsafe` 属性的写法
+- [ ] 能够使用 let 链编写更简洁的条件代码
+- [ ] 了解临时变量作用域的变更及其影响
+- [ ] 能够使用 `cargo fix --edition` 迁移到 2024 Edition
+
+## 🚀 下一步
+
+→ [未来 Edition 规划](./04-future-edition-plans)

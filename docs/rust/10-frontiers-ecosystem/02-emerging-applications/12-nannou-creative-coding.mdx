@@ -1,17 +1,439 @@
 # Nannou 创意编程
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「Nannou 创意编程」相关知识。
+[Nannou](https://nannou.cc/) 是一个用 Rust 编写的创意编程框架，灵感来源于 Processing（Java）和 openFrameworks（C++）。它为艺术家、设计师和创意开发者提供了一个简单易用的工具集，用于创建生成式艺术、数据可视化、互动装置和音视频作品。Nannou 基于 wgpu 进行渲染，天然支持跨平台。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心特点
 
-## 📝 学习检查点
+- **创意友好**：API 设计面向非专业程序员，上手门槛低
+- **实时交互**：内置窗口管理、事件处理和实时渲染循环
+- **丰富的绘图 API**：2D 基本图形、贝塞尔曲线、颜色空间等
+- **音频支持**：集成 CPAL 音频库，支持实时音频处理
+- **跨平台**：基于 wgpu，支持 Windows、macOS、Linux
 
-- [ ] 理解Nannou 创意编程的核心概念
-- [ ] 能够在实际项目中应用Nannou 创意编程
+## 🎯 快速上手
+
+### 项目配置
+
+```toml
+# Cargo.toml
+[package]
+name = "nannou-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nannou = "0.19"
+```
+
+### Hello Nannou
+
+```rust
+use nannou::prelude::*;
+
+fn main() {
+    nannou::app(model)
+        .update(update)
+        .simple_window(view)
+        .run();
+}
+
+// 应用状态
+struct Model {
+    rotation: f32,
+}
+
+// 初始化
+fn model(_app: &App) -> Model {
+    Model { rotation: 0.0 }
+}
+
+// 每帧更新
+fn update(_app: &App, model: &mut Model, _update: Update) {
+    model.rotation += 0.01;
+}
+
+// 绘制
+fn view(app: &App, model: &Model, frame: Frame) {
+    let draw = app.draw();
+
+    // 清除背景
+    draw.background().color(BLACK);
+
+    // 绘制旋转的矩形
+    draw.rect()
+        .w_h(100.0, 100.0)
+        .rotate(model.rotation)
+        .color(STEELBLUE);
+
+    // 绘制到帧
+    draw.to_frame(app, &frame).unwrap();
+}
+```
+
+## 🔑 2D 绘图
+
+### 基本图形
+
+```rust
+use nannou::prelude::*;
+
+fn main() {
+    nannou::sketch(view).run();
+}
+
+fn view(app: &App, frame: Frame) {
+    let draw = app.draw();
+    draw.background().color(WHITE);
+
+    // 圆形
+    draw.ellipse()
+        .x_y(-200.0, 100.0)
+        .w_h(80.0, 80.0)
+        .color(CORAL);
+
+    // 矩形
+    draw.rect()
+        .x_y(0.0, 100.0)
+        .w_h(120.0, 60.0)
+        .color(STEELBLUE);
+
+    // 三角形
+    draw.tri()
+        .points(
+            pt2(200.0, 140.0),
+            pt2(160.0, 60.0),
+            pt2(240.0, 60.0),
+        )
+        .color(MEDIUMSEAGREEN);
+
+    // 线段
+    draw.line()
+        .start(pt2(-300.0, 0.0))
+        .end(pt2(300.0, 0.0))
+        .weight(2.0)
+        .color(GRAY);
+
+    // 多边形
+    let points = (0..6).map(|i| {
+        let angle = i as f32 * TAU / 6.0;
+        pt2(angle.cos() * 50.0, angle.sin() * 50.0 - 100.0)
+    });
+    draw.polygon()
+        .points(points)
+        .color(ORCHID);
+
+    // 文本
+    draw.text("Hello Nannou!")
+        .x_y(0.0, -200.0)
+        .font_size(24)
+        .color(BLACK);
+
+    draw.to_frame(app, &frame).unwrap();
+}
+```
+
+### 颜色与渐变
+
+```rust
+use nannou::prelude::*;
+
+fn main() {
+    nannou::sketch(view).run();
+}
+
+fn view(app: &App, frame: Frame) {
+    let draw = app.draw();
+    draw.background().color(rgb(0.1, 0.1, 0.15));
+
+    let time = app.time;
+
+    // HSL 颜色空间
+    for i in 0..36 {
+        let hue = i as f32 / 36.0;
+        let angle = i as f32 * TAU / 36.0 + time;
+        let x = angle.cos() * 150.0;
+        let y = angle.sin() * 150.0;
+
+        draw.ellipse()
+            .x_y(x, y)
+            .w_h(30.0, 30.0)
+            .color(hsl(hue, 0.8, 0.6));
+    }
+
+    // 透明度渐变
+    for i in 0..20 {
+        let alpha = i as f32 / 20.0;
+        let x = map_range(i, 0, 19, -250.0, 250.0);
+
+        draw.rect()
+            .x_y(x, -200.0)
+            .w_h(20.0, 40.0)
+            .rgba(0.3, 0.6, 1.0, alpha);
+    }
+
+    draw.to_frame(app, &frame).unwrap();
+}
+```
+
+## 🔑 生成式艺术
+
+### 粒子系统
+
+```rust
+use nannou::prelude::*;
+use nannou::rand::random_range;
+
+struct Model {
+    particles: Vec<Particle>,
+}
+
+struct Particle {
+    position: Vec2,
+    velocity: Vec2,
+    color: Hsl,
+    size: f32,
+    life: f32,
+}
+
+impl Particle {
+    fn new(origin: Vec2) -> Self {
+        let angle = random_range(0.0, TAU);
+        let speed = random_range(1.0, 4.0);
+        Self {
+            position: origin,
+            velocity: vec2(angle.cos() * speed, angle.sin() * speed),
+            color: hsl(random_range(0.5, 0.7), 0.8, 0.6),
+            size: random_range(3.0, 8.0),
+            life: 1.0,
+        }
+    }
+
+    fn update(&mut self) {
+        self.position += self.velocity;
+        self.velocity *= 0.98; // 阻力
+        self.velocity.y -= 0.05; // 重力
+        self.life -= 0.008;
+    }
+
+    fn is_alive(&self) -> bool {
+        self.life > 0.0
+    }
+}
+
+fn main() {
+    nannou::app(model)
+        .update(update)
+        .simple_window(view)
+        .run();
+}
+
+fn model(_app: &App) -> Model {
+    Model {
+        particles: Vec::new(),
+    }
+}
+
+fn update(app: &App, model: &mut Model, _update: Update) {
+    // 每帧在鼠标位置生成粒子
+    let mouse = app.mouse.position();
+    for _ in 0..3 {
+        model.particles.push(Particle::new(mouse));
+    }
+
+    // 更新粒子
+    for particle in &mut model.particles {
+        particle.update();
+    }
+
+    // 移除死亡粒子
+    model.particles.retain(|p| p.is_alive());
+}
+
+fn view(app: &App, model: &Model, frame: Frame) {
+    let draw = app.draw();
+
+    // 半透明背景（产生拖尾效果）
+    draw.rect()
+        .wh(app.window_rect().wh())
+        .rgba(0.0, 0.0, 0.0, 0.05);
+
+    // 绘制粒子
+    for particle in &model.particles {
+        draw.ellipse()
+            .xy(particle.position)
+            .w_h(particle.size, particle.size)
+            .color(hsla(
+                particle.color.hue.to_positive_radians() / TAU,
+                particle.color.saturation,
+                particle.color.lightness,
+                particle.life,
+            ));
+    }
+
+    draw.to_frame(app, &frame).unwrap();
+}
+```
+
+### 噪声图案
+
+```rust
+use nannou::prelude::*;
+use nannou::noise::{NoiseFn, Perlin};
+
+struct Model {
+    noise: Perlin,
+}
+
+fn main() {
+    nannou::app(model)
+        .simple_window(view)
+        .run();
+}
+
+fn model(_app: &App) -> Model {
+    Model {
+        noise: Perlin::new(42),
+    }
+}
+
+fn view(app: &App, model: &Model, frame: Frame) {
+    let draw = app.draw();
+    draw.background().color(BLACK);
+
+    let time = app.time * 0.5;
+    let win = app.window_rect();
+
+    // 使用 Perlin 噪声生成流场
+    let grid_size = 20.0;
+    let cols = (win.w() / grid_size) as i32;
+    let rows = (win.h() / grid_size) as i32;
+
+    for col in -cols / 2..cols / 2 {
+        for row in -rows / 2..rows / 2 {
+            let x = col as f32 * grid_size;
+            let y = row as f32 * grid_size;
+
+            // 使用噪声函数获取角度
+            let noise_val = model.noise.get([
+                x as f64 * 0.005,
+                y as f64 * 0.005,
+                time as f64,
+            ]) as f32;
+
+            let angle = noise_val * TAU;
+            let length = grid_size * 0.8;
+
+            let end_x = x + angle.cos() * length;
+            let end_y = y + angle.sin() * length;
+
+            let hue = map_range(noise_val, -1.0, 1.0, 0.0, 1.0);
+
+            draw.line()
+                .start(pt2(x, y))
+                .end(pt2(end_x, end_y))
+                .weight(1.0)
+                .color(hsla(hue, 0.7, 0.6, 0.8));
+        }
+    }
+
+    draw.to_frame(app, &frame).unwrap();
+}
+```
+
+## 🔑 音频可视化
+
+```rust
+use nannou::prelude::*;
+
+struct Model {
+    // 模拟音频数据（实际使用 nannou_audio crate）
+    frequency_data: Vec<f32>,
+}
+
+fn main() {
+    nannou::app(model)
+        .update(update)
+        .simple_window(view)
+        .run();
+}
+
+fn model(_app: &App) -> Model {
+    Model {
+        frequency_data: vec![0.0; 64],
+    }
+}
+
+fn update(app: &App, model: &mut Model, _update: Update) {
+    let time = app.time;
+    // 模拟频谱数据
+    for (i, value) in model.frequency_data.iter_mut().enumerate() {
+        let freq = (i as f32 + 1.0) * 0.5;
+        *value = ((time * freq).sin() * 0.5 + 0.5) * (1.0 - i as f32 / 64.0);
+    }
+}
+
+fn view(app: &App, model: &Model, frame: Frame) {
+    let draw = app.draw();
+    draw.background().color(rgb(0.05, 0.05, 0.1));
+
+    let win = app.window_rect();
+    let bar_count = model.frequency_data.len();
+    let bar_width = win.w() / bar_count as f32 * 0.8;
+    let gap = win.w() / bar_count as f32 * 0.2;
+
+    for (i, &amplitude) in model.frequency_data.iter().enumerate() {
+        let x = map_range(i, 0, bar_count - 1, win.left() + bar_width, win.right() - bar_width);
+        let height = amplitude * win.h() * 0.8;
+        let hue = i as f32 / bar_count as f32;
+
+        // 频谱柱
+        draw.rect()
+            .x_y(x, -win.h() / 2.0 + height / 2.0)
+            .w_h(bar_width, height)
+            .color(hsl(hue * 0.3 + 0.5, 0.9, 0.5 + amplitude * 0.3));
+
+        // 顶部发光点
+        draw.ellipse()
+            .x_y(x, -win.h() / 2.0 + height)
+            .w_h(bar_width * 1.5, 4.0)
+            .color(hsla(hue * 0.3 + 0.5, 1.0, 0.8, 0.8));
+    }
+
+    draw.to_frame(app, &frame).unwrap();
+}
+```
+
+## 📊 Nannou vs 其他创意编程框架
+
+| 特性 | Nannou (Rust) | Processing (Java) | p5.js (JS) | openFrameworks (C++) |
+|------|-------------|-------------------|------------|---------------------|
+| 语言 | Rust | Java | JavaScript | C++ |
+| 性能 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐⭐ |
+| 学习曲线 | 中等 | 低 | 低 | 高 |
+| GPU 渲染 | wgpu | OpenGL | WebGL | OpenGL |
+| 音频 | CPAL | Minim | p5.sound | ofSoundStream |
+| 生态成熟度 | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+
+## 🔗 相关资源
+
+- [Nannou 官网](https://nannou.cc/)
+- [Nannou GitHub 仓库](https://github.com/nannou-org/nannou)
+- [Nannou Guide](https://guide.nannou.cc/)
+- [Nannou 示例](https://github.com/nannou-org/nannou/tree/master/examples)
+
+## ✅ 学习检查点
+
+- [ ] 理解 Nannou 的 model → update → view 应用结构
+- [ ] 能够使用 Nannou 绘制基本 2D 图形
+- [ ] 了解 HSL 颜色空间和透明度的使用
+- [ ] 能够实现简单的粒子系统
+- [ ] 了解 Perlin 噪声在生成式艺术中的应用
+
+## 🚀 下一步
+
+→ [编译器与解释器开发](./13-compiler-interpreter-development)

@@ -1,17 +1,430 @@
 # 生成器（Generators / Coroutines）
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解语言新特性中的「生成器（Generators / Coroutines）」相关知识。
+生成器（Generator）是一种可以惰性地逐个产生值的函数，通过 `yield` 关键字暂停执行并返回一个值，等到下次被调用时从暂停处继续。Rust 中的生成器分为两个层面：底层的**协程**（Coroutines，原名 Generators）已在 nightly 中长期实验，以及面向用户的 **`gen` 块**（RFC 3513）正在走向稳定。实际上，Rust 的 `async/await` 底层就是基于协程实现的。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+## 🔑 gen 块（Gen Blocks）
+
+### 基本概念
+
+`gen` 块是 RFC 3513 提出的用户友好的生成器语法。`gen` 关键字已在 Rust 2024 Edition 中被保留，`gen` 块目前在 nightly 中可用：
+
+```rust
+#![feature(gen_blocks)]
+
+fn main() {
+    // gen 块产生一个实现了 Iterator 的类型
+    let fibonacci = gen {
+        let (mut a, mut b) = (0u64, 1u64);
+        loop {
+            yield a;
+            (a, b) = (b, a + b);
+        }
+    };
+
+    // 像普通迭代器一样使用
+    let first_ten: Vec<u64> = fibonacci.take(10).collect();
+    println!("斐波那契前10项: {first_ten:?}");
+}
+```
+
+:::tip
+`gen` 块目前需要 nightly 编译器和 `#![feature(gen_blocks)]`。本节同时提供了稳定版的等价实现方式。
 :::
 
-## 📝 学习检查点
+### gen 块 vs 手动迭代器
 
-- [ ] 理解生成器（Generators / Coroutines）的核心概念
-- [ ] 能够在实际项目中应用生成器（Generators / Coroutines）
+```rust
+// === 稳定版：手动实现 Iterator ===
+struct Fibonacci {
+    current: u64,
+    next: u64,
+}
+
+impl Fibonacci {
+    fn new() -> Self {
+        Self { current: 0, next: 1 }
+    }
+}
+
+impl Iterator for Fibonacci {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let value = self.current;
+        let new_next = self.current + self.next;
+        self.current = self.next;
+        self.next = new_next;
+        Some(value)
+    }
+}
+
+// === 稳定版：使用 std::iter::from_fn ===
+fn fibonacci_from_fn() -> impl Iterator<Item = u64> {
+    let mut state = (0u64, 1u64);
+    std::iter::from_fn(move || {
+        let value = state.0;
+        state = (state.1, state.0 + state.1);
+        Some(value)
+    })
+}
+
+// === nightly: gen 块 ===
+// gen 块让代码更接近命令式风格，更直观
+// gen {
+//     let (mut a, mut b) = (0u64, 1u64);
+//     loop {
+//         yield a;
+//         (a, b) = (b, a + b);
+//     }
+// }
+
+fn main() {
+    // 手动迭代器
+    let fib1: Vec<u64> = Fibonacci::new().take(8).collect();
+    println!("手动实现: {fib1:?}");
+
+    // from_fn
+    let fib2: Vec<u64> = fibonacci_from_fn().take(8).collect();
+    println!("from_fn:  {fib2:?}");
+}
+```
+
+### 有限生成器
+
+```rust
+// === 稳定版等价实现 ===
+
+// 生成一个范围内的偶数
+fn even_numbers(limit: i32) -> impl Iterator<Item = i32> {
+    let mut current = 0;
+    std::iter::from_fn(move || {
+        if current > limit {
+            return None; // gen 块中直接 return 即可结束
+        }
+        let value = current;
+        current += 2;
+        Some(value)
+    })
+}
+
+// gen 块版本（nightly）：
+// gen fn even_numbers(limit: i32) -> impl Iterator<Item = i32> {
+//     let mut current = 0;
+//     while current <= limit {
+//         yield current;
+//         current += 2;
+//     }
+//     // 块结束时迭代器自动返回 None
+// }
+
+// 遍历树结构
+#[derive(Debug)]
+enum Tree {
+    Leaf(i32),
+    Node(Box<Tree>, Box<Tree>),
+}
+
+// 中序遍历（稳定版使用递归收集）
+fn inorder(tree: &Tree) -> Vec<i32> {
+    match tree {
+        Tree::Leaf(value) => vec![*value],
+        Tree::Node(left, right) => {
+            let mut result = inorder(left);
+            result.extend(inorder(right));
+            result
+        }
+    }
+}
+
+// gen 块版本可以惰性遍历：
+// gen fn inorder(tree: &Tree) -> impl Iterator<Item = i32> + '_ {
+//     match tree {
+//         Tree::Leaf(value) => yield *value,
+//         Tree::Node(left, right) => {
+//             yield from inorder(left);
+//             yield from inorder(right);
+//         }
+//     }
+// }
+
+fn main() {
+    let evens: Vec<i32> = even_numbers(20).collect();
+    println!("偶数: {evens:?}");
+
+    let tree = Tree::Node(
+        Box::new(Tree::Node(
+            Box::new(Tree::Leaf(1)),
+            Box::new(Tree::Leaf(3)),
+        )),
+        Box::new(Tree::Node(
+            Box::new(Tree::Leaf(5)),
+            Box::new(Tree::Leaf(7)),
+        )),
+    );
+    let values = inorder(&tree);
+    println!("中序遍历: {values:?}");
+}
+```
+
+## 🔑 底层协程（Coroutines）
+
+### 协程机制概述
+
+Rust 内部使用协程（Coroutine）作为 `async/await` 和未来 `gen` 块的底层基础。协程与 gen 块的区别在于：
+
+- **gen 块**：只能 `yield` 值，不接收外部输入
+- **协程**：可以 `yield` 值并在恢复时接收外部传入的值
+
+```rust
+// 协程目前需要 nightly
+// #![feature(coroutines, coroutine_trait)]
+//
+// use std::ops::{Coroutine, CoroutineState};
+// use std::pin::Pin;
+//
+// fn main() {
+//     let mut coroutine = |initial: i32| {
+//         let mut value = initial;
+//         loop {
+//             // yield 当前值，并接收新的输入
+//             let input = yield value;
+//             value = input * 2;
+//         }
+//     };
+//
+//     // Pin 并恢复协程
+//     let mut coroutine = Pin::new(&mut coroutine);
+//     match coroutine.as_mut().resume(10) {
+//         CoroutineState::Yielded(value) => println!("产出: {value}"),
+//         CoroutineState::Complete(_) => println!("完成"),
+//     }
+// }
+
+// 稳定版模拟协程行为
+struct SimpleCoroutine<T> {
+    state: T,
+}
+
+impl SimpleCoroutine<i32> {
+    fn new(initial: i32) -> Self {
+        Self { state: initial }
+    }
+
+    fn resume(&mut self, input: i32) -> i32 {
+        let output = self.state;
+        self.state = input * 2;
+        output
+    }
+}
+
+fn main() {
+    let mut co = SimpleCoroutine::new(10);
+    println!("第1次: {}", co.resume(5));   // 输出 10，内部状态变为 10
+    println!("第2次: {}", co.resume(3));   // 输出 10，内部状态变为 6
+    println!("第3次: {}", co.resume(7));   // 输出 6，内部状态变为 14
+}
+```
+
+### async/await 与协程的关系
+
+```rust
+// async/await 本质上是协程的语法糖
+// 编译器将 async fn 转换为一个状态机（协程）
+
+// async fn 的概念展开：
+// async fn fetch_data() -> String {
+//     let step1 = step_one().await;
+//     let step2 = step_two(step1).await;
+//     format!("{step1}-{step2}")
+// }
+
+// 编译器内部大致转换为：
+enum FetchDataState {
+    Start,
+    WaitingStep1,
+    WaitingStep2 { step1_result: String },
+    Done,
+}
+
+// 每个 .await 点是一个 yield 点
+// 运行时通过反复 resume 驱动状态机前进
+
+fn main() {
+    println!("async fn 被编译器转换为状态机（协程）");
+    println!("每个 .await 对应一个 yield 暂停点");
+    println!("运行时（如 tokio）负责在 Future ready 时恢复执行");
+
+    // 状态机演示
+    let mut state = FetchDataState::Start;
+    loop {
+        match state {
+            FetchDataState::Start => {
+                println!("状态: 开始执行");
+                state = FetchDataState::WaitingStep1;
+            }
+            FetchDataState::WaitingStep1 => {
+                println!("状态: 等待 step1 完成");
+                state = FetchDataState::WaitingStep2 {
+                    step1_result: "hello".into(),
+                };
+            }
+            FetchDataState::WaitingStep2 { ref step1_result } => {
+                println!("状态: step1={step1_result}，等待 step2");
+                state = FetchDataState::Done;
+            }
+            FetchDataState::Done => {
+                println!("状态: 完成");
+                break;
+            }
+        }
+    }
+}
+```
+
+## 🔑 实际应用场景
+
+### 惰性数据流处理
+
+```rust
+// 使用 from_fn 模拟 gen 块，实现惰性数据处理管道
+
+fn read_sensor_data() -> impl Iterator<Item = f64> {
+    let readings = vec![23.5, 24.1, 23.8, 25.2, 24.7, 26.1, 23.9, 24.5];
+    let mut index = 0;
+    std::iter::from_fn(move || {
+        if index < readings.len() {
+            let value = readings[index];
+            index += 1;
+            Some(value)
+        } else {
+            None
+        }
+    })
+}
+
+fn moving_average(source: impl Iterator<Item = f64>, window: usize) -> impl Iterator<Item = f64> {
+    let mut buffer: Vec<f64> = Vec::with_capacity(window);
+    let mut source = source.peekable();
+    std::iter::from_fn(move || {
+        let value = source.next()?;
+        buffer.push(value);
+        if buffer.len() > window {
+            buffer.remove(0);
+        }
+        let avg = buffer.iter().sum::<f64>() / buffer.len() as f64;
+        Some(avg)
+    })
+}
+
+fn main() {
+    let raw_data = read_sensor_data();
+    let smoothed: Vec<f64> = moving_average(raw_data, 3)
+        .map(|v| (v * 100.0).round() / 100.0)
+        .collect();
+
+    println!("移动平均（窗口=3）: {smoothed:?}");
+}
+```
+
+### 分页数据获取
+
+```rust
+struct Page {
+    items: Vec<String>,
+    has_next: bool,
+}
+
+fn fetch_page(page_num: usize) -> Page {
+    let total_items = 25;
+    let page_size = 10;
+    let start = page_num * page_size;
+    let end = (start + page_size).min(total_items);
+
+    Page {
+        items: (start..end).map(|i| format!("item_{i}")).collect(),
+        has_next: end < total_items,
+    }
+}
+
+// 使用 from_fn 模拟 gen 块的分页迭代器
+fn paginated_items() -> impl Iterator<Item = String> {
+    let mut page_num = 0;
+    let mut current_items: Vec<String> = Vec::new();
+    let mut item_index = 0;
+    let mut finished = false;
+
+    std::iter::from_fn(move || {
+        loop {
+            if item_index < current_items.len() {
+                let item = current_items[item_index].clone();
+                item_index += 1;
+                return Some(item);
+            }
+
+            if finished {
+                return None;
+            }
+
+            let page = fetch_page(page_num);
+            finished = !page.has_next;
+            current_items = page.items;
+            item_index = 0;
+            page_num += 1;
+        }
+    })
+}
+
+// gen 块版本会更清晰:
+// gen fn paginated_items() -> impl Iterator<Item = String> {
+//     let mut page_num = 0;
+//     loop {
+//         let page = fetch_page(page_num);
+//         for item in page.items {
+//             yield item;
+//         }
+//         if !page.has_next { break; }
+//         page_num += 1;
+//     }
+// }
+
+fn main() {
+    let all_items: Vec<String> = paginated_items().collect();
+    println!("总共获取 {} 个条目", all_items.len());
+    println!("前5个: {:?}", &all_items[..5]);
+    println!("后5个: {:?}", &all_items[all_items.len() - 5..]);
+}
+```
+
+## 📊 生成器/协程特性对比
+
+| 特性 | gen 块 | 协程（Coroutine） | async/await |
+|------|-------|------------------|------------|
+| 产出值 | ✅ yield | ✅ yield | ❌ |
+| 接收输入 | ❌ | ✅ resume 参数 | ❌ |
+| 返回类型 | Iterator | CoroutineState | Future |
+| 稳定状态 | 🔬 nightly | 🔬 nightly | ✅ 稳定 |
+| 使用场景 | 惰性序列生成 | 底层控制流 | 异步编程 |
+| 跨 yield 借用 | ❌ 受限 | ✅ | ✅ Pin |
+
+## 🔗 相关资源
+
+- [RFC 3513: gen blocks](https://rust-lang.github.io/rfcs/3513-gen-blocks.html)
+- [Tracking Issue: gen blocks](https://github.com/rust-lang/rust/issues/117078)
+- [Tracking Issue: coroutines](https://github.com/rust-lang/rust/issues/43122)
+
+## ✅ 学习检查点
+
+- [ ] 理解生成器（gen 块）与手动 Iterator 实现的区别
+- [ ] 掌握 `yield` 和 `from_fn` 的等价关系
+- [ ] 了解协程（Coroutine）与 gen 块的区别
+- [ ] 理解 async/await 与协程的底层关系
+- [ ] 能够使用 `std::iter::from_fn` 在稳定版中实现生成器模式
+
+## 🚀 下一步
+
+→ [特化（Specialization）](./08-specialization)

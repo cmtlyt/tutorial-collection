@@ -1,17 +1,415 @@
 # 网络代理 linkerd2-proxy
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「网络代理 linkerd2-proxy」相关知识。
+[linkerd2-proxy](https://github.com/linkerd/linkerd2-proxy) 是 Linkerd 服务网格的数据平面代理，完全使用 Rust 编写。它是一个超轻量级的透明微代理（micro-proxy），专为服务网格场景设计。与通用代理 Envoy（C++ 实现）不同，linkerd2-proxy 只实现服务网格所需的功能，因此在延迟、吞吐量和资源占用方面表现出色。Linkerd 已从 CNCF 毕业，是生产级别的服务网格解决方案。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心特点
 
-## 📝 学习检查点
+- **超轻量级**：二进制文件小，内存占用低（~20 MB RSS）
+- **透明代理**：以 sidecar 模式部署，对应用完全透明
+- **自动 mTLS**：自动为服务间通信加密
+- **负载均衡**：支持 EWMA（指数加权移动平均）等智能负载均衡算法
+- **可观测性**：自动收集延迟、请求量、成功率等指标
 
-- [ ] 理解网络代理 linkerd2-proxy的核心概念
-- [ ] 能够在实际项目中应用网络代理 linkerd2-proxy
+## 🎯 Service Mesh 架构
+
+```
+Linkerd 服务网格架构
+┌──────────────────────────────────────────────────┐
+│  控制平面（Control Plane）- Go 实现              │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
+│  │ Destination│ │ Identity │ │ Proxy Injector   │ │
+│  │ (服务发现) │ │ (证书管理)│ │ (自动注入 sidecar)│ │
+│  └──────────┘ └──────────┘ └──────────────────┘ │
+├──────────────────────────────────────────────────┤
+│  数据平面（Data Plane）- Rust 实现               │
+│                                                  │
+│  ┌─────────┐    linkerd2-proxy    ┌─────────┐   │
+│  │ Service │◄──────────────────►│ Service │   │
+│  │    A    │   mTLS + 负载均衡   │    B    │   │
+│  │ [proxy] │   可观测性 + 重试   │ [proxy] │   │
+│  └─────────┘                     └─────────┘   │
+└──────────────────────────────────────────────────┘
+```
+
+## 🔑 linkerd2-proxy 的核心功能
+
+### 透明代理
+
+```rust
+// linkerd2-proxy 透明代理的概念展示
+// 通过 iptables 规则截获进出 Pod 的流量
+
+use std::net::SocketAddr;
+
+/// 代理拦截的流量方向
+#[derive(Debug)]
+enum TrafficDirection {
+    /// 入站流量（其他服务 → 当前服务）
+    Inbound,
+    /// 出站流量（当前服务 → 其他服务）
+    Outbound,
+}
+
+/// 代理请求的元数据
+struct ProxyRequest {
+    direction: TrafficDirection,
+    source: SocketAddr,
+    destination: SocketAddr,
+    protocol: String,
+    path: Option<String>,
+}
+
+fn handle_request(request: &ProxyRequest) {
+    match request.direction {
+        TrafficDirection::Inbound => {
+            println!("入站请求: {} -> {}", request.source, request.destination);
+            println!("  协议: {}", request.protocol);
+            // 入站处理：TLS 终止、认证、指标收集
+        }
+        TrafficDirection::Outbound => {
+            println!("出站请求: {} -> {}", request.source, request.destination);
+            // 出站处理：服务发现、负载均衡、TLS 发起、重试
+            if let Some(ref path) = request.path {
+                println!("  路径: {path}");
+            }
+        }
+    }
+}
+
+fn main() {
+    let inbound = ProxyRequest {
+        direction: TrafficDirection::Inbound,
+        source: "10.0.0.5:43210".parse().unwrap(),
+        destination: "10.0.0.10:8080".parse().unwrap(),
+        protocol: "HTTP/2".into(),
+        path: Some("/api/users".into()),
+    };
+
+    let outbound = ProxyRequest {
+        direction: TrafficDirection::Outbound,
+        source: "10.0.0.10:8080".parse().unwrap(),
+        destination: "10.0.0.20:3000".parse().unwrap(),
+        protocol: "HTTP/1.1".into(),
+        path: Some("/api/orders".into()),
+    };
+
+    handle_request(&inbound);
+    println!();
+    handle_request(&outbound);
+}
+```
+
+### 自动 mTLS
+
+```rust
+// linkerd2-proxy 自动 mTLS 的概念展示
+
+use std::time::{Duration, SystemTime};
+
+/// TLS 身份信息
+#[derive(Debug, Clone)]
+struct ServiceIdentity {
+    /// 服务账户名
+    service_account: String,
+    /// 命名空间
+    namespace: String,
+    /// 信任域
+    trust_domain: String,
+}
+
+impl ServiceIdentity {
+    fn spiffe_id(&self) -> String {
+        format!(
+            "spiffe://{}/ns/{}/sa/{}",
+            self.trust_domain, self.namespace, self.service_account
+        )
+    }
+}
+
+/// 模拟 mTLS 握手
+struct MtlsConnection {
+    client_identity: ServiceIdentity,
+    server_identity: ServiceIdentity,
+    established_at: SystemTime,
+    cipher_suite: String,
+}
+
+impl MtlsConnection {
+    fn new(client: ServiceIdentity, server: ServiceIdentity) -> Self {
+        Self {
+            client_identity: client,
+            server_identity: server,
+            established_at: SystemTime::now(),
+            cipher_suite: "TLS_AES_256_GCM_SHA384".into(),
+        }
+    }
+
+    fn display_info(&self) {
+        println!("mTLS 连接信息:");
+        println!("  客户端: {}", self.client_identity.spiffe_id());
+        println!("  服务端: {}", self.server_identity.spiffe_id());
+        println!("  加密套件: {}", self.cipher_suite);
+        println!("  建立时间: {:?}", self.established_at);
+    }
+}
+
+fn main() {
+    // Linkerd 使用 SPIFFE 身份标准
+    let client = ServiceIdentity {
+        service_account: "web-frontend".into(),
+        namespace: "default".into(),
+        trust_domain: "cluster.local".into(),
+    };
+
+    let server = ServiceIdentity {
+        service_account: "api-server".into(),
+        namespace: "default".into(),
+        trust_domain: "cluster.local".into(),
+    };
+
+    let connection = MtlsConnection::new(client, server);
+    connection.display_info();
+
+    println!("\nLinkerd mTLS 特点:");
+    println!("  - 自动为所有服务间通信启用 mTLS");
+    println!("  - 无需修改应用代码");
+    println!("  - 证书由控制平面自动轮换");
+    println!("  - 基于 SPIFFE 身份标准");
+}
+```
+
+### 智能负载均衡
+
+```rust
+use std::collections::HashMap;
+use std::time::Duration;
+
+/// EWMA（指数加权移动平均）负载均衡器
+/// linkerd2-proxy 使用此算法根据请求延迟动态选择后端
+struct EwmaLoadBalancer {
+    endpoints: Vec<Endpoint>,
+    decay_time: Duration,
+}
+
+struct Endpoint {
+    address: String,
+    ewma_latency_ms: f64,
+    active_requests: u32,
+    total_requests: u64,
+}
+
+impl EwmaLoadBalancer {
+    fn new(addresses: Vec<String>) -> Self {
+        let endpoints = addresses
+            .into_iter()
+            .map(|addr| Endpoint {
+                address: addr,
+                ewma_latency_ms: 0.0,
+                active_requests: 0,
+                total_requests: 0,
+            })
+            .collect();
+
+        Self {
+            endpoints,
+            decay_time: Duration::from_secs(10),
+        }
+    }
+
+    /// 选择负载最低的端点（P2C + EWMA 算法）
+    fn select_endpoint(&self) -> Option<&Endpoint> {
+        if self.endpoints.is_empty() {
+            return None;
+        }
+
+        // Power of Two Choices: 随机选两个，取较优的
+        // 简化演示：直接选择 EWMA 延迟最低的
+        self.endpoints.iter().min_by(|a, b| {
+            let score_a = a.ewma_latency_ms * (a.active_requests as f64 + 1.0);
+            let score_b = b.ewma_latency_ms * (b.active_requests as f64 + 1.0);
+            score_a.partial_cmp(&score_b).unwrap()
+        })
+    }
+
+    fn update_latency(&mut self, index: usize, latency_ms: f64) {
+        let alpha = 0.5; // 衰减因子
+        let endpoint = &mut self.endpoints[index];
+        endpoint.ewma_latency_ms = alpha * latency_ms + (1.0 - alpha) * endpoint.ewma_latency_ms;
+        endpoint.total_requests += 1;
+    }
+
+    fn report(&self) {
+        println!("EWMA 负载均衡器状态:");
+        for (i, ep) in self.endpoints.iter().enumerate() {
+            println!(
+                "  [{i}] {} - EWMA延迟: {:.1}ms, 活跃请求: {}, 总请求: {}",
+                ep.address, ep.ewma_latency_ms, ep.active_requests, ep.total_requests
+            );
+        }
+    }
+}
+
+fn main() {
+    let mut balancer = EwmaLoadBalancer::new(vec![
+        "10.0.0.1:8080".into(),
+        "10.0.0.2:8080".into(),
+        "10.0.0.3:8080".into(),
+    ]);
+
+    // 模拟请求和延迟更新
+    balancer.update_latency(0, 5.0);
+    balancer.update_latency(1, 15.0);
+    balancer.update_latency(2, 8.0);
+
+    balancer.update_latency(0, 4.0);
+    balancer.update_latency(1, 20.0);
+    balancer.update_latency(2, 7.0);
+
+    balancer.report();
+
+    if let Some(selected) = balancer.select_endpoint() {
+        println!("\n选择端点: {} (延迟最低)", selected.address);
+    }
+}
+```
+
+## 🔑 linkerd2-proxy 的 Rust 技术栈
+
+```
+linkerd2-proxy 核心依赖
+├── tokio         — 异步运行时
+├── hyper         — HTTP/1.1 和 HTTP/2 实现
+├── tower         — 服务抽象和中间件框架
+│   ├── tower-service  — Service trait 定义
+│   ├── tower-layer    — Layer 组合抽象
+│   └── tower-util     — 超时、重试、限流等中间件
+├── rustls        — TLS 实现（替代 OpenSSL）
+├── tokio-rustls  — 异步 TLS
+├── ring          — 加密原语
+├── trust-dns     — DNS 解析
+└── tracing       — 结构化日志和分布式追踪
+```
+
+## 🔑 可观测性指标
+
+```rust
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// linkerd2-proxy 自动收集的指标
+struct ProxyMetrics {
+    /// 请求总数（按状态码和路由分组）
+    request_count: HashMap<String, u64>,
+    /// 延迟分布（p50, p95, p99）
+    latency_histogram: Vec<Duration>,
+    /// 成功率
+    success_count: u64,
+    failure_count: u64,
+    /// TCP 连接数
+    active_connections: u32,
+}
+
+impl ProxyMetrics {
+    fn new() -> Self {
+        Self {
+            request_count: HashMap::new(),
+            latency_histogram: Vec::new(),
+            success_count: 0,
+            failure_count: 0,
+            active_connections: 0,
+        }
+    }
+
+    fn record_request(&mut self, status_code: u16, latency: Duration) {
+        let key = format!("status_{status_code}");
+        *self.request_count.entry(key).or_insert(0) += 1;
+        self.latency_histogram.push(latency);
+
+        if (200..300).contains(&status_code) {
+            self.success_count += 1;
+        } else {
+            self.failure_count += 1;
+        }
+    }
+
+    fn success_rate(&self) -> f64 {
+        let total = self.success_count + self.failure_count;
+        if total == 0 {
+            return 1.0;
+        }
+        self.success_count as f64 / total as f64
+    }
+
+    fn percentile_latency(&self, percentile: f64) -> Duration {
+        if self.latency_histogram.is_empty() {
+            return Duration::ZERO;
+        }
+        let mut sorted = self.latency_histogram.clone();
+        sorted.sort();
+        let index = ((sorted.len() as f64 * percentile) as usize).min(sorted.len() - 1);
+        sorted[index]
+    }
+
+    fn report(&self) {
+        println!("代理指标报告:");
+        println!("  请求分布: {:?}", self.request_count);
+        println!("  成功率: {:.1}%", self.success_rate() * 100.0);
+        println!("  p50 延迟: {:?}", self.percentile_latency(0.50));
+        println!("  p95 延迟: {:?}", self.percentile_latency(0.95));
+        println!("  p99 延迟: {:?}", self.percentile_latency(0.99));
+        println!("  活跃连接: {}", self.active_connections);
+    }
+}
+
+fn main() {
+    let mut metrics = ProxyMetrics::new();
+
+    // 模拟请求记录
+    metrics.record_request(200, Duration::from_millis(5));
+    metrics.record_request(200, Duration::from_millis(8));
+    metrics.record_request(200, Duration::from_millis(3));
+    metrics.record_request(200, Duration::from_millis(12));
+    metrics.record_request(500, Duration::from_millis(150));
+    metrics.record_request(200, Duration::from_millis(6));
+    metrics.record_request(200, Duration::from_millis(4));
+    metrics.record_request(404, Duration::from_millis(2));
+    metrics.active_connections = 42;
+
+    metrics.report();
+}
+```
+
+## 📊 linkerd2-proxy vs Envoy 对比
+
+| 特性 | linkerd2-proxy (Rust) | Envoy (C++) |
+|------|----------------------|-------------|
+| 定位 | 服务网格专用 | 通用代理 |
+| 语言 | Rust | C++ |
+| 内存占用 | ~20 MB | ~50-100 MB |
+| p99 延迟增加 | < 1ms | ~2-5ms |
+| 配置方式 | 控制平面自动配置 | xDS API |
+| 扩展性 | 有限（专注服务网格） | WASM 插件 |
+| 安全特性 | 自动 mTLS | 需要手动配置 |
+
+## 🔗 相关资源
+
+- [linkerd2-proxy GitHub 仓库](https://github.com/linkerd/linkerd2-proxy)
+- [Linkerd 官方文档](https://linkerd.io/docs/)
+- [Linkerd 架构详解](https://linkerd.io/2.19/reference/architecture/)
+
+## ✅ 学习检查点
+
+- [ ] 理解 Service Mesh 的控制平面和数据平面架构
+- [ ] 了解 linkerd2-proxy 的核心功能（透明代理、mTLS、负载均衡、可观测性）
+- [ ] 理解 EWMA 负载均衡算法的原理
+- [ ] 了解 linkerd2-proxy 使用的 Rust 技术栈（tokio、hyper、tower、rustls）
+- [ ] 理解 linkerd2-proxy 相比 Envoy 的定位差异
+
+## 🚀 下一步
+
+→ [分布式系统 TiKV](./08-distributed-systems-tikv)

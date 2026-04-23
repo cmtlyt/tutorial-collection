@@ -1,17 +1,292 @@
 # candle 推理框架
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「candle 推理框架」相关知识。
+[candle](https://github.com/huggingface/candle) 是 Hugging Face 开源的一个用 Rust 编写的极简机器学习框架。与 Python 生态中的 PyTorch 不同，candle 专注于**轻量级推理**，核心目标是让无服务器（serverless）推理成为可能——无需 Python 运行时、无需庞大的依赖链，只需一个编译好的二进制文件即可运行模型推理。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心特点
 
-## 📝 学习检查点
+- **极简设计**：API 风格类似 PyTorch，学习成本低
+- **高性能**：原生 Rust 实现，支持 CPU 和 CUDA GPU
+- **零 Python 依赖**：部署时无需 Python 环境
+- **safetensors 原生支持**：直接加载 Hugging Face Hub 上的模型
+- **多精度支持**：支持 f32、f16、bf16 等数据类型
+- **WASM 支持**：可编译为 WebAssembly 在浏览器中运行
 
-- [ ] 理解candle 推理框架的核心概念
-- [ ] 能够在实际项目中应用candle 推理框架
+## 🎯 快速上手
+
+### 项目配置
+
+```toml
+# Cargo.toml
+[package]
+name = "candle-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+anyhow = "1"
+```
+
+### 张量基础操作
+
+```rust
+use candle_core::{Device, Tensor, DType};
+use anyhow::Result;
+
+fn main() -> Result<()> {
+    // 选择设备（CPU 或 CUDA）
+    let device = Device::Cpu;
+
+    // 创建张量
+    let a = Tensor::new(&[[1.0f32, 2.0], [3.0, 4.0]], &device)?;
+    let b = Tensor::new(&[[5.0f32, 6.0], [7.0, 8.0]], &device)?;
+
+    // 基本运算
+    let sum = (&a + &b)?;
+    let product = a.matmul(&b)?;
+
+    println!("矩阵 A:\n{a}");
+    println!("矩阵 B:\n{b}");
+    println!("A + B:\n{sum}");
+    println!("A × B:\n{product}");
+
+    // 创建随机张量
+    let random = Tensor::randn(0f32, 1.0, (3, 4), &device)?;
+    println!("随机张量 (3x4):\n{random}");
+
+    // 张量变形
+    let reshaped = random.reshape((2, 6))?;
+    println!("变形后 (2x6):\n{reshaped}");
+
+    // 类型转换
+    let float16 = a.to_dtype(DType::F16)?;
+    println!("F16 张量:\n{float16}");
+
+    Ok(())
+}
+```
+
+### 构建简单神经网络
+
+```rust
+use candle_core::{Device, Tensor, DType, Module};
+use candle_nn::{Linear, linear, VarBuilder, VarMap};
+use anyhow::Result;
+
+struct SimpleClassifier {
+    layer1: Linear,
+    layer2: Linear,
+    output: Linear,
+}
+
+impl SimpleClassifier {
+    fn new(input_dim: usize, hidden_dim: usize, output_dim: usize, vb: VarBuilder) -> Result<Self> {
+        let layer1 = linear(input_dim, hidden_dim, vb.pp("layer1"))?;
+        let layer2 = linear(hidden_dim, hidden_dim, vb.pp("layer2"))?;
+        let output = linear(hidden_dim, output_dim, vb.pp("output"))?;
+        Ok(Self { layer1, layer2, output })
+    }
+
+    fn forward(&self, input: &Tensor) -> Result<Tensor> {
+        let hidden = self.layer1.forward(input)?.relu()?;
+        let hidden = self.layer2.forward(&hidden)?.relu()?;
+        let logits = self.output.forward(&hidden)?;
+        Ok(logits)
+    }
+}
+
+fn main() -> Result<()> {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+
+    // 创建模型：输入维度 4，隐藏层 16，输出 3 类
+    let model = SimpleClassifier::new(4, 16, 3, vb)?;
+
+    // 模拟输入数据 (batch_size=2, features=4)
+    let input = Tensor::randn(0f32, 1.0, (2, 4), &device)?;
+    let output = model.forward(&input)?;
+
+    println!("输入形状: {:?}", input.shape());
+    println!("输出形状: {:?}", output.shape());
+    println!("输出 logits:\n{output}");
+
+    // Softmax 得到概率分布
+    let probabilities = candle_nn::ops::softmax(&output, 1)?;
+    println!("概率分布:\n{probabilities}");
+
+    Ok(())
+}
+```
+
+## 🔑 加载预训练模型
+
+### 从 Hugging Face Hub 加载
+
+```rust
+use candle_core::{Device, Tensor, DType};
+use candle_nn::VarBuilder;
+use anyhow::Result;
+
+fn demonstrate_model_loading() -> Result<()> {
+    let device = Device::Cpu;
+
+    // 方式一：从本地 safetensors 文件加载
+    // let vb = unsafe {
+    //     VarBuilder::from_mmaped_safetensors(
+    //         &["model.safetensors"],
+    //         DType::F32,
+    //         &device,
+    //     )?
+    // };
+
+    // 方式二：使用 hf-hub 从 Hugging Face 下载
+    // [dependencies]
+    // hf-hub = "0.3"
+    //
+    // use hf_hub::api::sync::Api;
+    // let api = Api::new()?;
+    // let repo = api.model("bert-base-uncased".into());
+    // let model_path = repo.get("model.safetensors")?;
+
+    // 演示：创建一个模拟的权重张量
+    let weights = Tensor::randn(0f32, 0.02, (768, 3072), &device)?;
+    let bias = Tensor::zeros((3072,), DType::F32, &device)?;
+
+    println!("权重形状: {:?}", weights.shape());
+    println!("偏置形状: {:?}", bias.shape());
+
+    // 模拟前向传播
+    let input = Tensor::randn(0f32, 1.0, (1, 768), &device)?;
+    let output = input.matmul(&weights)?;
+    let output = output.broadcast_add(&bias)?;
+    println!("输出形状: {:?}", output.shape());
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    demonstrate_model_loading()?;
+    println!("模型加载演示完成");
+    Ok(())
+}
+```
+
+## 🔑 candle 支持的模型
+
+candle-transformers 提供了大量预训练模型的原生 Rust 实现：
+
+```
+candle 支持的模型类型
+├── 语言模型
+│   ├── LLaMA / LLaMA 2 / LLaMA 3
+│   ├── Mistral / Mixtral
+│   ├── Phi-2 / Phi-3
+│   ├── Gemma / Gemma 2
+│   ├── Qwen / Qwen 2
+│   └── BERT / GPT-2
+├── 视觉模型
+│   ├── YOLO (目标检测)
+│   ├── Segment Anything (SAM)
+│   ├── Stable Diffusion (图像生成)
+│   └── DINOv2 (视觉特征)
+├── 语音模型
+│   └── Whisper (语音识别)
+└── 多模态
+    └── BLIP (图文理解)
+```
+
+## 🔑 与 PyTorch 的 API 对比
+
+```rust
+use candle_core::{Device, Tensor, DType};
+use anyhow::Result;
+
+fn api_comparison() -> Result<()> {
+    let device = Device::Cpu;
+
+    // PyTorch:  torch.zeros(3, 4)
+    // candle:
+    let zeros = Tensor::zeros((3, 4), DType::F32, &device)?;
+
+    // PyTorch:  torch.ones(3, 4)
+    // candle:
+    let ones = Tensor::ones((3, 4), DType::F32, &device)?;
+
+    // PyTorch:  torch.randn(3, 4)
+    // candle:
+    let random = Tensor::randn(0f32, 1.0, (3, 4), &device)?;
+
+    // PyTorch:  a + b
+    // candle:
+    let sum = (&zeros + &ones)?;
+
+    // PyTorch:  a.matmul(b)
+    // candle:
+    let a = Tensor::randn(0f32, 1.0, (2, 3), &device)?;
+    let b = Tensor::randn(0f32, 1.0, (3, 4), &device)?;
+    let product = a.matmul(&b)?;
+
+    // PyTorch:  x.softmax(dim=-1)
+    // candle:
+    let logits = Tensor::new(&[[1.0f32, 2.0, 3.0]], &device)?;
+    let probs = candle_nn::ops::softmax(&logits, 1)?;
+
+    // PyTorch:  x.reshape(2, 6)
+    // candle:
+    let reshaped = random.reshape((2, 6))?;
+
+    // PyTorch:  x.to(torch.float16)
+    // candle:
+    let half = ones.to_dtype(DType::F16)?;
+
+    println!("zeros: {zeros}");
+    println!("sum: {sum}");
+    println!("product 形状: {:?}", product.shape());
+    println!("softmax: {probs}");
+    println!("reshaped 形状: {:?}", reshaped.shape());
+    println!("half 类型: {:?}", half.dtype());
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    api_comparison()?;
+    Ok(())
+}
+```
+
+## 📝 适用场景
+
+| 场景 | candle 适合度 | 说明 |
+|------|-------------|------|
+| 生产环境推理 | ⭐⭐⭐⭐⭐ | 核心设计目标 |
+| Serverless 部署 | ⭐⭐⭐⭐⭐ | 单二进制文件，无 Python 依赖 |
+| 边缘设备推理 | ⭐⭐⭐⭐ | 轻量级，支持 WASM |
+| 模型训练 | ⭐⭐ | 可用但生态不如 PyTorch |
+| 研究实验 | ⭐⭐ | Python 生态更成熟 |
+
+## 🔗 相关资源
+
+- [candle GitHub 仓库](https://github.com/huggingface/candle)
+- [candle 在线 WASM 演示](https://huggingface.co/spaces/lmz/candle-llama2)
+- [candle 文档](https://huggingface.co/docs/transformers/community_integrations/candle)
+
+## ✅ 学习检查点
+
+- [ ] 理解 candle 的设计目标和核心优势
+- [ ] 能够使用 candle 进行基础张量操作
+- [ ] 了解如何构建简单的神经网络
+- [ ] 知道如何从 Hugging Face Hub 加载预训练模型
+- [ ] 理解 candle 与 PyTorch API 的对应关系
+
+## 🚀 下一步
+
+→ [burn 深度学习框架](./03-burn-deep-learning)

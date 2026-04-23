@@ -1,17 +1,330 @@
 # llama.cpp Rust 绑定
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「llama.cpp Rust 绑定」相关知识。
+[llama.cpp](https://github.com/ggml-org/llama.cpp) 是一个用 C/C++ 编写的高性能 LLM 推理引擎，以其极致的量化推理性能闻名——可以在普通消费级硬件上运行大语言模型。[llama-cpp-rs](https://github.com/utilityai/llama-cpp-rs) 提供了安全的 Rust 绑定（`llama-cpp-2`），让 Rust 开发者能够直接利用 llama.cpp 的推理能力，构建高性能的本地 AI 应用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
+### 核心优势
+
+- **量化推理**：支持 GGUF 格式的量化模型（Q4、Q5、Q8 等），大幅降低内存需求
+- **跨平台**：支持 CPU（AVX/AVX2/ARM NEON）、CUDA、Metal、Vulkan 等后端
+- **安全封装**：`llama-cpp-2` 提供了符合 Rust 惯例的安全 API
+- **紧跟上游**：与 llama.cpp 上游保持同步更新
+- **工具调用**：支持 OpenAI 兼容的工具调用流程
+
+## 🎯 快速上手
+
+### 项目配置
+
+```toml
+# Cargo.toml
+[package]
+name = "llama-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+llama-cpp-2 = "0.1"
+anyhow = "1"
+
+# 可选：启用 CUDA 加速
+# [features]
+# cuda = ["llama-cpp-2/cuda"]
+```
+
+:::tip
+使用 llama-cpp-2 需要系统安装 C/C++ 编译器（如 gcc、clang），因为它会在构建时编译 llama.cpp 源码。
 :::
 
-## 📝 学习检查点
+### 基本推理流程
 
-- [ ] 理解llama.cpp Rust 绑定的核心概念
-- [ ] 能够在实际项目中应用llama.cpp Rust 绑定
+```rust
+use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::LlamaModel;
+use anyhow::Result;
+use std::path::Path;
+
+fn main() -> Result<()> {
+    // 1. 初始化后端
+    let backend = LlamaBackend::init()?;
+
+    // 2. 加载模型（GGUF 格式）
+    let model_path = Path::new("models/llama-3-8b-q4_k_m.gguf");
+
+    if !model_path.exists() {
+        println!("模型文件不存在: {}", model_path.display());
+        println!("请从 Hugging Face 下载 GGUF 格式的模型文件");
+        println!("例如: huggingface-cli download TheBloke/Llama-2-7B-GGUF llama-2-7b.Q4_K_M.gguf");
+        return Ok(());
+    }
+
+    let model_params = LlamaModelParams::default();
+    let model = LlamaModel::load_from_file(&backend, model_path, &model_params)?;
+
+    // 3. 创建推理上下文
+    let context_params = LlamaContextParams::default()
+        .with_n_ctx(std::num::NonZeroU32::new(2048));
+    let mut context = model.new_context(&backend, context_params)?;
+
+    println!("模型加载成功");
+    println!("词汇表大小: {}", model.n_vocab());
+
+    // 4. 分词
+    let prompt = "Rust is a programming language that";
+    let tokens = model.str_to_token(prompt, llama_cpp_2::model::AddBos::Always)?;
+    println!("Prompt tokens: {tokens:?}");
+    println!("Token 数量: {}", tokens.len());
+
+    Ok(())
+}
+```
+
+### 文本生成
+
+```rust
+use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::context::LlamaContext;
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::{LlamaModel, AddBos};
+use llama_cpp_2::sampling::LlamaSampler;
+use anyhow::Result;
+use std::path::Path;
+
+fn generate_text(
+    model: &LlamaModel,
+    context: &mut LlamaContext,
+    prompt: &str,
+    max_tokens: usize,
+) -> Result<String> {
+    // 分词
+    let tokens = model.str_to_token(prompt, AddBos::Always)?;
+
+    // 创建 batch
+    let mut batch = LlamaBatch::new(2048, 1);
+
+    // 填入 prompt tokens
+    for (i, token) in tokens.iter().enumerate() {
+        let is_last = i == tokens.len() - 1;
+        batch.add(*token, i as i32, &[0], is_last)?;
+    }
+
+    // 评估 prompt
+    context.decode(&mut batch)?;
+
+    let mut output = String::new();
+    let mut current_pos = tokens.len() as i32;
+
+    // 创建采样器
+    let mut sampler = LlamaSampler::chain_simple([
+        LlamaSampler::temp(0.7),
+        LlamaSampler::top_p(0.9, 1),
+        LlamaSampler::dist(42),
+    ]);
+
+    // 自回归生成
+    for _ in 0..max_tokens {
+        let token = sampler.sample(context, -1);
+
+        // 检查是否为结束 token
+        if model.is_eog_token(token) {
+            break;
+        }
+
+        // 将 token 转回文本
+        let text = model.token_to_str(token, llama_cpp_2::model::Special::Tokenize)?;
+        output.push_str(&text);
+
+        // 准备下一步
+        batch.clear();
+        batch.add(token, current_pos, &[0], true)?;
+        context.decode(&mut batch)?;
+        current_pos += 1;
+    }
+
+    Ok(output)
+}
+
+fn main() -> Result<()> {
+    let backend = LlamaBackend::init()?;
+    let model_path = Path::new("models/model.gguf");
+
+    if !model_path.exists() {
+        println!("=== llama.cpp Rust 绑定 - 文本生成演示 ===");
+        println!();
+        println!("推理流程:");
+        println!("  1. LlamaBackend::init() - 初始化后端");
+        println!("  2. LlamaModel::load_from_file() - 加载 GGUF 模型");
+        println!("  3. model.new_context() - 创建推理上下文");
+        println!("  4. model.str_to_token() - 对 prompt 分词");
+        println!("  5. context.decode() - 评估 prompt");
+        println!("  6. sampler.sample() - 采样下一个 token");
+        println!("  7. 循环步骤 5-6 直到生成完成");
+        println!();
+        println!("需要 GGUF 格式的模型文件才能运行完整推理");
+        return Ok(());
+    }
+
+    let model_params = LlamaModelParams::default();
+    let model = LlamaModel::load_from_file(&backend, model_path, &model_params)?;
+
+    let context_params = LlamaContextParams::default()
+        .with_n_ctx(std::num::NonZeroU32::new(2048));
+    let mut context = model.new_context(&backend, context_params)?;
+
+    let prompt = "Explain Rust's ownership system in simple terms:";
+    println!("Prompt: {prompt}");
+    println!("---");
+
+    let generated = generate_text(&model, &mut context, prompt, 256)?;
+    println!("{generated}");
+
+    Ok(())
+}
+```
+
+## 🔑 GGUF 模型格式
+
+```
+GGUF（GPT-Generated Unified Format）
+├── 文件结构
+│   ├── Header: 魔数、版本、元数据
+│   ├── Metadata: 模型架构、参数配置
+│   └── Tensors: 量化后的权重数据
+├── 量化级别
+│   ├── Q2_K: ~2.7 bit/weight, 最小但质量损失较大
+│   ├── Q4_K_M: ~4.8 bit/weight, 推荐的平衡选择
+│   ├── Q5_K_M: ~5.7 bit/weight, 更好质量
+│   ├── Q6_K: ~6.6 bit/weight, 接近原始精度
+│   ├── Q8_0: ~8.5 bit/weight, 几乎无损
+│   └── F16: 16 bit/weight, 完整半精度
+└── 获取模型
+    ├── Hugging Face Hub: TheBloke 等用户提供的量化版本
+    └── 手动量化: 使用 llama.cpp 的 convert 工具
+```
+
+## 🔑 采样策略
+
+```rust
+use llama_cpp_2::sampling::LlamaSampler;
+
+fn demonstrate_sampling_strategies() {
+    // Temperature（温度）: 控制随机性
+    // - 低温度(0.1~0.3): 确定性输出，适合代码生成
+    // - 中温度(0.7~0.8): 平衡创造性和一致性
+    // - 高温度(1.0+): 高度随机，适合创意写作
+    let _temp_sampler = LlamaSampler::temp(0.7);
+
+    // Top-P（核采样）: 只从概率质量前 p% 的 token 中采样
+    // - 0.9: 常用值，过滤掉低概率的噪声
+    // - 1.0: 不过滤
+    let _top_p_sampler = LlamaSampler::top_p(0.9, 1);
+
+    // Top-K: 只从概率最高的 k 个 token 中采样
+    let _top_k_sampler = LlamaSampler::top_k(40);
+
+    // 组合采样链（按顺序应用）
+    let _chain = LlamaSampler::chain_simple([
+        LlamaSampler::temp(0.7),          // 先应用温度
+        LlamaSampler::top_k(40),          // 然后 top-k 过滤
+        LlamaSampler::top_p(0.9, 1),      // 再 top-p 过滤
+        LlamaSampler::dist(42),           // 最后按概率分布采样
+    ]);
+
+    // 贪心采样（总是选最高概率的 token）
+    let _greedy = LlamaSampler::greedy();
+
+    println!("采样策略配置:");
+    println!("  Temperature: 0.7 (平衡创造性)");
+    println!("  Top-K: 40 (候选 token 数)");
+    println!("  Top-P: 0.9 (概率质量阈值)");
+}
+
+fn main() {
+    demonstrate_sampling_strategies();
+}
+```
+
+## 🔑 性能优化
+
+```rust
+use std::num::NonZeroU32;
+
+fn demonstrate_performance_config() {
+    println!("=== llama.cpp 性能优化参数 ===");
+    println!();
+
+    // 上下文大小
+    println!("1. 上下文大小 (n_ctx):");
+    println!("   - 决定模型能处理的最大 token 数");
+    println!("   - 更大的上下文需要更多内存");
+    println!("   - 常用值: 2048, 4096, 8192");
+    println!();
+
+    // GPU 层数卸载
+    println!("2. GPU 层数卸载 (n_gpu_layers):");
+    println!("   - 将模型层放到 GPU 上加速");
+    println!("   - 0: 纯 CPU 推理");
+    println!("   - 999: 尽可能多地使用 GPU");
+    println!("   - 根据 GPU 显存大小调整");
+    println!();
+
+    // 线程数
+    println!("3. 线程数 (n_threads):");
+    println!("   - CPU 推理时的并行线程数");
+    println!("   - 推荐设为物理核心数");
+    println!();
+
+    // batch 大小
+    println!("4. Batch 大小 (n_batch):");
+    println!("   - 一次处理的 token 数量");
+    println!("   - 更大的 batch 提高 prompt 处理速度");
+    println!("   - 但增加内存使用");
+    println!();
+
+    // 量化选择建议
+    println!("5. 量化级别选择:");
+    println!("   - 8GB RAM: Q4_K_M (7B 模型)");
+    println!("   - 16GB RAM: Q5_K_M (7B) 或 Q4_K_M (13B)");
+    println!("   - 32GB RAM: Q6_K (13B) 或 Q4_K_M (70B 部分层)");
+    println!("   - GPU 24GB: F16 (7B) 或 Q8_0 (13B)");
+}
+
+fn main() {
+    demonstrate_performance_config();
+}
+```
+
+## 📊 Rust LLM 推理方案对比
+
+| 方案 | 模型格式 | GPU 支持 | 量化 | 生态成熟度 |
+|------|---------|---------|------|-----------|
+| llama-cpp-rs | GGUF | CUDA/Metal/Vulkan | ✅ 丰富 | ⭐⭐⭐⭐⭐ |
+| candle | safetensors | CUDA | 部分 | ⭐⭐⭐⭐ |
+| burn | 自有格式 | WGPU/CUDA | 部分 | ⭐⭐⭐ |
+| tract | ONNX | CPU | 部分 | ⭐⭐⭐ |
+
+## 🔗 相关资源
+
+- [llama-cpp-rs GitHub 仓库](https://github.com/utilityai/llama-cpp-rs)
+- [llama-cpp-2 API 文档](https://docs.rs/llama-cpp-2)
+- [llama.cpp 上游项目](https://github.com/ggml-org/llama.cpp)
+- [GGUF 模型下载（Hugging Face）](https://huggingface.co/models?sort=trending&search=gguf)
+
+## ✅ 学习检查点
+
+- [ ] 理解 llama.cpp 的推理流程和 GGUF 模型格式
+- [ ] 能够使用 llama-cpp-2 加载模型并进行文本生成
+- [ ] 了解各种采样策略（Temperature、Top-K、Top-P）的作用
+- [ ] 掌握量化级别选择和性能优化参数
+- [ ] 知道如何获取和使用 GGUF 格式的模型
+
+## 🚀 下一步
+
+→ [容器运行时 youki](./06-container-runtime-youki)

@@ -1,17 +1,454 @@
 # 分布式系统 TiKV
 
 > **版本**：v1.0  
-> **最后更新**：2026-04-22
+> **最后更新**：2026-04-23
 
 ## 📚 概念介绍
 
-本节将深入讲解新兴应用领域中的「分布式系统 TiKV」相关知识。
+[TiKV](https://github.com/tikv/tikv) 是一个用 Rust 编写的分布式事务性键值存储引擎，由 PingCAP 开发，是 CNCF 毕业项目。TiKV 基于 Raft 共识算法实现数据复制和强一致性，使用 RocksDB 作为单机存储引擎，并支持分布式事务（Percolator 模型）。它是 TiDB 分布式数据库的底层存储层，也可以独立作为分布式键值存储使用。
 
-:::tip 待完善
-本文档内容待后续实现，敬请期待。
-:::
+### 核心特点
 
-## 📝 学习检查点
+- **强一致性**：基于 Raft 共识算法，保证数据在多个副本间的一致性
+- **分布式事务**：支持跨 Region 的 ACID 事务
+- **水平扩展**：通过 Region 分裂和调度实现自动扩缩容
+- **高可用**：自动故障转移，少数节点故障不影响服务
+- **Rust 实现**：利用 Rust 的性能和安全性保障稳定运行
 
-- [ ] 理解分布式系统 TiKV的核心概念
-- [ ] 能够在实际项目中应用分布式系统 TiKV
+## 🎯 TiKV 整体架构
+
+```
+TiKV 集群架构
+┌─────────────────────────────────────────────────────┐
+│  PD（Placement Driver）集群                          │
+│  - 集群元数据管理                                    │
+│  - Region 调度（负载均衡、分裂/合并）                 │
+│  - 全局时间戳分配（TSO）                             │
+└──────────────────────┬──────────────────────────────┘
+                       │ 心跳 + 调度指令
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────┐
+    │ TiKV Node│ │ TiKV Node│ │ TiKV Node│
+    │          │ │          │ │          │
+    │ Region 1 │ │ Region 1 │ │ Region 1 │  ← Raft Group
+    │ (Leader) │ │ (Follower)│ │ (Follower)│
+    │          │ │          │ │          │
+    │ Region 2 │ │ Region 3 │ │ Region 2 │
+    │ (Follower)│ │ (Leader) │ │ (Leader) │
+    │          │ │          │ │          │
+    │ RocksDB  │ │ RocksDB  │ │ RocksDB  │
+    └──────────┘ └──────────┘ └──────────┘
+```
+
+## 🔑 核心概念
+
+### Region 与数据分片
+
+```rust
+use std::collections::BTreeMap;
+
+/// Region 是 TiKV 数据分片的基本单位
+/// 每个 Region 负责一段连续的 key 范围
+#[derive(Debug, Clone)]
+struct Region {
+    id: u64,
+    start_key: Vec<u8>,
+    end_key: Vec<u8>,
+    /// Raft 组中的节点列表
+    peers: Vec<Peer>,
+    /// 当前 Leader
+    leader: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct Peer {
+    id: u64,
+    store_id: u64,
+    role: PeerRole,
+}
+
+#[derive(Debug, Clone)]
+enum PeerRole {
+    Leader,
+    Follower,
+    Learner,
+}
+
+/// Region 管理器（简化版）
+struct RegionManager {
+    regions: BTreeMap<Vec<u8>, Region>,
+    split_threshold: usize, // Region 大小阈值，超过则分裂
+}
+
+impl RegionManager {
+    fn new() -> Self {
+        // 初始只有一个 Region 覆盖全部 key 空间
+        let mut regions = BTreeMap::new();
+        let initial_region = Region {
+            id: 1,
+            start_key: vec![],
+            end_key: vec![],
+            peers: vec![
+                Peer { id: 1, store_id: 1, role: PeerRole::Leader },
+                Peer { id: 2, store_id: 2, role: PeerRole::Follower },
+                Peer { id: 3, store_id: 3, role: PeerRole::Follower },
+            ],
+            leader: Some(1),
+        };
+        regions.insert(vec![], initial_region);
+
+        Self {
+            regions,
+            split_threshold: 96 * 1024 * 1024, // 96 MB
+        }
+    }
+
+    /// 根据 key 查找所在的 Region
+    fn locate_region(&self, key: &[u8]) -> Option<&Region> {
+        // 找到 start_key <= key 的最后一个 Region
+        self.regions
+            .range(..=key.to_vec())
+            .next_back()
+            .map(|(_, region)| region)
+    }
+
+    fn display_regions(&self) {
+        println!("Region 分布:");
+        for (_, region) in &self.regions {
+            let start = if region.start_key.is_empty() {
+                "MIN".to_string()
+            } else {
+                String::from_utf8_lossy(&region.start_key).to_string()
+            };
+            let end = if region.end_key.is_empty() {
+                "MAX".to_string()
+            } else {
+                String::from_utf8_lossy(&region.end_key).to_string()
+            };
+            println!(
+                "  Region {} [{start}, {end}) - Leader: Store {}",
+                region.id,
+                region.leader.unwrap_or(0)
+            );
+        }
+    }
+}
+
+fn main() {
+    let manager = RegionManager::new();
+    manager.display_regions();
+
+    // 查找 key 所在 Region
+    let key = b"user:1001";
+    if let Some(region) = manager.locate_region(key) {
+        println!(
+            "\nKey {:?} 位于 Region {}",
+            String::from_utf8_lossy(key),
+            region.id
+        );
+    }
+}
+```
+
+### Raft 共识算法
+
+```rust
+/// Raft 状态机的简化展示
+#[derive(Debug, Clone, PartialEq)]
+enum RaftRole {
+    Follower,
+    Candidate,
+    Leader,
+}
+
+#[derive(Debug)]
+struct RaftNode {
+    id: u64,
+    role: RaftRole,
+    current_term: u64,
+    voted_for: Option<u64>,
+    commit_index: u64,
+    last_applied: u64,
+    log: Vec<LogEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct LogEntry {
+    term: u64,
+    index: u64,
+    data: Vec<u8>,
+}
+
+impl RaftNode {
+    fn new(id: u64) -> Self {
+        Self {
+            id,
+            role: RaftRole::Follower,
+            current_term: 0,
+            voted_for: None,
+            commit_index: 0,
+            last_applied: 0,
+            log: Vec::new(),
+        }
+    }
+
+    /// Leader 接收写请求
+    fn propose(&mut self, data: Vec<u8>) -> Result<u64, String> {
+        if self.role != RaftRole::Leader {
+            return Err("不是 Leader，请重定向".into());
+        }
+
+        let index = self.log.len() as u64 + 1;
+        let entry = LogEntry {
+            term: self.current_term,
+            index,
+            data,
+        };
+        self.log.push(entry);
+
+        // 实际流程：
+        // 1. Leader 将日志追加到本地
+        // 2. 并行发送 AppendEntries RPC 给所有 Follower
+        // 3. 收到多数派确认后 commit
+        // 4. 应用到状态机
+
+        println!(
+            "Node {} (Leader): 提议日志 index={index}, term={}",
+            self.id, self.current_term
+        );
+
+        Ok(index)
+    }
+
+    /// 模拟日志复制确认
+    fn commit(&mut self, index: u64) {
+        if index > self.commit_index {
+            self.commit_index = index;
+            println!(
+                "Node {}: 日志 index={index} 已提交（多数派确认）",
+                self.id
+            );
+        }
+    }
+
+    fn status(&self) {
+        println!(
+            "Node {} - 角色: {:?}, Term: {}, 日志条目: {}, 已提交: {}",
+            self.id,
+            self.role,
+            self.current_term,
+            self.log.len(),
+            self.commit_index
+        );
+    }
+}
+
+fn main() {
+    println!("=== Raft 共识流程演示 ===\n");
+
+    // 创建一个 3 节点 Raft 组
+    let mut leader = RaftNode::new(1);
+    leader.role = RaftRole::Leader;
+    leader.current_term = 5;
+
+    let mut follower1 = RaftNode::new(2);
+    follower1.current_term = 5;
+
+    let mut follower2 = RaftNode::new(3);
+    follower2.current_term = 5;
+
+    // 写请求流程
+    println!("步骤 1: 客户端发送写请求到 Leader");
+    let index = leader.propose(b"PUT user:1001 Alice".to_vec()).unwrap();
+
+    println!("\n步骤 2: Leader 复制日志到 Follower");
+    println!("  → 发送 AppendEntries 到 Node 2");
+    println!("  → 发送 AppendEntries 到 Node 3");
+
+    println!("\n步骤 3: 收到多数派（2/3）确认后提交");
+    leader.commit(index);
+
+    println!("\n步骤 4: 应用到状态机，返回客户端成功");
+
+    println!("\n--- 集群状态 ---");
+    leader.status();
+    follower1.status();
+    follower2.status();
+}
+```
+
+### 分布式事务（Percolator 模型）
+
+```rust
+use std::collections::HashMap;
+
+/// TiKV 使用 Percolator 模型实现分布式事务
+/// 两阶段提交（2PC）: Prewrite + Commit
+
+#[derive(Debug, Clone)]
+struct Mutation {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug)]
+enum TxnStatus {
+    Active,
+    Prewriting,
+    Committed(u64),
+    RolledBack,
+}
+
+struct Transaction {
+    start_ts: u64,  // 事务开始时间戳
+    status: TxnStatus,
+    mutations: Vec<Mutation>,
+    primary_key: Option<String>,
+}
+
+/// 模拟 TSO（Timestamp Oracle）
+struct TimestampOracle {
+    current: u64,
+}
+
+impl TimestampOracle {
+    fn new() -> Self {
+        Self { current: 0 }
+    }
+
+    fn get_timestamp(&mut self) -> u64 {
+        self.current += 1;
+        self.current
+    }
+}
+
+impl Transaction {
+    fn new(start_ts: u64) -> Self {
+        Self {
+            start_ts,
+            status: TxnStatus::Active,
+            mutations: Vec::new(),
+            primary_key: None,
+        }
+    }
+
+    fn put(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.mutations.push(Mutation {
+            key: key.into(),
+            value: value.into(),
+        });
+    }
+
+    /// 阶段 1: Prewrite
+    fn prewrite(&mut self) -> Result<(), String> {
+        if self.mutations.is_empty() {
+            return Err("没有待提交的修改".into());
+        }
+
+        // 选择第一个 key 作为 primary key
+        self.primary_key = Some(self.mutations[0].key.clone());
+        self.status = TxnStatus::Prewriting;
+
+        println!("Prewrite 阶段 (start_ts={}):", self.start_ts);
+        for mutation in &self.mutations {
+            println!(
+                "  锁定 key='{}', 写入 value='{}', primary='{}'",
+                mutation.key,
+                mutation.value,
+                self.primary_key.as_ref().unwrap()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// 阶段 2: Commit
+    fn commit(&mut self, commit_ts: u64) -> Result<(), String> {
+        println!("Commit 阶段 (commit_ts={commit_ts}):");
+        println!(
+            "  提交 primary key='{}'",
+            self.primary_key.as_ref().unwrap()
+        );
+        println!("  清理所有锁，写入 commit 记录");
+
+        self.status = TxnStatus::Committed(commit_ts);
+        Ok(())
+    }
+}
+
+fn main() {
+    let mut tso = TimestampOracle::new();
+
+    println!("=== TiKV 分布式事务演示（Percolator 模型）===\n");
+
+    // 模拟一个转账事务
+    let start_ts = tso.get_timestamp();
+    let mut txn = Transaction::new(start_ts);
+
+    // 读取当前余额（快照读，使用 start_ts）
+    println!("1. 快照读 (start_ts={start_ts}):");
+    println!("   读取 account:A 余额 = 1000");
+    println!("   读取 account:B 余额 = 500\n");
+
+    // 写入修改
+    txn.put("account:A", "900");  // A 减少 100
+    txn.put("account:B", "600");  // B 增加 100
+
+    // Prewrite: 锁定所有 key
+    println!("2. Prewrite:");
+    txn.prewrite().unwrap();
+
+    // Commit: 提交事务
+    let commit_ts = tso.get_timestamp();
+    println!("\n3. Commit:");
+    txn.commit(commit_ts).unwrap();
+
+    println!("\n事务完成: A转账100给B");
+    println!("  start_ts={start_ts}, commit_ts={commit_ts}");
+}
+```
+
+## 🔑 TiKV 的 Rust 技术栈
+
+```
+TiKV 核心技术栈
+├── raft-rs          — Raft 共识算法的 Rust 实现（TiKV 团队维护）
+├── rust-rocksdb     — RocksDB 的 Rust 绑定（单机存储引擎）
+├── grpcio           — gRPC 的 Rust 绑定（节点间通信）
+├── tokio            — 异步运行时
+├── crossbeam        — 无锁并发数据结构
+├── prometheus       — 指标监控
+├── slog             — 结构化日志
+└── yatp             — 线程池（TiKV 自研）
+```
+
+## 📊 TiKV 关键特性总结
+
+| 特性 | 说明 |
+|------|------|
+| 存储引擎 | RocksDB（LSM-Tree） |
+| 共识算法 | Multi-Raft（每个 Region 一个 Raft Group） |
+| 事务模型 | Percolator（乐观/悲观事务） |
+| 数据分片 | Region（默认 96 MB 自动分裂） |
+| 副本数 | 默认 3 副本 |
+| 一致性级别 | 线性一致性（Linearizability） |
+
+## 🔗 相关资源
+
+- [TiKV GitHub 仓库](https://github.com/tikv/tikv)
+- [TiKV 官方文档](https://tikv.org/docs/)
+- [raft-rs 实现教程](https://tikv.org/blog/implement-raft-in-rust/)
+- [Percolator 论文](https://research.google/pubs/pub36726/)
+
+## ✅ 学习检查点
+
+- [ ] 理解 TiKV 的整体架构（PD + TiKV + Region）
+- [ ] 了解 Region 分片机制和数据路由
+- [ ] 理解 Raft 共识算法的日志复制流程
+- [ ] 了解 Percolator 分布式事务模型的两阶段提交
+- [ ] 知道 TiKV 使用的 Rust 技术栈
+
+## 🚀 下一步
+
+→ [Kubernetes Operator](./09-kubernetes-operator)
