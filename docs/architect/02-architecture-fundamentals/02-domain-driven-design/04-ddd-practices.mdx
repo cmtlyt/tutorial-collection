@@ -14,4 +14,746 @@
 - 理解防腐层（Anti-Corruption Layer）的作用和实现
 - 掌握上下文间通信策略的选择
 
-> 🚧 详细内容正在编写中...
+## 🌩️ 事件风暴（Event Storming）
+
+### 什么是事件风暴？
+
+事件风暴是由 Alberto Brandolini 发明的一种**协作式领域建模工作坊**方法。它将开发者和业务专家聚在一起，通过识别领域事件来探索业务流程，最终产出限界上下文的划分和领域模型。
+
+### 事件风暴的流程
+
+```
+第一阶段：发散（Big Picture）
+   ↓ 识别所有领域事件
+第二阶段：时间线排序
+   ↓ 按时间顺序排列事件
+第三阶段：识别命令和角色
+   ↓ 谁触发了什么操作导致了事件
+第四阶段：识别聚合
+   ↓ 哪些事件围绕同一个业务对象
+第五阶段：识别限界上下文
+   ↓ 按语义边界划分上下文
+产出：领域模型、上下文地图、通用语言
+```
+
+### 便利贴颜色约定
+
+| 颜色 | 含义 | 示例 |
+|------|------|------|
+| 🟧 **橙色** | 领域事件（已发生的事实） | "订单已提交"、"支付已完成" |
+| 🟦 **蓝色** | 命令（触发事件的操作） | "提交订单"、"发起支付" |
+| 🟨 **黄色** | 聚合（处理命令的业务对象） | "订单"、"支付单" |
+| 🟪 **紫色** | 业务策略/规则 | "库存不足时自动通知采购" |
+| 🟩 **绿色** | 读模型/查询 | "订单详情页"、"库存报表" |
+| 🟥 **红色** | 痛点/问题 | "退款流程太慢" |
+| 💛 **小黄色** | 角色/用户 | "买家"、"卖家"、"管理员" |
+
+### 代码示例：事件风暴结果建模
+
+```js
+// ========== 事件风暴产出物的结构化表达 ==========
+
+class EventStormingWorkshop {
+  constructor(businessDomain) {
+    this.businessDomain = businessDomain;
+    this.events = [];
+    this.commands = [];
+    this.aggregates = [];
+    this.policies = [];
+    this.hotspots = [];
+    this.boundedContexts = [];
+  }
+
+  // 第一阶段：收集领域事件
+  addEvent(name, description) {
+    this.events.push({ name, description, timestamp: null });
+  }
+
+  // 第二阶段：排序后关联命令和角色
+  addCommand(commandName, actor, triggeredEvent, aggregate) {
+    this.commands.push({ commandName, actor, triggeredEvent, aggregate });
+  }
+
+  // 记录业务策略
+  addPolicy(trigger, action, description) {
+    this.policies.push({ trigger, action, description });
+  }
+
+  // 记录痛点
+  addHotspot(description, severity) {
+    this.hotspots.push({ description, severity });
+  }
+
+  // 第五阶段：划分限界上下文
+  addBoundedContext(name, aggregates, events) {
+    this.boundedContexts.push({ name, aggregates, events });
+  }
+
+  // 输出完整的事件风暴结果
+  printResults() {
+    console.log(`\n=== 事件风暴结果：${this.businessDomain} ===\n`);
+
+    console.log('📋 业务流程（命令 → 事件）:');
+    for (const cmd of this.commands) {
+      console.log(`  👤 ${cmd.actor} → 🟦 ${cmd.commandName} → 🟨 [${cmd.aggregate}] → 🟧 ${cmd.triggeredEvent}`);
+    }
+
+    console.log('\n📜 业务策略:');
+    for (const policy of this.policies) {
+      console.log(`  🟪 当 "${policy.trigger}" 时 → ${policy.action}`);
+      console.log(`     说明: ${policy.description}`);
+    }
+
+    if (this.hotspots.length > 0) {
+      console.log('\n🔥 痛点:');
+      for (const hotspot of this.hotspots) {
+        console.log(`  🟥 [${hotspot.severity}] ${hotspot.description}`);
+      }
+    }
+
+    console.log('\n📦 限界上下文划分:');
+    for (const ctx of this.boundedContexts) {
+      console.log(`  🔲 ${ctx.name}`);
+      console.log(`     聚合: ${ctx.aggregates.join(', ')}`);
+      console.log(`     事件: ${ctx.events.join(', ')}`);
+    }
+  }
+}
+
+// ========== 模拟一次在线购物的事件风暴 ==========
+const workshop = new EventStormingWorkshop('在线购物平台');
+
+// 收集事件和命令
+workshop.addCommand('浏览商品', '买家', '商品已浏览', '商品目录');
+workshop.addCommand('加入购物车', '买家', '商品已加入购物车', '购物车');
+workshop.addCommand('提交订单', '买家', '订单已创建', '订单');
+workshop.addCommand('发起支付', '买家', '支付已完成', '支付单');
+workshop.addCommand('确认发货', '卖家', '商品已发货', '物流单');
+workshop.addCommand('确认收货', '买家', '订单已完成', '订单');
+workshop.addCommand('申请退款', '买家', '退款申请已提交', '退款单');
+workshop.addCommand('审核退款', '客服', '退款已批准', '退款单');
+
+// 业务策略
+workshop.addPolicy(
+  '订单已创建',
+  '自动扣减库存',
+  '订单创建后立即预留库存，30分钟未支付自动释放',
+);
+workshop.addPolicy(
+  '支付已完成',
+  '通知卖家发货',
+  '支付成功后自动通知卖家，并开始计算发货倒计时',
+);
+workshop.addPolicy(
+  '退款已批准',
+  '原路退回支付金额',
+  '退款审核通过后，自动发起退款到原支付渠道',
+);
+
+// 痛点
+workshop.addHotspot('库存预留超时释放后，订单仍可支付，导致超卖', '高');
+workshop.addHotspot('退款流程需要人工审核，平均处理时间 48 小时', '中');
+
+// 上下文划分
+workshop.addBoundedContext('商品目录', ['商品目录', '分类'], ['商品已浏览', '商品已上架', '商品已下架']);
+workshop.addBoundedContext('购物车', ['购物车'], ['商品已加入购物车', '购物车已清空']);
+workshop.addBoundedContext('交易', ['订单', '订单项'], ['订单已创建', '订单已完成', '订单已取消']);
+workshop.addBoundedContext('支付', ['支付单'], ['支付已发起', '支付已完成', '支付已失败']);
+workshop.addBoundedContext('履约', ['物流单'], ['商品已发货', '商品已签收']);
+workshop.addBoundedContext('售后', ['退款单'], ['退款申请已提交', '退款已批准', '退款已拒绝']);
+
+workshop.printResults();
+```
+
+## 🏗️ 领域建模方法
+
+### 从事件风暴到领域模型
+
+事件风暴产出的结果需要进一步精炼为可实现的领域模型。核心步骤：
+
+1. **识别聚合及其边界**
+2. **区分实体和值对象**
+3. **定义聚合的命令和事件**
+4. **设计聚合间的交互方式**
+
+### 代码示例：完整的领域建模过程
+
+```js
+// ========== 从事件风暴到代码的完整建模过程 ==========
+// 以"在线课程购买"为例
+
+// Step 1: 值对象
+class CoursePeriod {
+  constructor(startDate, endDate) {
+    if (new Date(endDate) <= new Date(startDate)) {
+      throw new Error('课程结束日期必须晚于开始日期');
+    }
+    this.startDate = startDate;
+    this.endDate = endDate;
+    Object.freeze(this);
+  }
+
+  isActive() {
+    const now = new Date();
+    return now >= new Date(this.startDate) && now <= new Date(this.endDate);
+  }
+
+  getDurationInDays() {
+    return Math.ceil((new Date(this.endDate) - new Date(this.startDate)) / (1000 * 60 * 60 * 24));
+  }
+}
+
+class LessonProgress {
+  constructor(lessonId, lessonTitle, completedAt) {
+    this.lessonId = lessonId;
+    this.lessonTitle = lessonTitle;
+    this.completedAt = completedAt;
+    Object.freeze(this);
+  }
+}
+
+// Step 2: 聚合 - 课程报名（Enrollment）
+class Enrollment {
+  constructor(enrollmentId, studentId, courseId, courseName, totalLessons) {
+    this.enrollmentId = enrollmentId;
+    this.studentId = studentId;
+    this.courseId = courseId;
+    this.courseName = courseName;
+    this.totalLessons = totalLessons;
+    this.completedLessons = [];
+    this.status = 'active';     // active, completed, dropped
+    this.enrolledAt = new Date().toISOString();
+    this.domainEvents = [];
+  }
+
+  completeLesson(lessonId, lessonTitle) {
+    if (this.status !== 'active') {
+      throw new Error('非活跃状态的课程不能完成课时');
+    }
+
+    const alreadyCompleted = this.completedLessons.some(lp => lp.lessonId === lessonId);
+    if (alreadyCompleted) {
+      return; // 幂等处理
+    }
+
+    const progress = new LessonProgress(lessonId, lessonTitle, new Date().toISOString());
+    this.completedLessons.push(progress);
+
+    this.domainEvents.push({
+      type: 'LessonCompleted',
+      enrollmentId: this.enrollmentId,
+      studentId: this.studentId,
+      lessonId,
+      progressPercentage: this.getProgressPercentage(),
+    });
+
+    // 检查是否完成全部课程
+    if (this.completedLessons.length === this.totalLessons) {
+      this.status = 'completed';
+      this.domainEvents.push({
+        type: 'CourseCompleted',
+        enrollmentId: this.enrollmentId,
+        studentId: this.studentId,
+        courseId: this.courseId,
+        courseName: this.courseName,
+        completedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  drop(reason) {
+    if (this.status !== 'active') {
+      throw new Error(`课程状态为 ${this.status}，无法退课`);
+    }
+    this.status = 'dropped';
+    this.domainEvents.push({
+      type: 'CourseDropped',
+      enrollmentId: this.enrollmentId,
+      studentId: this.studentId,
+      courseId: this.courseId,
+      reason,
+    });
+  }
+
+  getProgressPercentage() {
+    return Math.round((this.completedLessons.length / this.totalLessons) * 100);
+  }
+
+  pullDomainEvents() {
+    const events = [...this.domainEvents];
+    this.domainEvents = [];
+    return events;
+  }
+}
+
+// Step 3: 领域服务 - 报名服务
+class EnrollmentService {
+  constructor(enrollmentRepository, courseInfoProvider) {
+    this.enrollmentRepo = enrollmentRepository;
+    this.courseInfoProvider = courseInfoProvider;
+    this.nextId = 1;
+  }
+
+  enrollStudent(studentId, courseId) {
+    // 检查是否已报名
+    const existing = this.enrollmentRepo.findByStudentAndCourse(studentId, courseId);
+    if (existing && existing.status === 'active') {
+      throw new Error('已报名该课程');
+    }
+
+    // 获取课程信息（通过端口/防腐层）
+    const courseInfo = this.courseInfoProvider.getCourseInfo(courseId);
+    if (!courseInfo) {
+      throw new Error(`课程 ${courseId} 不存在`);
+    }
+
+    const enrollment = new Enrollment(
+      `enrollment-${this.nextId++}`,
+      studentId,
+      courseId,
+      courseInfo.name,
+      courseInfo.totalLessons,
+    );
+
+    this.enrollmentRepo.save(enrollment);
+    return enrollment;
+  }
+
+  recordLessonCompletion(enrollmentId, lessonId, lessonTitle) {
+    const enrollment = this.enrollmentRepo.findById(enrollmentId);
+    if (!enrollment) throw new Error(`报名记录 ${enrollmentId} 不存在`);
+
+    enrollment.completeLesson(lessonId, lessonTitle);
+    this.enrollmentRepo.save(enrollment);
+
+    return {
+      enrollmentId,
+      progress: enrollment.getProgressPercentage(),
+      status: enrollment.status,
+      events: enrollment.pullDomainEvents(),
+    };
+  }
+}
+
+// Step 4: 基础设施实现
+class InMemoryEnrollmentRepository {
+  constructor() { this.store = new Map(); }
+  save(enrollment) { this.store.set(enrollment.enrollmentId, enrollment); }
+  findById(id) { return this.store.get(id) || null; }
+  findByStudentAndCourse(studentId, courseId) {
+    return Array.from(this.store.values())
+      .find(e => e.studentId === studentId && e.courseId === courseId) || null;
+  }
+}
+
+const courseInfoProvider = {
+  getCourseInfo(courseId) {
+    const courses = {
+      'course-js': { name: 'JavaScript 高级编程', totalLessons: 5 },
+      'course-arch': { name: '软件架构设计', totalLessons: 3 },
+    };
+    return courses[courseId] || null;
+  },
+};
+
+// Step 5: 运行
+const enrollmentRepo = new InMemoryEnrollmentRepository();
+const enrollmentService = new EnrollmentService(enrollmentRepo, courseInfoProvider);
+
+const enrollment = enrollmentService.enrollStudent('student-001', 'course-arch');
+console.log('报名成功:', { id: enrollment.enrollmentId, course: enrollment.courseName });
+
+const progress1 = enrollmentService.recordLessonCompletion(enrollment.enrollmentId, 'lesson-1', '架构风格');
+console.log('完成课时 1:', progress1);
+
+const progress2 = enrollmentService.recordLessonCompletion(enrollment.enrollmentId, 'lesson-2', 'DDD');
+console.log('完成课时 2:', progress2);
+
+const progress3 = enrollmentService.recordLessonCompletion(enrollment.enrollmentId, 'lesson-3', '架构评估');
+console.log('完成课时 3（全部完成）:', progress3);
+```
+
+## 🛡️ 防腐层（Anti-Corruption Layer）
+
+### 何时需要防腐层？
+
+防腐层用于**保护自己的领域模型不被外部系统的模型侵蚀**。在以下场景中必须使用：
+
+1. **对接遗留系统**：旧系统的数据模型混乱，不能让它污染新模型
+2. **对接第三方 API**：第三方的数据格式和命名与你的领域语言不一致
+3. **跨限界上下文集成**：不同上下文对同一概念有不同理解
+
+### 防腐层的结构
+
+```
+你的限界上下文
+┌─────────────────────────────────────┐
+│                                     │
+│  领域模型  ←  防腐层  ←  外部接口   │
+│                 │                   │
+│           ┌─────┴─────┐            │
+│           │ Translator │ ← 翻译器   │
+│           │ Adapter    │ ← 适配器   │
+│           │ Facade     │ ← 外观     │
+│           └───────────┘            │
+└─────────────────────────────────────┘
+```
+
+### 代码示例
+
+```js
+// ========== 防腐层实战：对接遗留 CRM 系统 ==========
+
+// 遗留 CRM 系统（无法修改，数据模型混乱）
+class LegacyCrmSystem {
+  getCustomerData(custNo) {
+    // 模拟遗留系统的返回格式（字段命名不规范、格式不统一）
+    return {
+      CUST_NO: custNo,
+      CUST_NM: '张三',
+      CUST_TP: '01',            // 01=个人, 02=企业
+      CUST_LVL: 'A',            // A=VIP, B=普通, C=新客
+      ID_NO: '330100199001011234',
+      MOBILE_NO: '13800138000',
+      REG_DT: '20200315',       // 非标准日期格式
+      LAST_LOGIN: '1714000000', // Unix 时间戳
+      ADDR_INFO: '浙江省|杭州市|西湖区|文三路100号', // 竖线分隔
+      ACCT_BAL: '15000.50',     // 字符串金额
+      CUST_STS: 'N',            // N=正常, F=冻结, D=注销
+    };
+  }
+}
+
+// ========== 我们的领域模型 ==========
+class Customer {
+  constructor(customerId, name, type, level, contact, address, balance, status) {
+    this.customerId = customerId;
+    this.name = name;
+    this.type = type;
+    this.level = level;
+    this.contact = contact;
+    this.address = address;
+    this.balance = balance;
+    this.status = status;
+  }
+
+  isVip() { return this.level === 'vip'; }
+  isActive() { return this.status === 'active'; }
+}
+
+// ========== 防腐层 ==========
+class CrmAntiCorruptionLayer {
+  constructor(legacyCrm) {
+    this.legacyCrm = legacyCrm;
+  }
+
+  // 翻译器：遗留模型 → 领域模型
+  translateCustomerType(legacyType) {
+    const mapping = { '01': 'individual', '02': 'enterprise' };
+    return mapping[legacyType] || 'unknown';
+  }
+
+  translateCustomerLevel(legacyLevel) {
+    const mapping = { 'A': 'vip', 'B': 'regular', 'C': 'new' };
+    return mapping[legacyLevel] || 'unknown';
+  }
+
+  translateStatus(legacyStatus) {
+    const mapping = { 'N': 'active', 'F': 'frozen', 'D': 'deactivated' };
+    return mapping[legacyStatus] || 'unknown';
+  }
+
+  parseDate(legacyDate) {
+    if (!legacyDate) return null;
+    // 处理 YYYYMMDD 格式
+    if (legacyDate.length === 8) {
+      return `${legacyDate.slice(0, 4)}-${legacyDate.slice(4, 6)}-${legacyDate.slice(6, 8)}`;
+    }
+    // 处理 Unix 时间戳
+    if (/^\d{10}$/.test(legacyDate)) {
+      return new Date(parseInt(legacyDate) * 1000).toISOString().split('T')[0];
+    }
+    return legacyDate;
+  }
+
+  parseAddress(legacyAddr) {
+    if (!legacyAddr) return null;
+    const parts = legacyAddr.split('|');
+    return {
+      province: parts[0] || '',
+      city: parts[1] || '',
+      district: parts[2] || '',
+      street: parts[3] || '',
+    };
+  }
+
+  // 对外接口：返回干净的领域对象
+  getCustomer(customerId) {
+    const raw = this.legacyCrm.getCustomerData(customerId);
+    if (!raw) return null;
+
+    return new Customer(
+      raw.CUST_NO,
+      raw.CUST_NM,
+      this.translateCustomerType(raw.CUST_TP),
+      this.translateCustomerLevel(raw.CUST_LVL),
+      { phone: raw.MOBILE_NO, idNumber: raw.ID_NO },
+      this.parseAddress(raw.ADDR_INFO),
+      parseFloat(raw.ACCT_BAL),
+      this.translateStatus(raw.CUST_STS),
+    );
+  }
+}
+
+// ========== 领域服务使用防腐层 ==========
+class CustomerService {
+  constructor(customerAcl) {
+    this.customerAcl = customerAcl;
+  }
+
+  getCustomerProfile(customerId) {
+    const customer = this.customerAcl.getCustomer(customerId);
+    if (!customer) throw new Error(`客户 ${customerId} 不存在`);
+
+    // 领域逻辑只与干净的领域模型打交道
+    return {
+      customerId: customer.customerId,
+      name: customer.name,
+      type: customer.type,
+      isVip: customer.isVip(),
+      isActive: customer.isActive(),
+      balance: `¥${customer.balance.toFixed(2)}`,
+      address: customer.address,
+    };
+  }
+}
+
+// 运行
+const legacyCrm = new LegacyCrmSystem();
+const customerAcl = new CrmAntiCorruptionLayer(legacyCrm);
+const customerService = new CustomerService(customerAcl);
+
+const profile = customerService.getCustomerProfile('CUST-001');
+console.log('客户画像:', JSON.stringify(profile, null, 2));
+```
+
+## 📡 上下文间通信策略
+
+### 通信方式选择
+
+不同的限界上下文之间需要交互，选择合适的通信策略至关重要：
+
+| 通信方式 | 同步/异步 | 耦合度 | 适用场景 |
+|---------|----------|--------|---------|
+| **同步 API 调用** | 同步 | 中 | 需要立即获取结果的查询 |
+| **领域事件** | 异步 | 低 | 通知性操作、最终一致性场景 |
+| **共享数据库** | 同步 | 高 | ⚠️ 尽量避免 |
+| **消息队列** | 异步 | 低 | 可靠的异步通信 |
+
+### 代码示例：上下文间通信实战
+
+```js
+// ========== 上下文间通信：订单 → 库存 → 通知 ==========
+
+// 方式 1：同步 API 调用（查询场景）
+class InventoryContextApi {
+  constructor() {
+    this.stock = new Map([
+      ['sku-001', { productName: '机械键盘', available: 50 }],
+      ['sku-002', { productName: '显示器', available: 10 }],
+    ]);
+  }
+
+  // 同步查询：订单上下文在下单前查询库存
+  checkAvailability(skuId, quantity) {
+    const item = this.stock.get(skuId);
+    if (!item) return { available: false, reason: '商品不存在' };
+    if (item.available < quantity) return { available: false, reason: `库存不足，剩余 ${item.available}` };
+    return { available: true, currentStock: item.available };
+  }
+
+  // 同步命令：预留库存
+  reserveStock(skuId, quantity, orderId) {
+    const item = this.stock.get(skuId);
+    if (!item || item.available < quantity) {
+      throw new Error('库存不足');
+    }
+    item.available -= quantity;
+    console.log(`[库存上下文] 为订单 ${orderId} 预留 ${skuId} x ${quantity}`);
+    return { reserved: true, remainingStock: item.available };
+  }
+}
+
+// 方式 2：异步领域事件（通知场景）
+class CrossContextEventBus {
+  constructor() {
+    this.subscriptions = new Map();
+    this.deadLetterQueue = [];
+  }
+
+  subscribe(sourceContext, eventType, targetContext, handler) {
+    const key = `${sourceContext}:${eventType}`;
+    if (!this.subscriptions.has(key)) {
+      this.subscriptions.set(key, []);
+    }
+    this.subscriptions.get(key).push({ targetContext, handler });
+    console.log(`[事件总线] ${targetContext} 订阅了 ${sourceContext} 的 ${eventType} 事件`);
+  }
+
+  publish(sourceContext, eventType, payload) {
+    const key = `${sourceContext}:${eventType}`;
+    const subscribers = this.subscriptions.get(key) || [];
+
+    console.log(`\n[事件总线] ${sourceContext} 发布 ${eventType}`);
+
+    for (const { targetContext, handler } of subscribers) {
+      try {
+        handler(payload);
+        console.log(`  ✅ ${targetContext} 处理成功`);
+      } catch (error) {
+        console.log(`  ❌ ${targetContext} 处理失败: ${error.message}`);
+        this.deadLetterQueue.push({ sourceContext, eventType, targetContext, payload, error: error.message });
+      }
+    }
+  }
+}
+
+// ========== 各上下文的事件处理器 ==========
+
+// 订单上下文
+class OrderContext {
+  constructor(inventoryApi, eventBus) {
+    this.inventoryApi = inventoryApi;
+    this.eventBus = eventBus;
+  }
+
+  submitOrder(orderId, buyerId, items) {
+    // 同步调用：先检查库存
+    for (const item of items) {
+      const check = this.inventoryApi.checkAvailability(item.skuId, item.quantity);
+      if (!check.available) {
+        throw new Error(`下单失败: ${item.skuId} - ${check.reason}`);
+      }
+    }
+
+    // 同步调用：预留库存
+    for (const item of items) {
+      this.inventoryApi.reserveStock(item.skuId, item.quantity, orderId);
+    }
+
+    // 异步事件：通知其他上下文
+    const totalAmount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    this.eventBus.publish('订单上下文', 'OrderSubmitted', {
+      orderId,
+      buyerId,
+      items,
+      totalAmount,
+      submittedAt: new Date().toISOString(),
+    });
+
+    return { orderId, status: 'submitted', totalAmount };
+  }
+}
+
+// 通知上下文：异步消费事件
+class NotificationContext {
+  constructor(eventBus) {
+    eventBus.subscribe('订单上下文', 'OrderSubmitted', '通知上下文', (payload) => {
+      this.onOrderSubmitted(payload);
+    });
+
+    eventBus.subscribe('订单上下文', 'OrderCancelled', '通知上下文', (payload) => {
+      this.onOrderCancelled(payload);
+    });
+  }
+
+  onOrderSubmitted(payload) {
+    console.log(`    [通知] 向买家 ${payload.buyerId} 发送下单成功通知`);
+    console.log(`    [通知] 订单 ${payload.orderId}，金额 ¥${payload.totalAmount}`);
+  }
+
+  onOrderCancelled(payload) {
+    console.log(`    [通知] 向买家 ${payload.buyerId} 发送取消通知`);
+  }
+}
+
+// 分析上下文：异步消费事件做数据统计
+class AnalyticsContext {
+  constructor(eventBus) {
+    this.orderCount = 0;
+    this.totalRevenue = 0;
+
+    eventBus.subscribe('订单上下文', 'OrderSubmitted', '分析上下文', (payload) => {
+      this.onOrderSubmitted(payload);
+    });
+  }
+
+  onOrderSubmitted(payload) {
+    this.orderCount++;
+    this.totalRevenue += payload.totalAmount;
+    console.log(`    [分析] 累计订单: ${this.orderCount}，累计金额: ¥${this.totalRevenue}`);
+  }
+}
+
+// ========== 组装与运行 ==========
+const eventBus = new CrossContextEventBus();
+const inventoryApi = new InventoryContextApi();
+const orderContext = new OrderContext(inventoryApi, eventBus);
+new NotificationContext(eventBus);
+new AnalyticsContext(eventBus);
+
+const result = orderContext.submitOrder('order-001', 'buyer-001', [
+  { skuId: 'sku-001', name: '机械键盘', price: 599, quantity: 2 },
+  { skuId: 'sku-002', name: '显示器', price: 2499, quantity: 1 },
+]);
+console.log('\n订单结果:', result);
+```
+
+### 通信策略决策指南
+
+```
+需要立即拿到结果？
+  ├── 是 → 同步 API 调用
+  │         ├── 对方是核心服务？→ 直接调用 + 熔断
+  │         └── 对方是外部系统？→ 通过防腐层调用
+  └── 否 → 异步事件
+            ├── 需要可靠投递？→ 消息队列（Kafka/RocketMQ）
+            └── 不需要可靠投递？→ 内存事件总线
+```
+
+## 📊 DDD 落地检查清单
+
+### 团队层面
+- [ ] 建立了通用语言词汇表，团队成员日常使用
+- [ ] 代码中的命名与通用语言一致
+- [ ] 定期进行事件风暴或领域建模工作坊
+
+### 代码层面
+- [ ] 领域模型是充血模型，业务规则在实体/值对象中
+- [ ] 聚合边界清晰，外部通过聚合根访问
+- [ ] 仓储只为聚合根创建
+- [ ] 领域事件用于聚合间通信
+- [ ] 防腐层隔离了外部系统
+
+### 架构层面
+- [ ] 限界上下文边界与代码模块/服务边界一致
+- [ ] 上下文间通信策略明确（同步 vs 异步）
+- [ ] 子域分类指导了资源分配
+
+## 🔗 相关概念
+
+- **[DDD 战略设计](/architect/02-architecture-fundamentals/02-domain-driven-design/02-strategic-design)**：事件风暴帮助发现限界上下文
+- **[DDD 战术设计](/architect/02-architecture-fundamentals/02-domain-driven-design/03-tactical-design)**：事件风暴的产出落地为代码中的实体、聚合、事件
+- **[事件驱动架构](/architect/02-architecture-fundamentals/01-architecture-styles/03-distributed-architecture)**：上下文间通信经常使用事件驱动模式
+
+## ✅ 学习检查点
+
+- [ ] 能够组织和实施一场事件风暴工作坊
+- [ ] 能够将事件风暴的产出转化为领域模型代码
+- [ ] 能够设计防腐层来隔离遗留系统
+- [ ] 能够根据业务场景选择合适的上下文间通信策略
+- [ ] 理解 DDD 落地的关键检查点
+
+## 🚀 下一步
+
+→ [架构评估与决策](/architect/02-architecture-fundamentals/03-architecture-evaluation/01-architecture-evaluation-overview)

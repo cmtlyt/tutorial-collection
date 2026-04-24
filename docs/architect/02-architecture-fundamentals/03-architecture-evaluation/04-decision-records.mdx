@@ -14,4 +14,682 @@
 - 建立技术选型的评估框架
 - 了解如何管理和维护 ADR 库
 
-> 🚧 详细内容正在编写中...
+## 📝 ADR（Architecture Decision Records）
+
+### 什么是 ADR？
+
+ADR 是一种轻量级的文档格式，用于**记录重要的架构决策**。每个 ADR 记录一个决策，包括上下文、决策内容、理由和后果。ADR 最早由 Michael Nygard 在 2011 年提出。
+
+### 为什么需要 ADR？
+
+| 问题 | 没有 ADR | 有 ADR |
+|------|---------|--------|
+| "为什么用 Kafka 不用 RabbitMQ？" | 没人记得当时怎么决定的 | ADR-007 详细记录了选型理由 |
+| 新架构师入职 | 需要几个月才能理解历史决策 | 阅读 ADR 库快速了解架构演变 |
+| 要不要替换某个组件？ | 缺乏当时的约束信息，盲目决策 | 回顾原始 ADR，评估约束是否已变化 |
+| 同样的争论反复出现 | 每次重新讨论一遍 | 指向已有 ADR，终结争论 |
+
+### ADR 的标准格式
+
+```
+# ADR-{编号}: {决策标题}
+
+## 状态
+{提议 | 已接受 | 已弃用 | 已取代}（被 ADR-XXX 取代）
+
+## 日期
+{决策日期}
+
+## 背景
+{描述驱动这个决策的业务/技术背景、问题和约束条件}
+
+## 决策
+{我们决定采用什么方案，具体怎么做}
+
+## 理由
+{为什么选择这个方案而非其他方案}
+
+## 后果
+{这个决策会带来的正面和负面影响}
+
+## 备选方案
+{列举考虑过但未采纳的方案及原因}
+```
+
+### ADR 状态生命周期
+
+```
+提议（Proposed）
+  ↓ 团队讨论通过
+已接受（Accepted）
+  ↓ 环境/需求变化
+已弃用（Deprecated）或 被取代（Superseded by ADR-XXX）
+```
+
+### 代码示例：ADR 管理工具
+
+```js
+// ========== ADR 管理工具 ==========
+
+class AdrRecord {
+  constructor(id, title, context, decision, rationale, consequences, alternatives) {
+    this.id = id;
+    this.title = title;
+    this.status = 'proposed';
+    this.date = new Date().toISOString().split('T')[0];
+    this.context = context;
+    this.decision = decision;
+    this.rationale = rationale;
+    this.consequences = consequences;  // { positive: [], negative: [] }
+    this.alternatives = alternatives;  // [{ name, reason }]
+    this.supersededBy = null;
+  }
+
+  accept() {
+    this.status = 'accepted';
+    this.date = new Date().toISOString().split('T')[0];
+  }
+
+  deprecate(reason) {
+    this.status = 'deprecated';
+    this.deprecatedReason = reason;
+  }
+
+  supersede(newAdrId) {
+    this.status = 'superseded';
+    this.supersededBy = newAdrId;
+  }
+
+  toMarkdown() {
+    let statusText = this.status;
+    if (this.supersededBy) statusText += `（被 ADR-${this.supersededBy} 取代）`;
+
+    let markdown = '';
+    markdown += `# ADR-${this.id}: ${this.title}\n\n`;
+    markdown += `## 状态\n${statusText}\n\n`;
+    markdown += `## 日期\n${this.date}\n\n`;
+    markdown += `## 背景\n${this.context}\n\n`;
+    markdown += `## 决策\n${this.decision}\n\n`;
+    markdown += `## 理由\n${this.rationale}\n\n`;
+    markdown += `## 后果\n`;
+    markdown += `### 正面\n`;
+    for (const item of this.consequences.positive) {
+      markdown += `- ${item}\n`;
+    }
+    markdown += `\n### 负面\n`;
+    for (const item of this.consequences.negative) {
+      markdown += `- ${item}\n`;
+    }
+    markdown += `\n## 备选方案\n`;
+    for (const alt of this.alternatives) {
+      markdown += `- **${alt.name}**: ${alt.reason}\n`;
+    }
+    return markdown;
+  }
+}
+
+class AdrRepository {
+  constructor(projectName) {
+    this.projectName = projectName;
+    this.records = new Map();
+    this.nextId = 1;
+  }
+
+  create(title, context, decision, rationale, consequences, alternatives) {
+    const id = String(this.nextId++).padStart(3, '0');
+    const adr = new AdrRecord(id, title, context, decision, rationale, consequences, alternatives);
+    this.records.set(id, adr);
+    return adr;
+  }
+
+  accept(id) {
+    const adr = this.records.get(id);
+    if (!adr) throw new Error(`ADR-${id} 不存在`);
+    adr.accept();
+    return adr;
+  }
+
+  supersede(oldId, newTitle, newContext, newDecision, newRationale, newConsequences, newAlternatives) {
+    const oldAdr = this.records.get(oldId);
+    if (!oldAdr) throw new Error(`ADR-${oldId} 不存在`);
+
+    const newAdr = this.create(newTitle, newContext, newDecision, newRationale, newConsequences, newAlternatives);
+    newAdr.accept();
+    oldAdr.supersede(newAdr.id);
+    return { oldAdr, newAdr };
+  }
+
+  // 查询所有有效的决策
+  getActiveDecisions() {
+    return Array.from(this.records.values()).filter(adr => adr.status === 'accepted');
+  }
+
+  // 生成 ADR 索引
+  printIndex() {
+    console.log(`\n=== ${this.projectName} ADR 索引 ===\n`);
+    const statusIcons = {
+      proposed: '📋',
+      accepted: '✅',
+      deprecated: '⚠️',
+      superseded: '🔄',
+    };
+
+    for (const adr of this.records.values()) {
+      const icon = statusIcons[adr.status];
+      let line = `${icon} ADR-${adr.id}: ${adr.title} [${adr.status}]`;
+      if (adr.supersededBy) line += ` → ADR-${adr.supersededBy}`;
+      console.log(line);
+    }
+  }
+
+  // 打印完整 ADR
+  printAdr(id) {
+    const adr = this.records.get(id);
+    if (!adr) throw new Error(`ADR-${id} 不存在`);
+    console.log(adr.toMarkdown());
+  }
+}
+
+// ========== 实际案例 ==========
+const adrRepo = new AdrRepository('电商平台');
+
+// ADR-001: 选择消息队列
+const adr001 = adrRepo.create(
+  '选择 Apache Kafka 作为消息队列',
+  '系统需要在订单、支付、库存等微服务之间进行异步通信。日均消息量预计 500 万条，峰值 QPS 约 5000。需要支持消息持久化和消费回溯。',
+  '选择 Apache Kafka 作为系统的消息队列中间件，所有微服务间的异步事件通过 Kafka Topic 传递。',
+  '1. Kafka 的分区设计天然支持高吞吐量水平扩展\n2. 消息持久化到磁盘，支持消费回溯和事件溯源\n3. 团队有 Kafka 运维经验\n4. 社区生态成熟，与 Flink、Spark 等大数据组件集成良好',
+  {
+    positive: [
+      '高吞吐量，满足日均 500 万消息的处理需求',
+      '消息可回溯，支持事件溯源和数据重放',
+      '生态丰富，后续可扩展到流计算场景',
+    ],
+    negative: [
+      '运维复杂度较高，需要维护 ZooKeeper/KRaft 集群',
+      '消息延迟略高于 RabbitMQ（毫秒级 vs 微秒级）',
+      '不适合复杂路由场景，需要额外实现',
+    ],
+  },
+  [
+    { name: 'RabbitMQ', reason: '延迟更低，支持复杂路由，但吞吐量有限，不支持消费回溯' },
+    { name: 'RocketMQ', reason: '阿里系生态，支持事务消息，但团队无运维经验，社区较小' },
+    { name: 'Pulsar', reason: '架构先进，存算分离，但社区生态不够成熟，生产案例较少' },
+  ],
+);
+adrRepo.accept('001');
+
+// ADR-002: 数据库选型
+const adr002 = adrRepo.create(
+  '选择 MySQL 8.0 作为主数据库',
+  '系统需要关系型数据库存储订单、用户、商品等核心业务数据。预计数据量 3 年内达到亿级。需要支持事务和复杂查询。',
+  '选择 MySQL 8.0 作为主数据库，采用主从架构，读写分离。当单表数据量超过 5000 万时进行分库分表。',
+  '1. MySQL 8.0 性能显著提升（窗口函数、CTE、JSON 支持）\n2. 团队深度使用 MySQL 多年\n3. 云平台（阿里云 RDS）提供完善的托管和运维支持\n4. 分库分表方案成熟（ShardingSphere）',
+  {
+    positive: [
+      '团队熟悉，学习成本为零',
+      '云平台托管，运维成本低',
+      '成熟的分库分表方案可应对数据增长',
+    ],
+    negative: [
+      '单机性能有上限，超大规模需要分库分表',
+      '分库分表后跨库查询和事务变复杂',
+    ],
+  },
+  [
+    { name: 'PostgreSQL', reason: '功能更强大（JSONB、全文搜索），但团队不熟悉，迁移成本高' },
+    { name: 'TiDB', reason: '分布式 SQL 免分库分表，但运维复杂度高，成本高' },
+  ],
+);
+adrRepo.accept('002');
+
+// ADR-003: 最初选择 Session 认证，后来被 JWT 取代
+const adr003 = adrRepo.create(
+  '使用 Session 进行用户认证',
+  '系统需要用户认证方案。初期为单体架构，只有一个服务需要认证。',
+  '使用 Server-Side Session，将会话数据存储在 Redis 中。',
+  '1. 实现简单\n2. 服务端可随时吊销会话\n3. 符合当前单体架构',
+  {
+    positive: ['实现简单直观', '可随时吊销', '安全性高'],
+    negative: ['不适合微服务架构', '需要共享 Session 存储'],
+  },
+  [{ name: 'JWT', reason: '无状态认证，适合分布式，但当前架构不需要' }],
+);
+adrRepo.accept('003');
+
+// 架构演进：从 Session 切换到 JWT
+adrRepo.supersede(
+  '003',
+  '切换到 JWT 进行用户认证',
+  '系统已从单体演进为微服务架构，多个服务需要独立验证用户身份。共享 Session 的方案在微服务下带来了强耦合和性能瓶颈。',
+  '使用 JWT（JSON Web Token）作为无状态认证方案。Access Token 有效期 15 分钟，Refresh Token 有效期 7 天，存储在 HttpOnly Cookie 中。',
+  '1. 无状态认证，适合微服务架构\n2. 各服务可独立验证 Token，不依赖中心化存储\n3. 减少 Redis 的依赖和网络开销',
+  {
+    positive: [
+      '无状态，适合微服务独立验证',
+      '降低 Redis 依赖',
+      '支持跨域认证',
+    ],
+    negative: [
+      'Token 签发后无法立即吊销（需要黑名单机制）',
+      'Token 体积比 Session ID 大',
+      '密钥管理增加复杂度',
+    ],
+  },
+  [
+    { name: '继续使用 Session', reason: '需要所有服务共享 Redis Session，引入强耦合' },
+    { name: 'OAuth 2.0 + 授权服务器', reason: '完整方案过重，当前场景不需要第三方授权' },
+  ],
+);
+
+// 输出
+adrRepo.printIndex();
+console.log('\n--- ADR-001 详细内容 ---');
+adrRepo.printAdr('001');
+```
+
+## ⚖️ 权衡分析方法
+
+### 权衡矩阵（Trade-off Matrix）
+
+权衡矩阵是一种系统化的决策工具，通过**量化评分**来比较多个备选方案。
+
+### 代码示例：权衡分析工具
+
+```js
+// ========== 权衡分析矩阵 ==========
+
+class TradeoffMatrix {
+  constructor(decisionTitle) {
+    this.decisionTitle = decisionTitle;
+    this.criteria = [];     // 评估维度
+    this.candidates = [];   // 候选方案
+    this.scores = {};       // 评分数据
+  }
+
+  // 添加评估维度和权重
+  addCriterion(name, weight, description) {
+    if (weight < 0 || weight > 1) throw new Error('权重必须在 0-1 之间');
+    this.criteria.push({ name, weight, description });
+  }
+
+  // 添加候选方案
+  addCandidate(name, description) {
+    this.candidates.push({ name, description });
+    this.scores[name] = {};
+  }
+
+  // 为候选方案的某个维度打分（1-5 分）
+  score(candidateName, criterionName, score, justification) {
+    if (score < 1 || score > 5) throw new Error('评分必须在 1-5 之间');
+    this.scores[candidateName][criterionName] = { score, justification };
+  }
+
+  // 计算加权总分
+  calculateWeightedScores() {
+    const results = [];
+
+    for (const candidate of this.candidates) {
+      let totalWeightedScore = 0;
+      const details = [];
+
+      for (const criterion of this.criteria) {
+        const scoreData = this.scores[candidate.name][criterion.name];
+        if (!scoreData) {
+          throw new Error(`缺少 ${candidate.name} 在 ${criterion.name} 维度的评分`);
+        }
+        const weightedScore = scoreData.score * criterion.weight;
+        totalWeightedScore += weightedScore;
+        details.push({
+          criterion: criterion.name,
+          weight: criterion.weight,
+          rawScore: scoreData.score,
+          weightedScore: Math.round(weightedScore * 100) / 100,
+          justification: scoreData.justification,
+        });
+      }
+
+      results.push({
+        candidate: candidate.name,
+        description: candidate.description,
+        totalScore: Math.round(totalWeightedScore * 100) / 100,
+        details,
+      });
+    }
+
+    return results.sort((a, b) => b.totalScore - a.totalScore);
+  }
+
+  // 生成报告
+  generateReport() {
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`⚖️ 权衡分析: ${this.decisionTitle}`);
+    console.log(`${'='.repeat(60)}`);
+
+    // 评估维度
+    console.log('\n📐 评估维度:');
+    const totalWeight = this.criteria.reduce((sum, c) => sum + c.weight, 0);
+    for (const criterion of this.criteria) {
+      const percentage = ((criterion.weight / totalWeight) * 100).toFixed(0);
+      console.log(`  - ${criterion.name} (权重: ${percentage}%): ${criterion.description}`);
+    }
+
+    // 评分结果
+    const results = this.calculateWeightedScores();
+    console.log('\n📊 评分结果（从高到低）:\n');
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉';
+      console.log(`${medal} ${result.candidate} — 总分: ${result.totalScore}`);
+      console.log(`   ${result.description}`);
+      for (const detail of result.details) {
+        const bar = '█'.repeat(detail.rawScore) + '░'.repeat(5 - detail.rawScore);
+        console.log(`   ${detail.criterion}: ${bar} ${detail.rawScore}/5 (加权: ${detail.weightedScore}) — ${detail.justification}`);
+      }
+      console.log();
+    }
+
+    // 推荐
+    const winner = results[0];
+    const runnerUp = results[1];
+    const scoreDiff = winner.totalScore - (runnerUp ? runnerUp.totalScore : 0);
+    console.log(`${'='.repeat(60)}`);
+    console.log(`📌 推荐方案: ${winner.candidate} (总分 ${winner.totalScore})`);
+    if (runnerUp && scoreDiff < 0.5) {
+      console.log(`⚠️ 注意: 与第二名 ${runnerUp.candidate} 差距仅 ${scoreDiff.toFixed(2)}，建议进一步论证`);
+    }
+    console.log(`${'='.repeat(60)}`);
+
+    return results;
+  }
+}
+
+// ========== 实际案例：缓存方案选型 ==========
+const matrix = new TradeoffMatrix('分布式缓存方案选型');
+
+// 定义评估维度和权重
+matrix.addCriterion('性能', 0.25, '读写延迟、吞吐量');
+matrix.addCriterion('可用性', 0.20, '集群高可用、故障恢复');
+matrix.addCriterion('功能丰富度', 0.20, '数据结构、过期策略、Lua 脚本等');
+matrix.addCriterion('团队熟悉度', 0.15, '团队现有经验和学习成本');
+matrix.addCriterion('运维成本', 0.10, '部署、监控、升级难度');
+matrix.addCriterion('社区生态', 0.10, '文档、社区支持、第三方工具');
+
+// 候选方案
+matrix.addCandidate('Redis Cluster', '开源分布式缓存，支持丰富数据结构');
+matrix.addCandidate('Memcached', '高性能分布式内存缓存，协议简单');
+matrix.addCandidate('Tair', '阿里自研分布式缓存，兼容 Redis 协议');
+
+// 打分
+matrix.score('Redis Cluster', '性能', 4, '单线程模型 + IO 多路复用，QPS 10 万+');
+matrix.score('Redis Cluster', '可用性', 4, '原生集群模式，自动故障转移');
+matrix.score('Redis Cluster', '功能丰富度', 5, 'String/Hash/List/Set/ZSet/Stream/Lua');
+matrix.score('Redis Cluster', '团队熟悉度', 5, '团队使用 Redis 3 年+');
+matrix.score('Redis Cluster', '运维成本', 3, '集群运维有一定复杂度');
+matrix.score('Redis Cluster', '社区生态', 5, '最大的缓存社区，工具齐全');
+
+matrix.score('Memcached', '性能', 5, '多线程模型，纯内存操作，延迟极低');
+matrix.score('Memcached', '可用性', 2, '无原生集群，客户端分片，故障需手动处理');
+matrix.score('Memcached', '功能丰富度', 2, '仅支持简单 KV，无复杂数据结构');
+matrix.score('Memcached', '团队熟悉度', 2, '团队缺乏 Memcached 经验');
+matrix.score('Memcached', '运维成本', 4, '架构简单，运维轻量');
+matrix.score('Memcached', '社区生态', 3, '成熟但活跃度下降');
+
+matrix.score('Tair', '性能', 5, '多线程 + 持久化内存，性能优秀');
+matrix.score('Tair', '可用性', 5, '云原生高可用，自动故障转移');
+matrix.score('Tair', '功能丰富度', 4, '兼容 Redis 协议 + 额外扩展');
+matrix.score('Tair', '团队熟悉度', 3, '兼容 Redis 协议，学习成本适中');
+matrix.score('Tair', '运维成本', 5, '全托管服务，运维成本极低');
+matrix.score('Tair', '社区生态', 3, '阿里生态，但开源社区较小');
+
+matrix.generateReport();
+```
+
+## 🧭 技术选型方法论
+
+### 选型流程
+
+```
+1. 明确需求和约束条件
+    ↓
+2. 调研候选方案（至少 3 个）
+    ↓
+3. 定义评估维度和权重
+    ↓
+4. PoC 验证（关键方案需要原型验证）
+    ↓
+5. 权衡分析和评分
+    ↓
+6. 团队评审和决策
+    ↓
+7. 记录 ADR
+```
+
+### 代码示例：技术选型清单
+
+```js
+// ========== 技术选型清单 ==========
+
+class TechSelectionChecklist {
+  constructor(topic) {
+    this.topic = topic;
+    this.requirements = [];
+    this.constraints = [];
+    this.evaluationDimensions = [];
+    this.pocPlan = null;
+  }
+
+  // 第 1 步：明确需求
+  addRequirement(category, description, priority) {
+    this.requirements.push({ category, description, priority });
+  }
+
+  // 第 1 步：明确约束
+  addConstraint(description) {
+    this.constraints.push(description);
+  }
+
+  // 第 3 步：定义评估维度
+  addEvaluationDimension(name, questions) {
+    this.evaluationDimensions.push({ name, questions });
+  }
+
+  // 第 4 步：定义 PoC 计划
+  setPocPlan(duration, scope, successCriteria) {
+    this.pocPlan = { duration, scope, successCriteria };
+  }
+
+  printChecklist() {
+    console.log(`\n${'='.repeat(50)}`);
+    console.log(`🧭 技术选型清单: ${this.topic}`);
+    console.log(`${'='.repeat(50)}`);
+
+    console.log('\n📋 需求:');
+    const priorityIcon = { must: '🔴', should: '🟡', nice: '🟢' };
+    for (const req of this.requirements) {
+      console.log(`  ${priorityIcon[req.priority]} [${req.category}] ${req.description}`);
+    }
+
+    console.log('\n🔒 约束条件:');
+    for (const constraint of this.constraints) {
+      console.log(`  ⚠️ ${constraint}`);
+    }
+
+    console.log('\n📐 评估维度:');
+    for (const dim of this.evaluationDimensions) {
+      console.log(`  📌 ${dim.name}`);
+      for (const question of dim.questions) {
+        console.log(`     ❓ ${question}`);
+      }
+    }
+
+    if (this.pocPlan) {
+      console.log('\n🧪 PoC 计划:');
+      console.log(`  时长: ${this.pocPlan.duration}`);
+      console.log(`  范围: ${this.pocPlan.scope}`);
+      console.log('  成功标准:');
+      for (const criterion of this.pocPlan.successCriteria) {
+        console.log(`    ✅ ${criterion}`);
+      }
+    }
+  }
+}
+
+// ========== 实际案例：API 网关选型 ==========
+const checklist = new TechSelectionChecklist('API 网关');
+
+// 需求
+checklist.addRequirement('功能', '支持动态路由和负载均衡', 'must');
+checklist.addRequirement('功能', '支持 JWT 认证和限流', 'must');
+checklist.addRequirement('功能', '支持请求/响应转换', 'should');
+checklist.addRequirement('性能', '能承受 5 万 QPS，P99 延迟增加不超过 5ms', 'must');
+checklist.addRequirement('运维', '支持动态配置，无需重启', 'must');
+checklist.addRequirement('可观测', '内置 Prometheus 指标和链路追踪', 'should');
+checklist.addRequirement('扩展性', '支持自定义插件', 'nice');
+
+// 约束
+checklist.addConstraint('团队技术栈以 Java 和 Go 为主');
+checklist.addConstraint('预算有限，优先考虑开源方案');
+checklist.addConstraint('需要在 2 周内完成选型和 PoC');
+checklist.addConstraint('需要支持 gRPC 和 HTTP 协议');
+
+// 评估维度
+checklist.addEvaluationDimension('性能', [
+  '在 5 万 QPS 下延迟是多少？',
+  '网关层增加的延迟开销？',
+  '内存和 CPU 资源消耗？',
+]);
+checklist.addEvaluationDimension('功能完整性', [
+  '是否内置认证、限流、熔断？',
+  '路由规则的灵活性如何？',
+  '是否支持 WebSocket 和 gRPC？',
+]);
+checklist.addEvaluationDimension('可运维性', [
+  '是否支持 Admin API 动态配置？',
+  '是否有管理界面？',
+  '升级和回滚是否方便？',
+]);
+checklist.addEvaluationDimension('社区与生态', [
+  '社区活跃度如何？GitHub Star 和 Contributor 数量？',
+  '是否有商业支持？',
+  '文档质量如何？',
+]);
+
+// PoC 计划
+checklist.setPocPlan('5 个工作日', '搭建测试环境，接入 3 个核心服务进行压测', [
+  '5 万 QPS 下 P99 延迟增加不超过 5ms',
+  '支持按用户 ID 限流',
+  '支持 JWT Token 验证',
+  '配置变更无需重启',
+]);
+
+checklist.printChecklist();
+```
+
+## 📚 ADR 管理最佳实践
+
+### 1. ADR 存放位置
+
+```
+项目根目录/
+├── docs/
+│   └── adr/
+│       ├── 001-choose-kafka-as-message-queue.md
+│       ├── 002-choose-mysql-as-primary-database.md
+│       ├── 003-use-session-authentication.md
+│       ├── 004-switch-to-jwt-authentication.md
+│       └── index.md         ← ADR 索引页
+```
+
+### 2. 命名规范
+
+- 文件名格式：`{编号}-{简短描述}.md`
+- 编号连续递增，不重用
+- 描述使用 kebab-case
+
+### 3. 什么决策需要记录 ADR？
+
+| 需要记录 | 不需要记录 |
+|---------|-----------|
+| 技术栈选型（语言、框架、中间件） | 变量命名、代码风格 |
+| 架构风格选择（单体/微服务） | 具体的 UI 布局调整 |
+| 数据存储方案（数据库、缓存） | 日常 Bug 修复 |
+| 认证授权方案 | 小型重构 |
+| 通信协议选择（REST/gRPC） | 性能微调 |
+| 部署策略变更 | 依赖版本升级 |
+
+### 4. ADR 评审流程
+
+```js
+// ADR 评审流程示例
+
+const adrReviewProcess = {
+  steps: [
+    {
+      step: 1,
+      name: '起草',
+      responsible: '提案人（架构师/Tech Lead）',
+      action: '撰写 ADR 草案，状态设为 "Proposed"',
+      duration: '1-2 天',
+    },
+    {
+      step: 2,
+      name: '评审',
+      responsible: '架构委员会 / 相关技术负责人',
+      action: '组织评审会，讨论方案、风险和替代方案',
+      duration: '1 次会议（1-2 小时）',
+    },
+    {
+      step: 3,
+      name: '修订',
+      responsible: '提案人',
+      action: '根据评审意见修订 ADR，补充遗漏信息',
+      duration: '1 天',
+    },
+    {
+      step: 4,
+      name: '批准',
+      responsible: '架构委员会',
+      action: '确认修订内容，状态更新为 "Accepted"',
+      duration: '异步审批',
+    },
+    {
+      step: 5,
+      name: '通知',
+      responsible: '提案人',
+      action: '将决策通知到所有相关团队',
+      duration: '当天',
+    },
+  ],
+
+  print() {
+    console.log('\n=== ADR 评审流程 ===\n');
+    for (const step of this.steps) {
+      console.log(`Step ${step.step}: ${step.name} (${step.duration})`);
+      console.log(`  负责人: ${step.responsible}`);
+      console.log(`  动作: ${step.action}\n`);
+    }
+  },
+};
+
+adrReviewProcess.print();
+```
+
+## 🔗 相关概念
+
+- **[质量属性](/architect/02-architecture-fundamentals/03-architecture-evaluation/02-quality-attributes)**：ADR 中的权衡分析围绕质量属性展开
+- **[架构评估方法](/architect/02-architecture-fundamentals/03-architecture-evaluation/03-evaluation-methods)**：ATAM 的输出可直接转化为 ADR
+- **[DDD 战略设计](/architect/02-architecture-fundamentals/02-domain-driven-design/02-strategic-design)**：限界上下文的划分决策应记录为 ADR
+
+## ✅ 学习检查点
+
+- [ ] 能够按标准格式编写一份完整的 ADR
+- [ ] 理解 ADR 的状态生命周期（提议→接受→弃用/取代）
+- [ ] 能够使用权衡矩阵进行系统化的方案比较
+- [ ] 掌握技术选型的完整流程和评估维度
+- [ ] 知道什么类型的决策需要记录 ADR
+
+## 🚀 下一步
+
+→ [第三阶段：分布式系统](/architect/03-distributed-systems/01-distributed-theory/01-distributed-theory-overview)

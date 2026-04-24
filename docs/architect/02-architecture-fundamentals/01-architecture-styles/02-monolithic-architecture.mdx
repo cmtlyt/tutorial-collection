@@ -14,4 +14,426 @@
 - 能够评估单体架构的适用场景与局限
 - 了解从单体到微服务的演进路径
 
-> 🚧 详细内容正在编写中...
+## 🏗️ 分层架构（Layered Architecture）
+
+### 什么是分层架构？
+
+分层架构是最经典的软件架构模式，通过将系统划分为若干水平层次，每层负责特定的职责，层与层之间通过接口进行交互。
+
+### 典型四层结构
+
+```
+┌─────────────────────────────────┐
+│         表现层 (Presentation)    │  ← 处理用户交互、请求响应
+├─────────────────────────────────┤
+│         业务层 (Business)        │  ← 核心业务逻辑
+├─────────────────────────────────┤
+│         持久层 (Persistence)     │  ← 数据访问与存储
+├─────────────────────────────────┤
+│         数据层 (Database)        │  ← 数据库
+└─────────────────────────────────┘
+```
+
+### 代码示例：分层架构的实现
+
+以一个订单系统为例，展示各层的职责和交互方式：
+
+```js
+// ========== 数据访问层（Persistence Layer）==========
+class OrderRepository {
+  constructor() {
+    this.orders = new Map();
+    this.nextId = 1;
+  }
+
+  save(orderData) {
+    const orderId = this.nextId++;
+    const order = { id: orderId, ...orderData, createdAt: new Date().toISOString() };
+    this.orders.set(orderId, order);
+    return order;
+  }
+
+  findById(orderId) {
+    return this.orders.get(orderId) || null;
+  }
+
+  findByUserId(userId) {
+    return Array.from(this.orders.values()).filter(order => order.userId === userId);
+  }
+
+  updateStatus(orderId, status) {
+    const order = this.orders.get(orderId);
+    if (!order) return null;
+    order.status = status;
+    order.updatedAt = new Date().toISOString();
+    return order;
+  }
+}
+
+// ========== 业务逻辑层（Business Layer）==========
+class OrderService {
+  constructor(orderRepository) {
+    this.orderRepository = orderRepository;
+  }
+
+  createOrder(userId, items) {
+    if (!items || items.length === 0) {
+      throw new Error('订单必须包含至少一个商品');
+    }
+
+    const totalAmount = items.reduce((sum, item) => {
+      if (item.quantity <= 0) {
+        throw new Error(`商品 ${item.name} 的数量必须大于 0`);
+      }
+      return sum + item.price * item.quantity;
+    }, 0);
+
+    return this.orderRepository.save({
+      userId,
+      items,
+      totalAmount,
+      status: 'pending',
+    });
+  }
+
+  getOrder(orderId) {
+    const order = this.orderRepository.findById(orderId);
+    if (!order) {
+      throw new Error(`订单 ${orderId} 不存在`);
+    }
+    return order;
+  }
+
+  confirmOrder(orderId) {
+    const order = this.getOrder(orderId);
+    if (order.status !== 'pending') {
+      throw new Error(`订单 ${orderId} 当前状态为 ${order.status}，无法确认`);
+    }
+    return this.orderRepository.updateStatus(orderId, 'confirmed');
+  }
+}
+
+// ========== 表现层（Presentation Layer）==========
+class OrderController {
+  constructor(orderService) {
+    this.orderService = orderService;
+  }
+
+  handleCreateOrder(requestBody) {
+    try {
+      const { userId, items } = requestBody;
+      const order = this.orderService.createOrder(userId, items);
+      return { status: 201, body: { message: '订单创建成功', data: order } };
+    } catch (error) {
+      return { status: 400, body: { message: error.message } };
+    }
+  }
+
+  handleGetOrder(orderId) {
+    try {
+      const order = this.orderService.getOrder(orderId);
+      return { status: 200, body: { data: order } };
+    } catch (error) {
+      return { status: 404, body: { message: error.message } };
+    }
+  }
+
+  handleConfirmOrder(orderId) {
+    try {
+      const order = this.orderService.confirmOrder(orderId);
+      return { status: 200, body: { message: '订单已确认', data: order } };
+    } catch (error) {
+      return { status: 400, body: { message: error.message } };
+    }
+  }
+}
+
+// ========== 组装与运行 ==========
+const orderRepository = new OrderRepository();
+const orderService = new OrderService(orderRepository);
+const orderController = new OrderController(orderService);
+
+const createResult = orderController.handleCreateOrder({
+  userId: 'user-001',
+  items: [
+    { name: '机械键盘', price: 599, quantity: 1 },
+    { name: '鼠标垫', price: 49, quantity: 2 },
+  ],
+});
+console.log('创建订单:', createResult);
+
+const confirmResult = orderController.handleConfirmOrder(1);
+console.log('确认订单:', confirmResult);
+```
+
+### 分层架构的关键规则
+
+| 规则 | 说明 |
+|------|------|
+| **单向依赖** | 上层依赖下层，下层不能依赖上层 |
+| **跨层调用** | 严格分层禁止跨层调用；松散分层允许跨层 |
+| **职责隔离** | 每层只处理自己职责范围内的逻辑 |
+| **接口抽象** | 层与层之间通过接口交互，降低耦合 |
+
+### 优缺点分析
+
+**优势**：
+- **简单直观**：大多数开发者都熟悉这种模式
+- **职责清晰**：每层职责明确，易于理解和维护
+- **易于测试**：可以对每层单独进行单元测试
+- **技术成熟**：大量框架（如 Spring MVC、Express.js）原生支持
+
+**局限**：
+- **架构坍塌（Architecture Sinkhole）**：请求简单地穿过各层而不做任何有意义的处理
+- **部署耦合**：任何层的修改都需要重新部署整个应用
+- **扩展困难**：无法对单个层独立扩展
+- **团队协作瓶颈**：大团队在同一代码库上工作容易冲突
+
+## 📦 模块化单体（Modular Monolith）
+
+### 什么是模块化单体？
+
+模块化单体是分层架构的演进方案，它将系统按**业务能力**划分为多个独立模块，每个模块内部自包含，模块之间通过明确定义的接口通信。
+
+### 架构图示
+
+```
+┌──────────────────────────────────────────────┐
+│                  单体应用                      │
+│                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │ 订单模块  │  │ 用户模块  │  │ 支付模块  │   │
+│  │          │  │          │  │          │   │
+│  │ Controller│  │ Controller│  │ Controller│   │
+│  │ Service  │  │ Service  │  │ Service  │   │
+│  │ Repository│  │ Repository│  │ Repository│   │
+│  │ Model    │  │ Model    │  │ Model    │   │
+│  └─────┬────┘  └─────┬────┘  └─────┬────┘   │
+│        │             │             │         │
+│  ┌─────┴─────────────┴─────────────┴─────┐   │
+│  │           共享基础设施层                 │   │
+│  │    (数据库连接、日志、配置、安全)        │   │
+│  └───────────────────────────────────────┘   │
+└──────────────────────────────────────────────┘
+```
+
+### 代码示例：模块化单体设计
+
+```js
+// ========== 模块接口定义 ==========
+// 每个模块对外暴露清晰的公共 API，隐藏内部实现
+
+// 用户模块的公共 API
+class UserModule {
+  constructor() {
+    this.users = new Map();
+    this.nextId = 1;
+  }
+
+  registerUser(name, email) {
+    const userId = `user-${this.nextId++}`;
+    const user = { id: userId, name, email, createdAt: new Date().toISOString() };
+    this.users.set(userId, user);
+    return { id: userId, name, email };
+  }
+
+  getUserById(userId) {
+    const user = this.users.get(userId);
+    if (!user) return null;
+    return { id: user.id, name: user.name, email: user.email };
+  }
+
+  verifyUserExists(userId) {
+    return this.users.has(userId);
+  }
+}
+
+// 库存模块的公共 API
+class InventoryModule {
+  constructor() {
+    this.stock = new Map();
+  }
+
+  addStock(productId, productName, quantity) {
+    const existing = this.stock.get(productId) || { productId, productName, quantity: 0 };
+    existing.quantity += quantity;
+    this.stock.set(productId, existing);
+    return existing;
+  }
+
+  checkAvailability(productId, requiredQuantity) {
+    const item = this.stock.get(productId);
+    if (!item) return { available: false, currentStock: 0 };
+    return { available: item.quantity >= requiredQuantity, currentStock: item.quantity };
+  }
+
+  reserveStock(productId, quantity) {
+    const item = this.stock.get(productId);
+    if (!item || item.quantity < quantity) {
+      throw new Error(`商品 ${productId} 库存不足`);
+    }
+    item.quantity -= quantity;
+    return { productId, reservedQuantity: quantity, remainingStock: item.quantity };
+  }
+}
+
+// 订单模块：依赖其他模块的公共 API，而非直接访问其内部数据
+class OrderModule {
+  constructor(userModule, inventoryModule) {
+    this.userModule = userModule;
+    this.inventoryModule = inventoryModule;
+    this.orders = new Map();
+    this.nextId = 1;
+  }
+
+  createOrder(userId, items) {
+    // 通过用户模块的公共 API 验证用户
+    if (!this.userModule.verifyUserExists(userId)) {
+      throw new Error('用户不存在');
+    }
+
+    // 通过库存模块的公共 API 检查并预留库存
+    for (const item of items) {
+      const availability = this.inventoryModule.checkAvailability(item.productId, item.quantity);
+      if (!availability.available) {
+        throw new Error(`商品 ${item.productId} 库存不足，当前库存: ${availability.currentStock}`);
+      }
+    }
+
+    for (const item of items) {
+      this.inventoryModule.reserveStock(item.productId, item.quantity);
+    }
+
+    const orderId = `order-${this.nextId++}`;
+    const totalAmount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const order = { id: orderId, userId, items, totalAmount, status: 'created', createdAt: new Date().toISOString() };
+    this.orders.set(orderId, order);
+    return order;
+  }
+}
+
+// ========== 模块组装 ==========
+const userModule = new UserModule();
+const inventoryModule = new InventoryModule();
+const orderModule = new OrderModule(userModule, inventoryModule);
+
+// 初始化数据
+userModule.registerUser('张三', 'zhangsan@example.com');
+inventoryModule.addStock('prod-001', '机械键盘', 100);
+inventoryModule.addStock('prod-002', '鼠标垫', 200);
+
+// 创建订单
+const order = orderModule.createOrder('user-1', [
+  { productId: 'prod-001', price: 599, quantity: 1 },
+  { productId: 'prod-002', price: 49, quantity: 2 },
+]);
+console.log('订单创建成功:', order);
+console.log('键盘剩余库存:', inventoryModule.checkAvailability('prod-001', 1));
+```
+
+### 模块化单体的关键原则
+
+1. **模块边界明确**：每个模块有独立的公共 API，禁止直接访问其他模块的内部实现
+2. **数据所有权**：每个模块拥有并管理自己的数据，其他模块只能通过 API 访问
+3. **独立可测试**：每个模块可以独立进行单元测试和集成测试
+4. **渐进式拆分**：未来需要时，可以沿模块边界拆分为独立服务
+
+## 🔄 从单体到微服务的演进路径
+
+### 演进策略
+
+```
+经典分层单体
+    ↓ 识别业务模块边界
+模块化单体
+    ↓ 选择高价值模块优先拆分
+混合架构（单体 + 部分微服务）
+    ↓ 逐步拆分更多模块
+完全微服务化（如果确实需要）
+```
+
+### 何时保持单体？何时演进？
+
+| 场景 | 建议 |
+|------|------|
+| 团队少于 10 人 | 保持模块化单体 |
+| 业务变化快，频繁试错 | 保持单体，降低试错成本 |
+| 各模块需要独立扩展 | 考虑拆分高负载模块 |
+| 多团队并行开发，频繁冲突 | 沿模块边界拆分 |
+| 需要多语言/多技术栈 | 部分模块独立为服务 |
+| 部署频率要求极高（日发布数十次） | 考虑微服务化 |
+
+### 拆分示例：绞杀者模式（Strangler Fig Pattern）
+
+```js
+// 绞杀者模式：用新服务逐步替代旧单体中的功能
+
+// 旧单体中的用户服务
+class LegacyUserService {
+  getUser(userId) {
+    console.log(`[旧单体] 查询用户 ${userId}`);
+    return { id: userId, name: '旧系统用户', source: 'legacy' };
+  }
+}
+
+// 新独立的用户微服务
+class NewUserService {
+  getUser(userId) {
+    console.log(`[新服务] 查询用户 ${userId}`);
+    return { id: userId, name: '新系统用户', source: 'new-service' };
+  }
+}
+
+// 代理层：根据功能开关决定调用旧系统还是新系统
+class UserServiceProxy {
+  constructor(legacyService, newService, featureFlags) {
+    this.legacyService = legacyService;
+    this.newService = newService;
+    this.featureFlags = featureFlags;
+  }
+
+  getUser(userId) {
+    if (this.featureFlags.useNewUserService) {
+      return this.newService.getUser(userId);
+    }
+    return this.legacyService.getUser(userId);
+  }
+}
+
+// 使用功能开关平滑切换
+const featureFlags = { useNewUserService: false };
+const proxy = new UserServiceProxy(new LegacyUserService(), new NewUserService(), featureFlags);
+
+console.log(proxy.getUser('user-1'));   // 调用旧系统
+featureFlags.useNewUserService = true;  // 切换到新系统
+console.log(proxy.getUser('user-1'));   // 调用新系统
+```
+
+## 📊 单体架构对比总结
+
+| 维度 | 经典分层架构 | 模块化单体 |
+|------|------------|-----------|
+| **组织方式** | 按技术层次划分 | 按业务能力划分 |
+| **模块耦合** | 层间松耦合，层内高耦合 | 模块间松耦合 |
+| **数据管理** | 共享数据库 | 每模块独立数据空间 |
+| **团队协作** | 容易冲突 | 可按模块分配团队 |
+| **演进能力** | 重构成本高 | 易于拆分为微服务 |
+| **部署** | 整体部署 | 整体部署（但模块独立开发） |
+
+## 🔗 相关概念
+
+- **[分布式架构](/architect/02-architecture-fundamentals/01-architecture-styles/03-distributed-architecture)**：单体架构的下一步演进方向
+- **[DDD 战略设计](/architect/02-architecture-fundamentals/02-domain-driven-design/02-strategic-design)**：模块化单体的模块边界可以用限界上下文来指导
+- **[架构评估](/architect/02-architecture-fundamentals/03-architecture-evaluation/02-quality-attributes)**：评估是否需要从单体演进
+
+## ✅ 学习检查点
+
+- [ ] 能够画出分层架构的典型四层结构并解释每层职责
+- [ ] 理解架构坍塌（Architecture Sinkhole）反模式
+- [ ] 能够设计模块化单体的模块边界和公共 API
+- [ ] 理解绞杀者模式在单体到微服务迁移中的作用
+- [ ] 能够根据团队和业务特征判断是否应该保持单体
+
+## 🚀 下一步
+
+→ [分布式架构](/architect/02-architecture-fundamentals/01-architecture-styles/03-distributed-architecture)

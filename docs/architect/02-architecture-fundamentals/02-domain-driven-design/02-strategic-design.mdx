@@ -14,4 +14,593 @@
 - 掌握上下文映射（Context Mapping）的各种模式
 - 能够进行子域划分（Core / Supporting / Generic）
 
-> 🚧 详细内容正在编写中...
+## 🗣️ 通用语言（Ubiquitous Language）
+
+### 什么是通用语言？
+
+通用语言是**开发团队与业务专家之间共享的、严格定义的语言**。它不是技术术语，也不是纯粹的业务术语，而是团队为特定领域达成共识的精确表达。
+
+### 为什么需要通用语言？
+
+传统软件开发中，业务专家说"客户"，开发者说"User 对象"，测试说"账号"——大家说的可能是同一件事，也可能不是。这种沟通鸿沟是软件项目失败的主要原因之一。
+
+```
+❌ 没有通用语言的沟通
+业务专家："客户下了一个订单"
+开发者理解为：创建一条 order 记录
+实际业务含义：需要验证客户信用额度、检查库存、预留商品、计算折扣...
+
+✅ 使用通用语言的沟通
+业务专家："买家提交了一笔采购订单"
+开发者：调用 Buyer.submitPurchaseOrder()，触发信用检查、库存预留、价格计算
+双方理解完全一致
+```
+
+### 通用语言的建立过程
+
+```js
+// ========== 通用语言词汇表示例 ==========
+// 团队应该维护一份活的词汇表，代码中的命名必须与之一致
+
+const ubiquitousLanguageGlossary = {
+  // 术语定义：名称、定义、所属上下文、示例
+  terms: [
+    {
+      term: '采购订单（Purchase Order）',
+      definition: '买家向卖家发出的正式购买请求，包含商品明细、数量和期望价格',
+      context: '采购上下文',
+      notToBe: '不等同于"销售订单"，采购订单是从买家视角描述的',
+    },
+    {
+      term: '买家（Buyer）',
+      definition: '在平台上发起采购行为的企业或个人，已通过实名认证',
+      context: '采购上下文',
+      notToBe: '不是"用户（User）"，用户是技术概念；在销售上下文中称为"客户（Customer）"',
+    },
+    {
+      term: '库存预留（Stock Reservation）',
+      definition: '为特定订单临时锁定库存数量，防止超卖，有效期为30分钟',
+      context: '库存上下文',
+      notToBe: '不是"扣减库存"，预留是临时锁定，扣减是最终确认',
+    },
+    {
+      term: '信用额度（Credit Limit）',
+      definition: '买家被允许的最大未付款金额，超过额度将无法提交新的采购订单',
+      context: '财务上下文',
+      notToBe: '不等同于"账户余额"',
+    },
+  ],
+
+  // 验证代码命名是否符合通用语言
+  validateNaming(codeName, expectedTerm) {
+    const matching = this.terms.find(t => t.term.includes(expectedTerm));
+    if (!matching) {
+      console.warn(`术语 "${expectedTerm}" 未在词汇表中定义`);
+      return false;
+    }
+    console.log(`✅ "${codeName}" 对应术语: ${matching.term}`);
+    console.log(`   定义: ${matching.definition}`);
+    return true;
+  },
+};
+
+// 代码命名验证
+ubiquitousLanguageGlossary.validateNaming('PurchaseOrder', '采购订单');
+ubiquitousLanguageGlossary.validateNaming('Buyer', '买家');
+ubiquitousLanguageGlossary.validateNaming('StockReservation', '库存预留');
+```
+
+### 通用语言的实践要点
+
+1. **代码即语言**：类名、方法名、变量名必须使用通用语言中的术语
+2. **团队共建**：开发者和业务专家共同定义，任何一方都不能单方面决定
+3. **上下文限定**：同一个词在不同上下文中可能有不同含义（如"产品"在销售和库存中含义不同）
+4. **持续演进**：随着业务理解加深，通用语言会不断精炼
+
+## 🔲 限界上下文（Bounded Context）
+
+### 什么是限界上下文？
+
+限界上下文是**通用语言的有效边界**。在边界内，所有术语和模型概念具有明确且唯一的含义。不同的限界上下文可以对同一业务概念有不同的理解和建模。
+
+### 为什么需要边界？
+
+```
+以"产品"为例，不同团队对"产品"的理解完全不同：
+
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│  销售上下文   │  │  库存上下文   │  │  物流上下文   │
+│              │  │              │  │              │
+│ 产品 = {     │  │ 产品 = {     │  │ 产品 = {     │
+│   名称       │  │   SKU        │  │   重量       │
+│   描述       │  │   库存数量    │  │   体积       │
+│   价格       │  │   存放位置    │  │   易碎标记    │
+│   促销信息    │  │   补货阈值    │  │   配送方式    │
+│ }            │  │ }            │  │ }            │
+└──────────────┘  └──────────────┘  └──────────────┘
+
+三个上下文中的"产品"有完全不同的属性和行为！
+```
+
+### 如何识别限界上下文
+
+```js
+// ========== 限界上下文识别示例 ==========
+// 以电商平台为例，展示如何识别和划分限界上下文
+
+class BoundedContextAnalyzer {
+  constructor() {
+    this.contexts = [];
+  }
+
+  // 步骤 1：识别核心业务流程中的语义差异
+  analyzeSemanticDifferences() {
+    const semanticAnalysis = {
+      '产品': {
+        contexts: {
+          '商品目录上下文': {
+            attributes: ['名称', '描述', '图片', '分类', '品牌'],
+            behaviors: ['发布商品', '编辑详情', '上下架'],
+          },
+          '定价上下文': {
+            attributes: ['基础价', '促销价', '会员价', '区域价'],
+            behaviors: ['设置价格策略', '计算最终价格', '应用优惠券'],
+          },
+          '库存上下文': {
+            attributes: ['SKU', '库存数量', '仓库位置', '安全库存'],
+            behaviors: ['入库', '出库', '预留', '盘点'],
+          },
+        },
+        conclusion: '同一个"产品"在不同上下文中有完全不同的关注点，应划分为独立的限界上下文',
+      },
+      '订单': {
+        contexts: {
+          '交易上下文': {
+            attributes: ['买家', '商品列表', '总价', '订单状态'],
+            behaviors: ['提交订单', '取消订单', '确认收货'],
+          },
+          '履约上下文': {
+            attributes: ['发货地址', '物流单号', '配送状态'],
+            behaviors: ['创建发货单', '更新物流', '签收确认'],
+          },
+        },
+        conclusion: '"订单"在交易和履约中关注点不同，建议划分为两个上下文',
+      },
+    };
+
+    return semanticAnalysis;
+  }
+
+  // 步骤 2：定义上下文边界和职责
+  defineContext(name, responsibility, coreEntities, publicApi) {
+    const context = { name, responsibility, coreEntities, publicApi };
+    this.contexts.push(context);
+    return context;
+  }
+
+  // 步骤 3：输出上下文地图
+  printContextMap() {
+    console.log('\n=== 限界上下文地图 ===');
+    for (const ctx of this.contexts) {
+      console.log(`\n📦 ${ctx.name}`);
+      console.log(`   职责: ${ctx.responsibility}`);
+      console.log(`   核心实体: ${ctx.coreEntities.join(', ')}`);
+      console.log(`   公共 API: ${ctx.publicApi.join(', ')}`);
+    }
+  }
+}
+
+// 使用
+const analyzer = new BoundedContextAnalyzer();
+
+analyzer.defineContext(
+  '商品目录上下文',
+  '管理商品的基本信息、分类和展示',
+  ['CatalogProduct', 'Category', 'Brand'],
+  ['getProductDetail(productId)', 'searchProducts(query)'],
+);
+
+analyzer.defineContext(
+  '定价上下文',
+  '管理商品价格策略、促销和折扣计算',
+  ['PricePolicy', 'Promotion', 'Coupon'],
+  ['calculatePrice(productId, context)', 'applyPromotion(orderId)'],
+);
+
+analyzer.defineContext(
+  '库存上下文',
+  '管理商品库存、入库出库和库存预留',
+  ['InventoryItem', 'StockReservation', 'Warehouse'],
+  ['checkStock(skuId)', 'reserveStock(skuId, quantity)'],
+);
+
+analyzer.defineContext(
+  '交易上下文',
+  '管理订单的创建、支付和生命周期',
+  ['PurchaseOrder', 'OrderItem', 'Payment'],
+  ['submitOrder(orderData)', 'cancelOrder(orderId)'],
+);
+
+analyzer.printContextMap();
+console.log('\n语义差异分析:', JSON.stringify(analyzer.analyzeSemanticDifferences(), null, 2));
+```
+
+## 🗺️ 上下文映射（Context Mapping）
+
+### 什么是上下文映射？
+
+上下文映射描述了**限界上下文之间的关系和集成方式**。不同的关系模式决定了团队如何协作、系统如何集成。
+
+### 主要映射模式
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    上下文映射模式                          │
+├─────────────┬───────────────────────────────────────────┤
+│  合作关系    │  共享内核（Shared Kernel）                  │
+│  (对等)     │  合作伙伴（Partnership）                    │
+├─────────────┼───────────────────────────────────────────┤
+│  上下游关系  │  客户-供应商（Customer-Supplier）           │
+│  (依赖)     │  遵奉者（Conformist）                      │
+│             │  防腐层（Anti-Corruption Layer, ACL）       │
+│             │  开放主机服务（Open Host Service, OHS）      │
+│             │  已发布语言（Published Language, PL）        │
+├─────────────┼───────────────────────────────────────────┤
+│  隔离关系    │  各行其道（Separate Ways）                  │
+│  (独立)     │  大泥球（Big Ball of Mud）                  │
+└─────────────┴───────────────────────────────────────────┘
+```
+
+### 代码示例：防腐层模式
+
+防腐层是最重要的映射模式之一，用于**保护自己的领域模型不被外部系统的模型污染**。
+
+```js
+// ========== 防腐层（ACL）示例 ==========
+// 场景：订单上下文需要从外部支付系统获取支付状态
+// 外部系统的数据模型和我们的领域模型不一致
+
+// 外部支付系统的数据模型（我们无法控制）
+class ExternalPaymentGateway {
+  queryPayment(transactionNo) {
+    // 模拟外部 API 返回的数据（可能是 XML、也可能字段命名奇怪）
+    return {
+      txn_no: transactionNo,
+      pay_status: 'S',        // 'S'=成功, 'F'=失败, 'P'=处理中
+      pay_amt: '59900',       // 金额以分为单位的字符串
+      pay_ccy: 'CNY',
+      pay_time: '20260424153200',  // 非标准时间格式
+      channel_code: 'ALIPAY',
+      err_code: null,
+      err_msg: null,
+    };
+  }
+}
+
+// ========== 防腐层 ==========
+// 将外部模型翻译为我们的领域模型，隔离外部系统的变化
+
+class PaymentAntiCorruptionLayer {
+  constructor(externalGateway) {
+    this.gateway = externalGateway;
+  }
+
+  // 状态映射：外部编码 → 领域枚举
+  translateStatus(externalStatus) {
+    const statusMap = {
+      'S': 'succeeded',
+      'F': 'failed',
+      'P': 'processing',
+      'R': 'refunded',
+    };
+    return statusMap[externalStatus] || 'unknown';
+  }
+
+  // 时间格式转换
+  parsePaymentTime(rawTime) {
+    if (!rawTime) return null;
+    const year = rawTime.slice(0, 4);
+    const month = rawTime.slice(4, 6);
+    const day = rawTime.slice(6, 8);
+    const hour = rawTime.slice(8, 10);
+    const minute = rawTime.slice(10, 12);
+    const second = rawTime.slice(12, 14);
+    return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`).toISOString();
+  }
+
+  // 金额转换：分 → 元
+  parseAmount(rawAmount) {
+    return parseInt(rawAmount, 10) / 100;
+  }
+
+  // 防腐层核心方法：翻译外部模型为领域模型
+  getPaymentResult(transactionId) {
+    const rawResult = this.gateway.queryPayment(transactionId);
+
+    // 翻译为我们的领域模型
+    return {
+      transactionId: rawResult.txn_no,
+      status: this.translateStatus(rawResult.pay_status),
+      amount: this.parseAmount(rawResult.pay_amt),
+      currency: rawResult.pay_ccy,
+      paidAt: this.parsePaymentTime(rawResult.pay_time),
+      channel: rawResult.channel_code.toLowerCase(),
+      errorCode: rawResult.err_code,
+      errorMessage: rawResult.err_msg,
+    };
+  }
+}
+
+// ========== 领域服务使用防腐层 ==========
+class OrderPaymentService {
+  constructor(paymentAcl) {
+    this.paymentAcl = paymentAcl;
+  }
+
+  checkPaymentStatus(transactionId) {
+    // 通过防腐层获取标准化的支付结果
+    const paymentResult = this.paymentAcl.getPaymentResult(transactionId);
+
+    console.log('标准化支付结果:', paymentResult);
+
+    // 领域逻辑只与自己的模型打交道，不关心外部系统细节
+    if (paymentResult.status === 'succeeded') {
+      console.log(`订单支付成功：¥${paymentResult.amount}，渠道：${paymentResult.channel}`);
+      return { confirmed: true, amount: paymentResult.amount };
+    }
+
+    if (paymentResult.status === 'failed') {
+      console.log(`支付失败：${paymentResult.errorMessage || '未知原因'}`);
+      return { confirmed: false, reason: paymentResult.errorMessage };
+    }
+
+    console.log('支付处理中，稍后重试');
+    return { confirmed: false, reason: 'processing' };
+  }
+}
+
+// ========== 运行 ==========
+const externalGateway = new ExternalPaymentGateway();
+const paymentAcl = new PaymentAntiCorruptionLayer(externalGateway);
+const paymentService = new OrderPaymentService(paymentAcl);
+
+paymentService.checkPaymentStatus('TXN-20260424-001');
+```
+
+### 代码示例：开放主机服务 + 已发布语言
+
+```js
+// ========== 开放主机服务（OHS）+ 已发布语言（PL）==========
+// 上游服务提供标准化的 API 和数据格式，供多个下游消费
+
+class ProductCatalogOpenHostService {
+  constructor() {
+    this.products = new Map();
+    this.apiVersion = 'v2';
+    this.initSampleData();
+  }
+
+  initSampleData() {
+    this.products.set('prod-001', {
+      id: 'prod-001',
+      name: '机械键盘',
+      category: '外设',
+      specs: { switchType: '红轴', layout: '87键' },
+    });
+    this.products.set('prod-002', {
+      id: 'prod-002',
+      name: '无线鼠标',
+      category: '外设',
+      specs: { dpi: 16000, wireless: true },
+    });
+  }
+
+  // 已发布语言：定义标准化的数据格式
+  // 下游服务按此格式消费，上游保证向后兼容
+  formatProductEvent(product, eventType) {
+    return {
+      schemaVersion: '2.0',
+      eventType,
+      timestamp: new Date().toISOString(),
+      payload: {
+        productId: product.id,
+        productName: product.name,
+        category: product.category,
+        specifications: product.specs,
+      },
+    };
+  }
+
+  // 开放主机服务：提供标准化 API
+  getProduct(productId) {
+    const product = this.products.get(productId);
+    if (!product) return null;
+    return this.formatProductEvent(product, 'ProductQueried');
+  }
+
+  listProducts(category) {
+    const filtered = Array.from(this.products.values())
+      .filter(p => !category || p.category === category);
+    return filtered.map(p => this.formatProductEvent(p, 'ProductListed'));
+  }
+}
+
+// 下游上下文直接消费标准化格式
+const catalogService = new ProductCatalogOpenHostService();
+const productEvent = catalogService.getProduct('prod-001');
+console.log('标准化产品数据:', JSON.stringify(productEvent, null, 2));
+
+const allProducts = catalogService.listProducts('外设');
+console.log(`外设分类共 ${allProducts.length} 个商品`);
+```
+
+## 🧩 子域划分（Subdomain Classification）
+
+### 三种子域类型
+
+| 子域类型 | 特点 | 投入策略 | 实现方式 | 示例 |
+|---------|------|---------|---------|------|
+| **核心子域** | 业务竞争优势所在 | 最优秀的团队、最多的资源 | 自主研发 | 推荐算法、交易引擎 |
+| **支撑子域** | 辅助核心业务，有定制需求 | 适度投入 | 自研或外包 | 客服系统、内容管理 |
+| **通用子域** | 通用能力，无差异化价值 | 最少投入 | 购买/开源方案 | 认证、邮件、文件存储 |
+
+### 代码示例：子域划分分析
+
+```js
+// ========== 子域划分分析工具 ==========
+
+class SubdomainAnalyzer {
+  constructor(businessName) {
+    this.businessName = businessName;
+    this.subdomains = [];
+  }
+
+  addSubdomain(name, type, analysis) {
+    this.subdomains.push({
+      name,
+      type, // 'core' | 'supporting' | 'generic'
+      ...analysis,
+    });
+  }
+
+  analyze() {
+    console.log(`\n=== ${this.businessName} 子域划分分析 ===\n`);
+
+    const typeLabels = { core: '🔴 核心子域', supporting: '🟡 支撑子域', generic: '🟢 通用子域' };
+    const typeStrategies = {
+      core: '自主研发，投入最优秀的团队',
+      supporting: '自研或外包，适度投入',
+      generic: '购买或使用开源方案，最少投入',
+    };
+
+    for (const subdomain of this.subdomains) {
+      console.log(`${typeLabels[subdomain.type]}: ${subdomain.name}`);
+      console.log(`  职责: ${subdomain.responsibility}`);
+      console.log(`  竞争力: ${subdomain.competitiveAdvantage}`);
+      console.log(`  复杂度: ${subdomain.complexity}`);
+      console.log(`  策略: ${typeStrategies[subdomain.type]}`);
+      console.log();
+    }
+
+    // 统计
+    const coreCount = this.subdomains.filter(s => s.type === 'core').length;
+    const supportingCount = this.subdomains.filter(s => s.type === 'supporting').length;
+    const genericCount = this.subdomains.filter(s => s.type === 'generic').length;
+    console.log(`统计: 核心 ${coreCount} | 支撑 ${supportingCount} | 通用 ${genericCount}`);
+  }
+}
+
+// 分析一个在线教育平台
+const analyzer = new SubdomainAnalyzer('在线教育平台');
+
+analyzer.addSubdomain('课程推荐', 'core', {
+  responsibility: '根据学习历史和偏好推荐个性化课程',
+  competitiveAdvantage: '高 - 核心差异化能力，直接影响用户留存',
+  complexity: '高',
+});
+
+analyzer.addSubdomain('学习路径规划', 'core', {
+  responsibility: '为学生规划个性化的学习路径和进度',
+  competitiveAdvantage: '高 - 平台核心价值，其他平台难以复制',
+  complexity: '高',
+});
+
+analyzer.addSubdomain('内容管理', 'supporting', {
+  responsibility: '课程内容的创建、审核、发布和版本管理',
+  competitiveAdvantage: '中 - 有定制需求，但不是核心竞争力',
+  complexity: '中',
+});
+
+analyzer.addSubdomain('直播课堂', 'supporting', {
+  responsibility: '实时视频直播、互动白板、课堂录制',
+  competitiveAdvantage: '中 - 可基于第三方 SDK 定制',
+  complexity: '高',
+});
+
+analyzer.addSubdomain('用户认证', 'generic', {
+  responsibility: '用户注册、登录、身份验证',
+  competitiveAdvantage: '低 - 标准化能力，无差异化价值',
+  complexity: '低',
+});
+
+analyzer.addSubdomain('支付', 'generic', {
+  responsibility: '课程购买、退款、对账',
+  competitiveAdvantage: '低 - 接入第三方支付即可',
+  complexity: '中',
+});
+
+analyzer.addSubdomain('通知服务', 'generic', {
+  responsibility: '短信、邮件、站内信通知',
+  competitiveAdvantage: '低 - 通用能力',
+  complexity: '低',
+});
+
+analyzer.analyze();
+```
+
+## 🔄 限界上下文与微服务的关系
+
+### 对应原则
+
+限界上下文是微服务拆分的**最佳起点**，但两者不是一一对应的：
+
+```
+一般建议的映射关系：
+
+1 个限界上下文 = 1 个微服务    ← 最常见，推荐的起始方案
+1 个限界上下文 = N 个微服务    ← 当上下文内部仍需独立扩展时
+N 个限界上下文 = 1 个微服务    ← 早期阶段，模块化单体中
+```
+
+### 实际决策框架
+
+```js
+function shouldSplitIntoSeparateService(boundedContext) {
+  const factors = {
+    // 独立部署需求：不同上下文的发布节奏是否不同？
+    independentDeployment: boundedContext.releaseFrequency !== 'same-as-others',
+    // 独立扩展需求：是否有不同的扩展需求？
+    independentScaling: boundedContext.scalingRequirements === 'different',
+    // 团队自治：是否由不同团队负责？
+    teamOwnership: boundedContext.teamCount > 1,
+    // 技术异构：是否需要不同的技术栈？
+    technologyDifference: boundedContext.requiresDifferentTechStack,
+    // 数据隔离：数据是否需要严格隔离？
+    dataIsolation: boundedContext.dataPrivacyRequirement === 'strict',
+  };
+
+  const score = Object.values(factors).filter(Boolean).length;
+
+  if (score >= 3) return '强烈建议拆分为独立服务';
+  if (score >= 2) return '可以考虑拆分，但不紧急';
+  return '保持在同一服务内（模块化单体）';
+}
+
+// 示例
+console.log(shouldSplitIntoSeparateService({
+  releaseFrequency: 'daily',
+  scalingRequirements: 'different',
+  teamCount: 3,
+  requiresDifferentTechStack: false,
+  dataPrivacyRequirement: 'strict',
+}));
+// → "强烈建议拆分为独立服务"
+```
+
+## 🔗 相关概念
+
+- **[DDD 总览](/architect/02-architecture-fundamentals/02-domain-driven-design/01-ddd-overview)**：战略设计的全局视角
+- **[DDD 战术设计](/architect/02-architecture-fundamentals/02-domain-driven-design/03-tactical-design)**：在限界上下文内部如何建模
+- **[微服务架构](/architect/02-architecture-fundamentals/01-architecture-styles/03-distributed-architecture)**：限界上下文的技术落地方式
+
+## ✅ 学习检查点
+
+- [ ] 能够为一个业务系统建立通用语言词汇表
+- [ ] 能够通过语义差异分析识别限界上下文边界
+- [ ] 理解防腐层和开放主机服务的区别和适用场景
+- [ ] 能够将业务能力分类为核心子域、支撑子域和通用子域
+- [ ] 理解限界上下文与微服务的对应关系
+
+## 🚀 下一步
+
+→ [DDD 战术设计](/architect/02-architecture-fundamentals/02-domain-driven-design/03-tactical-design)

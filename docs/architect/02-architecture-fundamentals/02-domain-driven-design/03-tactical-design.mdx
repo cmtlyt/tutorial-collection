@@ -14,4 +14,747 @@
 - 理解领域服务和领域事件的职责
 - 掌握仓储（Repository）模式的实现
 
-> 🚧 详细内容正在编写中...
+## 🆔 实体（Entity）
+
+### 什么是实体？
+
+实体是具有**唯一标识**的领域对象。即使实体的所有属性都发生了变化，只要标识不变，它就还是"同一个东西"。实体的关键特征是**身份的连续性**。
+
+### 实体的核心特征
+
+| 特征 | 说明 |
+|------|------|
+| **唯一标识** | 每个实体有一个在整个生命周期内不变的 ID |
+| **可变性** | 实体的属性可以随时间改变 |
+| **生命周期** | 实体有创建、修改、删除等生命周期 |
+| **行为丰富** | 实体封装业务规则和行为，不是贫血的数据容器 |
+
+### 代码示例
+
+```js
+// ========== 实体：充血模型（Rich Domain Model）==========
+
+class Employee {
+  constructor(employeeId, name, email, department) {
+    // 唯一标识：即使改名换部门，还是同一个员工
+    this.employeeId = employeeId;
+    this.name = name;
+    this.email = email;
+    this.department = department;
+    this.status = 'active';
+    this.leaveBalance = 15; // 年假天数
+    this.performanceHistory = [];
+  }
+
+  // 业务行为封装在实体内部
+  requestLeave(days, reason) {
+    if (this.status !== 'active') {
+      throw new Error('非在职员工无法申请假期');
+    }
+    if (days > this.leaveBalance) {
+      throw new Error(`假期余额不足：剩余 ${this.leaveBalance} 天，申请 ${days} 天`);
+    }
+    if (days <= 0) {
+      throw new Error('请假天数必须大于 0');
+    }
+    this.leaveBalance -= days;
+    return {
+      employeeId: this.employeeId,
+      days,
+      reason,
+      remainingBalance: this.leaveBalance,
+      approvedAt: new Date().toISOString(),
+    };
+  }
+
+  transferDepartment(newDepartment) {
+    if (this.department === newDepartment) {
+      throw new Error('不能转到当前所在部门');
+    }
+    const oldDepartment = this.department;
+    this.department = newDepartment;
+    return { employeeId: this.employeeId, from: oldDepartment, to: newDepartment };
+  }
+
+  addPerformanceReview(year, rating, feedback) {
+    if (rating < 1 || rating > 5) {
+      throw new Error('绩效评分必须在 1-5 之间');
+    }
+    this.performanceHistory.push({ year, rating, feedback, recordedAt: new Date().toISOString() });
+  }
+
+  resign() {
+    if (this.status !== 'active') {
+      throw new Error('该员工已不在职');
+    }
+    this.status = 'resigned';
+  }
+
+  // 实体相等性：基于标识判断
+  equals(other) {
+    if (!(other instanceof Employee)) return false;
+    return this.employeeId === other.employeeId;
+  }
+}
+
+// 使用
+const employee = new Employee('emp-001', '张三', 'zhangsan@company.com', '技术部');
+console.log('请假:', employee.requestLeave(3, '年假'));
+console.log('转部门:', employee.transferDepartment('架构组'));
+employee.addPerformanceReview(2025, 4, '表现优秀');
+console.log('绩效记录:', employee.performanceHistory);
+```
+
+## 💎 值对象（Value Object）
+
+### 什么是值对象？
+
+值对象是**没有唯一标识的领域对象**，它通过属性值来定义。两个属性完全相同的值对象被认为是"同一个东西"。值对象应该是**不可变的**。
+
+### 实体 vs 值对象
+
+| 维度 | 实体 | 值对象 |
+|------|------|--------|
+| **标识** | 有唯一 ID | 无 ID，通过属性值判等 |
+| **可变性** | 可变 | 不可变（修改 = 创建新的） |
+| **相等性** | ID 相同就相等 | 所有属性相同才相等 |
+| **生命周期** | 独立的生命周期 | 依附于实体 |
+| **示例** | 用户、订单、产品 | 地址、金额、日期范围 |
+
+### 代码示例
+
+```js
+// ========== 值对象：不可变，通过值判等 ==========
+
+class Money {
+  constructor(amount, currency) {
+    if (amount < 0) throw new Error('金额不能为负数');
+    if (!currency) throw new Error('必须指定货币类型');
+    // 不可变：属性设置后不再改变
+    Object.freeze(this);
+    Object.defineProperties(this, {
+      amount: { value: amount, writable: false },
+      currency: { value: currency, writable: false },
+    });
+  }
+
+  // 值对象的相等性：基于属性值判断
+  equals(other) {
+    if (!(other instanceof Money)) return false;
+    return this.amount === other.amount && this.currency === other.currency;
+  }
+
+  // 业务操作返回新的值对象（不可变）
+  add(other) {
+    if (this.currency !== other.currency) {
+      throw new Error(`货币类型不匹配: ${this.currency} vs ${other.currency}`);
+    }
+    return new Money(this.amount + other.amount, this.currency);
+  }
+
+  subtract(other) {
+    if (this.currency !== other.currency) {
+      throw new Error(`货币类型不匹配: ${this.currency} vs ${other.currency}`);
+    }
+    if (this.amount < other.amount) {
+      throw new Error('金额不能为负数');
+    }
+    return new Money(this.amount - other.amount, this.currency);
+  }
+
+  multiply(factor) {
+    return new Money(Math.round(this.amount * factor * 100) / 100, this.currency);
+  }
+
+  toString() {
+    const symbols = { CNY: '¥', USD: '
+, EUR: '€' };
+    return `${symbols[this.currency] || this.currency}${this.amount.toFixed(2)}`;
+  }
+}
+
+class Address {
+  constructor(province, city, district, street, zipCode) {
+    Object.freeze(this);
+    Object.defineProperties(this, {
+      province: { value: province, writable: false },
+      city: { value: city, writable: false },
+      district: { value: district, writable: false },
+      street: { value: street, writable: false },
+      zipCode: { value: zipCode, writable: false },
+    });
+  }
+
+  equals(other) {
+    if (!(other instanceof Address)) return false;
+    return (
+      this.province === other.province &&
+      this.city === other.city &&
+      this.district === other.district &&
+      this.street === other.street &&
+      this.zipCode === other.zipCode
+    );
+  }
+
+  // 修改值对象 = 创建新的值对象
+  withStreet(newStreet) {
+    return new Address(this.province, this.city, this.district, newStreet, this.zipCode);
+  }
+
+  toFullString() {
+    return `${this.province}${this.city}${this.district}${this.street}`;
+  }
+}
+
+class DateRange {
+  constructor(startDate, endDate) {
+    if (new Date(endDate) <= new Date(startDate)) {
+      throw new Error('结束日期必须晚于开始日期');
+    }
+    Object.freeze(this);
+    Object.defineProperties(this, {
+      startDate: { value: startDate, writable: false },
+      endDate: { value: endDate, writable: false },
+    });
+  }
+
+  getDurationInDays() {
+    const diffMs = new Date(this.endDate) - new Date(this.startDate);
+    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  }
+
+  contains(date) {
+    const target = new Date(date);
+    return target >= new Date(this.startDate) && target <= new Date(this.endDate);
+  }
+
+  overlaps(other) {
+    return new Date(this.startDate) < new Date(other.endDate) &&
+           new Date(this.endDate) > new Date(other.startDate);
+  }
+}
+
+// 使用
+const price = new Money(599, 'CNY');
+const shipping = new Money(15, 'CNY');
+const total = price.add(shipping);
+console.log(`商品: ${price}, 运费: ${shipping}, 总计: ${total}`);
+
+const addr1 = new Address('浙江省', '杭州市', '西湖区', '文三路 100 号', '310000');
+const addr2 = addr1.withStreet('学院路 200 号');
+console.log(`原地址: ${addr1.toFullString()}`);
+console.log(`新地址: ${addr2.toFullString()}`);
+console.log(`地址相等: ${addr1.equals(addr2)}`);
+
+const range = new DateRange('2026-01-01', '2026-03-31');
+console.log(`持续天数: ${range.getDurationInDays()}`);
+console.log(`包含 2026-02-15: ${range.contains('2026-02-15')}`);
+```
+
+## 📦 聚合（Aggregate）
+
+### 什么是聚合？
+
+聚合是一组紧密关联的实体和值对象的**集合**，通过一个**聚合根（Aggregate Root）**统一管理。外部只能通过聚合根访问聚合内部的对象，聚合是事务一致性的边界。
+
+### 聚合设计原则
+
+1. **通过聚合根访问**：外部不能直接修改聚合内部的对象
+2. **事务边界**：一个事务只修改一个聚合
+3. **保持小聚合**：聚合应尽量小，只包含强一致性要求的对象
+4. **聚合间通过 ID 引用**：聚合之间不持有对方的直接引用，而是通过 ID
+
+### 代码示例
+
+```js
+// ========== 聚合根：Order ==========
+// Order 是聚合根，OrderItem 是聚合内部的实体
+
+class OrderItem {
+  constructor(itemId, productId, productName, unitPrice, quantity) {
+    this.itemId = itemId;
+    this.productId = productId;
+    this.productName = productName;
+    this.unitPrice = unitPrice;
+    this.quantity = quantity;
+  }
+
+  getSubtotal() {
+    return this.unitPrice * this.quantity;
+  }
+
+  changeQuantity(newQuantity) {
+    if (newQuantity <= 0) throw new Error('数量必须大于 0');
+    if (newQuantity > 99) throw new Error('单个商品最多购买 99 件');
+    this.quantity = newQuantity;
+  }
+}
+
+class Order {
+  constructor(orderId, buyerId) {
+    // 聚合根的标识
+    this.orderId = orderId;
+    this.buyerId = buyerId; // 通过 ID 引用其他聚合，而非直接持有 Buyer 对象
+    this.items = [];
+    this.status = 'draft';
+    this.createdAt = new Date().toISOString();
+    this.domainEvents = []; // 收集领域事件
+    this.nextItemId = 1;
+  }
+
+  // ---- 所有修改必须通过聚合根 ----
+
+  addItem(productId, productName, unitPrice, quantity) {
+    this.assertDraft();
+    // 业务规则：同一商品不能重复添加
+    const existing = this.items.find(item => item.productId === productId);
+    if (existing) {
+      throw new Error(`商品 ${productName} 已在订单中，请修改数量`);
+    }
+    // 业务规则：一个订单最多 20 个商品
+    if (this.items.length >= 20) {
+      throw new Error('一个订单最多包含 20 个商品');
+    }
+
+    const itemId = `item-${this.nextItemId++}`;
+    this.items.push(new OrderItem(itemId, productId, productName, unitPrice, quantity));
+  }
+
+  removeItem(productId) {
+    this.assertDraft();
+    const index = this.items.findIndex(item => item.productId === productId);
+    if (index === -1) throw new Error('该商品不在订单中');
+    this.items.splice(index, 1);
+  }
+
+  changeItemQuantity(productId, newQuantity) {
+    this.assertDraft();
+    const item = this.items.find(i => i.productId === productId);
+    if (!item) throw new Error('该商品不在订单中');
+    item.changeQuantity(newQuantity); // 通过聚合根间接修改内部实体
+  }
+
+  // 计算总金额（聚合根负责跨子实体的计算）
+  getTotalAmount() {
+    return this.items.reduce((sum, item) => sum + item.getSubtotal(), 0);
+  }
+
+  // 提交订单
+  submit() {
+    this.assertDraft();
+    if (this.items.length === 0) {
+      throw new Error('订单至少需要一个商品');
+    }
+
+    this.status = 'submitted';
+    // 发布领域事件
+    this.domainEvents.push({
+      type: 'OrderSubmitted',
+      orderId: this.orderId,
+      buyerId: this.buyerId,
+      totalAmount: this.getTotalAmount(),
+      itemCount: this.items.length,
+      occurredAt: new Date().toISOString(),
+    });
+  }
+
+  cancel(reason) {
+    if (this.status === 'shipped') {
+      throw new Error('已发货的订单不能取消');
+    }
+    if (this.status === 'cancelled') {
+      throw new Error('订单已经取消');
+    }
+    this.status = 'cancelled';
+    this.cancelReason = reason;
+    this.domainEvents.push({
+      type: 'OrderCancelled',
+      orderId: this.orderId,
+      reason,
+      occurredAt: new Date().toISOString(),
+    });
+  }
+
+  // 内部辅助方法
+  assertDraft() {
+    if (this.status !== 'draft') {
+      throw new Error(`订单当前状态为 ${this.status}，不允许修改`);
+    }
+  }
+
+  // 获取并清除领域事件
+  pullDomainEvents() {
+    const events = [...this.domainEvents];
+    this.domainEvents = [];
+    return events;
+  }
+}
+
+// ========== 使用聚合 ==========
+const order = new Order('order-001', 'buyer-001');
+
+// 所有操作通过聚合根
+order.addItem('prod-001', '机械键盘', 599, 1);
+order.addItem('prod-002', '鼠标垫', 49, 2);
+order.changeItemQuantity('prod-002', 3);
+console.log(`订单总金额: ¥${order.getTotalAmount()}`);
+
+// 提交订单
+order.submit();
+console.log('领域事件:', order.pullDomainEvents());
+
+// 提交后不能再修改
+try {
+  order.addItem('prod-003', '耳机', 299, 1);
+} catch (error) {
+  console.log('预期错误:', error.message);
+}
+```
+
+## 🔧 领域服务（Domain Service）
+
+### 什么是领域服务？
+
+领域服务封装**不自然属于任何单个实体或值对象**的业务逻辑。当一个操作涉及多个聚合、需要外部信息、或者不属于任何特定实体的职责时，使用领域服务。
+
+### 何时使用领域服务？
+
+- 业务操作涉及**多个聚合**的协调
+- 需要**外部信息**才能完成的业务规则
+- 逻辑不属于任何一个实体的自然职责
+
+```js
+// ========== 领域服务 ==========
+
+// 跨境运费计算服务：涉及商品重量（订单聚合）和目的地（地址值对象）
+class ShippingCostCalculator {
+  constructor(shippingRateProvider) {
+    this.rateProvider = shippingRateProvider;
+  }
+
+  calculateShippingCost(orderItems, shippingAddress) {
+    // 计算总重量（需要商品信息）
+    const totalWeight = orderItems.reduce((sum, item) => {
+      return sum + (item.weight || 0.5) * item.quantity;
+    }, 0);
+
+    // 获取运费费率（需要地址信息和外部数据）
+    const rate = this.rateProvider.getRate(shippingAddress.province, totalWeight);
+
+    // 业务规则：满 200 元免运费
+    const totalPrice = orderItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+    if (totalPrice >= 200) {
+      return { shippingCost: 0, reason: '满 200 元免运费', originalCost: rate.cost };
+    }
+
+    return { shippingCost: rate.cost, reason: rate.description, originalCost: rate.cost };
+  }
+}
+
+// 转账服务：涉及两个 Account 聚合的协调
+class TransferService {
+  constructor(accountRepository) {
+    this.accountRepository = accountRepository;
+  }
+
+  transfer(fromAccountId, toAccountId, amount) {
+    if (fromAccountId === toAccountId) {
+      throw new Error('不能向自己转账');
+    }
+
+    const fromAccount = this.accountRepository.findById(fromAccountId);
+    const toAccount = this.accountRepository.findById(toAccountId);
+
+    if (!fromAccount) throw new Error(`账户 ${fromAccountId} 不存在`);
+    if (!toAccount) throw new Error(`账户 ${toAccountId} 不存在`);
+
+    // 业务规则：单笔转账限额
+    if (amount > 50000) {
+      throw new Error('单笔转账金额不能超过 ¥50,000');
+    }
+
+    // 业务规则：不同币种不能直接转账
+    if (fromAccount.currency !== toAccount.currency) {
+      throw new Error('不同币种账户之间不能直接转账');
+    }
+
+    fromAccount.withdraw(amount);
+    toAccount.deposit(amount);
+
+    this.accountRepository.save(fromAccount);
+    this.accountRepository.save(toAccount);
+
+    return {
+      transactionId: `txn-${Date.now()}`,
+      from: fromAccountId,
+      to: toAccountId,
+      amount,
+      timestamp: new Date().toISOString(),
+    };
+  }
+}
+
+// 运费费率提供者
+const shippingRateProvider = {
+  getRate(province, weight) {
+    const baseRates = { '浙江省': 5, '江苏省': 8, '广东省': 12 };
+    const baseRate = baseRates[province] || 15;
+    const cost = baseRate + Math.ceil(weight) * 2;
+    return { cost, description: `${province} 基础 ¥${baseRate} + 重量附加` };
+  },
+};
+
+const shippingCalculator = new ShippingCostCalculator(shippingRateProvider);
+console.log('运费计算:', shippingCalculator.calculateShippingCost(
+  [{ unitPrice: 50, quantity: 2, weight: 1.5 }, { unitPrice: 30, quantity: 1, weight: 0.3 }],
+  { province: '广东省' },
+));
+```
+
+## 📢 领域事件（Domain Event）
+
+### 什么是领域事件？
+
+领域事件表示**领域中已经发生的、业务关心的事实**。它是过去时态的（"订单已提交"而非"提交订单"），不可变的，用于实现聚合间的最终一致性和系统解耦。
+
+### 领域事件的设计原则
+
+1. **过去时态命名**：`OrderSubmitted`、`PaymentReceived`，而非 `SubmitOrder`
+2. **不可变**：事件一旦发布就不能修改
+3. **自包含**：事件携带足够的信息，消费者无需回查
+4. **幂等消费**：消费者应能安全地多次处理同一事件
+
+```js
+// ========== 领域事件系统 ==========
+
+class DomainEvent {
+  constructor(type, aggregateId, payload) {
+    this.eventId = `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.type = type;
+    this.aggregateId = aggregateId;
+    this.payload = Object.freeze({ ...payload });
+    this.occurredAt = new Date().toISOString();
+    Object.freeze(this);
+  }
+}
+
+class DomainEventDispatcher {
+  constructor() {
+    this.handlers = new Map();
+  }
+
+  register(eventType, handler, handlerName) {
+    if (!this.handlers.has(eventType)) {
+      this.handlers.set(eventType, []);
+    }
+    this.handlers.get(eventType).push({ handler, handlerName });
+  }
+
+  dispatch(event) {
+    const handlers = this.handlers.get(event.type) || [];
+    console.log(`\n[事件调度] ${event.type} (${event.eventId})`);
+    for (const { handler, handlerName } of handlers) {
+      console.log(`  → ${handlerName} 处理中...`);
+      handler(event);
+    }
+  }
+
+  // 从聚合中收集事件并分发
+  dispatchEventsFrom(aggregate) {
+    const events = aggregate.pullDomainEvents();
+    for (const eventData of events) {
+      const event = new DomainEvent(eventData.type, eventData.orderId, eventData);
+      this.dispatch(event);
+    }
+  }
+}
+
+// ========== 事件处理器 ==========
+
+// 订单提交后 → 通知库存服务预留库存
+function onOrderSubmittedReserveStock(event) {
+  console.log(`    [库存] 为订单 ${event.payload.orderId} 预留库存，共 ${event.payload.itemCount} 种商品`);
+}
+
+// 订单提交后 → 发送确认通知
+function onOrderSubmittedSendNotification(event) {
+  console.log(`    [通知] 向买家 ${event.payload.buyerId} 发送订单确认消息`);
+}
+
+// 订单取消后 → 释放库存
+function onOrderCancelledReleaseStock(event) {
+  console.log(`    [库存] 释放订单 ${event.payload.orderId} 的预留库存`);
+}
+
+// 组装
+const dispatcher = new DomainEventDispatcher();
+dispatcher.register('OrderSubmitted', onOrderSubmittedReserveStock, '库存预留处理器');
+dispatcher.register('OrderSubmitted', onOrderSubmittedSendNotification, '通知处理器');
+dispatcher.register('OrderCancelled', onOrderCancelledReleaseStock, '库存释放处理器');
+
+// 使用（结合之前的 Order 聚合）
+const testOrder = new Order('order-100', 'buyer-100');
+testOrder.addItem('prod-001', '键盘', 599, 1);
+testOrder.submit();
+dispatcher.dispatchEventsFrom(testOrder);
+
+testOrder.cancel('买家主动取消');
+dispatcher.dispatchEventsFrom(testOrder);
+```
+
+## 🗄️ 仓储（Repository）
+
+### 什么是仓储？
+
+仓储是对数据访问的抽象，提供类似集合的接口来存取聚合。仓储屏蔽了持久化的技术细节，让领域层不需要关心数据存在哪里、怎么存储。
+
+### 仓储的设计原则
+
+1. **每个聚合根一个仓储**：不为聚合内部的实体单独创建仓储
+2. **接口在领域层定义**：仓储接口属于领域层，实现属于基础设施层
+3. **返回聚合**：仓储返回的是完整的聚合，不是部分数据
+4. **隐藏持久化细节**：领域层不知道数据是存在数据库、文件还是内存中
+
+```js
+// ========== 仓储模式 ==========
+
+// 仓储接口（领域层定义）
+// OrderRepository 接口:
+//   save(order)
+//   findById(orderId) -> Order | null
+//   findByBuyerId(buyerId) -> Order[]
+//   delete(orderId)
+
+// 仓储实现 1：内存存储（用于测试）
+class InMemoryOrderRepository {
+  constructor() {
+    this.store = new Map();
+  }
+
+  save(order) {
+    // 深拷贝保存，模拟数据库行为
+    this.store.set(order.orderId, JSON.parse(JSON.stringify(order)));
+    console.log(`[内存仓储] 保存订单 ${order.orderId}`);
+  }
+
+  findById(orderId) {
+    const data = this.store.get(orderId);
+    if (!data) return null;
+    // 重建聚合对象（模拟 ORM 行为）
+    const order = new Order(data.orderId, data.buyerId);
+    Object.assign(order, data);
+    // 重建内部实体
+    order.items = data.items.map(itemData =>
+      Object.assign(new OrderItem(itemData.itemId, itemData.productId, itemData.productName, itemData.unitPrice, itemData.quantity), itemData)
+    );
+    return order;
+  }
+
+  findByBuyerId(buyerId) {
+    return Array.from(this.store.values())
+      .filter(data => data.buyerId === buyerId)
+      .map(data => {
+        const order = new Order(data.orderId, data.buyerId);
+        Object.assign(order, data);
+        return order;
+      });
+  }
+
+  delete(orderId) {
+    this.store.delete(orderId);
+    console.log(`[内存仓储] 删除订单 ${orderId}`);
+  }
+
+  count() {
+    return this.store.size;
+  }
+}
+
+// ========== 应用服务使用仓储 ==========
+class OrderApplicationService {
+  constructor(orderRepository, eventDispatcher) {
+    this.orderRepository = orderRepository;
+    this.eventDispatcher = eventDispatcher;
+  }
+
+  createOrder(buyerId, items) {
+    const orderId = `order-${Date.now()}`;
+    const order = new Order(orderId, buyerId);
+
+    for (const item of items) {
+      order.addItem(item.productId, item.productName, item.unitPrice, item.quantity);
+    }
+
+    this.orderRepository.save(order);
+    return { orderId, totalAmount: order.getTotalAmount() };
+  }
+
+  submitOrder(orderId) {
+    // 从仓储加载聚合
+    const order = this.orderRepository.findById(orderId);
+    if (!order) throw new Error(`订单 ${orderId} 不存在`);
+
+    // 执行业务操作
+    order.submit();
+
+    // 保存变更
+    this.orderRepository.save(order);
+
+    // 分发领域事件
+    if (this.eventDispatcher) {
+      this.eventDispatcher.dispatchEventsFrom(order);
+    }
+
+    return { orderId, status: order.status, totalAmount: order.getTotalAmount() };
+  }
+
+  getOrdersByBuyer(buyerId) {
+    return this.orderRepository.findByBuyerId(buyerId);
+  }
+}
+
+// ========== 运行 ==========
+const orderRepo = new InMemoryOrderRepository();
+const appService = new OrderApplicationService(orderRepo, null);
+
+const result = appService.createOrder('buyer-001', [
+  { productId: 'prod-001', productName: '机械键盘', unitPrice: 599, quantity: 1 },
+  { productId: 'prod-002', productName: '显示器', unitPrice: 2499, quantity: 1 },
+]);
+console.log('创建结果:', result);
+
+const submitResult = appService.submitOrder(result.orderId);
+console.log('提交结果:', submitResult);
+
+const buyerOrders = appService.getOrdersByBuyer('buyer-001');
+console.log(`买家 buyer-001 共有 ${buyerOrders.length} 个订单`);
+```
+
+## 📊 战术设计模式对比总结
+
+| 构建块 | 特征 | 职责 | 关键规则 |
+|--------|------|------|---------|
+| **实体** | 有唯一标识、可变 | 封装业务行为和规则 | 充血模型，避免贫血 |
+| **值对象** | 无标识、不可变 | 表达领域中的"量"和"描述" | 修改即创建新实例 |
+| **聚合** | 一致性边界 | 保证内部数据一致性 | 通过聚合根访问，小聚合 |
+| **领域服务** | 无状态 | 跨聚合的业务逻辑 | 不属于任何实体的逻辑 |
+| **领域事件** | 不可变、过去时态 | 聚合间解耦通信 | 幂等消费、自包含 |
+| **仓储** | 集合接口 | 聚合的存取 | 每个聚合根一个仓储 |
+
+## 🔗 相关概念
+
+- **[DDD 战略设计](/architect/02-architecture-fundamentals/02-domain-driven-design/02-strategic-design)**：战术设计在限界上下文内部实施
+- **[DDD 实践](/architect/02-architecture-fundamentals/02-domain-driven-design/04-ddd-practices)**：如何在实际项目中落地这些模式
+- **[整洁架构](/architect/02-architecture-fundamentals/01-architecture-styles/04-modern-architecture-styles)**：整洁架构的实体层与 DDD 领域模型高度契合
+
+## ✅ 学习检查点
+
+- [ ] 能够区分何时用实体、何时用值对象
+- [ ] 能够设计聚合边界并通过聚合根管理内部一致性
+- [ ] 理解领域服务与应用服务的区别
+- [ ] 能够设计领域事件实现聚合间的最终一致性
+- [ ] 理解仓储模式中接口与实现的分离
+
+## 🚀 下一步
+
+→ [DDD 实践](/architect/02-architecture-fundamentals/02-domain-driven-design/04-ddd-practices)

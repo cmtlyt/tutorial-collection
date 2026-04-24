@@ -14,4 +14,846 @@
 - 理解 CQRS 的命令查询职责分离思想
 - 了解 Serverless 架构的设计和适用场景
 
-> 🚧 详细内容正在编写中...
+## 🔷 六边形架构（Hexagonal Architecture）
+
+### 核心思想
+
+六边形架构（又称端口与适配器架构，Ports and Adapters），由 Alistair Cockburn 提出。其核心思想是：**将应用程序的核心业务逻辑与外部依赖（数据库、UI、消息队列等）完全隔离**，通过端口（Port）和适配器（Adapter）进行交互。
+
+### 架构图示
+
+```
+                    ┌─ REST API 适配器
+                    │
+         ┌──────── Port（入站）────────┐
+         │                              │
+  CLI ───┤     ┌──────────────────┐     ├─── Web UI
+  适配器  │     │                  │     │    适配器
+         │     │   核心业务逻辑    │     │
+         │     │  （领域模型）      │     │
+         └─────┤                  ├─────┘
+               │                  │
+         ┌─────┤                  ├─────┐
+         │     └──────────────────┘     │
+         │                              │
+         └──────── Port（出站）────────┘
+                    │
+                    ├─ 数据库适配器
+                    ├─ 消息队列适配器
+                    └─ 外部 API 适配器
+```
+
+### 关键概念
+
+- **端口（Port）**：定义核心业务逻辑与外部世界交互的**接口**
+  - **入站端口（Driving Port）**：外部世界调用应用的接口（如用例接口）
+  - **出站端口（Driven Port）**：应用调用外部世界的接口（如仓储接口）
+- **适配器（Adapter）**：端口的具体实现，负责将外部技术细节转换为端口定义的格式
+  - **入站适配器**：HTTP Controller、CLI 命令、消息消费者
+  - **出站适配器**：数据库实现、外部 API 客户端、消息发布者
+
+### 代码示例
+
+```js
+// ========== 核心领域层（不依赖任何外部技术）==========
+
+// 领域模型
+class Order {
+  constructor(id, customerId, items) {
+    this.id = id;
+    this.customerId = customerId;
+    this.items = items;
+    this.status = 'pending';
+    this.totalAmount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    this.createdAt = new Date().toISOString();
+  }
+
+  confirm() {
+    if (this.status !== 'pending') {
+      throw new Error(`订单 ${this.id} 状态为 ${this.status}，无法确认`);
+    }
+    this.status = 'confirmed';
+  }
+
+  cancel() {
+    if (this.status === 'shipped') {
+      throw new Error('已发货的订单无法取消');
+    }
+    this.status = 'cancelled';
+  }
+}
+
+// ========== 端口定义（接口）==========
+
+// 入站端口：定义应用能做什么（用例）
+// CreateOrderUseCase: { execute(customerId, items) -> Order }
+// GetOrderUseCase: { execute(orderId) -> Order }
+
+// 出站端口：定义应用需要什么外部能力
+// OrderRepository: { save(order), findById(orderId) }
+// NotificationService: { sendOrderConfirmation(order) }
+
+// ========== 应用服务（编排用例，连接端口）==========
+class OrderApplicationService {
+  constructor(orderRepository, notificationService) {
+    // 依赖注入出站端口（接口），而非具体实现
+    this.orderRepository = orderRepository;
+    this.notificationService = notificationService;
+    this.nextId = 1;
+  }
+
+  // 实现入站端口：创建订单用例
+  createOrder(customerId, items) {
+    const orderId = `order-${this.nextId++}`;
+    const order = new Order(orderId, customerId, items);
+    this.orderRepository.save(order);
+    return order;
+  }
+
+  // 实现入站端口：确认订单用例
+  confirmOrder(orderId) {
+    const order = this.orderRepository.findById(orderId);
+    if (!order) throw new Error(`订单 ${orderId} 不存在`);
+    order.confirm();
+    this.orderRepository.save(order);
+    this.notificationService.sendOrderConfirmation(order);
+    return order;
+  }
+}
+
+// ========== 出站适配器（可替换的外部实现）==========
+
+// 适配器 1：内存数据库实现
+class InMemoryOrderRepository {
+  constructor() { this.store = new Map(); }
+  save(order) { this.store.set(order.id, { ...order }); }
+  findById(orderId) {
+    const data = this.store.get(orderId);
+    if (!data) return null;
+    const order = Object.assign(new Order(data.id, data.customerId, data.items), data);
+    return order;
+  }
+}
+
+// 适配器 2：控制台通知实现（可替换为邮件、短信等）
+class ConsoleNotificationService {
+  sendOrderConfirmation(order) {
+    console.log(`[通知] 订单 ${order.id} 已确认，金额: ¥${order.totalAmount}`);
+  }
+}
+
+// ========== 入站适配器（HTTP Controller 模拟）==========
+class OrderHttpAdapter {
+  constructor(orderService) {
+    this.orderService = orderService;
+  }
+
+  handlePost(body) {
+    try {
+      const order = this.orderService.createOrder(body.customerId, body.items);
+      return { status: 201, body: order };
+    } catch (error) {
+      return { status: 400, body: { message: error.message } };
+    }
+  }
+
+  handleConfirm(orderId) {
+    try {
+      const order = this.orderService.confirmOrder(orderId);
+      return { status: 200, body: order };
+    } catch (error) {
+      return { status: 400, body: { message: error.message } };
+    }
+  }
+}
+
+// ========== 组装（依赖注入）==========
+// 替换适配器不影响核心业务逻辑
+const repository = new InMemoryOrderRepository();
+const notification = new ConsoleNotificationService();
+const orderService = new OrderApplicationService(repository, notification);
+const httpAdapter = new OrderHttpAdapter(orderService);
+
+console.log(httpAdapter.handlePost({
+  customerId: 'cust-001',
+  items: [{ name: '键盘', price: 599, quantity: 1 }],
+}));
+console.log(httpAdapter.handleConfirm('order-1'));
+```
+
+## 🧅 洋葱架构（Onion Architecture）
+
+### 核心思想
+
+洋葱架构由 Jeffrey Palermo 提出，与六边形架构理念相似，但更强调**同心圆层次**和**依赖方向**：所有依赖都指向圆心（领域模型），外层可以依赖内层，内层不能依赖外层。
+
+### 层次结构
+
+```
+┌─────────────────────────────────────────────┐
+│           基础设施层（Infrastructure）         │
+│  ┌─────────────────────────────────────┐    │
+│  │      应用服务层（Application）        │    │
+│  │  ┌─────────────────────────────┐    │    │
+│  │  │   领域服务层（Domain Service）│    │    │
+│  │  │  ┌─────────────────────┐    │    │    │
+│  │  │  │   领域模型（Domain） │    │    │    │
+│  │  │  │   实体、值对象       │    │    │    │
+│  │  │  └─────────────────────┘    │    │    │
+│  │  └─────────────────────────────┘    │    │
+│  └─────────────────────────────────────┘    │
+└─────────────────────────────────────────────┘
+
+依赖方向：外 → 内（Infrastructure → Application → Domain Service → Domain Model）
+```
+
+### 各层职责
+
+| 层次 | 职责 | 示例 |
+|------|------|------|
+| **领域模型** | 业务实体和值对象，纯业务规则 | `Order`、`Money`、`Address` |
+| **领域服务** | 跨实体的业务逻辑 | `PricingService`、`OrderValidator` |
+| **应用服务** | 编排用例流程，不含业务逻辑 | `CreateOrderUseCase` |
+| **基础设施** | 技术实现细节 | 数据库、HTTP、消息队列 |
+
+### 与六边形架构的关系
+
+两者理念高度一致，核心区别在于：
+- **六边形架构**强调"端口与适配器"的隐喻，关注内外交互
+- **洋葱架构**强调"同心圆层次"的隐喻，关注依赖方向
+
+## 🎯 整洁架构（Clean Architecture）
+
+### 核心思想
+
+整洁架构由 Robert C. Martin（Uncle Bob）提出，是对六边形架构和洋葱架构的进一步提炼。核心规则只有一条：**依赖规则（Dependency Rule）—— 源代码依赖只能指向内层，内层对外层一无所知。**
+
+### 同心圆层次
+
+```
+┌──────────────────────────────────────────────────┐
+│  框架与驱动（Frameworks & Drivers）                │
+│  Web、数据库、设备、外部接口                        │
+│  ┌──────────────────────────────────────────┐    │
+│  │  接口适配器（Interface Adapters）           │    │
+│  │  Controller、Gateway、Presenter           │    │
+│  │  ┌──────────────────────────────────┐    │    │
+│  │  │  用例（Use Cases）                │    │    │
+│  │  │  应用业务规则                      │    │    │
+│  │  │  ┌──────────────────────────┐    │    │    │
+│  │  │  │  实体（Entities）         │    │    │    │
+│  │  │  │  企业级业务规则            │    │    │    │
+│  │  │  └──────────────────────────┘    │    │    │
+│  │  └──────────────────────────────────┘    │    │
+│  └──────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────┘
+```
+
+### 代码示例：整洁架构的依赖规则
+
+```js
+// ========== 实体层（Entities）：纯业务规则 ==========
+class Account {
+  constructor(id, ownerName, balance) {
+    this.id = id;
+    this.ownerName = ownerName;
+    this.balance = balance;
+  }
+
+  canWithdraw(amount) {
+    return this.balance >= amount;
+  }
+
+  withdraw(amount) {
+    if (!this.canWithdraw(amount)) {
+      throw new Error(`余额不足：当前 ¥${this.balance}，需要 ¥${amount}`);
+    }
+    this.balance -= amount;
+  }
+
+  deposit(amount) {
+    if (amount <= 0) throw new Error('存款金额必须大于 0');
+    this.balance += amount;
+  }
+}
+
+// ========== 用例层（Use Cases）：应用业务规则 ==========
+// 用例只依赖实体和出站端口接口，不知道外部技术细节
+
+class TransferMoneyUseCase {
+  constructor(accountRepository, transactionLogger) {
+    this.accountRepository = accountRepository;   // 出站端口
+    this.transactionLogger = transactionLogger;     // 出站端口
+  }
+
+  execute(fromAccountId, toAccountId, amount) {
+    const fromAccount = this.accountRepository.findById(fromAccountId);
+    const toAccount = this.accountRepository.findById(toAccountId);
+
+    if (!fromAccount) throw new Error(`账户 ${fromAccountId} 不存在`);
+    if (!toAccount) throw new Error(`账户 ${toAccountId} 不存在`);
+
+    // 业务规则在实体中
+    fromAccount.withdraw(amount);
+    toAccount.deposit(amount);
+
+    // 持久化（通过出站端口）
+    this.accountRepository.save(fromAccount);
+    this.accountRepository.save(toAccount);
+
+    // 记录交易日志
+    this.transactionLogger.log({
+      from: fromAccountId,
+      to: toAccountId,
+      amount,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { from: fromAccount, to: toAccount, amount };
+  }
+}
+
+// ========== 接口适配器层（Interface Adapters）==========
+class TransferController {
+  constructor(transferUseCase) {
+    this.transferUseCase = transferUseCase;
+  }
+
+  handleTransfer(request) {
+    try {
+      const result = this.transferUseCase.execute(
+        request.fromAccountId,
+        request.toAccountId,
+        request.amount,
+      );
+      return {
+        status: 200,
+        body: {
+          message: '转账成功',
+          fromBalance: result.from.balance,
+          toBalance: result.to.balance,
+        },
+      };
+    } catch (error) {
+      return { status: 400, body: { message: error.message } };
+    }
+  }
+}
+
+// ========== 框架与驱动层（Frameworks & Drivers）==========
+class InMemoryAccountRepository {
+  constructor() { this.accounts = new Map(); }
+  save(account) { this.accounts.set(account.id, account); }
+  findById(id) { return this.accounts.get(id) || null; }
+}
+
+class ConsoleTransactionLogger {
+  log(transaction) {
+    console.log(`[交易记录] ${transaction.from} → ${transaction.to}：¥${transaction.amount}`);
+  }
+}
+
+// ========== 组装 ==========
+const accountRepo = new InMemoryAccountRepository();
+accountRepo.save(new Account('acc-001', '张三', 10000));
+accountRepo.save(new Account('acc-002', '李四', 5000));
+
+const transferUseCase = new TransferMoneyUseCase(accountRepo, new ConsoleTransactionLogger());
+const controller = new TransferController(transferUseCase);
+
+console.log(controller.handleTransfer({
+  fromAccountId: 'acc-001',
+  toAccountId: 'acc-002',
+  amount: 3000,
+}));
+```
+
+## 🔀 CQRS（命令查询职责分离）
+
+### 核心思想
+
+CQRS（Command Query Responsibility Segregation）将系统的**写操作（命令）**和**读操作（查询）**分离到不同的模型中，各自独立优化。
+
+### 架构图示
+
+```
+              ┌─────────────┐
+              │   客户端      │
+              └──────┬──────┘
+            ┌────────┴────────┐
+            ↓                 ↓
+     ┌────────────┐   ┌────────────┐
+     │  命令模型   │   │  查询模型   │
+     │ (写模型)    │   │ (读模型)    │
+     │            │   │            │
+     │ 领域逻辑    │   │ 直接查库    │
+     │ 验证规则    │   │ 无业务逻辑  │
+     └─────┬──────┘   └──────┬─────┘
+           ↓                 ↑
+     ┌──────────┐      ┌──────────┐
+     │  写数据库  │ ───→ │  读数据库  │
+     │ (标准化)   │ 同步  │ (反标准化) │
+     └──────────┘      └──────────┘
+```
+
+### 代码示例
+
+```js
+// ========== 命令端（Write Side）==========
+
+// 命令对象
+class CreateProductCommand {
+  constructor(name, price, category) {
+    this.type = 'CreateProduct';
+    this.name = name;
+    this.price = price;
+    this.category = category;
+  }
+}
+
+class UpdatePriceCommand {
+  constructor(productId, newPrice) {
+    this.type = 'UpdatePrice';
+    this.productId = productId;
+    this.newPrice = newPrice;
+  }
+}
+
+// 命令处理器（包含业务验证和领域逻辑）
+class ProductCommandHandler {
+  constructor(writeStore, eventPublisher) {
+    this.writeStore = writeStore;
+    this.eventPublisher = eventPublisher;
+    this.nextId = 1;
+  }
+
+  handle(command) {
+    switch (command.type) {
+      case 'CreateProduct':
+        return this.handleCreate(command);
+      case 'UpdatePrice':
+        return this.handleUpdatePrice(command);
+      default:
+        throw new Error(`未知命令: ${command.type}`);
+    }
+  }
+
+  handleCreate(command) {
+    // 业务验证
+    if (command.price <= 0) throw new Error('价格必须大于 0');
+    if (!command.name) throw new Error('商品名称不能为空');
+
+    const productId = `prod-${this.nextId++}`;
+    const product = {
+      id: productId,
+      name: command.name,
+      price: command.price,
+      category: command.category,
+      createdAt: new Date().toISOString(),
+    };
+
+    this.writeStore.save(product);
+
+    // 发布事件，供查询端同步
+    this.eventPublisher.publish('ProductCreated', product);
+    return productId;
+  }
+
+  handleUpdatePrice(command) {
+    const product = this.writeStore.findById(command.productId);
+    if (!product) throw new Error(`商品 ${command.productId} 不存在`);
+    if (command.newPrice <= 0) throw new Error('价格必须大于 0');
+
+    const oldPrice = product.price;
+    product.price = command.newPrice;
+    this.writeStore.save(product);
+
+    this.eventPublisher.publish('PriceUpdated', {
+      productId: product.id,
+      oldPrice,
+      newPrice: command.newPrice,
+    });
+    return product;
+  }
+}
+
+// ========== 查询端（Read Side）==========
+
+// 查询模型（针对读场景优化的反标准化视图）
+class ProductReadModel {
+  constructor() {
+    this.products = [];
+    this.productsByCategory = new Map();
+  }
+
+  // 通过事件同步数据
+  onProductCreated(event) {
+    const readView = {
+      id: event.id,
+      name: event.name,
+      price: event.price,
+      category: event.category,
+      priceDisplay: `¥${event.price}`,
+    };
+    this.products.push(readView);
+
+    if (!this.productsByCategory.has(event.category)) {
+      this.productsByCategory.set(event.category, []);
+    }
+    this.productsByCategory.get(event.category).push(readView);
+  }
+
+  onPriceUpdated(event) {
+    const product = this.products.find(p => p.id === event.productId);
+    if (product) {
+      product.price = event.newPrice;
+      product.priceDisplay = `¥${event.newPrice}`;
+    }
+  }
+
+  // 查询方法（无业务逻辑，直接返回数据）
+  getAllProducts() {
+    return this.products;
+  }
+
+  getProductsByCategory(category) {
+    return this.productsByCategory.get(category) || [];
+  }
+
+  getProductById(productId) {
+    return this.products.find(p => p.id === productId) || null;
+  }
+}
+
+// ========== 事件发布者（连接读写两端）==========
+class EventPublisher {
+  constructor() { this.handlers = new Map(); }
+
+  subscribe(eventType, handler) {
+    if (!this.handlers.has(eventType)) this.handlers.set(eventType, []);
+    this.handlers.get(eventType).push(handler);
+  }
+
+  publish(eventType, data) {
+    const handlers = this.handlers.get(eventType) || [];
+    for (const handler of handlers) {
+      handler(data);
+    }
+  }
+}
+
+// ========== 组装与运行 ==========
+const writeStore = {
+  data: new Map(),
+  save(product) { this.data.set(product.id, { ...product }); },
+  findById(id) { return this.data.get(id) || null; },
+};
+
+const eventPublisher = new EventPublisher();
+const readModel = new ProductReadModel();
+
+// 查询端订阅事件
+eventPublisher.subscribe('ProductCreated', (data) => readModel.onProductCreated(data));
+eventPublisher.subscribe('PriceUpdated', (data) => readModel.onPriceUpdated(data));
+
+const commandHandler = new ProductCommandHandler(writeStore, eventPublisher);
+
+// 写操作
+commandHandler.handle(new CreateProductCommand('机械键盘', 599, '外设'));
+commandHandler.handle(new CreateProductCommand('无线鼠标', 199, '外设'));
+commandHandler.handle(new CreateProductCommand('显示器', 2499, '显示'));
+
+// 读操作（从读模型查询）
+console.log('所有商品:', readModel.getAllProducts());
+console.log('外设分类:', readModel.getProductsByCategory('外设'));
+
+// 更新价格
+commandHandler.handle(new UpdatePriceCommand('prod-1', 499));
+console.log('更新后:', readModel.getProductById('prod-1'));
+```
+
+### 何时使用 CQRS？
+
+| 适合 | 不适合 |
+|------|--------|
+| 读写比例悬殊（读远多于写） | 简单 CRUD 应用 |
+| 读写模型差异大 | 业务逻辑简单 |
+| 需要独立扩展读写能力 | 团队不熟悉事件驱动 |
+| 结合事件溯源使用 | 数据一致性要求极高 |
+
+## ☁️ Serverless 架构
+
+### 核心思想
+
+Serverless 架构让开发者只需关注业务逻辑，无需管理服务器。基础设施的供给、扩缩容、运维全部由云平台自动处理。
+
+### 两种主要形式
+
+1. **BaaS（Backend as a Service）**：使用第三方托管服务（数据库、认证、存储等）
+2. **FaaS（Function as a Service）**：以函数为部署单位，按调用次数计费
+
+### 架构模型
+
+```
+客户端（Web/App）
+    ↓
+API 网关（路由 + 认证 + 限流）
+    ↓
+┌──────────┐ ┌──────────┐ ┌──────────┐
+│ 函数 A    │ │ 函数 B    │ │ 函数 C    │
+│ (下单)    │ │ (支付)    │ │ (通知)    │
+└────┬─────┘ └────┬─────┘ └────┬─────┘
+     ↓            ↓            ↓
+  云数据库     支付 API      消息服务
+```
+
+### 代码示例：FaaS 函数设计
+
+```js
+// ========== Serverless 函数示例 ==========
+
+// 每个函数是一个独立的部署单位
+// 函数是无状态的，通过外部服务管理状态
+
+// 函数 1：创建订单
+function createOrderHandler(event) {
+  const { userId, items } = event.body;
+
+  // 输入验证
+  if (!userId || !items || items.length === 0) {
+    return { statusCode: 400, body: { message: '参数不完整' } };
+  }
+
+  const totalAmount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+  const order = {
+    id: `order-${Date.now()}`,
+    userId,
+    items,
+    totalAmount,
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+
+  // 实际环境中：写入云数据库（如 DynamoDB、TableStore）
+  console.log('[函数:createOrder] 写入数据库:', order);
+
+  // 实际环境中：发布事件到消息队列触发后续流程
+  console.log('[函数:createOrder] 发布 OrderCreated 事件');
+
+  return { statusCode: 201, body: order };
+}
+
+// 函数 2：处理支付回调（由消息队列触发）
+function processPaymentHandler(event) {
+  const { orderId, paymentStatus, transactionId } = event.body;
+
+  console.log(`[函数:processPayment] 处理订单 ${orderId} 的支付回调`);
+
+  if (paymentStatus === 'success') {
+    // 更新订单状态
+    console.log(`  → 订单 ${orderId} 支付成功，交易号: ${transactionId}`);
+    // 触发发货流程
+    console.log('  → 发布 PaymentConfirmed 事件');
+  } else {
+    console.log(`  → 订单 ${orderId} 支付失败`);
+    // 触发取消流程
+  }
+
+  return { statusCode: 200, body: { processed: true } };
+}
+
+// 模拟 API 网关调用
+const apiGateway = {
+  route(method, path, body) {
+    const event = { body, method, path };
+
+    if (method === 'POST' && path === '/orders') {
+      return createOrderHandler(event);
+    }
+    if (method === 'POST' && path === '/payments/callback') {
+      return processPaymentHandler(event);
+    }
+    return { statusCode: 404, body: { message: 'Not Found' } };
+  },
+};
+
+console.log(apiGateway.route('POST', '/orders', {
+  userId: 'user-001',
+  items: [{ name: '云服务器', price: 99, quantity: 1 }],
+}));
+
+console.log(apiGateway.route('POST', '/payments/callback', {
+  orderId: 'order-123',
+  paymentStatus: 'success',
+  transactionId: 'txn-456',
+}));
+```
+
+### Serverless 的权衡
+
+**优势**：
+- 无需运维服务器，自动扩缩容
+- 按实际使用量计费，闲时零成本
+- 开发者聚焦业务逻辑
+
+**劣势**：
+- **冷启动延迟**：函数首次调用有额外延迟
+- **执行时间限制**：通常有最大执行时间（如 15 分钟）
+- **状态管理困难**：函数无状态，需要外部存储
+- **供应商锁定**：不同云平台的 FaaS API 不同
+- **调试困难**：分布式追踪和本地调试较复杂
+
+## 🔧 管道-过滤器架构（Pipe-and-Filter）
+
+### 核心思想
+
+管道-过滤器架构将数据处理过程分解为一系列**独立的处理步骤（过滤器）**，过滤器之间通过**管道**连接，数据在管道中单向流动。
+
+### 代码示例
+
+```js
+// ========== 管道-过滤器架构实现 ==========
+
+// 过滤器基类
+class Filter {
+  constructor(name) { this.name = name; }
+  process(data) { throw new Error('子类必须实现 process 方法'); }
+}
+
+// 具体过滤器：数据清洗
+class DataCleansingFilter extends Filter {
+  constructor() { super('数据清洗'); }
+  process(records) {
+    console.log(`[${this.name}] 输入 ${records.length} 条记录`);
+    const cleaned = records
+      .filter(record => record.name && record.email)
+      .map(record => ({
+        ...record,
+        name: record.name.trim(),
+        email: record.email.trim().toLowerCase(),
+      }));
+    console.log(`[${this.name}] 输出 ${cleaned.length} 条有效记录`);
+    return cleaned;
+  }
+}
+
+// 具体过滤器：数据转换
+class DataTransformFilter extends Filter {
+  constructor() { super('数据转换'); }
+  process(records) {
+    console.log(`[${this.name}] 转换 ${records.length} 条记录`);
+    return records.map(record => ({
+      ...record,
+      username: record.email.split('@')[0],
+      domain: record.email.split('@')[1],
+      processedAt: new Date().toISOString(),
+    }));
+  }
+}
+
+// 具体过滤器：数据去重
+class DeduplicationFilter extends Filter {
+  constructor() { super('数据去重'); }
+  process(records) {
+    const seen = new Set();
+    const deduped = records.filter(record => {
+      if (seen.has(record.email)) return false;
+      seen.add(record.email);
+      return true;
+    });
+    console.log(`[${this.name}] 去重：${records.length} → ${deduped.length} 条`);
+    return deduped;
+  }
+}
+
+// 具体过滤器：数据富化
+class DataEnrichmentFilter extends Filter {
+  constructor() { super('数据富化'); }
+  process(records) {
+    console.log(`[${this.name}] 富化 ${records.length} 条记录`);
+    return records.map(record => ({
+      ...record,
+      userType: record.domain === 'company.com' ? 'internal' : 'external',
+    }));
+  }
+}
+
+// 管道：连接多个过滤器
+class Pipeline {
+  constructor(name) {
+    this.name = name;
+    this.filters = [];
+  }
+
+  addFilter(filter) {
+    this.filters.push(filter);
+    return this; // 支持链式调用
+  }
+
+  execute(inputData) {
+    console.log(`\n=== 管道 [${this.name}] 开始执行 ===`);
+    let data = inputData;
+    for (const filter of this.filters) {
+      data = filter.process(data);
+    }
+    console.log(`=== 管道 [${this.name}] 执行完成 ===\n`);
+    return data;
+  }
+}
+
+// ========== 运行 ==========
+const rawData = [
+  { name: '张三', email: 'zhangsan@company.com' },
+  { name: '  李四  ', email: '  LISI@example.com  ' },
+  { name: '', email: 'empty@test.com' },
+  { name: '王五', email: 'wangwu@company.com' },
+  { name: '张三(重复)', email: 'zhangsan@company.com' },
+  { name: '赵六', email: 'zhaoliu@external.com' },
+];
+
+const userProcessingPipeline = new Pipeline('用户数据处理')
+  .addFilter(new DataCleansingFilter())
+  .addFilter(new DeduplicationFilter())
+  .addFilter(new DataTransformFilter())
+  .addFilter(new DataEnrichmentFilter());
+
+const result = userProcessingPipeline.execute(rawData);
+console.log('最终结果:', JSON.stringify(result, null, 2));
+```
+
+### 适用场景
+
+- **数据处理流水线**：ETL、日志处理、数据清洗
+- **编译器**：词法分析 → 语法分析 → 语义分析 → 代码生成
+- **图像处理**：缩放 → 裁剪 → 滤镜 → 压缩
+- **请求处理**：认证 → 授权 → 限流 → 路由（中间件模式）
+
+## 📊 现代架构风格对比
+
+| 架构风格 | 核心关注点 | 适用场景 | 复杂度 |
+|---------|-----------|---------|--------|
+| **六边形架构** | 内外隔离 | 业务逻辑复杂的中大型系统 | 中 |
+| **洋葱架构** | 依赖方向 | 同六边形，更强调层次感 | 中 |
+| **整洁架构** | 依赖规则 | 需要长期维护的核心系统 | 中高 |
+| **CQRS** | 读写分离 | 读写比悬殊、读写模型差异大 | 中高 |
+| **Serverless** | 无服务器 | 事件驱动、低流量/突发流量 | 低 |
+| **管道-过滤器** | 数据流 | 数据处理、ETL、编译器 | 低 |
+
+## 🔗 相关概念
+
+- **[单体架构](/architect/02-architecture-fundamentals/01-architecture-styles/02-monolithic-architecture)**：六边形/整洁架构可以在单体中应用
+- **[DDD 战术设计](/architect/02-architecture-fundamentals/02-domain-driven-design/03-tactical-design)**：整洁架构的实体层与 DDD 的领域模型高度契合
+- **[事件驱动架构](/architect/02-architecture-fundamentals/01-architecture-styles/03-distributed-architecture)**：CQRS 经常与事件溯源结合使用
+
+## ✅ 学习检查点
+
+- [ ] 能够解释六边形架构中入站端口/出站端口的区别
+- [ ] 理解整洁架构的依赖规则及其带来的好处
+- [ ] 能够设计一个 CQRS 系统的读写分离方案
+- [ ] 理解 Serverless 的冷启动问题和状态管理挑战
+- [ ] 能够用管道-过滤器模式设计一个数据处理流水线
+
+## 🚀 下一步
+
+→ [领域驱动设计（DDD）](/architect/02-architecture-fundamentals/02-domain-driven-design/01-ddd-overview)
