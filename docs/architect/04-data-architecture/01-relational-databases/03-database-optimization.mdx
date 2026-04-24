@@ -14,4 +14,344 @@
 - 理解读写分离的架构设计
 - 掌握连接池的配置和调优
 
-> 🚧 详细内容正在编写中...
+## 📚 查询优化
+
+### 执行计划分析
+
+```sql
+-- 使用 EXPLAIN 分析查询执行计划
+EXPLAIN SELECT 
+    o.id,
+    o.order_no,
+    u.username,
+    p.product_name,
+    oi.quantity,
+    oi.price
+FROM orders o
+INNER JOIN users u ON o.user_id = u.id
+INNER JOIN order_items oi ON o.id = oi.order_id
+INNER JOIN products p ON oi.product_id = p.id
+WHERE o.status = 'pending'
+AND o.created_at >= '2025-01-01'
+ORDER BY o.created_at DESC
+LIMIT 100;
+
+-- 执行计划关键字段说明
+const explainColumns = {
+  id: "查询序列号，表示执行顺序",
+  select_type: "查询类型（SIMPLE/PRIMARY/SUBQUERY/DERIVED）",
+  type: "访问类型（性能：const > eq_ref > ref > range > index > ALL）",
+  possible_keys: "可能使用的索引",
+  key: "实际使用的索引",
+  key_len: "使用的索引长度",
+  ref: "索引引用的列",
+  rows: "预估扫描行数",
+  filtered: "过滤后的行数百分比",
+  Extra: "额外信息（Using index/Using filesort/Using temporary）"
+}
+```
+
+### SQL 优化技巧
+
+```sql
+-- 1. 避免 SELECT *
+-- 错误示例
+SELECT * FROM orders WHERE user_id = 123;
+
+-- 正确示例：只查询需要的字段
+SELECT id, order_no, status, total_amount 
+FROM orders 
+WHERE user_id = 123;
+
+-- 2. 避免在索引列上使用函数
+-- 错误示例
+SELECT * FROM users WHERE YEAR(created_at) = 2025;
+
+-- 正确示例：使用范围查询
+SELECT * FROM users 
+WHERE created_at >= '2025-01-01' 
+AND created_at < '2026-01-01';
+
+-- 3. 使用 UNION ALL 替代 UNION（如果不需要去重）
+-- UNION 会进行去重操作，性能较差
+SELECT user_id FROM orders WHERE status = 'pending'
+UNION
+SELECT user_id FROM orders WHERE status = 'processing';
+
+-- UNION ALL 不会去重，性能更好
+SELECT user_id FROM orders WHERE status = 'pending'
+UNION ALL
+SELECT user_id FROM orders WHERE status = 'processing';
+
+-- 4. 使用 LIMIT 限制结果集
+SELECT * FROM orders 
+WHERE status = 'pending' 
+ORDER BY created_at DESC 
+LIMIT 20;
+```
+
+## 📚 分库分表
+
+### 垂直分库 vs 水平分表
+
+```js
+// 分库分表策略对比
+const shardingStrategies = {
+  vertical: {
+    description: "按业务模块拆分",
+    example: "用户库、订单库、商品库",
+    advantages: [
+      "业务边界清晰",
+      "便于团队协作",
+      "降低单库压力"
+    ],
+    disadvantages: [
+      "跨库 JOIN 困难",
+      "分布式事务复杂"
+    ]
+  },
+  horizontal: {
+    description: "按数据量拆分",
+    example: "订单表按用户 ID 取模分 16 张表",
+    advantages: [
+      "解决单表数据量过大",
+      "提升查询性能"
+    ],
+    disadvantages: [
+      "跨分片查询复杂",
+      "数据迁移困难"
+    ]
+  }
+}
+```
+
+### 分片键选择
+
+```js
+// 分片键设计原则
+const shardingKeyDesign = {
+  principles: [
+    "查询频率高的字段",
+    "数据分布均匀",
+    "避免热点数据",
+    "考虑业务扩展性"
+  ],
+  commonShardingKeys: {
+    user_id: "用户相关数据，按用户 ID 取模",
+    order_id: "订单数据，按订单 ID 哈希",
+    date: "按时间范围分片（适合报表查询）",
+    region: "按地域分片（就近访问）"
+  }
+}
+
+// 分片算法示例
+const shardAlgorithms = {
+  modulo: {
+    name: "取模分片",
+    formula: "shard = id % shard_count",
+    example: "user_id % 16",
+    advantages: "数据分布均匀",
+    disadvantages: "扩容困难（需要数据迁移）"
+  },
+  range: {
+    name: "范围分片",
+    formula: "shard = (id - min_id) / range_size",
+    example: "user_id / 1000000",
+    advantages: "范围查询高效",
+    disadvantages: "数据分布不均"
+  },
+  hash: {
+    name: "哈希分片",
+    formula: "shard = hash(id) % shard_count",
+    example: "MD5(user_id) % 16",
+    advantages: "数据分布均匀",
+    disadvantages: "不支持范围查询"
+  }
+}
+```
+
+## 📚 读写分离
+
+### 主从复制架构
+
+```js
+// 读写分离架构设计
+const readWriteSplitting = {
+  architecture: {
+    master: {
+      role: "主库",
+      responsibility: "处理写操作",
+      features: ["强一致性", "高可用"]
+    },
+    slaves: {
+      role: "从库",
+      responsibility: "处理读操作",
+      features: ["最终一致性", "水平扩展"]
+    }
+  },
+  replication: {
+    async: {
+      description: "异步复制",
+      advantages: ["主库性能影响小"],
+      disadvantages: ["可能数据丢失"]
+    },
+    semiSync: {
+      description: "半同步复制",
+      advantages: ["数据安全性高"],
+      disadvantages: ["主库性能有影响"]
+    }
+  }
+}
+```
+
+### 读写分离实现策略
+
+```js
+// 读写分离路由策略
+const routingStrategies = {
+  forceMaster: {
+    description: "强制路由到主库",
+    scenarios: [
+      "写操作（INSERT/UPDATE/DELETE）",
+      "事务中的查询",
+      "需要强一致性的查询",
+      "刚写入后的查询"
+    ]
+  },
+  routeToSlave: {
+    description: "路由到从库",
+    scenarios: [
+      "读操作（SELECT）",
+      "报表查询",
+      "允许短暂延迟的查询"
+    ]
+  },
+  loadBalance: {
+    description: "从库负载均衡",
+    algorithms: [
+      "轮询（Round Robin）",
+      "随机（Random）",
+      "最少连接（Least Connections）",
+      "加权轮询（Weighted Round Robin）"
+    ]
+  }
+}
+```
+
+## 📚 连接池管理
+
+### 连接池配置
+
+```js
+// 连接池配置示例（以 HikariCP 为例）
+const hikariCPConfig = {
+  basic: {
+    minimumIdle: 10,
+    maximumPoolSize: 50,
+    connectionTimeout: 30000,
+    idleTimeout: 600000,
+    maxLifetime: 1800000
+  },
+  tuning: {
+    description: "连接池调优建议",
+    rules: [
+      "minimumIdle = maximumPoolSize / 2",
+      "maximumPoolSize = 核心数 * 2 + 有效磁盘数",
+      "maxLifetime 不应超过数据库的 wait_timeout",
+      "监控活跃连接数和等待时间"
+    ]
+  },
+  monitoring: {
+    metrics: [
+      "活跃连接数（activeConnections）",
+      "空闲连接数（idleConnections）",
+      "等待线程数（waitingThreads）",
+      "连接获取时间（connectionTimeout）"
+    ]
+  }
+}
+```
+
+### 连接泄漏检测
+
+```js
+// 连接泄漏检测配置
+const leakDetection = {
+  enabled: true,
+  leakDetectionThreshold: 60000,
+  description: "60 秒未归还的连接视为泄漏",
+  prevention: [
+    "使用 try-with-resources 或 try-finally",
+    "设置合理的超时时间",
+    "监控连接池状态",
+    "定期检查未关闭的连接"
+  ]
+}
+
+// 正确使用连接池的示例
+const queryWithConnectionPool = async (dataSource) => {
+  const connection = await dataSource.getConnection();
+  try {
+    const result = await connection.query('SELECT * FROM users WHERE id = ?', [userId]);
+    return result;
+  } finally {
+    connection.release();
+  }
+}
+```
+
+## 📝 实际应用示例
+
+### 综合优化方案
+
+```sql
+-- 场景：优化订单查询性能
+
+-- 1. 创建合适的索引
+CREATE INDEX idx_order_user_status_created ON orders(user_id, status, created_at);
+CREATE INDEX idx_order_status_created ON orders(status, created_at);
+
+-- 2. 优化查询语句
+SELECT 
+    o.id,
+    o.order_no,
+    o.status,
+    o.total_amount,
+    o.created_at
+FROM orders o
+WHERE o.user_id = ?
+AND o.status IN ('pending', 'processing')
+AND o.created_at >= ?
+ORDER BY o.created_at DESC
+LIMIT 20;
+
+-- 3. 分析执行计划
+EXPLAIN SELECT ...;
+
+-- 4. 监控慢查询
+-- 开启慢查询日志
+SET GLOBAL slow_query_log = 'ON';
+SET GLOBAL long_query_time = 1;
+SET GLOBAL slow_query_log_file = '/var/log/mysql/slow-query.log';
+
+-- 5. 定期优化表
+OPTIMIZE TABLE orders;
+ANALYZE TABLE orders;
+```
+
+## 🔗 相关概念
+
+- **数据库原理**：理解存储引擎、索引和事务机制
+- **缓存策略**：使用 Redis 缓解数据库压力
+- **分布式事务**：跨库事务的一致性保证
+
+## 📚 学习检查点
+
+- [ ] 能否分析一条慢 SQL 的执行计划并提出优化建议？
+- [ ] 能否设计一套分库分表方案？
+- [ ] 能否说明读写分离的实现原理和注意事项？
+- [ ] 能否配置和调优数据库连接池？
+
+## 🚀 下一步
+
+→ [NoSQL 数据库](/architect/04-data-architecture/02-nosql-databases/01-nosql-databases-overview)

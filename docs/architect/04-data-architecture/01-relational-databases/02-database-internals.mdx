@@ -14,4 +14,249 @@
 - 深入理解事务隔离级别和 MVCC 机制
 - 掌握行锁、表锁、间隙锁的适用场景
 
-> 🚧 详细内容正在编写中...
+## 📚 存储引擎
+
+### InnoDB vs MyISAM
+
+| 特性 | InnoDB | MyISAM |
+|------|--------|--------|
+| 事务支持 | ✓ | ✗ |
+| 行级锁 | ✓ | ✗（仅表锁） |
+| 外键约束 | ✓ | ✗ |
+| 崩溃恢复 | ✓ | ✗ |
+| 全文索引 | ✓（5.6+） | ✓ |
+| 适用场景 | 高并发、事务型 | 只读、数据仓库 |
+
+### InnoDB 存储引擎核心组件
+
+```js
+// InnoDB 存储引擎架构示意
+const innodbArchitecture = {
+  bufferPool: {
+    description: "缓存数据和索引页",
+    size: "通常设置为物理内存的 70-80%",
+    features: [
+      "LRU 算法管理缓存",
+      "Change Buffer 优化二级索引写入",
+      "自适应哈希索引"
+    ]
+  },
+  redoLog: {
+    description: "预写式日志，确保持久性",
+    features: [
+      "循环写入，固定大小",
+      "崩溃后恢复数据",
+      "支持组提交优化"
+    ]
+  },
+  undoLog: {
+    description: "回滚日志，支持 MVCC",
+    features: [
+      "存储数据修改前的版本",
+      "支持事务回滚",
+      "提供一致性非锁定读"
+    ]
+  }
+}
+```
+
+## 📚 索引原理
+
+### B+ 树索引结构
+
+InnoDB 使用 B+ 树作为索引结构，具有以下特点：
+
+```js
+// B+ 树索引特性
+const bPlusTreeFeatures = {
+  structure: {
+    description: "多路平衡搜索树",
+    height: "通常 3-4 层即可支持千万级数据",
+    branching: "每个节点可存储数百个键值"
+  },
+  advantages: [
+    "查询稳定（O(log n)）",
+    "范围查询高效（叶子节点双向链表）",
+    "减少磁盘 I/O（节点大小匹配页大小）"
+  ],
+  types: {
+    clustered: {
+      description: "聚簇索引",
+      key: "主键",
+      value: "完整行数据",
+      note: "每个表只有一个"
+    },
+    secondary: {
+      description: "二级索引",
+      key: "索引字段",
+      value: "主键值",
+      note: "需要回表查询完整数据"
+    }
+  }
+}
+```
+
+### 索引设计原则
+
+```sql
+-- 示例：创建合适的索引
+-- 1. 在 WHERE、JOIN、ORDER BY 字段上建索引
+CREATE INDEX idx_user_email ON users(email);
+CREATE INDEX idx_order_status_created ON orders(status, created_at);
+
+-- 2. 联合索引遵循最左前缀原则
+-- 这个索引可以支持：(email), (email, status), (email, status, created_at)
+CREATE INDEX idx_user_email_status_created ON users(email, status, created_at);
+
+-- 3. 避免在索引列上使用函数
+-- 错误示例
+SELECT * FROM users WHERE YEAR(created_at) = 2025;
+
+-- 正确示例
+SELECT * FROM users WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01';
+```
+
+## 📚 事务隔离级别
+
+### 四种隔离级别
+
+| 隔离级别 | 脏读 | 不可重复读 | 幻读 | 锁策略 |
+|---------|------|----------|------|--------|
+| 读未提交 | ✓ | ✓ | ✓ | 最少锁 |
+| 读已提交 | ✗ | ✓ | ✓ | 行级锁 |
+| 可重复读 | ✗ | ✗ | ✓* | 行锁 + 间隙锁 |
+| 串行化 | ✗ | ✗ | ✗ | 表锁 |
+
+*InnoDB 在可重复读级别通过 MVCC + Next-Key Lock 防止幻读
+
+### MVCC（多版本并发控制）
+
+MVCC 通过维护数据的多个版本，实现读写不阻塞：
+
+```js
+// MVCC 核心机制
+const mvccMechanism = {
+  readView: {
+    description: "读视图，决定事务能看到的数据版本",
+    components: {
+      m_ids: "活跃事务 ID 列表",
+      min_trx_id: "最小活跃事务 ID",
+      max_trx_id: "下一个事务 ID",
+      creator_trx_id: "当前事务 ID"
+    }
+  },
+  visibility: {
+    rules: [
+      "数据版本的事务 ID < min_trx_id：可见",
+      "数据版本的事务 ID = creator_trx_id：可见",
+      "数据版本的事务 ID 在 m_ids 中：不可见",
+      "数据版本的事务 ID > max_trx_id：不可见"
+    ]
+  },
+  undoLog: {
+    role: "存储数据的历史版本",
+    chain: "通过回滚指针构建版本链"
+  }
+}
+```
+
+## 📚 锁机制
+
+### 锁类型
+
+```js
+// InnoDB 锁类型
+const lockTypes = {
+  sharedLock: {
+    name: "共享锁（S 锁）",
+    description: "允许读，不允许写",
+    sql: "SELECT ... LOCK IN SHARE MODE",
+    compatibility: ["S"]
+  },
+  exclusiveLock: {
+    name: "排他锁（X 锁）",
+    description: "不允许读和写",
+    sql: "SELECT ... FOR UPDATE",
+    compatibility: []
+  },
+  gapLock: {
+    name: "间隙锁",
+    description: "锁定索引记录之间的间隙",
+    purpose: "防止幻读",
+    level: "可重复读"
+  },
+  nextKeyLock: {
+    name: "临键锁",
+    description: "记录锁 + 间隙锁",
+    purpose: "防止幻读",
+    level: "可重复读"
+  }
+}
+```
+
+### 死锁检测与处理
+
+```sql
+-- 查看死锁日志
+SHOW ENGINE INNODB STATUS;
+
+-- 设置死锁超时时间（秒）
+SET innodb_lock_wait_timeout = 50;
+
+-- 死锁处理策略
+const deadlockHandling = {
+  detection: "InnoDB 自动检测死锁",
+  resolution: "回滚代价最小的事务",
+  prevention: [
+    "保持事务简短",
+    "按相同顺序访问表和行",
+    "为表添加合适的索引",
+    "使用较低的隔离级别"
+  ]
+}
+```
+
+## 📝 实际应用示例
+
+### 分析慢查询的执行计划
+
+```sql
+-- 使用 EXPLAIN 分析查询
+EXPLAIN SELECT 
+    o.id,
+    o.order_no,
+    u.username,
+    o.total_amount
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.id
+WHERE o.status = 'pending'
+AND o.created_at >= '2025-01-01'
+ORDER BY o.created_at DESC
+LIMIT 100;
+
+-- 关键指标说明
+const explainMetrics = {
+  type: "访问类型（ALL/索引/range/ref/const）",
+  key: "实际使用的索引",
+  rows: "预估扫描行数",
+  filtered: "过滤后的行数百分比",
+  Extra: "额外信息（Using index/Using filesort/Using temporary）"
+}
+```
+
+## 🔗 相关概念
+
+- **查询优化**：基于执行计划优化 SQL 性能
+- **分库分表**：解决单表数据量过大的问题
+- **读写分离**：通过主从复制提升并发能力
+
+## 📚 学习检查点
+
+- [ ] 能否解释 InnoDB 的 B+ 树索引结构？
+- [ ] 能否对比四种事务隔离级别的差异？
+- [ ] 能否说明 MVCC 如何实现非锁定读？
+- [ ] 能否分析死锁产生的原因并给出解决方案？
+
+## 🚀 下一步
+
+→ [数据库优化](/architect/04-data-architecture/01-relational-databases/03-database-optimization)

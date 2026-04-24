@@ -14,4 +14,439 @@
 - 掌握 Redis 集群方案（主从、哨兵、Cluster）
 - 能够设计 Redis 在高并发场景中的应用方案
 
-> 🚧 详细内容正在编写中...
+## 📚 Redis 核心数据结构
+
+### 五种基础数据结构
+
+```js
+// Redis 数据结构及其应用场景
+const redisDataStructures = {
+  string: {
+    description: "字符串，最基本的数据类型",
+    maxMemory: "512MB",
+    operations: ["SET", "GET", "INCR", "DECR", "SETEX"],
+    useCases: [
+      "缓存用户会话",
+      "计数器（文章阅读量、点赞数）",
+      "分布式锁",
+      "限流（令牌桶）"
+    ]
+  },
+  hash: {
+    description: "哈希表，存储键值对集合",
+    maxMemory: "512MB",
+    operations: ["HSET", "HGET", "HMGET", "HINCRBY", "HGETALL"],
+    useCases: [
+      "存储对象（用户信息、商品信息）",
+      "购物车",
+      "用户标签"
+    ]
+  },
+  list: {
+    description: "列表，有序字符串集合",
+    maxMemory: "512MB",
+    operations: ["LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE"],
+    useCases: [
+      "消息队列",
+      "最新列表（最新文章、最新评论）",
+      "时间轴"
+    ]
+  },
+  set: {
+    description: "集合，无序唯一字符串集合",
+    maxMemory: "512MB",
+    operations: ["SADD", "SREM", "SMEMBERS", "SISMEMBER", "SINTER"],
+    useCases: [
+      "标签系统",
+      "共同关注",
+      "抽奖系统"
+    ]
+  },
+  sortedSet: {
+    description: "有序集合，带分数的集合",
+    maxMemory: "512MB",
+    operations: ["ZADD", "ZRANGE", "ZRANK", "ZSCORE", "ZINCRBY"],
+    useCases: [
+      "排行榜（游戏排名、商品销量）",
+      "延时队列",
+      "范围查询"
+    ]
+  }
+}
+```
+
+### 数据结构应用示例
+
+```js
+// 1. String - 分布式锁实现
+const distributedLock = {
+  acquire: async (key, ttl) => {
+    const result = await redis.set(
+      key,
+      'locked',
+      'PX', ttl,
+      'NX'
+    )
+    return result === 'OK'
+  },
+  release: async (key) => {
+    await redis.del(key)
+  }
+}
+
+// 2. Hash - 购物车实现
+const shoppingCart = {
+  addItem: async (userId, productId, quantity) => {
+    await redis.hincrby(`cart:${userId}`, productId, quantity)
+  },
+  getCart: async (userId) => {
+    return await redis.hgetall(`cart:${userId}`)
+  },
+  removeItem: async (userId, productId) => {
+    await redis.hdel(`cart:${userId}`, productId)
+  }
+}
+
+// 3. Sorted Set - 排行榜实现
+const leaderboard = {
+  addScore: async (userId, score) => {
+    await redis.zadd('leaderboard', score, userId)
+  },
+  getTopN: async (n) => {
+    return await redis.zrevrange('leaderboard', 0, n - 1, 'WITHSCORES')
+  },
+  getRank: async (userId) => {
+    return await redis.zrevrank('leaderboard', userId)
+  }
+}
+```
+
+## 📚 持久化机制
+
+### RDB（Redis Database）
+
+```js
+// RDB 持久化机制
+const rdbPersistence = {
+  description: "在指定时间间隔内生成数据集的时间点快照",
+  process: [
+    "Redis 主进程 fork 子进程",
+    "子进程将数据写入临时文件",
+    "替换旧的 RDB 文件"
+  ],
+  advantages: [
+    "文件紧凑，恢复速度快",
+    "适合备份",
+    "对主进程性能影响小"
+  ],
+  disadvantages: [
+    "可能会丢失最后一次快照后的数据",
+    "fork 时数据量大会阻塞"
+  ],
+  config: {
+    save: "save 900 1（900 秒内至少 1 个 key 变化）",
+    dir: "/var/lib/redis",
+    dbfilename: "dump.rdb"
+  }
+}
+```
+
+### AOF（Append Only File）
+
+```js
+// AOF 持久化机制
+const aofPersistence = {
+  description: "记录服务器接收到的每个写操作命令",
+  process: [
+    "命令追加到 AOF 缓冲区",
+    "根据策略写入磁盘",
+    "AOF 重写优化文件大小"
+  ],
+  advantages: [
+    "数据安全性高，最多丢失 1 秒数据",
+    "可读性强，易于修复"
+  ],
+  disadvantages: [
+    "文件体积大",
+    "恢复速度慢于 RDB"
+  ],
+  appendfsync: {
+    always: "每次写操作都同步（最安全，最慢）",
+    everysec: "每秒同步一次（推荐）",
+    no: "由操作系统决定（最快，不安全）"
+  }
+}
+```
+
+### 混合持久化
+
+```js
+// Redis 4.0+ 混合持久化
+const hybridPersistence = {
+  description: "RDB + AOF 结合",
+  process: [
+    "重写时使用 RDB 格式写入 AOF 文件开头",
+    "后续增量数据仍以 AOF 格式追加"
+  ],
+  advantages: [
+    "结合 RDB 的快速恢复",
+    "结合 AOF 的数据安全"
+  ],
+  config: {
+    aof_use_rdb_preamble: "yes"
+  }
+}
+```
+
+## 📚 集群方案
+
+### 主从复制
+
+```js
+// 主从复制架构
+const masterSlaveReplication = {
+  description: "一主多从，读写分离",
+  process: [
+    "从库连接主库并发送 SYNC 命令",
+    "主库生成 RDB 文件发送给从库",
+    "主库将后续写命令发送给从库"
+  ],
+  advantages: [
+    "数据备份",
+    "读写分离，提升读性能",
+    "故障恢复"
+  ],
+  disadvantages: [
+    "主库故障需要手动切换",
+    "主库压力仍然较大"
+  ],
+  config: {
+    replicaof: "master_ip master_port"
+  }
+}
+```
+
+### 哨兵（Sentinel）
+
+```js
+// 哨兵架构
+const sentinelArchitecture = {
+  description: "自动故障转移的高可用方案",
+  components: [
+    "多个 Sentinel 节点监控主从状态",
+    "自动故障检测和转移",
+    "配置提供者"
+  ],
+  workflow: [
+    "Sentinel 监控主从节点",
+    "主节点故障时投票选举新主节点",
+    "通知客户端新的主节点地址"
+  ],
+  advantages: [
+    "自动故障转移",
+    "高可用性",
+    "监控和通知"
+  ],
+  config: {
+    sentinel_monitor: "mymaster master_ip 6379 2",
+    sentinel_down_after_milliseconds: "mymaster 30000",
+    sentinel_failover_timeout: "mymaster 180000"
+  }
+}
+```
+
+### Redis Cluster
+
+```js
+// Redis Cluster 架构
+const redisCluster = {
+  description: "分布式集群，支持数据分片",
+  features: [
+    "16384 个哈希槽",
+    "自动分片",
+    "高可用性",
+    "自动故障转移"
+  ],
+  slotAllocation: {
+    description: "每个节点负责一部分槽",
+    formula: "CRC16(key) % 16384"
+  },
+  advantages: [
+    "水平扩展",
+    "高可用性",
+    "自动故障转移"
+  ],
+  disadvantages: [
+    "不支持多键操作（除非键在同一槽）",
+    "事务支持有限",
+    "客户端需要支持集群模式"
+  ],
+  config: {
+    cluster_enabled: "yes",
+    cluster_config_file: "nodes.conf",
+    cluster_node_timeout: "15000"
+  }
+}
+```
+
+## 📝 实际应用示例
+
+### 高并发缓存方案
+
+```js
+// 缓存穿透、击穿、雪崩防护
+const cacheProtection = {
+  // 缓存穿透：查询不存在的数据
+  cachePenetration: {
+    solution: [
+      "布隆过滤器预判",
+      "缓存空值（设置较短过期时间）"
+    ],
+    code: `
+const getWithBloomFilter = async (key) => {
+  // 1. 布隆过滤器判断
+  if (!bloomFilter.mightContain(key)) {
+    return null
+  }
+  
+  // 2. 查询缓存
+  let value = await redis.get(key)
+  if (value !== null) {
+    return value === 'NULL' ? null : JSON.parse(value)
+  }
+  
+  // 3. 查询数据库
+  value = await db.query(key)
+  
+  // 4. 缓存结果（包括空值）
+  await redis.setex(
+    key,
+    value ? 3600 : 60,
+    value ? JSON.stringify(value) : 'NULL'
+  )
+  
+  return value
+}
+    `
+  },
+  
+  // 缓存击穿：热点 key 过期
+  cacheBreakdown: {
+    solution: [
+      "互斥锁",
+      "逻辑过期（不设置过期时间）"
+    ],
+    code: `
+const getWithLock = async (key) => {
+  // 1. 查询缓存
+  let value = await redis.get(key)
+  if (value !== null) {
+    return JSON.parse(value)
+  }
+  
+  // 2. 获取锁
+  const lockKey = \`lock:\${key}\`
+  const lockAcquired = await redis.set(lockKey, '1', 'PX', 10000, 'NX')
+  
+  if (lockAcquired) {
+    try {
+      // 3. 双重检查
+      value = await redis.get(key)
+      if (value !== null) {
+        return JSON.parse(value)
+      }
+      
+      // 4. 查询数据库
+      value = await db.query(key)
+      
+      // 5. 设置缓存
+      await redis.setex(key, 3600, JSON.stringify(value))
+      
+      return value
+    } finally {
+      await redis.del(lockKey)
+    }
+  } else {
+    // 6. 等待并重试
+    await sleep(100)
+    return getWithLock(key)
+  }
+}
+    `
+  },
+  
+  // 缓存雪崩：大量 key 同时过期
+  cacheAvalanche: {
+    solution: [
+      "随机过期时间",
+      "缓存预热",
+      "高可用集群"
+    ],
+    code: `
+const setWithRandomExpire = async (key, value) => {
+  // 随机过期时间：基础时间 + 随机时间
+  const baseExpire = 3600
+  const randomExpire = Math.floor(Math.random() * 600)
+  await redis.setex(key, baseExpire + randomExpire, JSON.stringify(value))
+}
+    `
+  }
+}
+```
+
+### 分布式限流
+
+```js
+// 令牌桶限流算法
+const rateLimiter = {
+  acquire: async (key, capacity, rate) => {
+    const now = Date.now()
+    const pipe = redis.pipeline()
+    
+    // 1. 获取当前令牌数和上次更新时间
+    pipe.hget(key, 'tokens')
+    pipe.hget(key, 'last_refill')
+    
+    const [tokens, lastRefill] = await pipe.exec()
+    
+    let currentTokens = parseInt(tokens) || capacity
+    const lastRefillTime = parseInt(lastRefill) || now
+    const elapsed = (now - lastRefillTime) / 1000
+    
+    // 2. 补充令牌
+    currentTokens = Math.min(capacity, currentTokens + elapsed * rate)
+    
+    // 3. 检查是否有足够令牌
+    if (currentTokens >= 1) {
+      currentTokens -= 1
+      
+      // 4. 更新令牌数和时间
+      await redis.hmset(key, {
+        tokens: currentTokens,
+        last_refill: now
+      })
+      
+      return true
+    }
+    
+    return false
+  }
+}
+```
+
+## 🔗 相关概念
+
+- **文档数据库**：MongoDB 的文档建模
+- **列式存储**：HBase 的宽列模型
+- **消息队列**：Redis List 作为消息队列的应用
+
+## 📚 学习检查点
+
+- [ ] 能否列举 Redis 五种基础数据结构及其应用场景？
+- [ ] 能否对比 RDB 和 AOF 持久化机制的优劣？
+- [ ] 能否说明主从、哨兵、Cluster 三种集群方案的区别？
+- [ ] 能否设计一个高并发的 Redis 缓存方案？
+
+## 🚀 下一步
+
+→ [列式存储](/architect/04-data-architecture/02-nosql-databases/04-columnar-stores)
