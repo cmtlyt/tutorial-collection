@@ -14,4 +14,688 @@
 - 理解线性一致性和顺序一致性的区别
 - 能够根据业务需求选择合适的一致性级别
 
-> 🚧 详细内容正在编写中...
+## 📊 一致性模型光谱
+
+一致性模型不是非此即彼的选择，而是一个从强到弱的**连续光谱**：
+
+```
+强 ← ─────────────────────────────────────────── → 弱
+
+线性一致性 > 顺序一致性 > 因果一致性 > 最终一致性
+
+延迟低 ← ────────────────────────────────────── → 延迟高
+性能低 ← ────────────────────────────────────── → 性能高
+```
+
+## 🔒 强一致性（Strong Consistency）
+
+### 定义
+
+强一致性保证：**一旦写操作完成，后续所有读操作都能读到最新值**。从外部观察者看来，系统就像只有一个副本。
+
+### 代码示例
+
+```js
+// ========== 强一致性模拟 ==========
+
+class StrongConsistencyStore {
+  constructor(replicaCount) {
+    this.replicas = Array.from({ length: replicaCount }, (_, i) => ({
+      id: `replica-${i}`,
+      data: new Map(),
+    }));
+    this.writeCount = 0;
+    this.readCount = 0;
+  }
+
+  // 写操作：同步写入所有副本，全部成功后才返回
+  write(key, value) {
+    this.writeCount++;
+    const version = Date.now();
+    console.log(`[写入 #${this.writeCount}] ${key} = ${value}`);
+
+    // 同步写入所有副本（模拟同步复制）
+    const results = [];
+    for (const replica of this.replicas) {
+      replica.data.set(key, { value, version });
+      results.push({ replicaId: replica.id, success: true });
+    }
+
+    // 只有全部副本写入成功，才确认写入
+    const allSuccess = results.every(r => r.success);
+    if (!allSuccess) {
+      // 回滚所有副本
+      for (const replica of this.replicas) {
+        replica.data.delete(key);
+      }
+      throw new Error('写入失败：未能写入所有副本');
+    }
+
+    console.log(`  → 已同步写入 ${results.length} 个副本`);
+    return { success: true, confirmedReplicas: results.length };
+  }
+
+  // 读操作：从任意副本读取都能得到最新值（因为写入时已同步所有副本）
+  read(key, replicaIndex) {
+    this.readCount++;
+    const replica = this.replicas[replicaIndex || 0];
+    const data = replica.data.get(key);
+    return {
+      value: data ? data.value : null,
+      source: replica.id,
+      consistent: true,
+    };
+  }
+
+  // 验证所有副本的数据一致性
+  verifyConsistency(key) {
+    const values = this.replicas.map(r => {
+      const data = r.data.get(key);
+      return { replicaId: r.id, value: data ? data.value : null };
+    });
+
+    const allSame = values.every(v => v.value === values[0].value);
+    console.log(`一致性验证 [${key}]: ${allSame ? '✅ 一致' : '❌ 不一致'}`);
+    return { consistent: allSame, values };
+  }
+}
+
+// 使用
+const store = new StrongConsistencyStore(3);
+store.write('balance', 10000);
+store.write('balance', 9500);
+
+// 从任何副本读取都得到相同结果
+console.log('副本0读取:', store.read('balance', 0));
+console.log('副本1读取:', store.read('balance', 1));
+console.log('副本2读取:', store.read('balance', 2));
+store.verifyConsistency('balance');
+```
+
+### 强一致性的代价
+
+- **高延迟**：写操作必须等待所有副本确认
+- **低可用性**：任一副本不可达就无法写入
+- **适用场景**：银行转账、库存扣减等不容许错误的场景
+
+## 📐 线性一致性（Linearizability）
+
+### 定义
+
+线性一致性是最强的一致性模型，要求：
+1. **每个操作看起来在某个时间点瞬间完成**（原子性）
+2. **操作的顺序与实际时间顺序一致**（实时性）
+3. 如果操作 A 在操作 B 开始之前完成，那么 A 必须在 B 之前生效
+
+### 关键特征
+
+```
+时间轴：─────────────────────────────→
+
+客户端 A:  ├── write(x=1) ──┤
+客户端 B:            ├── read(x) ──┤  必须返回 1（因为写在读开始前完成）
+客户端 C:       ├── read(x) ──┤        可以返回 0 或 1（读与写有重叠）
+```
+
+### 代码示例
+
+```js
+// ========== 线性一致性验证器 ==========
+
+class LinearizabilityChecker {
+  constructor() {
+    this.history = []; // 操作历史记录
+  }
+
+  // 记录操作
+  recordOperation(clientId, type, key, value, startTime, endTime) {
+    this.history.push({ clientId, type, key, value, startTime, endTime });
+  }
+
+  // 检查操作历史是否满足线性一致性
+  checkLinearizability() {
+    console.log('\n=== 线性一致性检查 ===\n');
+
+    // 按结束时间排序，模拟线性化点
+    const sorted = [...this.history].sort((a, b) => a.endTime - b.endTime);
+
+    const currentValues = new Map();
+    const violations = [];
+
+    for (const operation of sorted) {
+      if (operation.type === 'write') {
+        currentValues.set(operation.key, operation.value);
+        console.log(`  [${operation.clientId}] write(${operation.key}=${operation.value}) @ [${operation.startTime}-${operation.endTime}]`);
+      } else if (operation.type === 'read') {
+        const expectedValue = currentValues.get(operation.key);
+
+        // 检查：如果一个写操作在读操作开始之前完成，读必须能看到该写
+        const precedingWrites = this.history.filter(
+          op => op.type === 'write' && op.key === operation.key && op.endTime < operation.startTime,
+        );
+
+        const latestPrecedingWrite = precedingWrites.length > 0
+          ? precedingWrites.reduce((a, b) => (a.endTime > b.endTime ? a : b))
+          : null;
+
+        const isValid = latestPrecedingWrite === null || operation.value === latestPrecedingWrite.value || operation.value === expectedValue;
+
+        const status = isValid ? '✅' : '❌';
+        console.log(`  [${operation.clientId}] read(${operation.key})=${operation.value} @ [${operation.startTime}-${operation.endTime}] ${status}`);
+
+        if (!isValid) {
+          violations.push({
+            operation,
+            expected: latestPrecedingWrite ? latestPrecedingWrite.value : 'null',
+            got: operation.value,
+          });
+        }
+      }
+    }
+
+    console.log(`\n结果: ${violations.length === 0 ? '✅ 满足线性一致性' : `❌ 发现 ${violations.length} 个违规`}`);
+    return violations;
+  }
+}
+
+// 示例 1：满足线性一致性的历史
+const checker1 = new LinearizabilityChecker();
+checker1.recordOperation('A', 'write', 'x', 1, 0, 5);
+checker1.recordOperation('B', 'read', 'x', 1, 6, 10);  // 写在读之前完成，读到 1 ✅
+checker1.recordOperation('C', 'read', 'x', 1, 8, 12);
+checker1.checkLinearizability();
+
+// 示例 2：违反线性一致性的历史
+const checker2 = new LinearizabilityChecker();
+checker2.recordOperation('A', 'write', 'x', 1, 0, 5);
+checker2.recordOperation('B', 'read', 'x', 0, 6, 10);  // 写在读之前完成，但读到旧值 ❌
+checker2.checkLinearizability();
+```
+
+## 📏 顺序一致性（Sequential Consistency）
+
+### 定义
+
+顺序一致性比线性一致性弱一些，它要求：
+1. **所有进程看到的操作顺序一致**
+2. **每个进程自己的操作顺序被保持**
+3. **但不要求与实际时间顺序一致**
+
+### 线性一致性 vs 顺序一致性
+
+```
+线性一致性：操作顺序 = 实际时间顺序（有全局时钟约束）
+顺序一致性：操作顺序一致即可，不要求对应实际时间
+
+示例：两个客户端同时写入
+客户端 A: write(x=1)  （实际先完成）
+客户端 B: write(x=2)  （实际后完成）
+
+线性一致性：所有人必须先看到 x=1，再看到 x=2（尊重时间顺序）
+顺序一致性：所有人都看到 x=2 再 x=1 也可以，只要顺序统一即可
+```
+
+### 代码示例
+
+```js
+// ========== 顺序一致性 vs 线性一致性 ==========
+
+class SequentialConsistencyDemo {
+  constructor() {
+    this.globalOrder = []; // 全局操作顺序
+  }
+
+  // 检查是否满足顺序一致性
+  checkSequentialConsistency(processOperations, globalSequence) {
+    console.log('\n=== 顺序一致性检查 ===');
+
+    // 规则 1：全局序列必须包含所有操作
+    const allOps = Object.values(processOperations).flat();
+    if (globalSequence.length !== allOps.length) {
+      console.log('❌ 全局序列长度不匹配');
+      return false;
+    }
+
+    // 规则 2：每个进程的操作在全局序列中的相对顺序必须保持
+    for (const [processId, ops] of Object.entries(processOperations)) {
+      const indices = ops.map(op => globalSequence.indexOf(op));
+      const isOrdered = indices.every((val, i) => i === 0 || val > indices[i - 1]);
+
+      if (!isOrdered) {
+        console.log(`❌ 进程 ${processId} 的操作顺序在全局序列中被打乱`);
+        return false;
+      }
+      console.log(`✅ 进程 ${processId} 的操作顺序得到保持: ${ops.join(' → ')}`);
+    }
+
+    // 规则 3：读操作必须返回最近一次写操作的值
+    const currentValues = new Map();
+    for (const op of globalSequence) {
+      const match = op.match(/^(write|read)\((\w+)(?:=(\w+))?\)(?:→(\w+))?$/);
+      if (!match) continue;
+
+      const [, type, key, writeValue, readValue] = match;
+      if (type === 'write') {
+        currentValues.set(key, writeValue);
+      } else if (type === 'read') {
+        const expected = currentValues.get(key) || 'null';
+        if (readValue !== expected) {
+          console.log(`❌ read(${key}) 返回 ${readValue}，期望 ${expected}`);
+          return false;
+        }
+      }
+    }
+
+    console.log('✅ 满足顺序一致性');
+    return true;
+  }
+}
+
+const demo = new SequentialConsistencyDemo();
+
+// 进程操作
+const processOps = {
+  P1: ['write(x=1)', 'write(x=3)'],
+  P2: ['write(x=2)', 'read(x)→3'],
+};
+
+// 合法的全局序列（保持每个进程内部的顺序）
+const validSequence = ['write(x=1)', 'write(x=2)', 'write(x=3)', 'read(x)→3'];
+demo.checkSequentialConsistency(processOps, validSequence);
+
+// 也合法的全局序列（P2 的写可以排在 P1 的两次写之间）
+const alsoValid = ['write(x=2)', 'write(x=1)', 'write(x=3)', 'read(x)→3'];
+demo.checkSequentialConsistency(processOps, alsoValid);
+```
+
+## 🔗 因果一致性（Causal Consistency）
+
+### 定义
+
+因果一致性要求：**有因果关系的操作在所有节点上的顺序一致**，但没有因果关系的并发操作可以以任意顺序被观察到。
+
+### 因果关系的判定
+
+```
+有因果关系的操作（必须有序）:
+  1. 同一进程内的操作（程序顺序）
+  2. 读到某个写的值后，后续操作依赖于该值
+  3. 传递关系：A → B，B → C，则 A → C
+
+无因果关系的操作（可以任意排序）:
+  不同进程对不同键的独立操作
+```
+
+### 代码示例
+
+```js
+// ========== 因果一致性实现：向量时钟 ==========
+
+class VectorClock {
+  constructor(nodeId, totalNodes) {
+    this.nodeId = nodeId;
+    this.clock = new Array(totalNodes).fill(0);
+  }
+
+  // 本地事件：自增本节点的时钟
+  tick() {
+    this.clock[this.nodeId]++;
+    return [...this.clock];
+  }
+
+  // 发送消息时：先 tick 再附带时钟
+  prepareSend() {
+    this.tick();
+    return [...this.clock];
+  }
+
+  // 接收消息时：合并时钟（取每个分量的最大值），再 tick
+  receiveMessage(senderClock) {
+    for (let i = 0; i < this.clock.length; i++) {
+      this.clock[i] = Math.max(this.clock[i], senderClock[i]);
+    }
+    this.tick();
+    return [...this.clock];
+  }
+
+  // 判断因果关系
+  static happensBefore(clockA, clockB) {
+    let atLeastOneLess = false;
+    for (let i = 0; i < clockA.length; i++) {
+      if (clockA[i] > clockB[i]) return false; // A 有分量大于 B，不是 happens-before
+      if (clockA[i] < clockB[i]) atLeastOneLess = true;
+    }
+    return atLeastOneLess;
+  }
+
+  static areConcurrent(clockA, clockB) {
+    return !VectorClock.happensBefore(clockA, clockB) &&
+           !VectorClock.happensBefore(clockB, clockA);
+  }
+}
+
+class CausalConsistencyStore {
+  constructor(nodeCount) {
+    this.nodes = Array.from({ length: nodeCount }, (_, i) => ({
+      id: i,
+      vectorClock: new VectorClock(i, nodeCount),
+      data: new Map(),
+      pendingUpdates: [],
+    }));
+  }
+
+  // 写入操作
+  write(nodeIndex, key, value) {
+    const node = this.nodes[nodeIndex];
+    const timestamp = node.vectorClock.prepareSend();
+    node.data.set(key, { value, timestamp });
+    console.log(`[节点${nodeIndex}] write(${key}=${value}) 时钟: [${timestamp}]`);
+
+    // 将更新广播给其他节点
+    for (const otherNode of this.nodes) {
+      if (otherNode.id !== nodeIndex) {
+        otherNode.pendingUpdates.push({ key, value, timestamp, fromNode: nodeIndex });
+      }
+    }
+    return timestamp;
+  }
+
+  // 应用待处理的更新（模拟异步复制）
+  syncNode(nodeIndex) {
+    const node = this.nodes[nodeIndex];
+
+    // 按因果顺序应用更新
+    const applied = [];
+    const remaining = [];
+
+    for (const update of node.pendingUpdates) {
+      // 检查因果依赖是否满足
+      const canApply = this.checkCausalDependency(node, update);
+      if (canApply) {
+        node.vectorClock.receiveMessage(update.timestamp);
+        node.data.set(update.key, { value: update.value, timestamp: update.timestamp });
+        applied.push(update);
+        console.log(`[节点${nodeIndex}] 应用更新: ${update.key}=${update.value} (来自节点${update.fromNode})`);
+      } else {
+        remaining.push(update);
+      }
+    }
+
+    node.pendingUpdates = remaining;
+    return { applied: applied.length, pending: remaining.length };
+  }
+
+  checkCausalDependency(node, update) {
+    // 简化检查：只要发送者的时钟不超过接收者太多就可以应用
+    for (let i = 0; i < update.timestamp.length; i++) {
+      if (i === update.fromNode) continue;
+      if (update.timestamp[i] > node.vectorClock.clock[i]) {
+        return false; // 还有因果依赖未满足
+      }
+    }
+    return true;
+  }
+
+  read(nodeIndex, key) {
+    const node = this.nodes[nodeIndex];
+    const data = node.data.get(key);
+    return {
+      value: data ? data.value : null,
+      nodeId: nodeIndex,
+      clock: [...node.vectorClock.clock],
+    };
+  }
+}
+
+// 演示因果一致性
+const causalStore = new CausalConsistencyStore(3);
+
+// 节点 0 写入帖子
+const postClock = causalStore.write(0, 'post:1', '今天天气真好');
+
+// 节点 1 看到帖子后发表评论（有因果关系）
+causalStore.syncNode(1);
+causalStore.write(1, 'comment:1', '确实不错！');
+
+// 节点 2 同步数据
+causalStore.syncNode(2);
+
+// 验证因果关系
+const commentClock = [0, 2, 0];
+console.log(`\n帖子 → 评论 是否有因果关系: ${VectorClock.happensBefore(postClock, commentClock)}`);
+
+// 读取
+console.log('节点2 读取帖子:', causalStore.read(2, 'post:1'));
+console.log('节点2 读取评论:', causalStore.read(2, 'comment:1'));
+```
+
+## 🔄 最终一致性（Eventual Consistency）
+
+### 定义
+
+最终一致性是最弱的一致性保证：**如果没有新的写入，所有副本最终会在某个时间点达到一致状态**。"最终"可能是毫秒、秒甚至分钟。
+
+### 最终一致性的变体
+
+| 变体 | 保证 | 示例 |
+|------|------|------|
+| **读己之写** | 写入后能读到自己写的值 | 社交平台发帖后自己能看到 |
+| **单调读** | 读到新值后不会再读到旧值 | 不会出现"时光倒流" |
+| **单调写** | 同一客户端的写按顺序执行 | 先改名再改头像，不会乱序 |
+| **会话一致性** | 同一会话内保持一致性 | 同一用户登录期间数据一致 |
+
+### 代码示例：最终一致性与冲突解决
+
+```js
+// ========== 最终一致性：冲突检测与解决 ==========
+
+class EventualConsistencyNode {
+  constructor(nodeId) {
+    this.nodeId = nodeId;
+    this.data = new Map();
+    this.conflictLog = [];
+  }
+
+  write(key, value) {
+    const entry = {
+      value,
+      timestamp: Date.now(),
+      nodeId: this.nodeId,
+      version: (this.data.get(key)?.version || 0) + 1,
+    };
+    this.data.set(key, entry);
+    return entry;
+  }
+
+  read(key) {
+    return this.data.get(key) || null;
+  }
+}
+
+class ConflictResolver {
+  // 策略 1：最后写入胜出（Last Write Wins, LWW）
+  static lastWriteWins(valueA, valueB) {
+    if (valueA.timestamp > valueB.timestamp) return valueA;
+    if (valueB.timestamp > valueA.timestamp) return valueB;
+    // 时间戳相同时，按节点 ID 排序确保确定性
+    return valueA.nodeId < valueB.nodeId ? valueA : valueB;
+  }
+
+  // 策略 2：合并（适用于集合类数据）
+  static mergeValues(valueA, valueB) {
+    if (Array.isArray(valueA.value) && Array.isArray(valueB.value)) {
+      const merged = [...new Set([...valueA.value, ...valueB.value])];
+      return {
+        value: merged,
+        timestamp: Math.max(valueA.timestamp, valueB.timestamp),
+        nodeId: 'merged',
+        version: Math.max(valueA.version, valueB.version) + 1,
+      };
+    }
+    return ConflictResolver.lastWriteWins(valueA, valueB);
+  }
+}
+
+class EventualConsistencyCluster {
+  constructor(nodeCount) {
+    this.nodes = Array.from({ length: nodeCount }, (_, i) => new EventualConsistencyNode(`node-${i}`));
+  }
+
+  // 模拟反熵同步（Anti-Entropy Synchronization）
+  synchronize(strategy) {
+    console.log('\n[同步] 开始反熵同步...');
+    const allKeys = new Set();
+    for (const node of this.nodes) {
+      for (const key of node.data.keys()) {
+        allKeys.add(key);
+      }
+    }
+
+    for (const key of allKeys) {
+      const values = this.nodes
+        .map(node => ({ node, entry: node.read(key) }))
+        .filter(v => v.entry !== null);
+
+      if (values.length <= 1) continue;
+
+      // 检测冲突
+      const uniqueValues = new Set(values.map(v => JSON.stringify(v.entry.value)));
+      if (uniqueValues.size > 1) {
+        console.log(`[冲突] key="${key}" 在 ${values.length} 个节点上有不同值`);
+        for (const v of values) {
+          console.log(`  ${v.node.nodeId}: ${JSON.stringify(v.entry.value)} (ts: ${v.entry.timestamp})`);
+        }
+
+        // 解决冲突
+        let resolved = values[0].entry;
+        for (let i = 1; i < values.length; i++) {
+          resolved = strategy(resolved, values[i].entry);
+        }
+        console.log(`  → 解决方案: ${JSON.stringify(resolved.value)}`);
+
+        // 将解决后的值写入所有节点
+        for (const node of this.nodes) {
+          node.data.set(key, { ...resolved });
+        }
+      }
+    }
+    console.log('[同步] 反熵同步完成');
+  }
+
+  // 验证一致性
+  verifyConsistency() {
+    const allKeys = new Set();
+    for (const node of this.nodes) {
+      for (const key of node.data.keys()) allKeys.add(key);
+    }
+
+    let consistent = true;
+    for (const key of allKeys) {
+      const values = this.nodes.map(n => {
+        const entry = n.read(key);
+        return entry ? JSON.stringify(entry.value) : null;
+      });
+      const unique = new Set(values);
+      if (unique.size > 1) {
+        consistent = false;
+        console.log(`❌ key="${key}" 不一致: ${values.join(', ')}`);
+      }
+    }
+    if (consistent) console.log('✅ 所有数据一致');
+    return consistent;
+  }
+}
+
+// 演示
+const cluster = new EventualConsistencyCluster(3);
+
+// 并发写入导致冲突
+cluster.nodes[0].write('username', 'alice');
+cluster.nodes[1].write('username', 'bob');      // 并发写入不同值
+
+// 集合类数据的合并
+cluster.nodes[0].write('tags', ['js', 'node']);
+cluster.nodes[1].write('tags', ['python', 'js']);
+
+console.log('同步前:');
+cluster.verifyConsistency();
+
+// 使用 LWW 策略同步标量值，合并策略同步集合值
+cluster.synchronize(ConflictResolver.mergeValues);
+
+console.log('\n同步后:');
+cluster.verifyConsistency();
+```
+
+## 📊 一致性模型对比总结
+
+| 一致性模型 | 强度 | 性能 | 可用性 | 适用场景 | 典型系统 |
+|-----------|------|------|--------|---------|---------|
+| **线性一致性** | 最强 | 最低 | 低 | 分布式锁、Leader 选举 | ZooKeeper、etcd |
+| **顺序一致性** | 强 | 低 | 中 | 多核 CPU 内存模型 | 硬件内存模型 |
+| **因果一致性** | 中 | 中 | 高 | 社交网络、协作编辑 | MongoDB(causal) |
+| **最终一致性** | 弱 | 最高 | 最高 | CDN、DNS、购物车 | Cassandra、DynamoDB |
+
+### 如何选择？
+
+```js
+function chooseConsistencyModel(requirements) {
+  const { dataType, tolerateStaleRead, concurrentWriters, latencyBudgetMs } = requirements;
+
+  if (dataType === 'financial' || !tolerateStaleRead) {
+    return {
+      model: '线性一致性',
+      reason: '金融数据或不容许脏读的场景，必须使用最强一致性',
+    };
+  }
+
+  if (concurrentWriters && latencyBudgetMs < 50) {
+    return {
+      model: '最终一致性',
+      reason: '高并发写入 + 低延迟要求，使用最终一致性 + 冲突解决',
+    };
+  }
+
+  if (concurrentWriters) {
+    return {
+      model: '因果一致性',
+      reason: '多写者场景，因果一致性保证因果顺序的同时允许并发',
+    };
+  }
+
+  return {
+    model: '顺序一致性',
+    reason: '单写者或低并发场景，顺序一致性提供较好的平衡',
+  };
+}
+
+console.log(chooseConsistencyModel({
+  dataType: 'financial', tolerateStaleRead: false, concurrentWriters: false, latencyBudgetMs: 100,
+}));
+
+console.log(chooseConsistencyModel({
+  dataType: 'social-feed', tolerateStaleRead: true, concurrentWriters: true, latencyBudgetMs: 20,
+}));
+
+console.log(chooseConsistencyModel({
+  dataType: 'collaborative-doc', tolerateStaleRead: true, concurrentWriters: true, latencyBudgetMs: 200,
+}));
+```
+
+## 🔗 相关概念
+
+- **[分布式核心定理](/architect/03-distributed-systems/01-distributed-theory/02-core-theorems)**：CAP 定理中的 C 对应线性一致性
+- **[共识算法](/architect/03-distributed-systems/01-distributed-theory/04-consensus-algorithms)**：Raft 等算法用于实现强一致性
+- **[分布式事务](/architect/03-distributed-systems/03-distributed-data/02-distributed-transactions)**：事务的隔离级别与一致性模型密切相关
+
+## ✅ 学习检查点
+
+- [ ] 能够从强到弱排列各种一致性模型
+- [ ] 能够解释线性一致性与顺序一致性的区别
+- [ ] 理解向量时钟如何实现因果一致性
+- [ ] 能够为不同业务场景选择合适的一致性级别
+- [ ] 理解 LWW 和合并策略在最终一致性中的冲突解决
+
+## 🚀 下一步
+
+→ [共识算法](/architect/03-distributed-systems/01-distributed-theory/04-consensus-algorithms)

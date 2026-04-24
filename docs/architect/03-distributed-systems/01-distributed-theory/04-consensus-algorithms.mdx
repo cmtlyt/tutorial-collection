@@ -14,4 +14,769 @@
 - 了解 ZAB 协议在 ZooKeeper 中的应用
 - 理解 Gossip 协议的传播机制
 
-> 🚧 详细内容正在编写中...
+## 🏛️ Paxos 算法
+
+### 核心思想
+
+Paxos 由 Leslie Lamport 在 1990 年提出，是第一个被严格证明正确性的共识算法。它解决的核心问题是：**多个节点如何就一个值达成一致**。
+
+### 三种角色
+
+| 角色 | 职责 |
+|------|------|
+| **Proposer（提议者）** | 发起提案，提议一个值 |
+| **Acceptor（接受者）** | 参与投票，决定是否接受提案 |
+| **Learner（学习者）** | 不参与投票，学习最终被选定的值 |
+
+### Basic Paxos 两阶段流程
+
+```
+阶段一：Prepare（准备）
+  Proposer → Acceptor: "我要提编号为 N 的提案，你同意吗？"
+  Acceptor → Proposer: "同意，我之前接受过的最高编号提案是 M（值为 V）"
+                        或 "同意，我之前没接受过任何提案"
+
+阶段二：Accept（接受）
+  Proposer → Acceptor: "请接受编号 N 的提案，值为 V"
+  Acceptor → Proposer: "已接受" 或 "拒绝（有更高编号的提案）"
+```
+
+### 代码示例
+
+```js
+// ========== Basic Paxos 实现 ==========
+
+class PaxosAcceptor {
+  constructor(acceptorId) {
+    this.acceptorId = acceptorId;
+    this.promisedProposalNumber = -1;  // 承诺不再接受比这个更小的提案
+    this.acceptedProposalNumber = -1;  // 已接受的提案编号
+    this.acceptedValue = null;          // 已接受的值
+  }
+
+  // 阶段一：处理 Prepare 请求
+  handlePrepare(proposalNumber) {
+    if (proposalNumber > this.promisedProposalNumber) {
+      // 承诺不再接受编号更小的提案
+      this.promisedProposalNumber = proposalNumber;
+      console.log(`  [Acceptor ${this.acceptorId}] 承诺提案 #${proposalNumber}，` +
+        `已接受: ${this.acceptedValue !== null ? `#${this.acceptedProposalNumber}=${this.acceptedValue}` : '无'}`);
+      return {
+        ok: true,
+        acceptedProposalNumber: this.acceptedProposalNumber,
+        acceptedValue: this.acceptedValue,
+      };
+    }
+
+    console.log(`  [Acceptor ${this.acceptorId}] 拒绝提案 #${proposalNumber}（已承诺 #${this.promisedProposalNumber}）`);
+    return { ok: false };
+  }
+
+  // 阶段二：处理 Accept 请求
+  handleAccept(proposalNumber, value) {
+    if (proposalNumber >= this.promisedProposalNumber) {
+      this.promisedProposalNumber = proposalNumber;
+      this.acceptedProposalNumber = proposalNumber;
+      this.acceptedValue = value;
+      console.log(`  [Acceptor ${this.acceptorId}] 接受提案 #${proposalNumber}=${value}`);
+      return { ok: true };
+    }
+
+    console.log(`  [Acceptor ${this.acceptorId}] 拒绝接受 #${proposalNumber}（已承诺 #${this.promisedProposalNumber}）`);
+    return { ok: false };
+  }
+}
+
+class PaxosProposer {
+  constructor(proposerId, acceptors) {
+    this.proposerId = proposerId;
+    this.acceptors = acceptors;
+    this.proposalCounter = 0;
+  }
+
+  generateProposalNumber() {
+    // 提案编号 = 自增计数器 * 节点数 + 节点ID（保证全局唯一且递增）
+    this.proposalCounter++;
+    return this.proposalCounter * 100 + this.proposerId;
+  }
+
+  propose(value) {
+    const proposalNumber = this.generateProposalNumber();
+    const majority = Math.floor(this.acceptors.length / 2) + 1;
+
+    console.log(`\n[Proposer ${this.proposerId}] 发起提案 #${proposalNumber}，建议值: ${value}`);
+
+    // 阶段一：Prepare
+    console.log('--- 阶段一: Prepare ---');
+    const prepareResponses = this.acceptors.map(a => ({
+      acceptorId: a.acceptorId,
+      response: a.handlePrepare(proposalNumber),
+    }));
+
+    const prepareOks = prepareResponses.filter(r => r.response.ok);
+    if (prepareOks.length < majority) {
+      console.log(`[Proposer ${this.proposerId}] Prepare 失败：只有 ${prepareOks.length}/${majority} 个 Acceptor 同意`);
+      return { success: false, reason: 'Prepare 阶段未获得多数同意' };
+    }
+
+    // 关键规则：如果有 Acceptor 已经接受过提案，必须使用已接受的最高编号提案的值
+    const previouslyAccepted = prepareOks
+      .filter(r => r.response.acceptedValue !== null)
+      .sort((a, b) => b.response.acceptedProposalNumber - a.response.acceptedProposalNumber);
+
+    const finalValue = previouslyAccepted.length > 0
+      ? previouslyAccepted[0].response.acceptedValue
+      : value;
+
+    if (finalValue !== value) {
+      console.log(`[Proposer ${this.proposerId}] 发现已接受的值 "${finalValue}"，使用该值替代 "${value}"`);
+    }
+
+    // 阶段二：Accept
+    console.log('--- 阶段二: Accept ---');
+    const acceptResponses = this.acceptors.map(a => ({
+      acceptorId: a.acceptorId,
+      response: a.handleAccept(proposalNumber, finalValue),
+    }));
+
+    const acceptOks = acceptResponses.filter(r => r.response.ok);
+    if (acceptOks.length >= majority) {
+      console.log(`[Proposer ${this.proposerId}] ✅ 提案通过！值 "${finalValue}" 被选定`);
+      return { success: true, value: finalValue, proposalNumber };
+    }
+
+    console.log(`[Proposer ${this.proposerId}] ❌ Accept 阶段失败`);
+    return { success: false, reason: 'Accept 阶段未获得多数同意' };
+  }
+}
+
+// 运行 Paxos
+const acceptors = [new PaxosAcceptor(0), new PaxosAcceptor(1), new PaxosAcceptor(2)];
+const proposer1 = new PaxosProposer(1, acceptors);
+const proposer2 = new PaxosProposer(2, acceptors);
+
+// 正常情况：单个 Proposer
+proposer1.propose('方案A');
+
+// 竞争情况：两个 Proposer 先后提议
+console.log('\n====== 竞争场景 ======');
+const acceptors2 = [new PaxosAcceptor(0), new PaxosAcceptor(1), new PaxosAcceptor(2)];
+const p1 = new PaxosProposer(1, acceptors2);
+const p2 = new PaxosProposer(2, acceptors2);
+
+p1.propose('Redis');   // P1 先提议
+p2.propose('Memcached');  // P2 后提议，但会发现 P1 的值已被接受
+```
+
+### Paxos 的局限
+
+- **难以理解**：Lamport 本人都说"Paxos 论文难以被理解"
+- **单值共识**：Basic Paxos 每次只能就一个值达成共识，工程中需要 Multi-Paxos
+- **活锁风险**：多个 Proposer 可能互相抢占，导致都无法通过
+
+## 🏷️ Raft 算法
+
+### 核心思想
+
+Raft 由 Diego Ongaro 在 2014 年提出，目标是设计一个**比 Paxos 更易理解**的共识算法。它将共识问题分解为三个子问题：
+
+1. **Leader 选举**：选一个节点当 Leader
+2. **日志复制**：Leader 将日志同步到所有 Follower
+3. **安全性**：保证已提交的日志不会丢失
+
+### 节点角色
+
+```
+┌────────┐    超时无心跳     ┌────────────┐    获得多数票    ┌────────┐
+│Follower│ ───────────────→ │ Candidate  │ ─────────────→ │ Leader │
+│        │ ←─────────────── │            │                │        │
+└────────┘  发现更高任期Leader └────────────┘                └────────┘
+     ↑                           │                            │
+     │         选举失败（平票）    │                            │
+     │         ←──────────────────                            │
+     │                                                        │
+     └────────────── 发现更高任期 Leader ──────────────────────┘
+```
+
+### 代码示例：Raft 核心流程
+
+```js
+// ========== Raft 算法核心实现 ==========
+
+class RaftNode {
+  constructor(nodeId, clusterSize) {
+    this.nodeId = nodeId;
+    this.clusterSize = clusterSize;
+    this.state = 'follower';    // follower | candidate | leader
+    this.currentTerm = 0;
+    this.votedFor = null;
+    this.log = [];              // 日志条目: [{ term, command }]
+    this.commitIndex = -1;      // 已提交的最高日志索引
+    this.lastApplied = -1;      // 已应用到状态机的最高日志索引
+
+    // Leader 才需要的
+    this.nextIndex = {};        // 下一条要发送给每个 Follower 的日志索引
+    this.matchIndex = {};       // 已知每个 Follower 已复制的最高日志索引
+    this.votes = 0;
+  }
+
+  // ========== Leader 选举 ==========
+
+  startElection() {
+    this.currentTerm++;
+    this.state = 'candidate';
+    this.votedFor = this.nodeId;
+    this.votes = 1; // 投自己
+    console.log(`[节点${this.nodeId}] 发起选举，任期 ${this.currentTerm}`);
+    return {
+      type: 'RequestVote',
+      term: this.currentTerm,
+      candidateId: this.nodeId,
+      lastLogIndex: this.log.length - 1,
+      lastLogTerm: this.log.length > 0 ? this.log[this.log.length - 1].term : 0,
+    };
+  }
+
+  handleRequestVote(request) {
+    // 规则 1：任期落后则拒绝
+    if (request.term < this.currentTerm) {
+      return { term: this.currentTerm, voteGranted: false };
+    }
+
+    // 发现更高任期，回退为 Follower
+    if (request.term > this.currentTerm) {
+      this.currentTerm = request.term;
+      this.state = 'follower';
+      this.votedFor = null;
+    }
+
+    // 规则 2：本任期已投票给其他人则拒绝
+    if (this.votedFor !== null && this.votedFor !== request.candidateId) {
+      return { term: this.currentTerm, voteGranted: false };
+    }
+
+    // 规则 3：候选人的日志必须至少和自己一样新
+    const myLastLogTerm = this.log.length > 0 ? this.log[this.log.length - 1].term : 0;
+    const myLastLogIndex = this.log.length - 1;
+
+    const candidateLogUpToDate =
+      request.lastLogTerm > myLastLogTerm ||
+      (request.lastLogTerm === myLastLogTerm && request.lastLogIndex >= myLastLogIndex);
+
+    if (!candidateLogUpToDate) {
+      return { term: this.currentTerm, voteGranted: false };
+    }
+
+    // 投票
+    this.votedFor = request.candidateId;
+    console.log(`[节点${this.nodeId}] 投票给 节点${request.candidateId}（任期 ${request.term}）`);
+    return { term: this.currentTerm, voteGranted: true };
+  }
+
+  receiveVote(response) {
+    if (response.voteGranted && this.state === 'candidate') {
+      this.votes++;
+      const majority = Math.floor(this.clusterSize / 2) + 1;
+      if (this.votes >= majority) {
+        this.becomeLeader();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  becomeLeader() {
+    this.state = 'leader';
+    console.log(`[节点${this.nodeId}] 🎉 成为 Leader（任期 ${this.currentTerm}，得票 ${this.votes}）`);
+    // 初始化 nextIndex 和 matchIndex
+    for (let i = 0; i < this.clusterSize; i++) {
+      if (i !== this.nodeId) {
+        this.nextIndex[i] = this.log.length;
+        this.matchIndex[i] = -1;
+      }
+    }
+  }
+
+  // ========== 日志复制 ==========
+
+  appendCommand(command) {
+    if (this.state !== 'leader') {
+      return { success: false, error: '只有 Leader 可以接收写请求' };
+    }
+
+    const entry = { term: this.currentTerm, command, index: this.log.length };
+    this.log.push(entry);
+    console.log(`[Leader ${this.nodeId}] 追加日志: index=${entry.index}, command="${command}"`);
+    return { success: true, logIndex: entry.index };
+  }
+
+  // 生成给 Follower 的 AppendEntries RPC
+  createAppendEntries(followerId) {
+    const nextIdx = this.nextIndex[followerId] || 0;
+    const prevLogIndex = nextIdx - 1;
+    const prevLogTerm = prevLogIndex >= 0 ? this.log[prevLogIndex].term : 0;
+
+    return {
+      type: 'AppendEntries',
+      term: this.currentTerm,
+      leaderId: this.nodeId,
+      prevLogIndex,
+      prevLogTerm,
+      entries: this.log.slice(nextIdx),
+      leaderCommit: this.commitIndex,
+    };
+  }
+
+  handleAppendEntries(request) {
+    if (request.term < this.currentTerm) {
+      return { term: this.currentTerm, success: false };
+    }
+
+    // 发现更高或相同任期的 Leader，回退为 Follower
+    this.currentTerm = request.term;
+    this.state = 'follower';
+    this.votedFor = null;
+
+    // 日志一致性检查
+    if (request.prevLogIndex >= 0) {
+      if (request.prevLogIndex >= this.log.length) {
+        return { term: this.currentTerm, success: false };
+      }
+      if (this.log[request.prevLogIndex].term !== request.prevLogTerm) {
+        // 日志不一致，删除冲突的条目
+        this.log = this.log.slice(0, request.prevLogIndex);
+        return { term: this.currentTerm, success: false };
+      }
+    }
+
+    // 追加新日志
+    for (const entry of request.entries) {
+      if (entry.index < this.log.length) {
+        this.log[entry.index] = entry;
+      } else {
+        this.log.push(entry);
+      }
+    }
+
+    // 更新 commitIndex
+    if (request.leaderCommit > this.commitIndex) {
+      this.commitIndex = Math.min(request.leaderCommit, this.log.length - 1);
+    }
+
+    if (request.entries.length > 0) {
+      console.log(`[节点${this.nodeId}] 复制 ${request.entries.length} 条日志，commitIndex=${this.commitIndex}`);
+    }
+    return { term: this.currentTerm, success: true, matchIndex: this.log.length - 1 };
+  }
+
+  // Leader 处理 Follower 的复制响应
+  handleAppendEntriesResponse(followerId, response) {
+    if (response.success) {
+      this.matchIndex[followerId] = response.matchIndex;
+      this.nextIndex[followerId] = response.matchIndex + 1;
+      this.updateCommitIndex();
+    } else {
+      // 回退 nextIndex 重试
+      this.nextIndex[followerId] = Math.max(0, (this.nextIndex[followerId] || 1) - 1);
+    }
+  }
+
+  // 更新 commitIndex：如果多数节点已复制，则提交
+  updateCommitIndex() {
+    for (let n = this.log.length - 1; n > this.commitIndex; n--) {
+      if (this.log[n].term !== this.currentTerm) continue;
+
+      const replicatedCount = 1; // Leader 自己
+      let count = replicatedCount;
+      for (const [, matchIdx] of Object.entries(this.matchIndex)) {
+        if (matchIdx >= n) count++;
+      }
+
+      const majority = Math.floor(this.clusterSize / 2) + 1;
+      if (count >= majority) {
+        this.commitIndex = n;
+        console.log(`[Leader ${this.nodeId}] 日志 index=${n} 已被多数节点复制，提交！`);
+        break;
+      }
+    }
+  }
+}
+
+// ========== 模拟 Raft 集群 ==========
+const clusterSize = 3;
+const nodes = Array.from({ length: clusterSize }, (_, i) => new RaftNode(i, clusterSize));
+
+// Leader 选举
+console.log('=== Leader 选举 ===');
+const voteRequest = nodes[0].startElection();
+const vote1 = nodes[1].handleRequestVote(voteRequest);
+const vote2 = nodes[2].handleRequestVote(voteRequest);
+nodes[0].receiveVote(vote1);
+nodes[0].receiveVote(vote2);
+
+// 日志复制
+console.log('\n=== 日志复制 ===');
+nodes[0].appendCommand('SET x = 1');
+nodes[0].appendCommand('SET y = 2');
+
+// Leader 发送 AppendEntries 给 Follower
+for (let followerId = 1; followerId < clusterSize; followerId++) {
+  const appendEntries = nodes[0].createAppendEntries(followerId);
+  const response = nodes[followerId].handleAppendEntries(appendEntries);
+  nodes[0].handleAppendEntriesResponse(followerId, response);
+}
+
+console.log(`\nLeader 日志: ${nodes[0].log.map(e => e.command).join(', ')}`);
+console.log(`Leader commitIndex: ${nodes[0].commitIndex}`);
+console.log(`节点状态: ${nodes.map(n => `节点${n.nodeId}=${n.state}(日志${n.log.length}条)`).join(', ')}`);
+```
+
+## 🐘 ZAB 协议（ZooKeeper Atomic Broadcast）
+
+### 核心思想
+
+ZAB 是 ZooKeeper 使用的原子广播协议，与 Raft 非常相似，但设计时间更早。它保证：
+
+1. **全局有序**：所有事务按照 Leader 发出的顺序被应用
+2. **原子性**：事务要么被所有节点应用，要么都不应用
+3. **因果有序**：如果事务 A 在 B 之前提交，所有节点先执行 A 再执行 B
+
+### ZAB vs Raft 对比
+
+| 维度 | ZAB | Raft |
+|------|-----|------|
+| **设计年份** | 2007 | 2014 |
+| **核心目标** | 原子广播 | 共识/状态机复制 |
+| **日志恢复** | 保证 Leader 有最新数据 | 保证 Leader 有最长日志 |
+| **Leader 选举** | 选 zxid 最大的 | 选任期最高+日志最新的 |
+| **典型实现** | ZooKeeper | etcd、Consul |
+
+### 代码示例：ZAB 的事务 ID（zxid）
+
+```js
+// ========== ZAB 事务 ID（zxid）机制 ==========
+// zxid 是 64 位数字：高 32 位是 epoch（Leader 纪元），低 32 位是事务计数器
+
+class ZxidGenerator {
+  constructor(initialEpoch) {
+    this.epoch = initialEpoch;  // Leader 纪元（每次选举递增）
+    this.counter = 0;           // 事务计数器（Leader 内递增）
+  }
+
+  // 生成下一个 zxid
+  nextZxid() {
+    this.counter++;
+    return this.toZxid(this.epoch, this.counter);
+  }
+
+  // 新 Leader 上任：epoch 递增，counter 归零
+  newEpoch() {
+    this.epoch++;
+    this.counter = 0;
+    console.log(`[ZAB] 新纪元 epoch=${this.epoch}（新 Leader 上任）`);
+  }
+
+  // 组合为 zxid
+  toZxid(epoch, counter) {
+    return { epoch, counter, toString: () => `0x${epoch.toString(16).padStart(8, '0')}${counter.toString(16).padStart(8, '0')}` };
+  }
+
+  // 比较 zxid 大小
+  static compare(zxidA, zxidB) {
+    if (zxidA.epoch !== zxidB.epoch) return zxidA.epoch - zxidB.epoch;
+    return zxidA.counter - zxidB.counter;
+  }
+}
+
+class ZabNode {
+  constructor(nodeId) {
+    this.nodeId = nodeId;
+    this.state = 'looking';  // looking | following | leading
+    this.transactions = [];
+    this.lastZxid = { epoch: 0, counter: 0 };
+  }
+
+  applyTransaction(zxid, operation) {
+    this.transactions.push({ zxid, operation, appliedAt: Date.now() });
+    this.lastZxid = zxid;
+    console.log(`  [节点${this.nodeId}] 应用事务 ${zxid.toString()}: ${operation}`);
+  }
+}
+
+// 演示 ZAB 的事务顺序保证
+const zxidGen = new ZxidGenerator(1);
+
+console.log('=== ZAB 事务处理 ===\n');
+
+// Leader 纪元 1
+const leader = new ZabNode(0);
+leader.state = 'leading';
+
+const follower1 = new ZabNode(1);
+follower1.state = 'following';
+
+const follower2 = new ZabNode(2);
+follower2.state = 'following';
+
+// 事务按顺序广播
+const txns = [
+  { zxid: zxidGen.nextZxid(), op: 'CREATE /config' },
+  { zxid: zxidGen.nextZxid(), op: 'SET /config/db = "mysql"' },
+  { zxid: zxidGen.nextZxid(), op: 'SET /config/cache = "redis"' },
+];
+
+console.log('Leader 广播事务（保证全局有序）:');
+for (const txn of txns) {
+  leader.applyTransaction(txn.zxid, txn.op);
+  follower1.applyTransaction(txn.zxid, txn.op);
+  follower2.applyTransaction(txn.zxid, txn.op);
+}
+
+// 模拟 Leader 切换
+console.log('\n--- Leader 故障，重新选举 ---');
+zxidGen.newEpoch();
+
+const newTxns = [
+  { zxid: zxidGen.nextZxid(), op: 'SET /config/db = "postgresql"' },
+];
+
+console.log('新 Leader 广播事务:');
+for (const txn of newTxns) {
+  follower1.applyTransaction(txn.zxid, txn.op); // follower1 成为新 Leader
+  follower2.applyTransaction(txn.zxid, txn.op);
+}
+
+console.log(`\n事务 zxid 大小比较: ${ZxidGenerator.compare(txns[2].zxid, newTxns[0].zxid) < 0 ? '旧 Leader 事务 < 新 Leader 事务' : '异常'}`);
+```
+
+## 📡 Gossip 协议
+
+### 核心思想
+
+Gossip（八卦协议）是一种去中心化的信息传播协议。每个节点随机选择其他节点进行数据交换，信息像"八卦"一样在网络中扩散。Gossip 不需要 Leader，天然支持最终一致性。
+
+### 传播方式
+
+```
+第 0 轮：节点 A 有新信息
+     A*
+
+第 1 轮：A 随机告诉 B
+     A* → B*
+
+第 2 轮：A 和 B 各随机告诉一个节点
+     A* → C*
+     B* → D*
+
+第 3 轮：A, B, C, D 各随机告诉一个节点
+     → 指数级扩散，最终所有节点都知道
+```
+
+### 代码示例
+
+```js
+// ========== Gossip 协议实现 ==========
+
+class GossipNode {
+  constructor(nodeId) {
+    this.nodeId = nodeId;
+    this.data = new Map();          // key → { value, version, origin }
+    this.heartbeat = 0;
+    this.memberList = new Map();    // 成员列表: nodeId → { heartbeat, lastSeen, status }
+  }
+
+  // 更新自己的心跳
+  tick() {
+    this.heartbeat++;
+    this.memberList.set(this.nodeId, {
+      heartbeat: this.heartbeat,
+      lastSeen: Date.now(),
+      status: 'alive',
+    });
+  }
+
+  // 更新本地数据
+  updateData(key, value) {
+    const version = Date.now();
+    this.data.set(key, { value, version, origin: this.nodeId });
+  }
+
+  // 生成摘要（用于反熵同步）
+  getDigest() {
+    const digest = {};
+    for (const [key, entry] of this.data) {
+      digest[key] = entry.version;
+    }
+    return { nodeId: this.nodeId, data: digest, members: Object.fromEntries(this.memberList) };
+  }
+
+  // 处理来自其他节点的 Gossip 消息
+  handleGossip(remoteDigest, remoteData) {
+    const updatedKeys = [];
+
+    // 比较数据版本，接受更新的
+    for (const [key, remoteVersion] of Object.entries(remoteDigest.data)) {
+      const local = this.data.get(key);
+      if (!local || local.version < remoteVersion) {
+        // 远端数据更新，接受
+        if (remoteData[key]) {
+          this.data.set(key, { ...remoteData[key] });
+          updatedKeys.push(key);
+        }
+      }
+    }
+
+    // 合并成员列表
+    for (const [memberId, remoteMember] of Object.entries(remoteDigest.members)) {
+      const localMember = this.memberList.get(memberId);
+      if (!localMember || localMember.heartbeat < remoteMember.heartbeat) {
+        this.memberList.set(memberId, { ...remoteMember, lastSeen: Date.now() });
+      }
+    }
+
+    return updatedKeys;
+  }
+
+  // 获取需要发送给对方的数据
+  getDataForKeys(keys) {
+    const result = {};
+    for (const key of keys) {
+      const entry = this.data.get(key);
+      if (entry) result[key] = entry;
+    }
+    return result;
+  }
+}
+
+class GossipCluster {
+  constructor(nodeCount) {
+    this.nodes = Array.from({ length: nodeCount }, (_, i) => new GossipNode(`node-${i}`));
+    this.roundCount = 0;
+  }
+
+  // 执行一轮 Gossip
+  gossipRound() {
+    this.roundCount++;
+    console.log(`\n--- Gossip 第 ${this.roundCount} 轮 ---`);
+
+    for (const node of this.nodes) {
+      node.tick();
+
+      // 随机选择一个其他节点进行数据交换
+      const peers = this.nodes.filter(n => n.nodeId !== node.nodeId);
+      const randomPeer = peers[Math.floor(Math.random() * peers.length)];
+
+      // 交换摘要
+      const nodeDigest = node.getDigest();
+      const peerDigest = randomPeer.getDigest();
+
+      // 找出对方有但自己没有（或更新）的 key
+      const keysToFetch = [];
+      for (const [key, version] of Object.entries(peerDigest.data)) {
+        const local = node.data.get(key);
+        if (!local || local.version < version) {
+          keysToFetch.push(key);
+        }
+      }
+
+      if (keysToFetch.length > 0) {
+        const remoteData = randomPeer.getDataForKeys(keysToFetch);
+        const updated = node.handleGossip(peerDigest, remoteData);
+        if (updated.length > 0) {
+          console.log(`  ${node.nodeId} ← ${randomPeer.nodeId}: 同步了 ${updated.join(', ')}`);
+        }
+      }
+
+      // 反向同步：把自己的新数据发给对方
+      const keysToSend = [];
+      for (const [key, version] of Object.entries(nodeDigest.data)) {
+        const remote = randomPeer.data.get(key);
+        if (!remote || remote.version < version) {
+          keysToSend.push(key);
+        }
+      }
+
+      if (keysToSend.length > 0) {
+        const localData = node.getDataForKeys(keysToSend);
+        const updated = randomPeer.handleGossip(nodeDigest, localData);
+        if (updated.length > 0) {
+          console.log(`  ${randomPeer.nodeId} ← ${node.nodeId}: 同步了 ${updated.join(', ')}`);
+        }
+      }
+    }
+  }
+
+  // 检查数据一致性
+  checkConsistency(key) {
+    const values = this.nodes.map(n => {
+      const data = n.data.get(key);
+      return { nodeId: n.nodeId, value: data ? data.value : null };
+    });
+
+    const uniqueValues = new Set(values.map(v => JSON.stringify(v.value)));
+    const consistent = uniqueValues.size <= 1;
+    console.log(`  [${key}] ${consistent ? '✅ 一致' : '❌ 不一致'}: ${values.map(v => `${v.nodeId}=${v.value}`).join(', ')}`);
+    return consistent;
+  }
+}
+
+// 演示
+const cluster = new GossipCluster(5);
+
+// 节点 0 写入数据
+cluster.nodes[0].updateData('config:version', '2.0');
+cluster.nodes[0].updateData('config:env', 'production');
+
+// 节点 3 独立写入另一个数据
+cluster.nodes[3].updateData('feature:dark-mode', 'enabled');
+
+console.log('初始状态：');
+cluster.checkConsistency('config:version');
+cluster.checkConsistency('feature:dark-mode');
+
+// 执行多轮 Gossip，观察数据扩散
+for (let i = 0; i < 4; i++) {
+  cluster.gossipRound();
+}
+
+console.log('\n最终状态：');
+cluster.checkConsistency('config:version');
+cluster.checkConsistency('config:env');
+cluster.checkConsistency('feature:dark-mode');
+```
+
+### Gossip 的特点
+
+| 优势 | 劣势 |
+|------|------|
+| 去中心化，无单点故障 | 只能保证最终一致性 |
+| 高容错，部分节点故障不影响传播 | 信息传播有延迟 |
+| 扩展性好，适合大规模集群 | 网络带宽消耗随节点数增长 |
+| 实现简单 | 不适合需要强一致性的场景 |
+
+## 📊 共识算法对比总结
+
+| 算法 | 一致性保证 | 复杂度 | 性能 | 典型应用 |
+|------|-----------|--------|------|---------|
+| **Paxos** | 线性一致 | 高 | 中 | Chubby（Google 内部） |
+| **Raft** | 线性一致 | 中 | 中 | etcd、Consul、TiKV |
+| **ZAB** | 线性一致 | 中 | 中 | ZooKeeper |
+| **Gossip** | 最终一致 | 低 | 高 | Cassandra、Redis Cluster、Consul(成员管理) |
+
+## 🔗 相关概念
+
+- **[分布式核心定理](/architect/03-distributed-systems/01-distributed-theory/02-core-theorems)**：共识算法是 CP 系统的核心实现
+- **[一致性模型](/architect/03-distributed-systems/01-distributed-theory/03-consistency-models)**：不同共识算法提供不同级别的一致性
+- **[分布式存储](/architect/03-distributed-systems/03-distributed-data/03-distributed-storage)**：数据复制依赖共识算法
+
+## ✅ 学习检查点
+
+- [ ] 能够解释 Paxos 的两阶段流程
+- [ ] 能够描述 Raft 的 Leader 选举和日志复制过程
+- [ ] 理解 ZAB 与 Raft 的异同
+- [ ] 能够解释 Gossip 协议的传播机制和适用场景
+- [ ] 能够根据一致性需求选择合适的共识算法
+
+## 🚀 下一步
+
+→ [分布式通信](/architect/03-distributed-systems/02-distributed-communication/01-distributed-communication-overview)

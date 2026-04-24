@@ -14,4 +14,663 @@
 - 深入理解一致性哈希及其虚拟节点机制
 - 了解 HDFS 和 Ceph 等分布式文件系统的架构
 
-> 🚧 详细内容正在编写中...
+## 🔪 数据分片（Sharding）
+
+### 为什么需要分片
+
+当单机数据库无法承载数据量或请求量时，需要将数据**水平拆分**到多个节点上：
+
+```
+单机瓶颈：
+  - 存储：单磁盘容量有限
+  - 计算：单 CPU 处理能力有限
+  - 网络：单网卡带宽有限
+
+分片后：
+  节点1: 用户 A~H 的数据
+  节点2: 用户 I~P 的数据
+  节点3: 用户 Q~Z 的数据
+  → 存储、计算、网络负载均匀分散
+```
+
+### 分片策略
+
+| 策略 | 原理 | 优点 | 缺点 |
+|------|------|------|------|
+| **范围分片** | 按 key 的范围划分 | 支持范围查询 | 热点数据倾斜 |
+| **哈希分片** | 对 key 取哈希后取模 | 数据均匀 | 不支持范围查询 |
+| **一致性哈希** | 哈希环 + 虚拟节点 | 扩缩容迁移量小 | 实现复杂 |
+| **目录分片** | 查表确定分片位置 | 灵活 | 目录服务是瓶颈 |
+
+### 代码示例
+
+```js
+// ========== 数据分片策略实现 ==========
+
+// 1. 范围分片
+class RangeSharding {
+  constructor(ranges) {
+    // ranges: [{ min, max, shardId }]
+    this.ranges = ranges.sort((a, b) => a.min - b.min);
+  }
+
+  getShard(key) {
+    const numericKey = typeof key === 'number' ? key : this.hashToNumber(key);
+    for (const range of this.ranges) {
+      if (numericKey >= range.min && numericKey <= range.max) {
+        return range.shardId;
+      }
+    }
+    return this.ranges[this.ranges.length - 1].shardId;
+  }
+
+  hashToNumber(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash);
+  }
+}
+
+// 2. 哈希分片
+class HashSharding {
+  constructor(shardCount) {
+    this.shardCount = shardCount;
+  }
+
+  hash(key) {
+    let hash = 0;
+    const str = String(key);
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash);
+  }
+
+  getShard(key) {
+    return this.hash(key) % this.shardCount;
+  }
+}
+
+// 3. 一致性哈希（带虚拟节点）
+class ConsistentHashing {
+  constructor(virtualNodeCount = 150) {
+    this.virtualNodeCount = virtualNodeCount;
+    this.ring = new Map();       // hash → physicalNode
+    this.sortedHashes = [];
+    this.physicalNodes = new Set();
+  }
+
+  hash(key) {
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash);
+  }
+
+  // 添加物理节点
+  addNode(nodeId) {
+    this.physicalNodes.add(nodeId);
+    for (let i = 0; i < this.virtualNodeCount; i++) {
+      const virtualKey = `${nodeId}#VN${i}`;
+      const hashValue = this.hash(virtualKey);
+      this.ring.set(hashValue, nodeId);
+      this.sortedHashes.push(hashValue);
+    }
+    this.sortedHashes.sort((a, b) => a - b);
+    console.log(`[一致性哈希] 添加节点 ${nodeId}（${this.virtualNodeCount} 个虚拟节点）`);
+  }
+
+  // 移除物理节点
+  removeNode(nodeId) {
+    this.physicalNodes.delete(nodeId);
+    for (let i = 0; i < this.virtualNodeCount; i++) {
+      const virtualKey = `${nodeId}#VN${i}`;
+      const hashValue = this.hash(virtualKey);
+      this.ring.delete(hashValue);
+    }
+    this.sortedHashes = this.sortedHashes.filter(h => this.ring.has(h));
+    console.log(`[一致性哈希] 移除节点 ${nodeId}`);
+  }
+
+  // 查找 key 对应的节点
+  getShard(key) {
+    if (this.sortedHashes.length === 0) return null;
+    const hashValue = this.hash(String(key));
+
+    // 在环上顺时针查找第一个大于等于 hashValue 的虚拟节点
+    let targetHash = this.sortedHashes.find(h => h >= hashValue);
+    if (!targetHash) {
+      targetHash = this.sortedHashes[0]; // 绕回环起点
+    }
+    return this.ring.get(targetHash);
+  }
+
+  // 分析数据分布
+  analyzeDistribution(keys) {
+    const distribution = {};
+    for (const node of this.physicalNodes) {
+      distribution[node] = 0;
+    }
+
+    for (const key of keys) {
+      const node = this.getShard(key);
+      distribution[node]++;
+    }
+
+    console.log('\n数据分布:');
+    const total = keys.length;
+    for (const [node, count] of Object.entries(distribution)) {
+      const percentage = ((count / total) * 100).toFixed(1);
+      const bar = '█'.repeat(Math.round(count / total * 40));
+      console.log(`  ${node}: ${count} (${percentage}%) ${bar}`);
+    }
+
+    // 计算标准差衡量均匀度
+    const avg = total / Object.keys(distribution).length;
+    const variance = Object.values(distribution).reduce((sum, v) => sum + Math.pow(v - avg, 2), 0) / Object.keys(distribution).length;
+    const stdDev = Math.sqrt(variance);
+    console.log(`  标准差: ${stdDev.toFixed(1)}（越小越均匀）`);
+    return distribution;
+  }
+}
+
+// ========== 对比测试 ==========
+const testKeys = Array.from({ length: 10000 }, (_, i) => `user-${i}`);
+
+// 哈希分片
+console.log('=== 哈希分片 ===');
+const hashSharding = new HashSharding(3);
+const hashDist = { 0: 0, 1: 0, 2: 0 };
+for (const key of testKeys) {
+  hashDist[hashSharding.getShard(key)]++;
+}
+console.log('分布:', hashDist);
+
+// 一致性哈希
+console.log('\n=== 一致性哈希 ===');
+const ch = new ConsistentHashing(200);
+ch.addNode('node-A');
+ch.addNode('node-B');
+ch.addNode('node-C');
+ch.analyzeDistribution(testKeys);
+
+// 扩容：新增节点后观察迁移量
+console.log('\n=== 扩容：添加 node-D ===');
+const beforeMapping = testKeys.map(k => ({ key: k, node: ch.getShard(k) }));
+ch.addNode('node-D');
+const afterMapping = testKeys.map(k => ({ key: k, node: ch.getShard(k) }));
+
+const migratedCount = beforeMapping.filter((b, i) => b.node !== afterMapping[i].node).length;
+console.log(`迁移数据量: ${migratedCount} / ${testKeys.length} (${((migratedCount / testKeys.length) * 100).toFixed(1)}%)`);
+ch.analyzeDistribution(testKeys);
+```
+
+## 📋 数据复制（Replication）
+
+### 主从复制
+
+```
+写请求 → 主节点（Leader）→ 同步/异步 → 从节点1（Follower）
+                                       → 从节点2（Follower）
+读请求 → 从节点（负载均衡）
+```
+
+### 多主复制
+
+```
+写请求 → 主节点1（Leader）←同步→ 主节点2（Leader）
+              ↓                       ↓
+         从节点1A                  从节点2A
+```
+
+### 代码示例
+
+```js
+// ========== 数据复制模式实现 ==========
+
+class ReplicaNode {
+  constructor(nodeId, role) {
+    this.nodeId = nodeId;
+    this.role = role;  // 'leader' | 'follower'
+    this.data = new Map();
+    this.replicationLog = [];   // 复制日志（WAL）
+    this.logOffset = 0;
+  }
+
+  write(key, value) {
+    const logEntry = {
+      offset: this.logOffset++,
+      operation: 'SET',
+      key,
+      value,
+      timestamp: Date.now(),
+    };
+    this.replicationLog.push(logEntry);
+    this.data.set(key, value);
+    return logEntry;
+  }
+
+  // 应用来自 Leader 的复制日志
+  applyReplicationLog(entries) {
+    for (const entry of entries) {
+      if (entry.offset <= this.logOffset - 1) continue; // 跳过已应用的
+
+      if (entry.operation === 'SET') {
+        this.data.set(entry.key, entry.value);
+      } else if (entry.operation === 'DELETE') {
+        this.data.delete(entry.key);
+      }
+      this.logOffset = entry.offset + 1;
+    }
+  }
+
+  read(key) {
+    return this.data.get(key);
+  }
+}
+
+// ========== 主从复制集群 ==========
+class LeaderFollowerCluster {
+  constructor() {
+    this.leader = new ReplicaNode('leader', 'leader');
+    this.followers = [
+      new ReplicaNode('follower-1', 'follower'),
+      new ReplicaNode('follower-2', 'follower'),
+    ];
+    this.replicationMode = 'async'; // 'sync' | 'semi-sync' | 'async'
+    this.readIndex = 0;
+  }
+
+  // 写操作（只发往 Leader）
+  write(key, value) {
+    console.log(`[写入] ${key} = ${value}`);
+    const logEntry = this.leader.write(key, value);
+
+    if (this.replicationMode === 'sync') {
+      // 同步复制：等待所有 Follower 确认
+      for (const follower of this.followers) {
+        follower.applyReplicationLog([logEntry]);
+        console.log(`  → ${follower.nodeId} 同步复制完成`);
+      }
+    } else if (this.replicationMode === 'semi-sync') {
+      // 半同步复制：等待至少一个 Follower 确认
+      this.followers[0].applyReplicationLog([logEntry]);
+      console.log(`  → ${this.followers[0].nodeId} 半同步复制完成`);
+      // 其余 Follower 异步复制
+      console.log(`  → 其余 Follower 异步复制中...`);
+    } else {
+      // 异步复制：Leader 写完即返回
+      console.log(`  → Follower 异步复制中...`);
+    }
+
+    return { success: true, writtenTo: 'leader' };
+  }
+
+  // 异步复制（定时执行）
+  asyncReplicate() {
+    const leaderLog = this.leader.replicationLog;
+    for (const follower of this.followers) {
+      const newEntries = leaderLog.filter(e => e.offset >= follower.logOffset);
+      if (newEntries.length > 0) {
+        follower.applyReplicationLog(newEntries);
+        console.log(`[异步复制] ${follower.nodeId}: 同步了 ${newEntries.length} 条日志`);
+      }
+    }
+  }
+
+  // 读操作（从 Follower 读，负载均衡）
+  read(key, readFromLeader = false) {
+    if (readFromLeader) {
+      const value = this.leader.read(key);
+      console.log(`[读取] ${key} = ${value} (from leader)`);
+      return value;
+    }
+
+    // 轮询读取 Follower
+    const follower = this.followers[this.readIndex % this.followers.length];
+    this.readIndex++;
+    const value = follower.read(key);
+    console.log(`[读取] ${key} = ${value} (from ${follower.nodeId})`);
+    return value;
+  }
+
+  // 故障转移
+  failover() {
+    console.log('\n=== 故障转移 ===');
+    console.log(`[故障] Leader ${this.leader.nodeId} 不可达`);
+
+    // 选择日志最新的 Follower 作为新 Leader
+    const newLeader = this.followers.reduce((best, follower) =>
+      follower.logOffset > best.logOffset ? follower : best,
+    );
+
+    newLeader.role = 'leader';
+    this.leader = newLeader;
+    this.followers = this.followers.filter(f => f !== newLeader);
+
+    console.log(`[切换] ${newLeader.nodeId} 晋升为新 Leader（日志偏移量: ${newLeader.logOffset}）`);
+    return newLeader;
+  }
+
+  getStatus() {
+    return {
+      leader: { id: this.leader.nodeId, logOffset: this.leader.logOffset, dataSize: this.leader.data.size },
+      followers: this.followers.map(f => ({
+        id: f.nodeId, logOffset: f.logOffset, dataSize: f.data.size,
+        lag: this.leader.logOffset - f.logOffset,
+      })),
+    };
+  }
+}
+
+// 演示
+const cluster = new LeaderFollowerCluster();
+cluster.replicationMode = 'semi-sync';
+
+cluster.write('user:1', '张三');
+cluster.write('user:2', '李四');
+cluster.write('config:theme', 'dark');
+
+// 异步复制
+cluster.asyncReplicate();
+
+// 读取
+cluster.read('user:1');
+cluster.read('user:2');
+cluster.read('config:theme', true); // 强制读 Leader
+
+console.log('\n状态:', JSON.stringify(cluster.getStatus(), null, 2));
+
+// 故障转移
+cluster.failover();
+cluster.write('user:3', '王五');
+console.log('\n故障转移后状态:', JSON.stringify(cluster.getStatus(), null, 2));
+```
+
+### 复制模式对比
+
+| 模式 | 一致性 | 可用性 | 性能 | 适用场景 |
+|------|--------|--------|------|---------|
+| **同步复制** | 强 | 低（任一从库故障影响写） | 低 | 金融核心数据 |
+| **异步复制** | 最终 | 高 | 高 | 大多数读多写少场景 |
+| **半同步** | 较强 | 中 | 中 | 平衡一致性和性能 |
+| **多主复制** | 最终（有冲突） | 最高 | 高 | 多数据中心、协作编辑 |
+
+## 📂 分布式文件系统
+
+### HDFS 架构
+
+```
+客户端
+  │
+  │ ① 查询文件元数据
+  ↓
+NameNode（主节点）
+  │ 元数据：文件名 → Block 列表 → DataNode 位置
+  │
+  │ ② 返回 Block 位置
+  ↓
+客户端
+  │
+  │ ③ 直接读写 DataNode
+  ↓
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│DataNode 1│  │DataNode 2│  │DataNode 3│
+│ Block A  │  │ Block B  │  │ Block A' │ ← 副本
+│ Block C  │  │ Block A''│  │ Block B' │ ← 副本
+└──────────┘  └──────────┘  └──────────┘
+```
+
+### 代码示例：分布式文件系统模拟
+
+```js
+// ========== 简化版分布式文件系统 ==========
+
+class NameNode {
+  constructor(blockSize, replicaCount) {
+    this.blockSize = blockSize;        // 每个 Block 的大小（字符数模拟）
+    this.replicaCount = replicaCount;  // 副本数
+    this.fileTable = new Map();        // fileName → [{ blockId, dataNodes }]
+    this.dataNodes = [];
+    this.blockCounter = 0;
+  }
+
+  registerDataNode(dataNode) {
+    this.dataNodes.push(dataNode);
+    console.log(`[NameNode] 注册 DataNode: ${dataNode.nodeId}`);
+  }
+
+  // 将文件拆分为 Block，分配到 DataNode
+  createFile(fileName, fileContent) {
+    console.log(`\n[NameNode] 创建文件: ${fileName}（${fileContent.length} 字符）`);
+
+    // 拆分为 Block
+    const blocks = [];
+    for (let i = 0; i < fileContent.length; i += this.blockSize) {
+      this.blockCounter++;
+      const blockId = `blk_${this.blockCounter}`;
+      const blockData = fileContent.slice(i, i + this.blockSize);
+
+      // 选择 DataNode（轮询 + 副本分散到不同节点）
+      const assignedNodes = this.selectDataNodes(this.replicaCount);
+
+      blocks.push({ blockId, size: blockData.length, dataNodes: assignedNodes.map(n => n.nodeId) });
+
+      // 写入数据到选中的 DataNode
+      for (const node of assignedNodes) {
+        node.storeBlock(blockId, blockData);
+      }
+
+      console.log(`  Block ${blockId}: ${blockData.length} 字符 → ${assignedNodes.map(n => n.nodeId).join(', ')}`);
+    }
+
+    this.fileTable.set(fileName, blocks);
+    return { fileName, blockCount: blocks.length, totalSize: fileContent.length };
+  }
+
+  // 选择 DataNode（机架感知简化版）
+  selectDataNodes(count) {
+    const available = this.dataNodes.filter(n => n.isAlive);
+    if (available.length < count) {
+      throw new Error(`可用 DataNode 不足: 需要 ${count}，可用 ${available.length}`);
+    }
+
+    // 简单轮询选择
+    const selected = [];
+    const shuffled = [...available].sort(() => Math.random() - 0.5);
+    for (let i = 0; i < count; i++) {
+      selected.push(shuffled[i]);
+    }
+    return selected;
+  }
+
+  // 读取文件
+  readFile(fileName) {
+    const blocks = this.fileTable.get(fileName);
+    if (!blocks) {
+      console.log(`[NameNode] 文件不存在: ${fileName}`);
+      return null;
+    }
+
+    console.log(`\n[NameNode] 读取文件: ${fileName}（${blocks.length} 个 Block）`);
+
+    let content = '';
+    for (const block of blocks) {
+      // 从任一可用副本读取
+      let blockData = null;
+      for (const nodeId of block.dataNodes) {
+        const node = this.dataNodes.find(n => n.nodeId === nodeId && n.isAlive);
+        if (node) {
+          blockData = node.readBlock(block.blockId);
+          console.log(`  ${block.blockId} ← ${node.nodeId}`);
+          break;
+        }
+      }
+
+      if (blockData === null) {
+        throw new Error(`Block ${block.blockId} 所有副本不可用`);
+      }
+      content += blockData;
+    }
+
+    return content;
+  }
+
+  // 文件列表
+  listFiles() {
+    return Array.from(this.fileTable.entries()).map(([name, blocks]) => ({
+      name,
+      blockCount: blocks.length,
+      totalSize: blocks.reduce((sum, b) => sum + b.size, 0),
+    }));
+  }
+}
+
+class DataNode {
+  constructor(nodeId, capacity) {
+    this.nodeId = nodeId;
+    this.capacity = capacity;
+    this.blocks = new Map();   // blockId → data
+    this.usedSpace = 0;
+    this.isAlive = true;
+  }
+
+  storeBlock(blockId, data) {
+    if (this.usedSpace + data.length > this.capacity) {
+      throw new Error(`${this.nodeId} 磁盘空间不足`);
+    }
+    this.blocks.set(blockId, data);
+    this.usedSpace += data.length;
+  }
+
+  readBlock(blockId) {
+    return this.blocks.get(blockId) || null;
+  }
+
+  getStatus() {
+    return {
+      nodeId: this.nodeId,
+      blockCount: this.blocks.size,
+      usedSpace: this.usedSpace,
+      capacity: this.capacity,
+      utilization: `${((this.usedSpace / this.capacity) * 100).toFixed(1)}%`,
+      alive: this.isAlive,
+    };
+  }
+}
+
+// ========== 演示 ==========
+const nameNode = new NameNode(20, 2);  // 每个 Block 20 字符，2 副本
+
+const dn1 = new DataNode('datanode-1', 1000);
+const dn2 = new DataNode('datanode-2', 1000);
+const dn3 = new DataNode('datanode-3', 1000);
+
+nameNode.registerDataNode(dn1);
+nameNode.registerDataNode(dn2);
+nameNode.registerDataNode(dn3);
+
+// 写入文件
+nameNode.createFile('/data/report.txt', 'This is a distributed file system demo for learning purposes.');
+nameNode.createFile('/config/app.json', '{"port":8080,"host":"0.0.0.0"}');
+
+// 读取文件
+const content = nameNode.readFile('/data/report.txt');
+console.log(`\n读取到的内容: "${content}"`);
+
+// 文件列表
+console.log('\n文件列表:', nameNode.listFiles());
+
+// DataNode 状态
+console.log('\nDataNode 状态:');
+[dn1, dn2, dn3].forEach(dn => console.log(`  ${JSON.stringify(dn.getStatus())}`));
+
+// 模拟节点故障后读取
+console.log('\n=== 模拟 DataNode 故障 ===');
+dn1.isAlive = false;
+console.log(`${dn1.nodeId} 已下线`);
+const contentAfterFailure = nameNode.readFile('/data/report.txt');
+console.log(`故障后读取: "${contentAfterFailure}"`);
+```
+
+### 分布式文件系统对比
+
+| 系统 | 架构 | 一致性 | 适用场景 |
+|------|------|--------|---------|
+| **HDFS** | 主从（NameNode + DataNode） | 强一致 | 大数据批处理（Hadoop 生态） |
+| **Ceph** | 去中心化（CRUSH 算法） | 强一致 | 块存储、对象存储、文件存储 |
+| **MinIO** | 对等节点 | 强一致（纠删码） | S3 兼容对象存储 |
+| **GlusterFS** | 对等节点 | 最终一致 | 通用文件存储 |
+
+## 📊 存储引擎
+
+### LSM-Tree vs B-Tree
+
+```js
+// ========== LSM-Tree 与 B-Tree 特点对比 ==========
+
+class StorageEngineComparator {
+  static compare() {
+    const engines = {
+      'B-Tree': {
+        writePattern: '原地更新（随机写）',
+        readPattern: '直接查找（O(log n)）',
+        writeAmplification: '高（每次写可能引发页分裂）',
+        readAmplification: '低（一次磁盘寻址）',
+        spaceAmplification: '低（原地更新，无重复数据）',
+        bestFor: '读多写少、需要高效点查和范围查询',
+        examples: 'MySQL InnoDB、PostgreSQL、SQLite',
+      },
+      'LSM-Tree': {
+        writePattern: '顺序追加（批量写内存，定期 flush 到磁盘）',
+        readPattern: '多层查找（先 MemTable → L0 → L1 → ...）',
+        writeAmplification: '低（顺序写 + 批量合并）',
+        readAmplification: '高（可能需要查多层，布隆过滤器优化）',
+        spaceAmplification: '高（合并前存在重复数据）',
+        bestFor: '写多读少、高吞吐写入',
+        examples: 'LevelDB、RocksDB、Cassandra、HBase',
+      },
+    };
+
+    console.log('=== 存储引擎对比 ===\n');
+    const dimensions = ['writePattern', 'readPattern', 'writeAmplification', 'readAmplification', 'spaceAmplification', 'bestFor', 'examples'];
+    const labels = {
+      writePattern: '写模式', readPattern: '读模式',
+      writeAmplification: '写放大', readAmplification: '读放大',
+      spaceAmplification: '空间放大', bestFor: '最佳场景', examples: '代表系统',
+    };
+
+    for (const dim of dimensions) {
+      console.log(`${labels[dim]}:`);
+      for (const [name, info] of Object.entries(engines)) {
+        console.log(`  ${name}: ${info[dim]}`);
+      }
+      console.log();
+    }
+  }
+}
+
+StorageEngineComparator.compare();
+```
+
+## 🔗 相关概念
+
+- **[一致性模型](/architect/03-distributed-systems/01-distributed-theory/03-consistency-models)**：复制策略决定一致性级别
+- **[共识算法](/architect/03-distributed-systems/01-distributed-theory/04-consensus-algorithms)**：主从切换依赖共识算法
+- **[分布式缓存](/architect/03-distributed-systems/03-distributed-data/04-distributed-cache)**：缓存和存储配合使用
+- **[分布式事务](/architect/03-distributed-systems/03-distributed-data/02-distributed-transactions)**：跨分片事务的挑战
+
+## ✅ 学习检查点
+
+- [ ] 能够对比范围分片、哈希分片、一致性哈希的优劣
+- [ ] 理解一致性哈希的虚拟节点如何解决数据倾斜
+- [ ] 能够区分同步复制、异步复制、半同步复制的适用场景
+- [ ] 理解 HDFS 的 NameNode + DataNode 架构
+- [ ] 能够解释 LSM-Tree 和 B-Tree 的核心差异
+
+## 🚀 下一步
+
+→ [分布式缓存](/architect/03-distributed-systems/03-distributed-data/04-distributed-cache)

@@ -14,4 +14,496 @@
 - 理解 PACELC 定理对 CAP 的扩展
 - 了解 FLP 不可能性定理的含义
 
-> 🚧 详细内容正在编写中...
+## 🔺 CAP 定理
+
+### 定义
+
+CAP 定理由 Eric Brewer 在 2000 年提出，指出在一个分布式系统中，以下三个属性最多只能同时满足两个：
+
+- **C（Consistency，一致性）**：所有节点在同一时刻看到相同的数据
+- **A（Availability，可用性）**：每个非故障节点都能在合理时间内返回响应
+- **P（Partition Tolerance，分区容忍性）**：系统在网络分区（节点之间的通信中断）时仍能继续运行
+
+### 为什么只能三选二？
+
+网络分区在分布式系统中**不可避免**——网线可能断裂、交换机可能故障、数据中心可能失联。因此 P 是必须保证的，实际的选择是在 **CP** 和 **AP** 之间做取舍。
+
+```
+                    C（一致性）
+                   /          \
+                  /            \
+                CP              CA（实际不可行）
+               /                  \
+              /                    \
+         P（分区容忍）————————— A（可用性）
+                    AP
+```
+
+### 代码示例：CAP 权衡模拟
+
+```js
+// ========== CAP 定理权衡模拟 ==========
+
+class DistributedNode {
+  constructor(nodeId) {
+    this.nodeId = nodeId;
+    this.data = new Map();
+    this.isPartitioned = false; // 是否处于网络分区状态
+  }
+
+  write(key, value) {
+    this.data.set(key, { value, version: Date.now() });
+  }
+
+  read(key) {
+    return this.data.get(key) || null;
+  }
+}
+
+// ========== CP 系统：保证一致性，牺牲可用性 ==========
+class CpSystem {
+  constructor() {
+    this.nodes = [new DistributedNode('node-1'), new DistributedNode('node-2'), new DistributedNode('node-3')];
+  }
+
+  write(key, value) {
+    const reachableNodes = this.nodes.filter(n => !n.isPartitioned);
+
+    // CP 策略：必须获得多数节点确认才能写入成功
+    const majority = Math.floor(this.nodes.length / 2) + 1;
+    if (reachableNodes.length < majority) {
+      // 无法达到多数确认 → 拒绝写入（牺牲可用性）
+      return { success: false, error: '无法达到多数节点确认，拒绝写入以保证一致性' };
+    }
+
+    for (const node of reachableNodes) {
+      node.write(key, value);
+    }
+    return { success: true, confirmedNodes: reachableNodes.length };
+  }
+
+  read(key) {
+    const reachableNodes = this.nodes.filter(n => !n.isPartitioned);
+    const majority = Math.floor(this.nodes.length / 2) + 1;
+
+    if (reachableNodes.length < majority) {
+      return { success: false, error: '无法达到多数节点确认，拒绝读取以保证一致性' };
+    }
+
+    // 从多数节点读取，返回最新版本
+    const results = reachableNodes.map(n => n.read(key)).filter(Boolean);
+    if (results.length === 0) return { success: true, value: null };
+
+    const latest = results.reduce((a, b) => (a.version > b.version ? a : b));
+    return { success: true, value: latest.value };
+  }
+}
+
+// ========== AP 系统：保证可用性，牺牲一致性 ==========
+class ApSystem {
+  constructor() {
+    this.nodes = [new DistributedNode('node-1'), new DistributedNode('node-2'), new DistributedNode('node-3')];
+  }
+
+  write(key, value, targetNodeIndex) {
+    const node = this.nodes[targetNodeIndex];
+    // AP 策略：只要节点自身可用就接受写入，不等待其他节点确认
+    node.write(key, value);
+
+    // 尝试异步复制到其他节点（可能因分区失败）
+    const replicated = [];
+    for (const otherNode of this.nodes) {
+      if (otherNode === node) continue;
+      if (!otherNode.isPartitioned) {
+        otherNode.write(key, value);
+        replicated.push(otherNode.nodeId);
+      }
+    }
+    return { success: true, node: node.nodeId, replicated };
+  }
+
+  read(key, targetNodeIndex) {
+    const node = this.nodes[targetNodeIndex];
+    // AP 策略：总是返回本地数据，即使可能是过期的
+    const result = node.read(key);
+    return { success: true, value: result ? result.value : null, source: node.nodeId };
+  }
+}
+
+// ========== 模拟网络分区场景 ==========
+console.log('=== CP 系统（网络正常）===');
+const cpSystem = new CpSystem();
+console.log('写入:', cpSystem.write('user:1', '张三'));
+console.log('读取:', cpSystem.read('user:1'));
+
+console.log('\n=== CP 系统（网络分区：2 个节点不可达）===');
+cpSystem.nodes[1].isPartitioned = true;
+cpSystem.nodes[2].isPartitioned = true;
+console.log('写入:', cpSystem.write('user:2', '李四'));  // 失败：牺牲可用性
+console.log('读取:', cpSystem.read('user:1'));            // 失败：牺牲可用性
+
+console.log('\n=== AP 系统（网络分区）===');
+const apSystem = new ApSystem();
+apSystem.nodes[1].isPartitioned = true;
+apSystem.nodes[2].isPartitioned = true;
+console.log('写入节点0:', apSystem.write('user:1', '张三v2', 0));  // 成功
+console.log('读取节点0:', apSystem.read('user:1', 0));              // 最新数据
+console.log('读取节点1:', apSystem.read('user:1', 1));              // 可能读到旧数据（牺牲一致性）
+```
+
+### CAP 定理的局限性
+
+CAP 定理是一个**极端情况下的理论框架**，实际应用中需要注意：
+
+1. **CAP 不是"三选二"**：分区是一种故障状态，不是常态。平时系统可以同时保证 C 和 A
+2. **一致性和可用性是连续光谱**：不是非此即彼，可以在中间地带做选择
+3. **分区是暂时的**：分区恢复后需要合并冲突数据
+
+## ⚖️ BASE 理论
+
+### 定义
+
+BASE 理论是对 CAP 定理中 AP 方向的实践指导，由 eBay 架构师 Dan Pritchett 提出：
+
+- **BA（Basically Available，基本可用）**：系统在出现故障时，允许损失部分功能，保证核心功能可用
+- **S（Soft State，软状态）**：系统中的数据存在中间状态，允许一定的延迟
+- **E（Eventually Consistent，最终一致性）**：经过一段时间后，所有副本最终会达到一致
+
+### BASE vs ACID
+
+| 维度 | ACID | BASE |
+|------|------|------|
+| **一致性** | 强一致性 | 最终一致性 |
+| **可用性** | 可能因为等待锁而阻塞 | 基本可用 |
+| **隔离性** | 事务隔离 | 允许软状态 |
+| **适用场景** | 银行转账、库存扣减 | 社交动态、商品浏览 |
+| **性能** | 较低（需要协调） | 较高（减少协调） |
+
+### 代码示例：BASE 原则的实践
+
+```js
+// ========== BASE 原则实践示例 ==========
+
+// 基本可用（Basically Available）：降级策略
+class ProductService {
+  constructor() {
+    this.primaryDb = { available: true, data: new Map() };
+    this.cache = new Map();
+    this.fallbackData = { name: '商品信息暂时不可用', price: 0, available: false };
+  }
+
+  getProduct(productId) {
+    // 策略 1：优先从缓存读取
+    if (this.cache.has(productId)) {
+      console.log('[基本可用] 从缓存返回数据');
+      return { ...this.cache.get(productId), source: 'cache' };
+    }
+
+    // 策略 2：缓存未命中，从主数据库读取
+    if (this.primaryDb.available) {
+      const product = this.primaryDb.data.get(productId);
+      if (product) {
+        this.cache.set(productId, product);
+        console.log('[基本可用] 从主数据库返回数据');
+        return { ...product, source: 'primary-db' };
+      }
+    }
+
+    // 策略 3：主数据库不可用，返回降级数据（基本可用）
+    console.log('[基本可用] 主数据库不可用，返回降级数据');
+    return { ...this.fallbackData, source: 'fallback' };
+  }
+}
+
+// 软状态（Soft State）+ 最终一致性（Eventually Consistent）
+class EventualConsistencyDemo {
+  constructor() {
+    this.replicas = [
+      { id: 'replica-1', data: new Map(), syncQueue: [] },
+      { id: 'replica-2', data: new Map(), syncQueue: [] },
+      { id: 'replica-3', data: new Map(), syncQueue: [] },
+    ];
+  }
+
+  // 写入主副本，异步同步到其他副本
+  write(key, value) {
+    const primary = this.replicas[0];
+    primary.data.set(key, { value, version: Date.now() });
+    console.log(`[写入] 主副本 ${primary.id} 已写入 ${key}=${value}`);
+
+    // 将变更加入同步队列（软状态：数据在副本间暂时不一致）
+    for (let i = 1; i < this.replicas.length; i++) {
+      this.replicas[i].syncQueue.push({ key, value, version: Date.now() });
+    }
+    console.log('[软状态] 变更已加入同步队列，副本间暂时不一致');
+  }
+
+  // 模拟异步同步过程（最终一致性）
+  syncReplicas() {
+    console.log('\n[最终一致性] 开始同步副本...');
+    for (const replica of this.replicas.slice(1)) {
+      while (replica.syncQueue.length > 0) {
+        const change = replica.syncQueue.shift();
+        replica.data.set(change.key, { value: change.value, version: change.version });
+        console.log(`  → ${replica.id} 同步完成: ${change.key}=${change.value}`);
+      }
+    }
+    console.log('[最终一致性] 所有副本已达到一致状态');
+  }
+
+  // 读取所有副本的数据
+  readAll(key) {
+    const results = this.replicas.map(replica => {
+      const data = replica.data.get(key);
+      return { replicaId: replica.id, value: data ? data.value : null };
+    });
+    return results;
+  }
+}
+
+// 运行
+const productService = new ProductService();
+productService.primaryDb.data.set('prod-1', { name: '机械键盘', price: 599 });
+console.log(productService.getProduct('prod-1'));
+productService.primaryDb.available = false;
+console.log(productService.getProduct('prod-1'));  // 从缓存返回
+console.log(productService.getProduct('prod-999')); // 降级数据
+
+console.log('\n--- 最终一致性演示 ---');
+const ecDemo = new EventualConsistencyDemo();
+ecDemo.write('config:theme', 'dark');
+console.log('同步前:', ecDemo.readAll('config:theme'));
+ecDemo.syncReplicas();
+console.log('同步后:', ecDemo.readAll('config:theme'));
+```
+
+## 🔄 PACELC 定理
+
+### 定义
+
+PACELC 定理由 Daniel Abadi 在 2012 年提出，是对 CAP 定理的扩展。它认为 CAP 只描述了**分区时**的权衡，而忽略了**正常情况下**的权衡：
+
+```
+如果有分区（P）:
+  在可用性（A）和一致性（C）之间选择
+否则（E = Else）:
+  在延迟（L）和一致性（C）之间选择
+```
+
+### PACELC 分类
+
+| 系统 | 分区时（PAC） | 正常时（ELC） | 说明 |
+|------|-------------|-------------|------|
+| **DynamoDB** | PA | EL | 分区时保可用，平时追求低延迟 |
+| **Cassandra** | PA | EL | 高可用优先，最终一致性 |
+| **MongoDB** | PA | EC | 分区时保可用，平时保一致性 |
+| **HBase** | PC | EC | 始终追求一致性 |
+| **ZooKeeper** | PC | EC | 严格一致性，牺牲延迟 |
+| **MySQL（主从）** | PC | EL | 分区时保一致，平时读从库降低延迟 |
+
+### 代码示例
+
+```js
+// ========== PACELC 决策框架 ==========
+
+class PacelcAnalyzer {
+  constructor(systemName) {
+    this.systemName = systemName;
+  }
+
+  analyze(partitionBehavior, normalBehavior) {
+    // partitionBehavior: 'PA'(可用优先) | 'PC'(一致优先)
+    // normalBehavior: 'EL'(低延迟优先) | 'EC'(一致性优先)
+
+    const classification = `${partitionBehavior}/${normalBehavior}`;
+    const descriptions = {
+      'PA/EL': {
+        summary: '高可用 + 低延迟优先',
+        partitionStrategy: '分区时继续接受读写，允许返回旧数据',
+        normalStrategy: '正常时读本地副本，异步复制，追求最低延迟',
+        tradeoff: '可能读到过期数据',
+        examples: 'Cassandra、DynamoDB、DNS',
+      },
+      'PA/EC': {
+        summary: '高可用 + 正常一致性',
+        partitionStrategy: '分区时继续服务，允许不一致',
+        normalStrategy: '正常时同步多数副本，保证一致性',
+        tradeoff: '正常情况下延迟较高',
+        examples: 'MongoDB（默认配置）',
+      },
+      'PC/EL': {
+        summary: '分区一致 + 低延迟',
+        partitionStrategy: '分区时拒绝不确定的请求，保证一致性',
+        normalStrategy: '正常时通过读写分离等手段降低延迟',
+        tradeoff: '分区时部分请求不可用',
+        examples: 'MySQL 主从（半同步）',
+      },
+      'PC/EC': {
+        summary: '始终追求强一致性',
+        partitionStrategy: '分区时宁可不可用也不返回不一致数据',
+        normalStrategy: '正常时同步所有副本后才确认',
+        tradeoff: '延迟最高，但数据始终正确',
+        examples: 'ZooKeeper、etcd、HBase',
+      },
+    };
+
+    const desc = descriptions[classification];
+    console.log(`\n=== ${this.systemName} PACELC 分析 ===`);
+    console.log(`分类: ${classification} — ${desc.summary}`);
+    console.log(`分区策略: ${desc.partitionStrategy}`);
+    console.log(`正常策略: ${desc.normalStrategy}`);
+    console.log(`代价: ${desc.tradeoff}`);
+    console.log(`同类系统: ${desc.examples}`);
+    return { classification, ...desc };
+  }
+}
+
+// 分析不同系统
+new PacelcAnalyzer('电商商品目录').analyze('PA', 'EL');
+new PacelcAnalyzer('支付核心系统').analyze('PC', 'EC');
+new PacelcAnalyzer('社交动态流').analyze('PA', 'EL');
+new PacelcAnalyzer('订单交易系统').analyze('PC', 'EL');
+```
+
+## ❌ FLP 不可能性定理
+
+### 定义
+
+FLP 不可能性定理（Fischer, Lynch, Paterson, 1985）指出：**在一个异步分布式系统中，即使只有一个进程可能崩溃，也不存在一个确定性的共识算法能在有限时间内终止。**
+
+### 通俗理解
+
+```
+异步系统中：
+  - 消息可以任意延迟（但不会丢失）
+  - 无法区分"进程崩溃"和"进程响应很慢"
+  - 在这种条件下，共识问题无法在有限步骤内解决
+
+实际影响：
+  - 不是说"共识不可能"，而是说"不能保证一定在有限时间内达成"
+  - 实际系统通过引入超时、随机化、故障检测器来绕过这个限制
+```
+
+### 绕过 FLP 的工程方法
+
+| 方法 | 原理 | 示例 |
+|------|------|------|
+| **引入超时机制** | 放弃纯异步假设，通过超时判断节点状态 | Raft 的选举超时 |
+| **随机化** | 通过随机退避打破对称性 | Ben-Or 算法 |
+| **故障检测器** | 引入不完美但实用的故障检测 | Φ 应计故障检测器 |
+| **部分同步模型** | 假设系统最终会变得同步 | Paxos、Raft |
+
+### 代码示例：超时机制绕过 FLP
+
+```js
+// ========== 通过超时机制实现实际可用的共识 ==========
+
+class ConsensusNode {
+  constructor(nodeId, totalNodes) {
+    this.nodeId = nodeId;
+    this.totalNodes = totalNodes;
+    this.state = 'follower';  // follower | candidate | leader
+    this.currentTerm = 0;
+    this.votedFor = null;
+    this.electionTimeout = this.randomElectionTimeout();
+    this.votes = 0;
+  }
+
+  // 随机化选举超时：绕过 FLP 的关键手段
+  randomElectionTimeout() {
+    // 150ms - 300ms 的随机超时，避免多个节点同时发起选举
+    return 150 + Math.floor(Math.random() * 150);
+  }
+
+  // 发起选举
+  startElection() {
+    this.currentTerm++;
+    this.state = 'candidate';
+    this.votedFor = this.nodeId;
+    this.votes = 1; // 投自己一票
+    console.log(`[节点${this.nodeId}] 发起选举，任期 ${this.currentTerm}，超时 ${this.electionTimeout}ms`);
+    return {
+      type: 'RequestVote',
+      candidateId: this.nodeId,
+      term: this.currentTerm,
+    };
+  }
+
+  // 处理投票请求
+  handleVoteRequest(request) {
+    if (request.term > this.currentTerm) {
+      this.currentTerm = request.term;
+      this.votedFor = null;
+      this.state = 'follower';
+    }
+
+    if (request.term >= this.currentTerm && (this.votedFor === null || this.votedFor === request.candidateId)) {
+      this.votedFor = request.candidateId;
+      console.log(`[节点${this.nodeId}] 投票给 节点${request.candidateId}（任期 ${request.term}）`);
+      return { voteGranted: true, term: this.currentTerm };
+    }
+
+    return { voteGranted: false, term: this.currentTerm };
+  }
+
+  // 收到投票响应
+  receiveVote(response) {
+    if (response.voteGranted) {
+      this.votes++;
+      const majority = Math.floor(this.totalNodes / 2) + 1;
+      if (this.votes >= majority && this.state === 'candidate') {
+        this.state = 'leader';
+        console.log(`[节点${this.nodeId}] 获得多数票 (${this.votes}/${this.totalNodes})，成为 Leader！`);
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+// 模拟选举过程
+const nodes = [
+  new ConsensusNode(0, 3),
+  new ConsensusNode(1, 3),
+  new ConsensusNode(2, 3),
+];
+
+// 节点 0 超时最先到期，发起选举
+const voteRequest = nodes[0].startElection();
+
+// 其他节点收到投票请求
+const vote1 = nodes[1].handleVoteRequest(voteRequest);
+const vote2 = nodes[2].handleVoteRequest(voteRequest);
+
+// 节点 0 收集投票
+nodes[0].receiveVote(vote1);
+nodes[0].receiveVote(vote2);
+
+console.log(`\n最终状态: ${nodes.map(n => `节点${n.nodeId}=${n.state}`).join(', ')}`);
+```
+
+## 📊 核心定理对比总结
+
+| 定理 | 年份 | 核心观点 | 实践意义 |
+|------|------|---------|---------|
+| **CAP** | 2000 | 一致性、可用性、分区容忍只能三选二 | 指导 CP/AP 系统设计 |
+| **BASE** | 2008 | 基本可用、软状态、最终一致 | 指导 AP 系统的实现策略 |
+| **PACELC** | 2012 | 分区时 A/C 选择 + 正常时 L/C 选择 | 更全面的系统分类框架 |
+| **FLP** | 1985 | 异步系统中共识不可能在有限时间终止 | 解释为什么需要超时和随机化 |
+
+## 🔗 相关概念
+
+- **[一致性模型](/architect/03-distributed-systems/01-distributed-theory/03-consistency-models)**：CAP 中的 C 有不同的级别
+- **[共识算法](/architect/03-distributed-systems/01-distributed-theory/04-consensus-algorithms)**：绕过 FLP 限制的工程实现
+- **[分布式事务](/architect/03-distributed-systems/03-distributed-data/02-distributed-transactions)**：BASE 理论在事务中的具体应用
+
+## ✅ 学习检查点
+
+- [ ] 能够解释 CAP 定理及其在实际中的局限性
+- [ ] 能够对比 BASE 和 ACID 的核心差异
+- [ ] 能够用 PACELC 框架分析一个分布式系统
+- [ ] 理解 FLP 不可能性定理以及工程上如何绕过
+
+## 🚀 下一步
+
+→ [一致性模型](/architect/03-distributed-systems/01-distributed-theory/03-consistency-models)

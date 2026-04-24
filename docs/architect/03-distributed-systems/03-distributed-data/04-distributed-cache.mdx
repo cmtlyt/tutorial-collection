@@ -14,4 +14,803 @@
 - 掌握缓存与数据库的一致性保障方法
 - 能够设计缓存雪崩、穿透、击穿的防护方案
 
-> 🚧 详细内容正在编写中...
+## 🏗️ Redis Cluster 架构
+
+### 数据分片机制
+
+Redis Cluster 使用 **16384 个哈希槽（Hash Slot）** 进行数据分片：
+
+```
+key → CRC16(key) % 16384 → slot 编号 → 对应的 Redis 节点
+
+节点分配示例（3 主 3 从）：
+  Master-1: slots 0~5460        ← Slave-1（副本）
+  Master-2: slots 5461~10922    ← Slave-2（副本）
+  Master-3: slots 10923~16383   ← Slave-3（副本）
+```
+
+### 代码示例：哈希槽分片模拟
+
+```js
+// ========== Redis Cluster 哈希槽分片模拟 ==========
+
+class RedisClusterNode {
+  constructor(nodeId, slotRange) {
+    this.nodeId = nodeId;
+    this.slotStart = slotRange[0];
+    this.slotEnd = slotRange[1];
+    this.data = new Map();
+    this.role = 'master';
+    this.replica = null;
+  }
+
+  ownsSlot(slot) {
+    return slot >= this.slotStart && slot <= this.slotEnd;
+  }
+
+  set(key, value, ttl = null) {
+    const entry = { value, createdAt: Date.now(), ttl };
+    this.data.set(key, entry);
+  }
+
+  get(key) {
+    const entry = this.data.get(key);
+    if (!entry) return null;
+
+    // TTL 过期检查
+    if (entry.ttl && (Date.now() - entry.createdAt) > entry.ttl) {
+      this.data.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  delete(key) {
+    return this.data.delete(key);
+  }
+
+  getSlotCount() {
+    return this.slotEnd - this.slotStart + 1;
+  }
+}
+
+class RedisCluster {
+  constructor() {
+    this.nodes = [];
+    this.totalSlots = 16384;
+  }
+
+  // CRC16 简化实现
+  crc16(key) {
+    let crc = 0;
+    for (let i = 0; i < key.length; i++) {
+      crc = ((crc << 8) ^ key.charCodeAt(i)) & 0xffff;
+    }
+    return crc;
+  }
+
+  // 计算 key 对应的哈希槽
+  getSlot(key) {
+    // 支持 Hash Tag：{user}:profile 和 {user}:orders 路由到同一 slot
+    const hashTagMatch = key.match(/\{([^}]+)\}/);
+    const hashKey = hashTagMatch ? hashTagMatch[1] : key;
+    return this.crc16(hashKey) % this.totalSlots;
+  }
+
+  // 添加节点
+  addNode(nodeId, slotRange) {
+    const node = new RedisClusterNode(nodeId, slotRange);
+    this.nodes.push(node);
+    return node;
+  }
+
+  // 查找 key 对应的节点
+  getNodeForKey(key) {
+    const slot = this.getSlot(key);
+    const node = this.nodes.find(n => n.ownsSlot(slot));
+
+    if (!node) {
+      throw new Error(`没有节点负责 slot ${slot}`);
+    }
+    return { node, slot };
+  }
+
+  // SET 操作
+  set(key, value, ttl = null) {
+    const { node, slot } = this.getNodeForKey(key);
+    node.set(key, value, ttl);
+    console.log(`[SET] ${key} → slot ${slot} → ${node.nodeId}`);
+  }
+
+  // GET 操作
+  get(key) {
+    const { node, slot } = this.getNodeForKey(key);
+    const value = node.get(key);
+    console.log(`[GET] ${key} → slot ${slot} → ${node.nodeId} = ${value}`);
+    return value;
+  }
+
+  // Hash Tag 演示
+  demonstrateHashTag() {
+    console.log('\n=== Hash Tag 演示 ===');
+    const keys = ['{user:1}:profile', '{user:1}:orders', '{user:1}:cart'];
+    for (const key of keys) {
+      const slot = this.getSlot(key);
+      const node = this.nodes.find(n => n.ownsSlot(slot));
+      console.log(`  ${key} → slot ${slot} → ${node.nodeId}`);
+    }
+    console.log('  所有相同 Hash Tag 的 key 在同一节点，支持 MGET/Pipeline');
+  }
+
+  // 集群状态
+  getClusterInfo() {
+    return this.nodes.map(n => ({
+      nodeId: n.nodeId,
+      slots: `${n.slotStart}-${n.slotEnd}`,
+      slotCount: n.getSlotCount(),
+      keyCount: n.data.size,
+    }));
+  }
+}
+
+// 使用
+const cluster = new RedisCluster();
+cluster.addNode('master-1', [0, 5460]);
+cluster.addNode('master-2', [5461, 10922]);
+cluster.addNode('master-3', [10923, 16383]);
+
+cluster.set('user:1001', '{"name":"张三","age":28}');
+cluster.set('user:1002', '{"name":"李四","age":32}');
+cluster.set('product:2001', '{"name":"键盘","price":599}');
+cluster.set('order:3001', '{"userId":"1001","amount":599}');
+
+cluster.get('user:1001');
+cluster.get('product:2001');
+
+cluster.demonstrateHashTag();
+console.log('\n集群状态:', cluster.getClusterInfo());
+```
+
+## 📐 缓存策略
+
+### 三种主流缓存策略
+
+```js
+// ========== 缓存策略实现 ==========
+
+// 模拟数据库
+class Database {
+  constructor() {
+    this.data = new Map();
+    this.queryCount = 0;
+    this.writeCount = 0;
+  }
+
+  query(key) {
+    this.queryCount++;
+    console.log(`  [DB] 查询 ${key}（第 ${this.queryCount} 次查库）`);
+    return this.data.get(key) || null;
+  }
+
+  update(key, value) {
+    this.writeCount++;
+    this.data.set(key, value);
+    console.log(`  [DB] 写入 ${key}（第 ${this.writeCount} 次写库）`);
+  }
+}
+
+// 模拟缓存
+class Cache {
+  constructor(name) {
+    this.name = name;
+    this.store = new Map();
+    this.hitCount = 0;
+    this.missCount = 0;
+  }
+
+  get(key) {
+    if (this.store.has(key)) {
+      this.hitCount++;
+      return this.store.get(key);
+    }
+    this.missCount++;
+    return null;
+  }
+
+  set(key, value) {
+    this.store.set(key, value);
+  }
+
+  delete(key) {
+    this.store.delete(key);
+  }
+
+  getStats() {
+    const total = this.hitCount + this.missCount;
+    return {
+      hits: this.hitCount,
+      misses: this.missCount,
+      hitRate: total > 0 ? `${((this.hitCount / total) * 100).toFixed(1)}%` : '0%',
+    };
+  }
+}
+
+// ========== 策略 1：Cache-Aside（旁路缓存）==========
+// 最常用的模式，应用层负责缓存的读写
+class CacheAsideStrategy {
+  constructor() {
+    this.cache = new Cache('Cache-Aside');
+    this.db = new Database();
+  }
+
+  read(key) {
+    // 1. 先查缓存
+    const cached = this.cache.get(key);
+    if (cached !== null) {
+      console.log(`  [Cache-Aside] 缓存命中: ${key}`);
+      return cached;
+    }
+
+    // 2. 缓存未命中，查数据库
+    console.log(`  [Cache-Aside] 缓存未命中: ${key}`);
+    const dbValue = this.db.query(key);
+
+    // 3. 数据库有值则回填缓存
+    if (dbValue !== null) {
+      this.cache.set(key, dbValue);
+    }
+    return dbValue;
+  }
+
+  write(key, value) {
+    // 1. 先更新数据库
+    this.db.update(key, value);
+    // 2. 再删除缓存（而不是更新缓存，避免并发问题）
+    this.cache.delete(key);
+    console.log(`  [Cache-Aside] 已删除缓存: ${key}`);
+  }
+}
+
+// ========== 策略 2：Read/Write-Through（读写穿透）==========
+// 缓存层作为数据访问的唯一入口
+class ReadWriteThroughStrategy {
+  constructor() {
+    this.cache = new Cache('Read/Write-Through');
+    this.db = new Database();
+  }
+
+  read(key) {
+    const cached = this.cache.get(key);
+    if (cached !== null) {
+      console.log(`  [Read-Through] 缓存命中: ${key}`);
+      return cached;
+    }
+
+    // 缓存自动从数据库加载（对调用者透明）
+    console.log(`  [Read-Through] 缓存自动加载: ${key}`);
+    const dbValue = this.db.query(key);
+    if (dbValue !== null) {
+      this.cache.set(key, dbValue);
+    }
+    return dbValue;
+  }
+
+  write(key, value) {
+    // 同步写入缓存和数据库（缓存层负责写穿）
+    this.cache.set(key, value);
+    this.db.update(key, value);
+    console.log(`  [Write-Through] 同步写入缓存和数据库: ${key}`);
+  }
+}
+
+// ========== 策略 3：Write-Behind（写回）==========
+// 先写缓存，异步批量写入数据库
+class WriteBehindStrategy {
+  constructor() {
+    this.cache = new Cache('Write-Behind');
+    this.db = new Database();
+    this.writeBuffer = [];   // 写入缓冲区
+    this.bufferLimit = 5;
+  }
+
+  read(key) {
+    const cached = this.cache.get(key);
+    if (cached !== null) {
+      console.log(`  [Write-Behind] 缓存命中: ${key}`);
+      return cached;
+    }
+
+    console.log(`  [Write-Behind] 缓存未命中: ${key}`);
+    const dbValue = this.db.query(key);
+    if (dbValue !== null) {
+      this.cache.set(key, dbValue);
+    }
+    return dbValue;
+  }
+
+  write(key, value) {
+    // 只写缓存，立即返回
+    this.cache.set(key, value);
+    this.writeBuffer.push({ key, value, timestamp: Date.now() });
+    console.log(`  [Write-Behind] 写入缓存，加入缓冲区（当前 ${this.writeBuffer.length} 条）: ${key}`);
+
+    // 缓冲区满时批量写入数据库
+    if (this.writeBuffer.length >= this.bufferLimit) {
+      this.flush();
+    }
+  }
+
+  flush() {
+    console.log(`  [Write-Behind] 批量写入数据库（${this.writeBuffer.length} 条）`);
+    for (const entry of this.writeBuffer) {
+      this.db.update(entry.key, entry.value);
+    }
+    this.writeBuffer = [];
+  }
+}
+
+// ========== 对比测试 ==========
+console.log('=== Cache-Aside ===');
+const cacheAside = new CacheAsideStrategy();
+cacheAside.db.data.set('user:1', '张三');
+cacheAside.read('user:1');  // 未命中 → 查库 → 回填
+cacheAside.read('user:1');  // 命中
+cacheAside.write('user:1', '张三v2');
+cacheAside.read('user:1');  // 未命中（缓存已删） → 查库 → 回填
+console.log('Stats:', cacheAside.cache.getStats());
+
+console.log('\n=== Read/Write-Through ===');
+const rwThrough = new ReadWriteThroughStrategy();
+rwThrough.db.data.set('user:1', '张三');
+rwThrough.read('user:1');
+rwThrough.read('user:1');
+rwThrough.write('user:1', '张三v2');
+rwThrough.read('user:1'); // 命中（写穿已更新缓存）
+console.log('Stats:', rwThrough.cache.getStats());
+
+console.log('\n=== Write-Behind ===');
+const writeBehind = new WriteBehindStrategy();
+writeBehind.write('item:1', '数据1');
+writeBehind.write('item:2', '数据2');
+writeBehind.write('item:3', '数据3');
+writeBehind.write('item:4', '数据4');
+writeBehind.write('item:5', '数据5'); // 触发 flush
+console.log('Stats:', writeBehind.cache.getStats());
+```
+
+### 策略对比
+
+| 策略 | 读性能 | 写性能 | 一致性 | 实现复杂度 | 适用场景 |
+|------|--------|--------|--------|-----------|---------|
+| **Cache-Aside** | 高 | 中 | 中 | 低 | 大多数场景（推荐默认） |
+| **Read/Write-Through** | 高 | 低 | 高 | 中 | 数据一致性要求高 |
+| **Write-Behind** | 高 | 最高 | 低 | 高 | 写密集型、可容忍丢数据 |
+
+## 🔄 缓存一致性
+
+### 经典问题：先更新数据库还是先删缓存？
+
+```js
+// ========== 缓存一致性问题分析 ==========
+
+class CacheConsistencyDemo {
+  constructor() {
+    this.cache = new Map();
+    this.db = new Map();
+    this.timeline = [];
+  }
+
+  log(time, thread, action) {
+    this.timeline.push({ time, thread, action });
+  }
+
+  // 方案 1：先删缓存，再更新数据库（有问题）
+  demonstrateDeleteCacheFirst() {
+    console.log('\n=== 方案 1：先删缓存，再更新数据库 ===');
+    console.log('初始: DB=旧值, Cache=旧值\n');
+
+    this.log(1, '线程A(写)', '删除缓存 ✅');
+    this.log(2, '线程B(读)', '查缓存未命中');
+    this.log(3, '线程B(读)', '查数据库 → 拿到旧值');
+    this.log(4, '线程B(读)', '将旧值写入缓存 ❌');
+    this.log(5, '线程A(写)', '更新数据库为新值');
+    this.log(6, '', '结果: DB=新值, Cache=旧值 ← 不一致！');
+
+    for (const entry of this.timeline) {
+      console.log(`  T${entry.time}: [${entry.thread}] ${entry.action}`);
+    }
+    this.timeline = [];
+  }
+
+  // 方案 2：先更新数据库，再删缓存（推荐）
+  demonstrateUpdateDbFirst() {
+    console.log('\n=== 方案 2：先更新数据库，再删缓存（Cache-Aside 标准做法）===');
+    console.log('初始: DB=旧值, Cache=旧值\n');
+
+    this.log(1, '线程A(写)', '更新数据库为新值 ✅');
+    this.log(2, '线程A(写)', '删除缓存 ✅');
+    this.log(3, '线程B(读)', '查缓存未命中');
+    this.log(4, '线程B(读)', '查数据库 → 拿到新值');
+    this.log(5, '线程B(读)', '将新值写入缓存 ✅');
+    this.log(6, '', '结果: DB=新值, Cache=新值 ← 一致！');
+
+    for (const entry of this.timeline) {
+      console.log(`  T${entry.time}: [${entry.thread}] ${entry.action}`);
+    }
+    this.timeline = [];
+  }
+
+  // 方案 3：延迟双删
+  demonstrateDelayedDoubleDelete() {
+    console.log('\n=== 方案 3：延迟双删（解决方案 1 的问题）===');
+    console.log('流程: 删缓存 → 更新DB → 延迟N秒 → 再删缓存\n');
+
+    this.log(1, '线程A(写)', '第一次删除缓存');
+    this.log(2, '线程A(写)', '更新数据库为新值');
+    this.log(3, '线程B(读)', '（在此期间可能读到旧值并回填缓存）');
+    this.log(4, '线程A(写)', '延迟 500ms 后第二次删除缓存 ✅');
+    this.log(5, '线程C(读)', '查缓存未命中 → 查DB拿到新值 → 回填');
+    this.log(6, '', '结果: DB=新值, Cache=新值 ← 最终一致！');
+
+    for (const entry of this.timeline) {
+      console.log(`  T${entry.time}: [${entry.thread}] ${entry.action}`);
+    }
+    this.timeline = [];
+  }
+}
+
+const demo = new CacheConsistencyDemo();
+demo.demonstrateDeleteCacheFirst();
+demo.demonstrateUpdateDbFirst();
+demo.demonstrateDelayedDoubleDelete();
+
+// 最佳实践总结
+console.log('\n=== 缓存一致性最佳实践 ===');
+const practices = [
+  { method: '先更新DB，再删缓存', consistency: '最终一致', complexity: '低', recommendation: '⭐ 推荐（默认方案）' },
+  { method: '延迟双删', consistency: '最终一致', complexity: '中', recommendation: '高并发读写场景' },
+  { method: '监听 Binlog 异步删缓存', consistency: '最终一致', complexity: '高', recommendation: '大型系统（Canal + MQ）' },
+  { method: '分布式锁 + 缓存更新', consistency: '强一致', complexity: '高', recommendation: '金融等强一致场景' },
+];
+
+for (const practice of practices) {
+  console.log(`  ${practice.recommendation}`);
+  console.log(`    方法: ${practice.method}`);
+  console.log(`    一致性: ${practice.consistency} | 复杂度: ${practice.complexity}`);
+}
+```
+
+## ⚠️ 缓存三大问题
+
+### 代码示例：缓存穿透、击穿、雪崩的防护
+
+```js
+// ========== 缓存穿透、击穿、雪崩防护 ==========
+
+class RobustCacheLayer {
+  constructor() {
+    this.cache = new Map();
+    this.db = new Map();
+    this.bloomFilter = new Set();       // 简化布隆过滤器
+    this.locks = new Map();             // 互斥锁（防击穿）
+    this.nullCacheTtl = 60000;          // 空值缓存 TTL
+    this.stats = { penetration: 0, breakdown: 0, avalanche: 0, normal: 0 };
+  }
+
+  // 初始化布隆过滤器
+  initBloomFilter(validKeys) {
+    for (const key of validKeys) {
+      this.bloomFilter.add(key);
+    }
+    console.log(`[布隆过滤器] 已加载 ${validKeys.length} 个有效 key`);
+  }
+
+  // ========== 防穿透：布隆过滤器 + 空值缓存 ==========
+  getWithPenetrationProtection(key) {
+    // 第一层防线：布隆过滤器快速判断 key 是否存在
+    if (!this.bloomFilter.has(key)) {
+      this.stats.penetration++;
+      console.log(`[防穿透] 布隆过滤器拦截: ${key} 不存在`);
+      return null;
+    }
+
+    // 查缓存
+    const cached = this.getFromCache(key);
+    if (cached !== undefined) {
+      if (cached === '__NULL__') {
+        console.log(`[防穿透] 命中空值缓存: ${key}`);
+        return null;
+      }
+      this.stats.normal++;
+      return cached;
+    }
+
+    // 查数据库
+    const dbValue = this.db.get(key);
+    if (dbValue === undefined) {
+      // 第二层防线：缓存空值，防止反复穿透
+      this.setCache(key, '__NULL__', this.nullCacheTtl);
+      console.log(`[防穿透] 缓存空值: ${key}（TTL: ${this.nullCacheTtl}ms）`);
+      return null;
+    }
+
+    this.setCache(key, dbValue);
+    return dbValue;
+  }
+
+  // ========== 防击穿：互斥锁（单飞模式）==========
+  getWithBreakdownProtection(key) {
+    const cached = this.getFromCache(key);
+    if (cached !== undefined && cached !== '__NULL__') {
+      this.stats.normal++;
+      return cached;
+    }
+
+    // 热点 key 过期时，只允许一个线程查库
+    if (this.locks.has(key)) {
+      this.stats.breakdown++;
+      console.log(`[防击穿] key "${key}" 正在被其他线程加载，等待...`);
+      // 实际场景：等待锁释放后重新查缓存，或返回旧值/默认值
+      return this.getFromCache(key) || '默认值（等待中）';
+    }
+
+    // 获取互斥锁
+    this.locks.set(key, true);
+    console.log(`[防击穿] 获取锁，查询数据库: ${key}`);
+
+    try {
+      const dbValue = this.db.get(key);
+      if (dbValue !== undefined) {
+        this.setCache(key, dbValue);
+      }
+      return dbValue || null;
+    } finally {
+      // 释放锁
+      this.locks.delete(key);
+    }
+  }
+
+  // ========== 防雪崩：随机 TTL + 多级缓存 ==========
+  setWithAvalancheProtection(key, value, baseTtl) {
+    // 在基础 TTL 上加随机偏移，避免大量 key 同时过期
+    const jitter = Math.floor(Math.random() * baseTtl * 0.2); // ±20% 偏移
+    const actualTtl = baseTtl + jitter;
+    this.setCache(key, value, actualTtl);
+    console.log(`[防雪崩] ${key} TTL=${actualTtl}ms（基础 ${baseTtl}ms + 随机 ${jitter}ms）`);
+  }
+
+  batchSetWithAvalancheProtection(entries, baseTtl) {
+    console.log(`\n[防雪崩] 批量设置 ${entries.length} 个 key（TTL 随机化）`);
+    const ttlDistribution = {};
+
+    for (const [key, value] of entries) {
+      const jitter = Math.floor(Math.random() * baseTtl * 0.2);
+      const actualTtl = baseTtl + jitter;
+      this.setCache(key, value, actualTtl);
+
+      const bucket = `${Math.floor(actualTtl / 1000)}s`;
+      ttlDistribution[bucket] = (ttlDistribution[bucket] || 0) + 1;
+    }
+
+    console.log('  TTL 分布:', ttlDistribution);
+  }
+
+  // 缓存操作
+  getFromCache(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return undefined;
+
+    if (entry.ttl && (Date.now() - entry.createdAt) > entry.ttl) {
+      this.cache.delete(key);
+      return undefined;
+    }
+    return entry.value;
+  }
+
+  setCache(key, value, ttl = null) {
+    this.cache.set(key, { value, createdAt: Date.now(), ttl });
+  }
+
+  getStats() {
+    return {
+      ...this.stats,
+      cacheSize: this.cache.size,
+      bloomFilterSize: this.bloomFilter.size,
+    };
+  }
+}
+
+// ========== 演示 ==========
+const robustCache = new RobustCacheLayer();
+
+// 初始化数据
+robustCache.db.set('product:1', '{"name":"键盘","price":599}');
+robustCache.db.set('product:2', '{"name":"鼠标","price":299}');
+robustCache.db.set('product:3', '{"name":"显示器","price":2999}');
+robustCache.initBloomFilter(['product:1', 'product:2', 'product:3']);
+
+// 1. 防穿透测试
+console.log('\n=== 防穿透测试 ===');
+robustCache.getWithPenetrationProtection('product:1');       // 正常
+robustCache.getWithPenetrationProtection('product:99999');   // 布隆过滤器拦截
+robustCache.bloomFilter.add('product:404');                  // 布隆过滤器有 key 但 DB 没有
+robustCache.getWithPenetrationProtection('product:404');     // 空值缓存
+
+// 2. 防击穿测试
+console.log('\n=== 防击穿测试 ===');
+robustCache.getWithBreakdownProtection('product:2');   // 第一个线程获取锁
+robustCache.getWithBreakdownProtection('product:2');   // 命中缓存
+
+// 3. 防雪崩测试
+console.log('\n=== 防雪崩测试 ===');
+const products = Array.from({ length: 20 }, (_, i) => [`item:${i}`, `商品${i}`]);
+robustCache.batchSetWithAvalancheProtection(products, 10000);
+
+console.log('\n统计:', robustCache.getStats());
+```
+
+### 三大问题总结
+
+| 问题 | 原因 | 影响 | 解决方案 |
+|------|------|------|---------|
+| **穿透** | 查询不存在的 key，缓存永远不命中 | DB 压力大 | 布隆过滤器 + 空值缓存 |
+| **击穿** | 热点 key 过期，大量请求同时查 DB | DB 瞬间压力 | 互斥锁 / 逻辑过期 / 永不过期 |
+| **雪崩** | 大量 key 同时过期或缓存服务宕机 | DB 被压垮 | TTL 随机化 + 多级缓存 + 熔断 |
+
+## 📐 缓存淘汰策略
+
+```js
+// ========== LRU 缓存实现 ==========
+
+class LruCache {
+  constructor(capacity) {
+    this.capacity = capacity;
+    this.cache = new Map();  // Map 保持插入顺序
+    this.hitCount = 0;
+    this.missCount = 0;
+  }
+
+  get(key) {
+    if (!this.cache.has(key)) {
+      this.missCount++;
+      return null;
+    }
+
+    this.hitCount++;
+    // 将 key 移动到最后（最近使用）
+    const value = this.cache.get(key);
+    this.cache.delete(key);
+    this.cache.set(key, value);
+    return value;
+  }
+
+  put(key, value) {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.capacity) {
+      // 淘汰最久未使用的（Map 的第一个元素）
+      const oldestKey = this.cache.keys().next().value;
+      this.cache.delete(oldestKey);
+      console.log(`  [LRU] 淘汰: ${oldestKey}`);
+    }
+
+    this.cache.set(key, value);
+  }
+
+  getStats() {
+    const total = this.hitCount + this.missCount;
+    return {
+      size: this.cache.size,
+      capacity: this.capacity,
+      hitRate: total > 0 ? `${((this.hitCount / total) * 100).toFixed(1)}%` : '0%',
+    };
+  }
+}
+
+// LFU 缓存（最不常用淘汰）
+class LfuCache {
+  constructor(capacity) {
+    this.capacity = capacity;
+    this.cache = new Map();        // key → { value, frequency }
+    this.frequencyMap = new Map(); // frequency → Set<key>
+    this.minFrequency = 0;
+  }
+
+  get(key) {
+    if (!this.cache.has(key)) return null;
+
+    const entry = this.cache.get(key);
+    this.incrementFrequency(key, entry);
+    return entry.value;
+  }
+
+  put(key, value) {
+    if (this.capacity <= 0) return;
+
+    if (this.cache.has(key)) {
+      const entry = this.cache.get(key);
+      entry.value = value;
+      this.incrementFrequency(key, entry);
+      return;
+    }
+
+    if (this.cache.size >= this.capacity) {
+      // 淘汰最低频率中最早的 key
+      const minFreqSet = this.frequencyMap.get(this.minFrequency);
+      const evictKey = minFreqSet.values().next().value;
+      minFreqSet.delete(evictKey);
+      this.cache.delete(evictKey);
+      console.log(`  [LFU] 淘汰: ${evictKey}（频率: ${this.minFrequency}）`);
+    }
+
+    this.cache.set(key, { value, frequency: 1 });
+    if (!this.frequencyMap.has(1)) {
+      this.frequencyMap.set(1, new Set());
+    }
+    this.frequencyMap.get(1).add(key);
+    this.minFrequency = 1;
+  }
+
+  incrementFrequency(key, entry) {
+    const oldFreq = entry.frequency;
+    entry.frequency++;
+
+    this.frequencyMap.get(oldFreq).delete(key);
+    if (this.frequencyMap.get(oldFreq).size === 0) {
+      this.frequencyMap.delete(oldFreq);
+      if (this.minFrequency === oldFreq) {
+        this.minFrequency++;
+      }
+    }
+
+    const newFreq = entry.frequency;
+    if (!this.frequencyMap.has(newFreq)) {
+      this.frequencyMap.set(newFreq, new Set());
+    }
+    this.frequencyMap.get(newFreq).add(key);
+  }
+}
+
+// 对比测试
+console.log('=== LRU 缓存 ===');
+const lru = new LruCache(3);
+lru.put('a', 1); lru.put('b', 2); lru.put('c', 3);
+lru.get('a');      // 访问 a，a 变为最近使用
+lru.put('d', 4);   // 容量满，淘汰最久未使用的 b
+console.log('LRU 剩余:', [...lru.cache.keys()]);
+console.log('Stats:', lru.getStats());
+
+console.log('\n=== LFU 缓存 ===');
+const lfu = new LfuCache(3);
+lfu.put('a', 1); lfu.put('b', 2); lfu.put('c', 3);
+lfu.get('a'); lfu.get('a'); lfu.get('b');  // a 频率 3，b 频率 2，c 频率 1
+lfu.put('d', 4);  // 淘汰频率最低的 c
+console.log('LFU 剩余:', [...lfu.cache.keys()]);
+```
+
+### 淘汰策略对比
+
+| 策略 | 原理 | 适用场景 |
+|------|------|---------|
+| **LRU** | 淘汰最近最少使用 | 通用场景（Redis 默认） |
+| **LFU** | 淘汰访问频率最低 | 热点数据明确的场景 |
+| **TTL** | 按过期时间淘汰 | 有时效性的数据 |
+| **Random** | 随机淘汰 | 数据价值均等时 |
+
+## 🔗 相关概念
+
+- **[分布式存储](/architect/03-distributed-systems/03-distributed-data/03-distributed-storage)**：一致性哈希在缓存中的应用
+- **[容错设计](/architect/03-distributed-systems/04-distributed-reliability/02-fault-tolerance)**：缓存降级与熔断
+- **[高可用设计](/architect/03-distributed-systems/04-distributed-reliability/03-high-availability)**：缓存集群的高可用部署
+
+## ✅ 学习检查点
+
+- [ ] 理解 Redis Cluster 的哈希槽分片和 Hash Tag 机制
+- [ ] 能够区分 Cache-Aside、Read/Write-Through、Write-Behind 三种策略
+- [ ] 掌握"先更新 DB 再删缓存"的一致性保障
+- [ ] 能够设计缓存穿透、击穿、雪崩的防护方案
+- [ ] 理解 LRU 和 LFU 淘汰策略的差异
+
+## 🚀 下一步
+
+→ [分布式可靠性](/architect/03-distributed-systems/04-distributed-reliability/01-distributed-reliability-overview)

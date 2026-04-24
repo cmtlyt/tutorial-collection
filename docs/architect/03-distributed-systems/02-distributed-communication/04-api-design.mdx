@@ -14,4 +14,760 @@
 - 掌握 API 版本管理策略
 - 理解 API 网关的核心功能和架构
 
-> 🚧 详细内容正在编写中...
+## 🌐 RESTful API 设计
+
+### 核心原则
+
+REST（Representational State Transfer）是一种架构风格，核心约束包括：
+
+| 原则 | 说明 |
+|------|------|
+| **资源导向** | URL 代表资源，用名词而非动词 |
+| **统一接口** | 用 HTTP 方法表达操作语义 |
+| **无状态** | 每个请求包含完整信息，服务端不保存会话 |
+| **可缓存** | 响应应标明是否可缓存 |
+| **分层系统** | 客户端不知道是否直连服务器 |
+
+### HTTP 方法语义
+
+| 方法 | 语义 | 幂等 | 安全 | 示例 |
+|------|------|------|------|------|
+| **GET** | 读取资源 | ✅ | ✅ | `GET /users/123` |
+| **POST** | 创建资源 | ❌ | ❌ | `POST /users` |
+| **PUT** | 全量更新 | ✅ | ❌ | `PUT /users/123` |
+| **PATCH** | 部分更新 | ❌ | ❌ | `PATCH /users/123` |
+| **DELETE** | 删除资源 | ✅ | ❌ | `DELETE /users/123` |
+
+### 代码示例：RESTful API 路由设计器
+
+```js
+// ========== RESTful API 路由设计器 ==========
+
+class RestfulRouter {
+  constructor(basePath) {
+    this.basePath = basePath;
+    this.routes = [];
+  }
+
+  // 注册资源路由
+  resource(resourceName, options = {}) {
+    const { nested, actions = ['list', 'create', 'get', 'update', 'partialUpdate', 'delete'] } = options;
+    const path = nested
+      ? `${this.basePath}/${nested}/:${nested.slice(0, -1)}Id/${resourceName}`
+      : `${this.basePath}/${resourceName}`;
+
+    const routeMap = {
+      list:          { method: 'GET',    path: path,              desc: `获取${resourceName}列表` },
+      create:        { method: 'POST',   path: path,              desc: `创建${resourceName}` },
+      get:           { method: 'GET',    path: `${path}/:id`,     desc: `获取单个${resourceName}` },
+      update:        { method: 'PUT',    path: `${path}/:id`,     desc: `全量更新${resourceName}` },
+      partialUpdate: { method: 'PATCH',  path: `${path}/:id`,     desc: `部分更新${resourceName}` },
+      delete:        { method: 'DELETE', path: `${path}/:id`,     desc: `删除${resourceName}` },
+    };
+
+    for (const action of actions) {
+      if (routeMap[action]) {
+        this.routes.push(routeMap[action]);
+      }
+    }
+
+    return this;
+  }
+
+  // 注册自定义动作
+  action(method, path, description) {
+    this.routes.push({
+      method: method.toUpperCase(),
+      path: `${this.basePath}${path}`,
+      desc: description,
+    });
+    return this;
+  }
+
+  // 输出路由表
+  print() {
+    console.log('\n=== API 路由表 ===\n');
+    const maxMethodLen = Math.max(...this.routes.map(r => r.method.length));
+    const maxPathLen = Math.max(...this.routes.map(r => r.path.length));
+
+    for (const route of this.routes) {
+      const method = route.method.padEnd(maxMethodLen);
+      const path = route.path.padEnd(maxPathLen);
+      console.log(`  ${method}  ${path}  ${route.desc}`);
+    }
+    return this;
+  }
+}
+
+// 设计一个电商 API
+const router = new RestfulRouter('/api/v1');
+
+router
+  .resource('users')
+  .resource('orders', { nested: 'users' })  // 嵌套资源
+  .resource('products')
+  .resource('reviews', { nested: 'products', actions: ['list', 'create', 'get'] })
+  .action('POST', '/users/:id/activate', '激活用户账户')
+  .action('POST', '/orders/:id/cancel', '取消订单')
+  .action('GET', '/products/search', '搜索商品')
+  .print();
+```
+
+### RESTful 响应规范
+
+```js
+// ========== RESTful 响应格式规范 ==========
+
+class ApiResponse {
+  // 成功响应
+  static success(data, meta = {}) {
+    return {
+      code: 0,
+      message: 'success',
+      data,
+      meta: {
+        timestamp: new Date().toISOString(),
+        ...meta,
+      },
+    };
+  }
+
+  // 分页响应
+  static paginated(items, pagination) {
+    return {
+      code: 0,
+      message: 'success',
+      data: items,
+      pagination: {
+        page: pagination.page,
+        pageSize: pagination.pageSize,
+        total: pagination.total,
+        totalPages: Math.ceil(pagination.total / pagination.pageSize),
+        hasNext: pagination.page < Math.ceil(pagination.total / pagination.pageSize),
+        hasPrev: pagination.page > 1,
+      },
+    };
+  }
+
+  // 错误响应
+  static error(httpStatus, errorCode, message, details = null) {
+    return {
+      code: errorCode,
+      message,
+      ...(details ? { details } : {}),
+      meta: {
+        timestamp: new Date().toISOString(),
+      },
+      _httpStatus: httpStatus,
+    };
+  }
+}
+
+// HTTP 状态码使用规范
+const httpStatusGuide = {
+  // 2xx 成功
+  200: { usage: 'GET/PUT/PATCH 成功', example: '获取用户信息成功' },
+  201: { usage: 'POST 创建资源成功', example: '创建订单成功' },
+  204: { usage: 'DELETE 成功（无返回体）', example: '删除用户成功' },
+  // 4xx 客户端错误
+  400: { usage: '请求参数错误', example: '邮箱格式不正确' },
+  401: { usage: '未认证', example: '缺少或无效的 Token' },
+  403: { usage: '无权限', example: '普通用户不能删除管理员' },
+  404: { usage: '资源不存在', example: '用户 ID 不存在' },
+  409: { usage: '资源冲突', example: '用户名已被占用' },
+  422: { usage: '语义错误（参数合法但业务不允许）', example: '库存不足无法下单' },
+  429: { usage: '请求过于频繁', example: '触发限流' },
+  // 5xx 服务端错误
+  500: { usage: '服务器内部错误', example: '未预期的异常' },
+  502: { usage: '网关错误', example: '上游服务不可达' },
+  503: { usage: '服务不可用', example: '服务维护中' },
+};
+
+// 示例
+console.log('=== 成功响应 ===');
+console.log(JSON.stringify(ApiResponse.success({
+  id: 123, name: '张三', email: 'zhangsan@example.com',
+}), null, 2));
+
+console.log('\n=== 分页响应 ===');
+console.log(JSON.stringify(ApiResponse.paginated(
+  [{ id: 1, name: '商品A' }, { id: 2, name: '商品B' }],
+  { page: 1, pageSize: 10, total: 56 },
+), null, 2));
+
+console.log('\n=== 错误响应 ===');
+console.log(JSON.stringify(ApiResponse.error(400, 'INVALID_PARAM', '参数校验失败', [
+  { field: 'email', message: '邮箱格式不正确' },
+  { field: 'age', message: '年龄不能小于 0' },
+]), null, 2));
+
+console.log('\n=== HTTP 状态码速查 ===');
+for (const [code, info] of Object.entries(httpStatusGuide)) {
+  console.log(`  ${code}: ${info.usage}（${info.example}）`);
+}
+```
+
+## 📊 GraphQL
+
+### 核心概念
+
+GraphQL 由 Facebook 在 2015 年开源，核心理念是**客户端决定需要什么数据**：
+
+| 特点 | REST | GraphQL |
+|------|------|---------|
+| **端点** | 多个端点（/users, /orders） | 单一端点（/graphql） |
+| **数据量** | 固定结构，可能过度获取或不足获取 | 客户端精确指定需要的字段 |
+| **版本** | URL 版本（/v1, /v2） | Schema 演进，无需版本 |
+| **类型系统** | 无（依赖文档） | 强类型 Schema |
+
+### 代码示例：GraphQL Schema 与查询
+
+```js
+// ========== GraphQL 核心概念模拟 ==========
+
+// Schema 定义（类型系统）
+class GraphQLSchema {
+  constructor() {
+    this.types = new Map();
+    this.queries = new Map();
+    this.mutations = new Map();
+  }
+
+  defineType(name, fields) {
+    this.types.set(name, fields);
+  }
+
+  defineQuery(name, config) {
+    this.queries.set(name, config);
+  }
+
+  defineMutation(name, config) {
+    this.mutations.set(name, config);
+  }
+
+  printSchema() {
+    console.log('=== GraphQL Schema ===\n');
+    for (const [name, fields] of this.types) {
+      console.log(`type ${name} {`);
+      for (const [fieldName, fieldType] of Object.entries(fields)) {
+        console.log(`  ${fieldName}: ${fieldType}`);
+      }
+      console.log('}\n');
+    }
+  }
+}
+
+// 查询解析器（Resolver）
+class GraphQLResolver {
+  constructor(schema) {
+    this.schema = schema;
+    this.data = {
+      users: [
+        { id: '1', name: '张三', email: 'zhangsan@example.com', age: 28, departmentId: 'dept-1' },
+        { id: '2', name: '李四', email: 'lisi@example.com', age: 32, departmentId: 'dept-2' },
+      ],
+      departments: [
+        { id: 'dept-1', name: '工程部', location: '北京' },
+        { id: 'dept-2', name: '产品部', location: '杭州' },
+      ],
+      orders: [
+        { id: 'order-1', userId: '1', amount: 299, status: 'completed' },
+        { id: 'order-2', userId: '1', amount: 599, status: 'pending' },
+        { id: 'order-3', userId: '2', amount: 199, status: 'completed' },
+      ],
+    };
+  }
+
+  // 执行查询
+  execute(query) {
+    console.log(`\n查询: ${JSON.stringify(query)}`);
+
+    const result = {};
+
+    for (const [queryName, config] of Object.entries(query)) {
+      const { args, fields } = config;
+
+      if (queryName === 'user') {
+        const user = this.data.users.find(u => u.id === args.id);
+        result[queryName] = user ? this.selectFields(user, fields) : null;
+      } else if (queryName === 'users') {
+        result[queryName] = this.data.users.map(u => this.selectFields(u, fields));
+      } else if (queryName === 'orders') {
+        let orders = this.data.orders;
+        if (args && args.userId) {
+          orders = orders.filter(o => o.userId === args.userId);
+        }
+        result[queryName] = orders.map(o => this.selectFields(o, fields));
+      }
+
+      // 解析嵌套字段（关联查询）
+      if (result[queryName] && fields.department) {
+        const items = Array.isArray(result[queryName]) ? result[queryName] : [result[queryName]];
+        for (const item of items) {
+          const dept = this.data.departments.find(d => d.id === item.departmentId);
+          item.department = dept ? this.selectFields(dept, fields.department) : null;
+          delete item.departmentId;
+        }
+      }
+
+      if (result[queryName] && fields.orders) {
+        const items = Array.isArray(result[queryName]) ? result[queryName] : [result[queryName]];
+        for (const item of items) {
+          const userOrders = this.data.orders.filter(o => o.userId === item.id);
+          item.orders = userOrders.map(o => this.selectFields(o, fields.orders));
+        }
+      }
+    }
+
+    console.log('结果:', JSON.stringify(result, null, 2));
+    return result;
+  }
+
+  // 只返回客户端请求的字段
+  selectFields(obj, fields) {
+    const result = {};
+    for (const [field, subFields] of Object.entries(fields)) {
+      if (typeof subFields === 'boolean' && subFields) {
+        if (obj[field] !== undefined) {
+          result[field] = obj[field];
+        }
+      }
+      // 嵌套对象在外层处理
+    }
+    return result;
+  }
+}
+
+// 定义 Schema
+const schema = new GraphQLSchema();
+schema.defineType('User', { id: 'ID!', name: 'String!', email: 'String!', age: 'Int', department: 'Department', orders: '[Order]' });
+schema.defineType('Department', { id: 'ID!', name: 'String!', location: 'String' });
+schema.defineType('Order', { id: 'ID!', amount: 'Float!', status: 'String!' });
+schema.printSchema();
+
+// 执行查询
+const resolver = new GraphQLResolver(schema);
+
+// 查询 1：只要名字和邮箱（避免过度获取）
+resolver.execute({
+  users: { args: {}, fields: { id: true, name: true, email: true } },
+});
+
+// 查询 2：获取用户及其部门和订单（一次请求获取关联数据，避免 N+1 问题）
+resolver.execute({
+  user: {
+    args: { id: '1' },
+    fields: {
+      id: true,
+      name: true,
+      department: { name: true, location: true },
+      orders: { id: true, amount: true, status: true },
+    },
+  },
+});
+```
+
+### GraphQL 适用场景
+
+| 适用 | 不适用 |
+|------|--------|
+| 移动端（带宽敏感，需精确控制数据量） | 简单 CRUD（REST 更直观） |
+| 聚合多个后端服务（BFF 层） | 文件上传（需配合 REST） |
+| 前端需要灵活组合数据 | 实时性要求极高的场景 |
+| 减少请求次数（一次获取关联数据） | 缓存友好的场景（REST 更容易缓存） |
+
+## 🔢 API 版本管理
+
+### 代码示例
+
+```js
+// ========== API 版本管理策略 ==========
+
+class ApiVersionManager {
+  constructor() {
+    this.versions = new Map(); // version → { handlers, deprecated, sunset }
+  }
+
+  registerVersion(version, config) {
+    this.versions.set(version, {
+      handlers: config.handlers || {},
+      deprecated: config.deprecated || false,
+      sunset: config.sunset || null,
+      releaseDate: config.releaseDate,
+    });
+  }
+
+  // 策略 1：URL 路径版本
+  resolveByUrlPath(url) {
+    const match = url.match(/\/api\/(v\d+)\//);
+    if (!match) return { error: 'URL 中未找到版本号' };
+
+    const version = match[1];
+    return this.getVersionInfo(version);
+  }
+
+  // 策略 2：Header 版本
+  resolveByHeader(headers) {
+    const version = headers['api-version'] || headers['accept-version'];
+    if (!version) return { error: 'Header 中未找到版本号，使用默认版本' };
+
+    return this.getVersionInfo(version);
+  }
+
+  // 策略 3：Accept Header（Content Negotiation）
+  resolveByAccept(acceptHeader) {
+    // Accept: application/vnd.myapi.v2+json
+    const match = acceptHeader.match(/application\/vnd\.myapi\.(v\d+)\+json/);
+    if (!match) return { error: 'Accept Header 格式不匹配' };
+
+    return this.getVersionInfo(match[1]);
+  }
+
+  getVersionInfo(version) {
+    const versionConfig = this.versions.get(version);
+    if (!versionConfig) {
+      return { error: `版本 ${version} 不存在` };
+    }
+
+    const result = { version, ...versionConfig };
+
+    if (versionConfig.deprecated) {
+      result.warning = `版本 ${version} 已废弃`;
+      if (versionConfig.sunset) {
+        result.warning += `，将于 ${versionConfig.sunset} 下线`;
+      }
+      result.suggestHeaders = {
+        'Deprecation': 'true',
+        'Sunset': versionConfig.sunset,
+        'Link': `</api/v${parseInt(version.slice(1)) + 1}/>; rel="successor-version"`,
+      };
+    }
+
+    return result;
+  }
+
+  // 版本迁移指南
+  printMigrationGuide() {
+    console.log('\n=== API 版本状态 ===\n');
+    for (const [version, config] of this.versions) {
+      const status = config.deprecated
+        ? `⚠️  已废弃${config.sunset ? `（${config.sunset} 下线）` : ''}`
+        : '✅ 活跃';
+      console.log(`  ${version}: ${status} (发布于 ${config.releaseDate})`);
+    }
+  }
+}
+
+// 使用
+const versionManager = new ApiVersionManager();
+
+versionManager.registerVersion('v1', {
+  releaseDate: '2023-01-01',
+  deprecated: true,
+  sunset: '2025-06-30',
+  handlers: { getUser: 'v1/getUser' },
+});
+
+versionManager.registerVersion('v2', {
+  releaseDate: '2024-01-01',
+  deprecated: false,
+  handlers: { getUser: 'v2/getUser' },
+});
+
+versionManager.registerVersion('v3', {
+  releaseDate: '2025-01-01',
+  deprecated: false,
+  handlers: { getUser: 'v3/getUser' },
+});
+
+versionManager.printMigrationGuide();
+
+console.log('\n=== 版本解析 ===');
+console.log('URL 路径:', versionManager.resolveByUrlPath('/api/v1/users/123'));
+console.log('Header:', versionManager.resolveByHeader({ 'api-version': 'v2' }));
+console.log('Accept:', versionManager.resolveByAccept('application/vnd.myapi.v3+json'));
+```
+
+### 版本管理策略对比
+
+| 策略 | 优点 | 缺点 | 示例 |
+|------|------|------|------|
+| **URL 路径** | 直观、易理解、方便缓存 | URL 膨胀、不够 RESTful | `/api/v2/users` |
+| **Query 参数** | 简单、可选 | 容易遗忘、缓存 key 复杂 | `/api/users?version=2` |
+| **Header** | 干净的 URL、灵活 | 不直观、调试困难 | `Api-Version: 2` |
+| **Content Negotiation** | 最 RESTful | 复杂、工具支持差 | `Accept: vnd.myapi.v2+json` |
+
+## 🚪 API 网关
+
+### 核心架构
+
+```
+客户端                    API 网关                      后端服务
+┌──────┐              ┌─────────────┐              ┌──────────┐
+│ Web  │──┐           │ 认证鉴权    │              │ User     │
+│ App  │  │           │ 限流熔断    │  ──路由──→   │ Service  │
+│Mobile│──┼──请求──→  │ 协议转换    │              ├──────────┤
+│ IoT  │  │           │ 日志监控    │  ──路由──→   │ Order    │
+│第三方 │──┘           │ 请求聚合    │              │ Service  │
+└──────┘              │ 灰度发布    │              ├──────────┤
+                      │ 缓存       │  ──路由──→   │ Product  │
+                      └─────────────┘              │ Service  │
+                                                   └──────────┘
+```
+
+### 代码示例
+
+```js
+// ========== API 网关核心功能实现 ==========
+
+class ApiGateway {
+  constructor() {
+    this.routes = new Map();        // path → { service, method }
+    this.middlewares = [];           // 全局中间件
+    this.rateLimiters = new Map();   // clientId → { count, resetAt }
+    this.circuitBreakers = new Map(); // service → { state, failCount, lastFailAt }
+    this.cache = new Map();          // cacheKey → { data, expireAt }
+  }
+
+  // 注册路由
+  route(path, service, options = {}) {
+    this.routes.set(path, { service, ...options });
+  }
+
+  // 添加中间件
+  use(middleware) {
+    this.middlewares.push(middleware);
+  }
+
+  // 处理请求（经过完整的网关处理链）
+  handleRequest(request) {
+    const { path, method, headers, body, clientId } = request;
+    console.log(`\n[Gateway] ${method} ${path} (client: ${clientId})`);
+
+    // 1. 认证鉴权
+    const authResult = this.authenticate(headers);
+    if (!authResult.authenticated) {
+      return { status: 401, body: { error: authResult.reason } };
+    }
+
+    // 2. 限流
+    const rateLimitResult = this.checkRateLimit(clientId);
+    if (rateLimitResult.limited) {
+      return {
+        status: 429,
+        body: { error: '请求过于频繁' },
+        headers: { 'Retry-After': rateLimitResult.retryAfter },
+      };
+    }
+
+    // 3. 路由匹配
+    const route = this.matchRoute(path);
+    if (!route) {
+      return { status: 404, body: { error: '路由不存在' } };
+    }
+
+    // 4. 缓存检查（仅 GET 请求）
+    if (method === 'GET' && route.cacheTtl) {
+      const cached = this.getCache(path);
+      if (cached) {
+        console.log(`  [缓存] 命中缓存`);
+        return { status: 200, body: cached, headers: { 'X-Cache': 'HIT' } };
+      }
+    }
+
+    // 5. 熔断检查
+    const circuitResult = this.checkCircuitBreaker(route.service);
+    if (circuitResult.open) {
+      console.log(`  [熔断] 服务 ${route.service} 熔断中`);
+      return { status: 503, body: { error: `服务 ${route.service} 暂时不可用` } };
+    }
+
+    // 6. 执行中间件
+    for (const middleware of this.middlewares) {
+      const result = middleware(request);
+      if (result && result.blocked) {
+        return { status: 403, body: { error: result.reason } };
+      }
+    }
+
+    // 7. 转发请求到后端服务
+    try {
+      const response = route.handler
+        ? route.handler(request)
+        : { status: 200, body: { message: `${route.service} 响应成功`, path } };
+
+      // 缓存 GET 响应
+      if (method === 'GET' && route.cacheTtl) {
+        this.setCache(path, response.body, route.cacheTtl);
+      }
+
+      this.recordSuccess(route.service);
+      return response;
+    } catch (error) {
+      this.recordFailure(route.service);
+      return { status: 502, body: { error: `上游服务错误: ${error.message}` } };
+    }
+  }
+
+  // 认证
+  authenticate(headers) {
+    const token = headers?.authorization;
+    if (!token) return { authenticated: false, reason: '缺少 Authorization Header' };
+    if (!token.startsWith('Bearer ')) return { authenticated: false, reason: 'Token 格式错误' };
+
+    // 模拟 JWT 验证
+    const tokenValue = token.slice(7);
+    if (tokenValue === 'invalid') return { authenticated: false, reason: 'Token 已过期' };
+
+    console.log(`  [认证] Token 验证通过`);
+    return { authenticated: true, userId: 'user-123' };
+  }
+
+  // 限流（滑动窗口）
+  checkRateLimit(clientId, limit = 10, windowMs = 60000) {
+    const now = Date.now();
+    const entry = this.rateLimiters.get(clientId);
+
+    if (!entry || now > entry.resetAt) {
+      this.rateLimiters.set(clientId, { count: 1, resetAt: now + windowMs });
+      return { limited: false, remaining: limit - 1 };
+    }
+
+    entry.count++;
+    if (entry.count > limit) {
+      const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
+      console.log(`  [限流] 客户端 ${clientId} 超过限额 (${entry.count}/${limit})`);
+      return { limited: true, retryAfter };
+    }
+
+    return { limited: false, remaining: limit - entry.count };
+  }
+
+  // 熔断器
+  checkCircuitBreaker(service) {
+    const breaker = this.circuitBreakers.get(service);
+    if (!breaker) return { open: false };
+
+    if (breaker.state === 'open') {
+      // 检查是否进入半开状态
+      if (Date.now() - breaker.lastFailAt > 30000) {
+        breaker.state = 'half-open';
+        return { open: false };
+      }
+      return { open: true };
+    }
+    return { open: false };
+  }
+
+  recordSuccess(service) {
+    const breaker = this.circuitBreakers.get(service);
+    if (breaker && breaker.state === 'half-open') {
+      breaker.state = 'closed';
+      breaker.failCount = 0;
+      console.log(`  [熔断] ${service} 恢复正常`);
+    }
+  }
+
+  recordFailure(service) {
+    if (!this.circuitBreakers.has(service)) {
+      this.circuitBreakers.set(service, { state: 'closed', failCount: 0, lastFailAt: 0 });
+    }
+    const breaker = this.circuitBreakers.get(service);
+    breaker.failCount++;
+    breaker.lastFailAt = Date.now();
+
+    if (breaker.failCount >= 5) {
+      breaker.state = 'open';
+      console.log(`  [熔断] ${service} 连续失败 ${breaker.failCount} 次，触发熔断`);
+    }
+  }
+
+  matchRoute(path) {
+    return this.routes.get(path) || null;
+  }
+
+  getCache(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expireAt) {
+      this.cache.delete(key);
+      return null;
+    }
+    return entry.data;
+  }
+
+  setCache(key, data, ttlMs) {
+    this.cache.set(key, { data, expireAt: Date.now() + ttlMs });
+    console.log(`  [缓存] 已缓存 ${key}（TTL: ${ttlMs}ms）`);
+  }
+}
+
+// ========== 使用 ==========
+const gateway = new ApiGateway();
+
+// 注册路由
+gateway.route('/api/v1/users', { service: 'user-service', cacheTtl: 60000 });
+gateway.route('/api/v1/orders', { service: 'order-service' });
+gateway.route('/api/v1/products', {
+  service: 'product-service',
+  cacheTtl: 300000,
+  handler: () => ({
+    status: 200,
+    body: { products: [{ id: 1, name: '机械键盘', price: 599 }] },
+  }),
+});
+
+// 添加日志中间件
+gateway.use((req) => {
+  console.log(`  [日志] ${req.method} ${req.path} from ${req.clientId}`);
+});
+
+// 模拟请求
+console.log(gateway.handleRequest({
+  path: '/api/v1/products', method: 'GET',
+  headers: { authorization: 'Bearer valid-token' }, clientId: 'client-1',
+}));
+
+// 第二次请求命中缓存
+console.log(gateway.handleRequest({
+  path: '/api/v1/products', method: 'GET',
+  headers: { authorization: 'Bearer valid-token' }, clientId: 'client-1',
+}));
+
+// 未认证请求
+console.log(gateway.handleRequest({
+  path: '/api/v1/users', method: 'GET',
+  headers: {}, clientId: 'client-2',
+}));
+```
+
+## 📊 三种 API 风格对比
+
+| 维度 | REST | GraphQL | gRPC |
+|------|------|---------|------|
+| **协议** | HTTP/1.1 | HTTP/1.1 | HTTP/2 |
+| **数据格式** | JSON | JSON | Protobuf |
+| **类型系统** | 无（OpenAPI 可选） | 强类型 Schema | 强类型 .proto |
+| **过度获取** | 可能 | 不会（客户端指定字段） | 不会（Schema 定义） |
+| **实时通信** | WebSocket/SSE | Subscription | 双向流 |
+| **缓存** | HTTP 缓存友好 | 需要额外处理 | 需要额外处理 |
+| **浏览器支持** | 原生 | 需要库 | 需要 gRPC-Web |
+| **推荐场景** | 公开 API、简单 CRUD | 前端驱动的灵活查询 | 微服务内部通信 |
+
+## 🔗 相关概念
+
+- **[RPC 框架](/architect/03-distributed-systems/02-distributed-communication/02-rpc-frameworks)**：gRPC 既是 RPC 框架也是 API 风格
+- **[消息队列](/architect/03-distributed-systems/02-distributed-communication/03-message-queues)**：异步 API 的实现方式
+- **[高可用设计](/architect/03-distributed-systems/04-distributed-reliability/03-high-availability)**：API 网关的高可用部署
+
+## ✅ 学习检查点
+
+- [ ] 能够设计符合规范的 RESTful API（URL、方法、状态码、响应格式）
+- [ ] 理解 GraphQL 解决了 REST 的哪些问题
+- [ ] 能够选择合适的 API 版本管理策略
+- [ ] 理解 API 网关的核心功能（认证、限流、熔断、缓存、路由）
+- [ ] 能够根据场景选择 REST / GraphQL / gRPC
+
+## 🚀 下一步
+
+→ [分布式数据管理](/architect/03-distributed-systems/03-distributed-data/01-distributed-data-overview)

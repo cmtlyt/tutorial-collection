@@ -14,4 +14,728 @@
 - 掌握服务发现与注册的实现机制
 - 理解各种负载均衡策略的适用场景
 
-> 🚧 详细内容正在编写中...
+## 🔧 RPC 核心原理
+
+### 什么是 RPC
+
+RPC（Remote Procedure Call，远程过程调用）让调用远程服务就像调用本地函数一样简单。核心思想是**屏蔽网络通信的复杂性**。
+
+### RPC 调用流程
+
+```
+客户端                                          服务端
+┌──────────┐                              ┌──────────┐
+│ 业务代码  │                              │ 业务代码  │
+│ userService.getUser(1)                   │ getUser(id) { ... }
+├──────────┤                              ├──────────┤
+│ 客户端Stub │ → 序列化 → 网络传输 →       │ 服务端Stub │
+│ (代理)    │                              │ (骨架)    │
+├──────────┤                              ├──────────┤
+│ 网络层    │ ←────── TCP/HTTP2 ──────→   │ 网络层    │
+└──────────┘                              └──────────┘
+```
+
+### 代码示例：手写简易 RPC 框架
+
+```js
+// ========== 手写简易 RPC 框架 ==========
+
+// 序列化器
+class Serializer {
+  static serialize(data) {
+    return JSON.stringify(data);
+  }
+
+  static deserialize(data) {
+    return JSON.parse(data);
+  }
+}
+
+// 服务端：注册并暴露服务
+class RpcServer {
+  constructor() {
+    this.services = new Map();     // 服务注册表
+    this.middlewares = [];         // 中间件链
+  }
+
+  // 注册服务
+  registerService(serviceName, serviceImpl) {
+    this.services.set(serviceName, serviceImpl);
+    const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(serviceImpl))
+      .filter(m => m !== 'constructor');
+    console.log(`[Server] 注册服务: ${serviceName}，方法: ${methods.join(', ')}`);
+  }
+
+  // 添加中间件
+  use(middleware) {
+    this.middlewares.push(middleware);
+  }
+
+  // 处理 RPC 请求
+  handleRequest(rawRequest) {
+    const request = Serializer.deserialize(rawRequest);
+    const { serviceName, methodName, args, requestId } = request;
+
+    console.log(`[Server] 收到请求 #${requestId}: ${serviceName}.${methodName}(${args.join(', ')})`);
+
+    // 执行中间件
+    for (const middleware of this.middlewares) {
+      const result = middleware(request);
+      if (result && result.blocked) {
+        return Serializer.serialize({ requestId, error: result.reason });
+      }
+    }
+
+    // 查找服务
+    const service = this.services.get(serviceName);
+    if (!service) {
+      return Serializer.serialize({ requestId, error: `服务 ${serviceName} 未注册` });
+    }
+
+    // 查找方法
+    const method = service[methodName];
+    if (typeof method !== 'function') {
+      return Serializer.serialize({ requestId, error: `方法 ${serviceName}.${methodName} 不存在` });
+    }
+
+    // 调用方法
+    try {
+      const result = method.apply(service, args);
+      return Serializer.serialize({ requestId, result });
+    } catch (error) {
+      return Serializer.serialize({ requestId, error: error.message });
+    }
+  }
+}
+
+// 客户端：透明代理
+class RpcClient {
+  constructor(server) {
+    this.server = server;    // 模拟网络连接
+    this.requestCounter = 0;
+  }
+
+  // 创建服务代理（核心：让远程调用看起来像本地调用）
+  createProxy(serviceName) {
+    const client = this;
+    return new Proxy({}, {
+      get(target, methodName) {
+        return (...args) => {
+          client.requestCounter++;
+          const requestId = client.requestCounter;
+
+          // 序列化请求
+          const rawRequest = Serializer.serialize({
+            serviceName,
+            methodName,
+            args,
+            requestId,
+          });
+
+          // 发送请求（模拟网络传输）
+          const rawResponse = client.server.handleRequest(rawRequest);
+          const response = Serializer.deserialize(rawResponse);
+
+          if (response.error) {
+            throw new Error(`RPC 调用失败: ${response.error}`);
+          }
+
+          return response.result;
+        };
+      },
+    });
+  }
+}
+
+// ========== 使用示例 ==========
+
+// 定义服务
+class UserService {
+  getUser(userId) {
+    const users = {
+      1: { id: 1, name: '张三', role: 'admin' },
+      2: { id: 2, name: '李四', role: 'user' },
+    };
+    return users[userId] || null;
+  }
+
+  listUsers() {
+    return [
+      { id: 1, name: '张三' },
+      { id: 2, name: '李四' },
+    ];
+  }
+}
+
+class OrderService {
+  createOrder(userId, productId, quantity) {
+    return {
+      orderId: `ORD-${Date.now()}`,
+      userId,
+      productId,
+      quantity,
+      status: 'created',
+    };
+  }
+}
+
+// 启动服务端
+const server = new RpcServer();
+
+// 添加日志中间件
+server.use((request) => {
+  console.log(`[中间件-日志] ${request.serviceName}.${request.methodName} @ ${new Date().toISOString()}`);
+});
+
+// 添加限流中间件
+const rateLimitMap = new Map();
+server.use((request) => {
+  const key = `${request.serviceName}.${request.methodName}`;
+  const count = (rateLimitMap.get(key) || 0) + 1;
+  rateLimitMap.set(key, count);
+  if (count > 100) {
+    return { blocked: true, reason: '触发限流' };
+  }
+});
+
+server.registerService('UserService', new UserService());
+server.registerService('OrderService', new OrderService());
+
+// 客户端调用（透明代理，像调用本地函数一样）
+const client = new RpcClient(server);
+const userService = client.createProxy('UserService');
+const orderService = client.createProxy('OrderService');
+
+console.log('\n--- 客户端调用 ---');
+console.log('getUser(1):', userService.getUser(1));
+console.log('listUsers():', userService.listUsers());
+console.log('createOrder:', orderService.createOrder(1, 'PROD-001', 2));
+```
+
+## 📦 主流 RPC 框架对比
+
+### gRPC
+
+| 维度 | 说明 |
+|------|------|
+| **开发者** | Google |
+| **传输协议** | HTTP/2 |
+| **序列化** | Protocol Buffers（二进制） |
+| **IDL** | .proto 文件 |
+| **流式支持** | 支持四种模式：一元、服务端流、客户端流、双向流 |
+| **语言支持** | 多语言（Go、Java、Python、C++、Node.js 等） |
+| **适用场景** | 微服务间通信、移动端与后端通信、实时流 |
+
+### Thrift
+
+| 维度 | 说明 |
+|------|------|
+| **开发者** | Facebook → Apache |
+| **传输协议** | 自定义（TSocket、TFramedTransport 等） |
+| **序列化** | 多种（TBinaryProtocol、TCompactProtocol、TJSONProtocol） |
+| **IDL** | .thrift 文件 |
+| **流式支持** | 不原生支持 |
+| **语言支持** | 多语言（28 种以上） |
+| **适用场景** | 遗留系统、需要极致序列化性能的场景 |
+
+### Dubbo
+
+| 维度 | 说明 |
+|------|------|
+| **开发者** | 阿里巴巴 → Apache |
+| **传输协议** | Dubbo 协议、Triple（兼容 gRPC） |
+| **序列化** | Hessian2、Protobuf、JSON |
+| **IDL** | Java 接口（也支持 .proto） |
+| **治理功能** | 内建服务发现、负载均衡、熔断、路由 |
+| **适用场景** | Java 微服务生态、需要完善服务治理的场景 |
+
+## 📋 序列化协议
+
+### 主流序列化协议对比
+
+```js
+// ========== 序列化协议性能对比模拟 ==========
+
+// JSON 序列化
+class JsonSerializer {
+  static name = 'JSON';
+
+  static serialize(data) {
+    const start = performance.now();
+    const result = JSON.stringify(data);
+    const duration = performance.now() - start;
+    return { data: result, size: new Blob([result]).size, duration };
+  }
+
+  static deserialize(data) {
+    const start = performance.now();
+    const result = JSON.parse(data);
+    const duration = performance.now() - start;
+    return { data: result, duration };
+  }
+}
+
+// 模拟 Protobuf 的紧凑二进制编码
+class ProtobufLikeSerializer {
+  static name = 'Protobuf-like';
+
+  // 模拟 varint 编码（Protobuf 用于压缩整数）
+  static encodeVarint(value) {
+    const bytes = [];
+    while (value > 127) {
+      bytes.push((value & 0x7f) | 0x80);
+      value >>>= 7;
+    }
+    bytes.push(value & 0x7f);
+    return bytes;
+  }
+
+  static decodeVarint(bytes, offset) {
+    let result = 0;
+    let shift = 0;
+    let currentOffset = offset;
+    while (currentOffset < bytes.length) {
+      const byte = bytes[currentOffset];
+      result |= (byte & 0x7f) << shift;
+      currentOffset++;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    return { value: result, bytesRead: currentOffset - offset };
+  }
+
+  static serialize(data) {
+    const start = performance.now();
+    // 简化：用紧凑格式编码（field_number + type + value）
+    const fields = Object.entries(data);
+    const encoded = [];
+
+    for (let i = 0; i < fields.length; i++) {
+      const [, value] = fields[i];
+      const fieldNumber = i + 1;
+
+      if (typeof value === 'number') {
+        // wire type 0: varint
+        encoded.push((fieldNumber << 3) | 0);
+        encoded.push(...ProtobufLikeSerializer.encodeVarint(value));
+      } else if (typeof value === 'string') {
+        // wire type 2: length-delimited
+        const stringBytes = new TextEncoder().encode(value);
+        encoded.push((fieldNumber << 3) | 2);
+        encoded.push(...ProtobufLikeSerializer.encodeVarint(stringBytes.length));
+        encoded.push(...stringBytes);
+      }
+    }
+
+    const result = new Uint8Array(encoded);
+    const duration = performance.now() - start;
+    return { data: result, size: result.length, duration };
+  }
+
+  static deserialize(uint8Array) {
+    const start = performance.now();
+    // 简化反序列化
+    const result = { _raw: `[${uint8Array.length} bytes]` };
+    const duration = performance.now() - start;
+    return { data: result, duration };
+  }
+}
+
+// 对比测试
+const testData = {
+  id: 12345,
+  name: '张三',
+  email: 'zhangsan@example.com',
+  age: 28,
+  role: 'developer',
+};
+
+console.log('=== 序列化协议对比 ===\n');
+
+const jsonResult = JsonSerializer.serialize(testData);
+console.log(`JSON:`);
+console.log(`  大小: ${jsonResult.size} bytes`);
+console.log(`  耗时: ${jsonResult.duration.toFixed(4)} ms`);
+console.log(`  可读性: ✅ 人类可读`);
+
+const pbResult = ProtobufLikeSerializer.serialize(testData);
+console.log(`Protobuf-like:`);
+console.log(`  大小: ${pbResult.size} bytes`);
+console.log(`  耗时: ${pbResult.duration.toFixed(4)} ms`);
+console.log(`  可读性: ❌ 二进制`);
+
+console.log(`\n压缩率: Protobuf-like 比 JSON 小 ${((1 - pbResult.size / jsonResult.size) * 100).toFixed(1)}%`);
+```
+
+### 序列化协议总结
+
+| 协议 | 格式 | 大小 | 速度 | Schema | 适用场景 |
+|------|------|------|------|--------|---------|
+| **JSON** | 文本 | 大 | 慢 | 无 | REST API、调试 |
+| **Protobuf** | 二进制 | 最小 | 最快 | 强制 | gRPC、高性能通信 |
+| **Avro** | 二进制 | 小 | 快 | 动态 | 大数据（Hadoop、Kafka） |
+| **MessagePack** | 二进制 | 中 | 快 | 无 | 替代 JSON 的场景 |
+| **Thrift Binary** | 二进制 | 小 | 快 | 强制 | Thrift RPC |
+
+## 🔍 服务发现与注册
+
+### 核心机制
+
+```
+服务提供者                     注册中心                     服务消费者
+┌──────────┐               ┌──────────┐               ┌──────────┐
+│ Service A │──① 注册──→   │ ZooKeeper│  ←─③ 订阅── │ Client   │
+│ 10.0.0.1  │              │  / etcd  │               │          │
+│ :8080     │              │  / Nacos │──④ 推送──→   │          │
+└──────────┘               └──────────┘               └──────────┘
+      │                         ↑                          │
+      └───── ② 心跳 ───────────┘                          │
+                                                           │
+                                              ⑤ 客户端负载均衡调用
+                                                           │
+                                                           ↓
+                                                    ┌──────────┐
+                                                    │ Service A │
+                                                    │ (某个实例) │
+                                                    └──────────┘
+```
+
+### 代码示例
+
+```js
+// ========== 服务发现与注册 ==========
+
+class ServiceRegistry {
+  constructor() {
+    this.services = new Map();     // serviceName → [{ host, port, metadata, lastHeartbeat }]
+    this.subscribers = new Map();   // serviceName → [callback]
+    this.healthCheckIntervalMs = 5000;
+  }
+
+  // 注册服务实例
+  register(serviceName, instance) {
+    if (!this.services.has(serviceName)) {
+      this.services.set(serviceName, []);
+    }
+
+    const entry = {
+      ...instance,
+      lastHeartbeat: Date.now(),
+      status: 'healthy',
+    };
+
+    const instances = this.services.get(serviceName);
+    // 去重：相同 host:port 的实例不重复注册
+    const existingIndex = instances.findIndex(i => i.host === instance.host && i.port === instance.port);
+    if (existingIndex >= 0) {
+      instances[existingIndex] = entry;
+    } else {
+      instances.push(entry);
+    }
+
+    console.log(`[注册中心] ${serviceName} 注册: ${instance.host}:${instance.port}`);
+    this.notifySubscribers(serviceName);
+  }
+
+  // 注销服务实例
+  deregister(serviceName, host, port) {
+    const instances = this.services.get(serviceName);
+    if (!instances) return;
+
+    const index = instances.findIndex(i => i.host === host && i.port === port);
+    if (index >= 0) {
+      instances.splice(index, 1);
+      console.log(`[注册中心] ${serviceName} 注销: ${host}:${port}`);
+      this.notifySubscribers(serviceName);
+    }
+  }
+
+  // 心跳续约
+  heartbeat(serviceName, host, port) {
+    const instances = this.services.get(serviceName);
+    if (!instances) return;
+
+    const instance = instances.find(i => i.host === host && i.port === port);
+    if (instance) {
+      instance.lastHeartbeat = Date.now();
+      instance.status = 'healthy';
+    }
+  }
+
+  // 健康检查：剔除过期实例
+  healthCheck() {
+    const now = Date.now();
+    for (const [serviceName, instances] of this.services) {
+      const before = instances.length;
+      const healthyInstances = instances.filter(instance => {
+        const isHealthy = (now - instance.lastHeartbeat) < this.healthCheckIntervalMs;
+        if (!isHealthy) {
+          console.log(`[健康检查] ${serviceName} 实例 ${instance.host}:${instance.port} 心跳超时，标记为不健康`);
+          instance.status = 'unhealthy';
+        }
+        return isHealthy;
+      });
+
+      if (healthyInstances.length !== before) {
+        this.services.set(serviceName, healthyInstances);
+        this.notifySubscribers(serviceName);
+      }
+    }
+  }
+
+  // 查询服务实例
+  discover(serviceName) {
+    const instances = this.services.get(serviceName) || [];
+    return instances.filter(i => i.status === 'healthy');
+  }
+
+  // 订阅服务变化
+  subscribe(serviceName, callback) {
+    if (!this.subscribers.has(serviceName)) {
+      this.subscribers.set(serviceName, []);
+    }
+    this.subscribers.get(serviceName).push(callback);
+    console.log(`[注册中心] 新增订阅: ${serviceName}`);
+  }
+
+  // 通知订阅者
+  notifySubscribers(serviceName) {
+    const callbacks = this.subscribers.get(serviceName) || [];
+    const instances = this.discover(serviceName);
+    for (const callback of callbacks) {
+      callback(serviceName, instances);
+    }
+  }
+}
+
+// ========== 使用示例 ==========
+
+const registry = new ServiceRegistry();
+
+// 注册多个服务实例
+registry.register('UserService', { host: '10.0.0.1', port: 8080, metadata: { version: '1.0', weight: 100 } });
+registry.register('UserService', { host: '10.0.0.2', port: 8080, metadata: { version: '1.0', weight: 100 } });
+registry.register('UserService', { host: '10.0.0.3', port: 8080, metadata: { version: '2.0', weight: 50 } });
+registry.register('OrderService', { host: '10.0.1.1', port: 9090, metadata: { version: '1.0' } });
+
+// 订阅服务变化
+registry.subscribe('UserService', (name, instances) => {
+  console.log(`[订阅通知] ${name} 实例变化: ${instances.map(i => `${i.host}:${i.port}`).join(', ')}`);
+});
+
+// 服务发现
+console.log('\n--- 服务发现 ---');
+console.log('UserService 实例:', registry.discover('UserService').map(i => `${i.host}:${i.port}`));
+console.log('OrderService 实例:', registry.discover('OrderService').map(i => `${i.host}:${i.port}`));
+
+// 模拟实例下线
+console.log('\n--- 实例注销 ---');
+registry.deregister('UserService', '10.0.0.2', 8080);
+console.log('UserService 实例:', registry.discover('UserService').map(i => `${i.host}:${i.port}`));
+```
+
+## ⚖️ 负载均衡策略
+
+### 代码示例
+
+```js
+// ========== 负载均衡策略实现 ==========
+
+class LoadBalancer {
+  constructor(instances) {
+    this.instances = instances;
+  }
+}
+
+// 1. 轮询（Round Robin）
+class RoundRobinBalancer extends LoadBalancer {
+  constructor(instances) {
+    super(instances);
+    this.currentIndex = -1;
+  }
+
+  select() {
+    this.currentIndex = (this.currentIndex + 1) % this.instances.length;
+    return this.instances[this.currentIndex];
+  }
+}
+
+// 2. 加权轮询（Weighted Round Robin）
+class WeightedRoundRobinBalancer extends LoadBalancer {
+  constructor(instances) {
+    super(instances);
+    this.currentWeights = instances.map(() => 0);
+  }
+
+  select() {
+    const totalWeight = this.instances.reduce((sum, inst) => sum + (inst.weight || 1), 0);
+
+    // 增加每个实例的当前权重
+    let maxWeightIndex = 0;
+    for (let i = 0; i < this.instances.length; i++) {
+      this.currentWeights[i] += (this.instances[i].weight || 1);
+      if (this.currentWeights[i] > this.currentWeights[maxWeightIndex]) {
+        maxWeightIndex = i;
+      }
+    }
+
+    // 选择权重最高的实例，减去总权重
+    this.currentWeights[maxWeightIndex] -= totalWeight;
+    return this.instances[maxWeightIndex];
+  }
+}
+
+// 3. 随机（Random）
+class RandomBalancer extends LoadBalancer {
+  select() {
+    const index = Math.floor(Math.random() * this.instances.length);
+    return this.instances[index];
+  }
+}
+
+// 4. 一致性哈希（Consistent Hashing）
+class ConsistentHashBalancer extends LoadBalancer {
+  constructor(instances, virtualNodeCount = 150) {
+    super(instances);
+    this.ring = new Map(); // hash → instance
+    this.sortedHashes = [];
+
+    // 为每个实例创建虚拟节点
+    for (const instance of instances) {
+      for (let i = 0; i < virtualNodeCount; i++) {
+        const hash = this.hash(`${instance.host}:${instance.port}#${i}`);
+        this.ring.set(hash, instance);
+        this.sortedHashes.push(hash);
+      }
+    }
+    this.sortedHashes.sort((a, b) => a - b);
+  }
+
+  hash(key) {
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash);
+  }
+
+  select(key) {
+    if (!key) return this.instances[0];
+    const hashValue = this.hash(key);
+
+    // 在环上顺时针查找第一个大于等于 hashValue 的节点
+    let targetHash = this.sortedHashes.find(h => h >= hashValue);
+    if (!targetHash) {
+      // 绕回环的起点
+      targetHash = this.sortedHashes[0];
+    }
+    return this.ring.get(targetHash);
+  }
+}
+
+// 5. 最少连接（Least Connections）
+class LeastConnectionsBalancer extends LoadBalancer {
+  constructor(instances) {
+    super(instances);
+    this.connectionCounts = new Map();
+    for (const instance of instances) {
+      this.connectionCounts.set(`${instance.host}:${instance.port}`, 0);
+    }
+  }
+
+  select() {
+    let minConnections = Infinity;
+    let selected = this.instances[0];
+
+    for (const instance of this.instances) {
+      const key = `${instance.host}:${instance.port}`;
+      const connections = this.connectionCounts.get(key);
+      if (connections < minConnections) {
+        minConnections = connections;
+        selected = instance;
+      }
+    }
+
+    const selectedKey = `${selected.host}:${selected.port}`;
+    this.connectionCounts.set(selectedKey, this.connectionCounts.get(selectedKey) + 1);
+    return selected;
+  }
+
+  release(instance) {
+    const key = `${instance.host}:${instance.port}`;
+    const current = this.connectionCounts.get(key) || 0;
+    this.connectionCounts.set(key, Math.max(0, current - 1));
+  }
+}
+
+// ========== 对比测试 ==========
+
+const instances = [
+  { host: '10.0.0.1', port: 8080, weight: 5 },
+  { host: '10.0.0.2', port: 8080, weight: 3 },
+  { host: '10.0.0.3', port: 8080, weight: 2 },
+];
+
+function testBalancer(name, balancer, rounds, selectArg) {
+  const distribution = {};
+  for (const inst of instances) {
+    distribution[`${inst.host}:${inst.port}`] = 0;
+  }
+
+  for (let i = 0; i < rounds; i++) {
+    const selected = selectArg ? balancer.select(selectArg(i)) : balancer.select();
+    distribution[`${selected.host}:${selected.port}`]++;
+  }
+
+  console.log(`\n${name}（${rounds} 次调用）:`);
+  for (const [key, count] of Object.entries(distribution)) {
+    const bar = '█'.repeat(Math.round(count / rounds * 30));
+    console.log(`  ${key}: ${count} (${(count / rounds * 100).toFixed(1)}%) ${bar}`);
+  }
+}
+
+testBalancer('轮询', new RoundRobinBalancer(instances), 30);
+testBalancer('加权轮询', new WeightedRoundRobinBalancer(instances), 30);
+testBalancer('随机', new RandomBalancer(instances), 30);
+testBalancer('一致性哈希', new ConsistentHashBalancer(instances), 30, (i) => `user-${i % 10}`);
+testBalancer('最少连接', new LeastConnectionsBalancer(instances), 30);
+```
+
+### 策略选择指南
+
+| 策略 | 特点 | 适用场景 |
+|------|------|---------|
+| **轮询** | 均匀分配，简单 | 实例配置相同、请求耗时均匀 |
+| **加权轮询** | 按权重分配 | 实例配置不同（如新旧机器） |
+| **随机** | 简单，长期趋向均匀 | 大量请求时的简单负载分散 |
+| **一致性哈希** | 相同 key 路由到同一实例 | 有状态服务、缓存亲和 |
+| **最少连接** | 动态感知负载 | 请求处理时间差异大的场景 |
+
+## 📊 RPC 框架选型总结
+
+| 维度 | gRPC | Thrift | Dubbo |
+|------|------|--------|-------|
+| **性能** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **生态** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐(Java) |
+| **易用性** | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **流式支持** | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ |
+| **服务治理** | ⭐⭐（需配合 Istio） | ⭐⭐ | ⭐⭐⭐⭐⭐ |
+| **推荐场景** | 多语言微服务 | 高性能/遗留系统 | Java 微服务 |
+
+## 🔗 相关概念
+
+- **[消息队列](/architect/03-distributed-systems/02-distributed-communication/03-message-queues)**：异步通信的另一种选择
+- **[API 设计](/architect/03-distributed-systems/02-distributed-communication/04-api-design)**：API 网关对 RPC 的封装
+- **[容错设计](/architect/03-distributed-systems/04-distributed-reliability/02-fault-tolerance)**：RPC 调用的超时、重试、熔断
+
+## ✅ 学习检查点
+
+- [ ] 理解 RPC 的核心调用流程（序列化 → 传输 → 反序列化）
+- [ ] 能够对比 gRPC、Thrift、Dubbo 的优劣
+- [ ] 理解 Protobuf 相比 JSON 的性能优势
+- [ ] 能够实现服务注册与发现的基本流程
+- [ ] 能够根据场景选择合适的负载均衡策略
+
+## 🚀 下一步
+
+→ [消息队列](/architect/03-distributed-systems/02-distributed-communication/03-message-queues)

@@ -14,4 +14,808 @@
 - 理解故障转移（Failover）的自动化实现
 - 能够设计完整的数据备份与容灾方案
 
-> 🚧 详细内容正在编写中...
+## 📊 可用性量化
+
+### SLA 与可用性等级
+
+| 可用性等级 | 年度宕机时间 | 月度宕机时间 | 适用场景 |
+|-----------|------------|------------|---------|
+| **99%（两个9）** | 3.65 天 | 7.3 小时 | 内部工具 |
+| **99.9%（三个9）** | 8.76 小时 | 43.8 分钟 | 普通商业应用 |
+| **99.99%（四个9）** | 52.6 分钟 | 4.38 分钟 | 电商、社交平台 |
+| **99.999%（五个9）** | 5.26 分钟 | 26.3 秒 | 金融核心、电信 |
+
+### 代码示例：SLA 计算器
+
+```js
+// ========== SLA 可用性计算器 ==========
+
+class SlaCalculator {
+  // 计算单组件可用性对应的宕机时间
+  static calculateDowntime(availabilityPercent, periodDays = 365) {
+    const totalMinutes = periodDays * 24 * 60;
+    const downtimeMinutes = totalMinutes * (1 - availabilityPercent / 100);
+    return {
+      availability: `${availabilityPercent}%`,
+      period: `${periodDays} 天`,
+      downtime: SlaCalculator.formatDuration(downtimeMinutes),
+    };
+  }
+
+  // 串联系统可用性：A × B（所有组件都必须可用）
+  static serialAvailability(components) {
+    const combined = components.reduce((total, component) => {
+      return total * (component.availability / 100);
+    }, 1);
+    return combined * 100;
+  }
+
+  // 并联系统可用性：1 - (1-A) × (1-B)（只要一个可用就行）
+  static parallelAvailability(components) {
+    const combinedUnavailability = components.reduce((total, component) => {
+      return total * (1 - component.availability / 100);
+    }, 1);
+    return (1 - combinedUnavailability) * 100;
+  }
+
+  static formatDuration(minutes) {
+    if (minutes >= 1440) {
+      return `${(minutes / 1440).toFixed(2)} 天`;
+    }
+    if (minutes >= 60) {
+      return `${(minutes / 60).toFixed(2)} 小时`;
+    }
+    return `${minutes.toFixed(2)} 分钟`;
+  }
+}
+
+// 基本计算
+console.log('=== SLA 宕机时间 ===');
+[99, 99.9, 99.99, 99.999].forEach(pct => {
+  const result = SlaCalculator.calculateDowntime(pct);
+  console.log(`  ${result.availability}: 年度宕机 ${result.downtime}`);
+});
+
+// 串联系统（微服务链路）
+console.log('\n=== 串联系统（微服务链路）===');
+const microserviceChain = [
+  { name: 'API 网关', availability: 99.99 },
+  { name: '用户服务', availability: 99.95 },
+  { name: '订单服务', availability: 99.95 },
+  { name: '支付服务', availability: 99.9 },
+  { name: '数据库', availability: 99.99 },
+];
+const serialResult = SlaCalculator.serialAvailability(microserviceChain);
+console.log('组件:');
+for (const component of microserviceChain) {
+  console.log(`  ${component.name}: ${component.availability}%`);
+}
+console.log(`整体可用性: ${serialResult.toFixed(4)}%`);
+console.log(`年度宕机: ${SlaCalculator.formatDuration(365 * 24 * 60 * (1 - serialResult / 100))}`);
+
+// 并联系统（主备冗余）
+console.log('\n=== 并联系统（主备冗余）===');
+const redundantDb = [
+  { name: '数据库主节点', availability: 99.9 },
+  { name: '数据库备节点', availability: 99.9 },
+];
+const parallelResult = SlaCalculator.parallelAvailability(redundantDb);
+console.log(`单节点可用性: ${redundantDb[0].availability}%`);
+console.log(`双节点冗余可用性: ${parallelResult.toFixed(6)}%`);
+console.log(`提升: ${redundantDb[0].availability}% → ${parallelResult.toFixed(4)}%`);
+```
+
+## 🔄 故障转移（Failover）
+
+### 故障检测与自动切换
+
+```
+               ┌─────────────┐
+               │  哨兵/仲裁者  │
+               │ (Sentinel)  │
+               └──────┬──────┘
+                      │ 心跳检测
+            ┌─────────┼─────────┐
+            ↓         ↓         ↓
+      ┌──────────┐ ┌──────────┐ ┌──────────┐
+      │ Master   │ │ Slave 1  │ │ Slave 2  │
+      │ (Active) │ │(Standby) │ │(Standby) │
+      └──────────┘ └──────────┘ └──────────┘
+
+   Master 故障后：
+      ┌──────────┐ ┌──────────┐ ┌──────────┐
+      │ 原Master │ │ Slave 1  │ │ Slave 2  │
+      │  (Down)  │ │(New Master)│ │(Standby)│
+      └──────────┘ └──────────┘ └──────────┘
+```
+
+### 代码示例
+
+```js
+// ========== 故障检测与自动转移 ==========
+
+class HealthChecker {
+  constructor(options = {}) {
+    this.checkIntervalMs = options.checkIntervalMs || 1000;
+    this.failureThreshold = options.failureThreshold || 3;      // 连续失败多少次判定故障
+    this.recoveryThreshold = options.recoveryThreshold || 2;    // 连续成功多少次判定恢复
+    this.nodeStatus = new Map();  // nodeId → { consecutiveFailures, consecutiveSuccesses, status }
+  }
+
+  registerNode(nodeId) {
+    this.nodeStatus.set(nodeId, {
+      consecutiveFailures: 0,
+      consecutiveSuccesses: 0,
+      status: 'healthy',       // healthy | suspected | dead | recovering
+      lastCheckTime: Date.now(),
+    });
+  }
+
+  // 执行健康检查
+  check(nodeId, isResponding) {
+    const status = this.nodeStatus.get(nodeId);
+    if (!status) return;
+
+    status.lastCheckTime = Date.now();
+
+    if (isResponding) {
+      status.consecutiveFailures = 0;
+      status.consecutiveSuccesses++;
+
+      if (status.status === 'dead' || status.status === 'suspected') {
+        if (status.consecutiveSuccesses >= this.recoveryThreshold) {
+          status.status = 'healthy';
+          console.log(`  [健康检查] ${nodeId}: ✅ 恢复健康`);
+        } else {
+          status.status = 'recovering';
+          console.log(`  [健康检查] ${nodeId}: 🟡 恢复中 (${status.consecutiveSuccesses}/${this.recoveryThreshold})`);
+        }
+      }
+    } else {
+      status.consecutiveSuccesses = 0;
+      status.consecutiveFailures++;
+
+      if (status.consecutiveFailures === 1) {
+        status.status = 'suspected';
+        console.log(`  [健康检查] ${nodeId}: ⚠️ 疑似故障`);
+      } else if (status.consecutiveFailures >= this.failureThreshold) {
+        status.status = 'dead';
+        console.log(`  [健康检查] ${nodeId}: ❌ 确认故障 (连续失败 ${status.consecutiveFailures} 次)`);
+      }
+    }
+
+    return status.status;
+  }
+
+  getHealthyNodes() {
+    const healthy = [];
+    for (const [nodeId, status] of this.nodeStatus) {
+      if (status.status === 'healthy') {
+        healthy.push(nodeId);
+      }
+    }
+    return healthy;
+  }
+}
+
+class FailoverManager {
+  constructor() {
+    this.healthChecker = new HealthChecker({ failureThreshold: 3, recoveryThreshold: 2 });
+    this.primaryNode = null;
+    this.standbyNodes = [];
+    this.failoverHistory = [];
+  }
+
+  setupCluster(primaryId, standbyIds) {
+    this.primaryNode = primaryId;
+    this.standbyNodes = [...standbyIds];
+
+    this.healthChecker.registerNode(primaryId);
+    for (const id of standbyIds) {
+      this.healthChecker.registerNode(id);
+    }
+    console.log(`[集群] 主节点: ${primaryId}, 备节点: ${standbyIds.join(', ')}`);
+  }
+
+  // 执行健康检查并在必要时触发故障转移
+  performHealthCheck(nodeResponses) {
+    console.log('\n--- 健康检查轮次 ---');
+
+    for (const [nodeId, isResponding] of Object.entries(nodeResponses)) {
+      const status = this.healthChecker.check(nodeId, isResponding);
+
+      // 如果主节点被判定为故障，触发自动故障转移
+      if (nodeId === this.primaryNode && status === 'dead') {
+        this.triggerFailover();
+      }
+    }
+  }
+
+  // 自动故障转移
+  triggerFailover() {
+    console.log(`\n🚨 [故障转移] 主节点 ${this.primaryNode} 故障，开始故障转移...`);
+
+    // 选择新的主节点（选择健康的备节点中的第一个）
+    const healthyStandbys = this.standbyNodes.filter(id => {
+      const status = this.healthChecker.nodeStatus.get(id);
+      return status && status.status === 'healthy';
+    });
+
+    if (healthyStandbys.length === 0) {
+      console.log('  ❌ 没有可用的备节点，故障转移失败！');
+      return { success: false, error: '无可用备节点' };
+    }
+
+    const newPrimary = healthyStandbys[0];
+    const oldPrimary = this.primaryNode;
+
+    // 执行切换
+    this.standbyNodes = this.standbyNodes.filter(id => id !== newPrimary);
+    this.standbyNodes.push(oldPrimary); // 旧主节点降级为备节点
+    this.primaryNode = newPrimary;
+
+    const failoverRecord = {
+      timestamp: new Date().toISOString(),
+      oldPrimary,
+      newPrimary,
+      reason: '主节点健康检查失败',
+      duration: '自动切换',
+    };
+    this.failoverHistory.push(failoverRecord);
+
+    console.log(`  ✅ 故障转移完成: ${oldPrimary} → ${newPrimary}`);
+    console.log(`  新主节点: ${this.primaryNode}`);
+    console.log(`  备节点: ${this.standbyNodes.join(', ')}`);
+    return { success: true, ...failoverRecord };
+  }
+
+  getClusterStatus() {
+    return {
+      primary: this.primaryNode,
+      standbys: this.standbyNodes,
+      nodeHealth: Object.fromEntries(
+        [...this.healthChecker.nodeStatus].map(([id, s]) => [id, s.status]),
+      ),
+      failoverCount: this.failoverHistory.length,
+    };
+  }
+}
+
+// ========== 模拟故障转移 ==========
+const failover = new FailoverManager();
+failover.setupCluster('node-A', ['node-B', 'node-C']);
+
+// 正常运行
+failover.performHealthCheck({ 'node-A': true, 'node-B': true, 'node-C': true });
+
+// 主节点开始不稳定
+failover.performHealthCheck({ 'node-A': false, 'node-B': true, 'node-C': true });
+failover.performHealthCheck({ 'node-A': false, 'node-B': true, 'node-C': true });
+failover.performHealthCheck({ 'node-A': false, 'node-B': true, 'node-C': true }); // 第三次失败，触发故障转移
+
+// 故障转移后正常运行
+failover.performHealthCheck({ 'node-A': false, 'node-B': true, 'node-C': true });
+
+// 旧主节点恢复
+failover.performHealthCheck({ 'node-A': true, 'node-B': true, 'node-C': true });
+failover.performHealthCheck({ 'node-A': true, 'node-B': true, 'node-C': true });
+
+console.log('\n最终集群状态:', failover.getClusterStatus());
+```
+
+## 🌍 多活架构
+
+### 架构模式
+
+| 模式 | 说明 | 复杂度 | 适用场景 |
+|------|------|--------|---------|
+| **主备（Active-Standby）** | 备机不处理流量，仅同步数据 | 低 | 中小系统 |
+| **主从（Active-Passive）** | 从机可读，主机读写 | 中 | 读多写少 |
+| **双活（Active-Active）** | 两个机房同时处理流量 | 高 | 大型互联网 |
+| **异地多活** | 多个机房同时处理流量 | 最高 | 超大规模系统 |
+
+### 代码示例：异地多活路由
+
+```js
+// ========== 异地多活架构模拟 ==========
+
+class DataCenter {
+  constructor(dcId, region, capacity) {
+    this.dcId = dcId;
+    this.region = region;
+    this.capacity = capacity;      // 最大 QPS
+    this.currentLoad = 0;
+    this.isActive = true;
+    this.data = new Map();
+    this.syncQueue = [];            // 待同步的变更
+  }
+
+  handleRequest(request) {
+    if (!this.isActive) {
+      return { success: false, error: '数据中心不可用' };
+    }
+
+    if (this.currentLoad >= this.capacity) {
+      return { success: false, error: '数据中心过载' };
+    }
+
+    this.currentLoad++;
+
+    if (request.type === 'write') {
+      this.data.set(request.key, { value: request.value, timestamp: Date.now(), dc: this.dcId });
+      this.syncQueue.push({ key: request.key, value: request.value, timestamp: Date.now() });
+      return { success: true, dc: this.dcId, operation: 'write' };
+    }
+
+    const entry = this.data.get(request.key);
+    return { success: true, dc: this.dcId, operation: 'read', value: entry ? entry.value : null };
+  }
+
+  releaseLoad() {
+    this.currentLoad = Math.max(0, this.currentLoad - 1);
+  }
+
+  getStatus() {
+    return {
+      dcId: this.dcId,
+      region: this.region,
+      active: this.isActive,
+      load: `${this.currentLoad}/${this.capacity}`,
+      dataSize: this.data.size,
+      pendingSync: this.syncQueue.length,
+    };
+  }
+}
+
+class MultiActiveRouter {
+  constructor() {
+    this.dataCenters = new Map();  // dcId → DataCenter
+    this.userSharding = new Map();  // userId 分片规则
+    this.routingRules = [];
+  }
+
+  addDataCenter(dc) {
+    this.dataCenters.set(dc.dcId, dc);
+    console.log(`[多活] 添加数据中心: ${dc.dcId}（${dc.region}，容量 ${dc.capacity} QPS）`);
+  }
+
+  // 路由策略 1：按地域就近路由
+  routeByRegion(userRegion) {
+    const regionMapping = {
+      '华北': 'dc-beijing',
+      '华东': 'dc-shanghai',
+      '华南': 'dc-guangzhou',
+    };
+
+    const targetDc = regionMapping[userRegion];
+    const dc = this.dataCenters.get(targetDc);
+
+    if (dc && dc.isActive && dc.currentLoad < dc.capacity) {
+      return dc;
+    }
+
+    // 就近数据中心不可用，选择其他可用的
+    return this.findAvailableDc();
+  }
+
+  // 路由策略 2：按用户 ID 分片路由（保证同一用户的请求总是路由到同一机房）
+  routeByUserId(userId) {
+    const hash = this.hashCode(userId);
+    const dcList = [...this.dataCenters.values()].filter(dc => dc.isActive);
+
+    if (dcList.length === 0) {
+      throw new Error('没有可用的数据中心');
+    }
+
+    return dcList[Math.abs(hash) % dcList.length];
+  }
+
+  // 路由策略 3：按数据分区路由（不同业务数据归属不同机房）
+  routeByDataPartition(dataType) {
+    const partitionMapping = {
+      'order': 'dc-shanghai',     // 订单数据在上海
+      'user': 'dc-beijing',       // 用户数据在北京
+      'product': 'dc-guangzhou',  // 商品数据在广州
+    };
+
+    const targetDcId = partitionMapping[dataType] || 'dc-beijing';
+    const dc = this.dataCenters.get(targetDcId);
+
+    if (dc && dc.isActive) return dc;
+    return this.findAvailableDc();
+  }
+
+  findAvailableDc() {
+    for (const dc of this.dataCenters.values()) {
+      if (dc.isActive && dc.currentLoad < dc.capacity) {
+        return dc;
+      }
+    }
+    return null;
+  }
+
+  // 跨机房数据同步
+  syncData() {
+    console.log('\n[同步] 开始跨机房数据同步...');
+
+    for (const sourceDc of this.dataCenters.values()) {
+      if (sourceDc.syncQueue.length === 0) continue;
+
+      for (const targetDc of this.dataCenters.values()) {
+        if (targetDc.dcId === sourceDc.dcId) continue;
+        if (!targetDc.isActive) continue;
+
+        for (const change of sourceDc.syncQueue) {
+          const existingEntry = targetDc.data.get(change.key);
+          // 冲突解决：Last Write Wins
+          if (!existingEntry || existingEntry.timestamp < change.timestamp) {
+            targetDc.data.set(change.key, {
+              value: change.value,
+              timestamp: change.timestamp,
+              dc: sourceDc.dcId,
+            });
+          }
+        }
+        console.log(`  ${sourceDc.dcId} → ${targetDc.dcId}: 同步 ${sourceDc.syncQueue.length} 条变更`);
+      }
+      sourceDc.syncQueue = [];
+    }
+  }
+
+  hashCode(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+    return hash;
+  }
+
+  // 获取所有数据中心状态
+  getClusterStatus() {
+    return [...this.dataCenters.values()].map(dc => dc.getStatus());
+  }
+}
+
+// ========== 演示 ==========
+const router = new MultiActiveRouter();
+
+router.addDataCenter(new DataCenter('dc-beijing', '华北', 10000));
+router.addDataCenter(new DataCenter('dc-shanghai', '华东', 8000));
+router.addDataCenter(new DataCenter('dc-guangzhou', '华南', 6000));
+
+// 按地域路由
+console.log('\n=== 地域路由 ===');
+const dc1 = router.routeByRegion('华北');
+console.log(`华北用户 → ${dc1.dcId}`);
+console.log(dc1.handleRequest({ type: 'write', key: 'user:1001', value: '张三' }));
+
+const dc2 = router.routeByRegion('华南');
+console.log(`华南用户 → ${dc2.dcId}`);
+console.log(dc2.handleRequest({ type: 'write', key: 'user:2001', value: '李四' }));
+
+// 按数据分区路由
+console.log('\n=== 数据分区路由 ===');
+const orderDc = router.routeByDataPartition('order');
+console.log(`订单数据 → ${orderDc.dcId}`);
+const userDc = router.routeByDataPartition('user');
+console.log(`用户数据 → ${userDc.dcId}`);
+
+// 跨机房同步
+router.syncData();
+
+// 模拟机房故障
+console.log('\n=== 机房故障 ===');
+router.dataCenters.get('dc-beijing').isActive = false;
+console.log('dc-beijing 故障');
+const fallbackDc = router.routeByRegion('华北');
+console.log(`华北用户自动路由到 → ${fallbackDc.dcId}`);
+
+console.log('\n集群状态:', router.getClusterStatus());
+```
+
+## 💾 数据备份与容灾
+
+### 备份策略
+
+```js
+// ========== 数据备份策略 ==========
+
+class BackupManager {
+  constructor() {
+    this.backups = [];
+    this.retentionPolicy = {
+      full: 30,           // 全量备份保留 30 天
+      incremental: 7,     // 增量备份保留 7 天
+      snapshot: 14,       // 快照保留 14 天
+    };
+  }
+
+  // 全量备份
+  fullBackup(dataSource) {
+    const backup = {
+      id: `full-${Date.now()}`,
+      type: 'full',
+      size: this.calculateSize(dataSource),
+      dataCount: dataSource.size,
+      timestamp: new Date().toISOString(),
+      status: 'completed',
+      data: new Map(dataSource),  // 完整复制
+    };
+    this.backups.push(backup);
+    console.log(`[全量备份] ${backup.id}: ${backup.dataCount} 条数据，大小 ${backup.size}`);
+    return backup;
+  }
+
+  // 增量备份（只备份自上次备份以来变更的数据）
+  incrementalBackup(dataSource, lastBackupTimestamp) {
+    const changedEntries = new Map();
+    for (const [key, value] of dataSource) {
+      if (value.updatedAt > lastBackupTimestamp) {
+        changedEntries.set(key, value);
+      }
+    }
+
+    const backup = {
+      id: `incr-${Date.now()}`,
+      type: 'incremental',
+      size: this.calculateSize(changedEntries),
+      dataCount: changedEntries.size,
+      baseBackup: this.backups.filter(b => b.type === 'full').pop()?.id,
+      timestamp: new Date().toISOString(),
+      status: 'completed',
+      data: changedEntries,
+    };
+    this.backups.push(backup);
+    console.log(`[增量备份] ${backup.id}: ${backup.dataCount} 条变更（基于 ${backup.baseBackup}）`);
+    return backup;
+  }
+
+  // 恢复数据
+  restore(targetBackupId) {
+    const targetBackup = this.backups.find(b => b.id === targetBackupId);
+    if (!targetBackup) {
+      console.log(`[恢复] 备份 ${targetBackupId} 不存在`);
+      return null;
+    }
+
+    console.log(`\n[恢复] 从 ${targetBackupId} 恢复数据...`);
+
+    if (targetBackup.type === 'full') {
+      console.log(`  → 全量恢复: ${targetBackup.dataCount} 条数据`);
+      return new Map(targetBackup.data);
+    }
+
+    // 增量恢复：先恢复全量备份，再依次应用增量
+    const fullBackup = this.backups.find(b => b.id === targetBackup.baseBackup);
+    if (!fullBackup) {
+      console.log('  ❌ 基础全量备份不存在');
+      return null;
+    }
+
+    const restoredData = new Map(fullBackup.data);
+    console.log(`  → 恢复全量备份 ${fullBackup.id}: ${fullBackup.dataCount} 条`);
+
+    // 应用从全量备份到目标备份之间的所有增量
+    const incrementals = this.backups.filter(
+      b => b.type === 'incremental' &&
+           b.baseBackup === fullBackup.id &&
+           new Date(b.timestamp) <= new Date(targetBackup.timestamp),
+    );
+
+    for (const incr of incrementals) {
+      for (const [key, value] of incr.data) {
+        restoredData.set(key, value);
+      }
+      console.log(`  → 应用增量备份 ${incr.id}: ${incr.dataCount} 条变更`);
+    }
+
+    console.log(`  ✅ 恢复完成: 共 ${restoredData.size} 条数据`);
+    return restoredData;
+  }
+
+  // 清理过期备份
+  cleanExpiredBackups() {
+    const now = Date.now();
+    const before = this.backups.length;
+
+    this.backups = this.backups.filter(backup => {
+      const retentionDays = this.retentionPolicy[backup.type] || 7;
+      const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
+      const backupTime = new Date(backup.timestamp).getTime();
+      return (now - backupTime) < retentionMs;
+    });
+
+    const removed = before - this.backups.length;
+    if (removed > 0) {
+      console.log(`[清理] 删除 ${removed} 个过期备份`);
+    }
+  }
+
+  calculateSize(dataMap) {
+    let size = 0;
+    for (const [key, value] of dataMap) {
+      size += key.length + JSON.stringify(value).length;
+    }
+    if (size > 1024 * 1024) return `${(size / 1024 / 1024).toFixed(2)} MB`;
+    if (size > 1024) return `${(size / 1024).toFixed(2)} KB`;
+    return `${size} B`;
+  }
+
+  getBackupList() {
+    return this.backups.map(b => ({
+      id: b.id,
+      type: b.type,
+      size: b.size,
+      dataCount: b.dataCount,
+      timestamp: b.timestamp,
+    }));
+  }
+}
+
+// 演示
+const backupManager = new BackupManager();
+
+// 模拟数据源
+const dataSource = new Map();
+const baseTime = Date.now();
+dataSource.set('user:1', { name: '张三', updatedAt: baseTime - 100000 });
+dataSource.set('user:2', { name: '李四', updatedAt: baseTime - 100000 });
+dataSource.set('config:db', { host: 'localhost', updatedAt: baseTime - 100000 });
+
+// 全量备份
+const fullBackup = backupManager.fullBackup(dataSource);
+
+// 模拟数据变更
+dataSource.set('user:1', { name: '张三v2', updatedAt: baseTime });
+dataSource.set('user:3', { name: '王五', updatedAt: baseTime });
+
+// 增量备份
+backupManager.incrementalBackup(dataSource, baseTime - 50000);
+
+// 恢复
+const restored = backupManager.restore(fullBackup.id);
+console.log('恢复的数据:', [...restored.entries()].map(([k, v]) => `${k}=${v.name || v.host}`));
+
+console.log('\n备份列表:', backupManager.getBackupList());
+```
+
+### 容灾等级
+
+| 等级 | 名称 | RPO | RTO | 方案 |
+|------|------|-----|-----|------|
+| **L1** | 本地备份 | 24h | 数小时 | 磁带/硬盘定期备份 |
+| **L2** | 异地冷备 | 24h | 数小时 | 数据定期搬运到异地 |
+| **L3** | 异地温备 | 分钟级 | 30分钟 | 异地有备用系统，数据异步复制 |
+| **L4** | 异地热备 | 秒级 | 分钟级 | 异地系统实时同步，随时可切换 |
+| **L5** | 异地双活 | 0 | 秒级 | 双机房同时提供服务 |
+
+> **RPO**（Recovery Point Objective）：能容忍丢失多少数据
+> **RTO**（Recovery Time Objective）：能容忍多久恢复服务
+
+```js
+// ========== 容灾等级评估工具 ==========
+
+function assessDisasterRecoveryLevel(requirements) {
+  const { maxDataLoss, maxDowntime, budget } = requirements;
+
+  const levels = [
+    { level: 'L5', name: '异地双活', rpo: '0', rto: '秒级',
+      condition: maxDataLoss === 0 && maxDowntime <= 10, cost: '极高' },
+    { level: 'L4', name: '异地热备', rpo: '秒级', rto: '分钟级',
+      condition: maxDataLoss <= 60 && maxDowntime <= 300, cost: '高' },
+    { level: 'L3', name: '异地温备', rpo: '分钟级', rto: '30分钟',
+      condition: maxDataLoss <= 3600 && maxDowntime <= 1800, cost: '中' },
+    { level: 'L2', name: '异地冷备', rpo: '24h', rto: '数小时',
+      condition: maxDataLoss <= 86400 && maxDowntime <= 14400, cost: '低' },
+    { level: 'L1', name: '本地备份', rpo: '24h', rto: '数小时',
+      condition: true, cost: '最低' },
+  ];
+
+  for (const level of levels) {
+    if (level.condition) {
+      console.log(`\n容灾等级评估:`);
+      console.log(`  需求: 最大数据丢失 ${maxDataLoss}s, 最大宕机 ${maxDowntime}s`);
+      console.log(`  推荐: ${level.level} ${level.name}`);
+      console.log(`  RPO: ${level.rpo}, RTO: ${level.rto}`);
+      console.log(`  成本: ${level.cost}`);
+      return level;
+    }
+  }
+}
+
+// 评估不同场景
+assessDisasterRecoveryLevel({
+  maxDataLoss: 0, maxDowntime: 5, budget: 'unlimited',      // 金融核心
+});
+
+assessDisasterRecoveryLevel({
+  maxDataLoss: 300, maxDowntime: 600, budget: 'high',        // 电商
+});
+
+assessDisasterRecoveryLevel({
+  maxDataLoss: 3600, maxDowntime: 7200, budget: 'medium',    // 内容平台
+});
+```
+
+## 📊 高可用设计 Checklist
+
+```js
+// ========== 高可用设计检查清单 ==========
+
+const highAvailabilityChecklist = {
+  '消除单点故障': {
+    items: [
+      { check: '所有核心服务是否有冗余实例', level: 'critical' },
+      { check: '数据库是否配置了主从/集群', level: 'critical' },
+      { check: '缓存是否有集群或主备', level: 'high' },
+      { check: '消息队列是否配置了集群', level: 'high' },
+      { check: '负载均衡器是否有冗余', level: 'critical' },
+    ],
+  },
+  '故障检测与恢复': {
+    items: [
+      { check: '是否有自动化健康检查', level: 'critical' },
+      { check: '是否支持自动故障转移', level: 'critical' },
+      { check: '故障转移时间是否满足 RTO', level: 'high' },
+      { check: '是否有故障演练计划', level: 'medium' },
+    ],
+  },
+  '容错设计': {
+    items: [
+      { check: '核心服务是否配置了熔断器', level: 'high' },
+      { check: '是否有限流保护', level: 'high' },
+      { check: '是否设计了降级方案', level: 'high' },
+      { check: '是否配置了合理的超时', level: 'critical' },
+      { check: '重试是否有退避策略', level: 'medium' },
+    ],
+  },
+  '数据安全': {
+    items: [
+      { check: '是否有定期数据备份', level: 'critical' },
+      { check: '备份是否进行恢复验证', level: 'high' },
+      { check: '是否有异地备份', level: 'high' },
+      { check: 'RPO 和 RTO 是否明确定义', level: 'critical' },
+    ],
+  },
+  '监控与告警': {
+    items: [
+      { check: '是否有全链路监控', level: 'critical' },
+      { check: '核心指标是否有告警', level: 'critical' },
+      { check: '是否有 On-Call 响应机制', level: 'high' },
+      { check: '是否定期进行容量评估', level: 'medium' },
+    ],
+  },
+};
+
+console.log('=== 高可用设计 Checklist ===\n');
+
+for (const [category, config] of Object.entries(highAvailabilityChecklist)) {
+  const levelIcons = { critical: '🔴', high: '🟡', medium: '🟢' };
+  console.log(`### ${category}`);
+  for (const item of config.items) {
+    console.log(`  ${levelIcons[item.level]} [${item.level}] ${item.check}`);
+  }
+  console.log();
+}
+```
+
+## 🔗 相关概念
+
+- **[容错设计](/architect/03-distributed-systems/04-distributed-reliability/02-fault-tolerance)**：高可用的基础防护手段
+- **[一致性模型](/architect/03-distributed-systems/01-distributed-theory/03-consistency-models)**：多活架构下的一致性挑战
+- **[共识算法](/architect/03-distributed-systems/01-distributed-theory/04-consensus-algorithms)**：Leader 选举和故障转移的基础
+- **[分布式存储](/architect/03-distributed-systems/03-distributed-data/03-distributed-storage)**：数据复制与备份策略
+
+## ✅ 学习检查点
+
+- [ ] 能够计算串联和并联系统的整体可用性
+- [ ] 理解故障检测的阈值机制和自动故障转移流程
+- [ ] 能够对比主备、双活、异地多活架构的适用场景
+- [ ] 理解全量备份和增量备份的恢复流程
+- [ ] 能够评估系统的容灾等级并给出改进建议
+
+## 🚀 下一步
+
+恭喜你完成了分布式系统阶段的学习！
+
+→ 返回 [架构师学习路线图](/roadmaps/architect-learning-roadmap) 查看下一阶段

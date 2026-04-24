@@ -14,4 +14,605 @@
 - 掌握消息可靠性和顺序性的保障方法
 - 能够根据业务场景选择合适的消息队列
 
-> 🚧 详细内容正在编写中...
+## 📬 消息队列核心概念
+
+### 为什么需要消息队列
+
+```
+同步调用的问题：
+  用户下单 → 扣库存 → 生成物流单 → 发短信 → 发邮件 → 返回
+  总耗时 = 所有步骤耗时之和，任一步骤失败整个流程失败
+
+引入消息队列后：
+  用户下单 → 扣库存 → 返回（核心链路）
+                  ↓
+             发送消息到 MQ
+           ↙       ↓       ↘
+     生成物流单   发短信   发邮件（异步并行）
+```
+
+### 三大核心价值
+
+| 价值 | 说明 | 示例 |
+|------|------|------|
+| **解耦** | 生产者和消费者互不知道对方存在 | 订单系统不需要知道有多少下游系统 |
+| **异步** | 非核心流程异步处理，降低响应时间 | 下单后异步发短信 |
+| **削峰** | 突发流量先存入队列，消费者按能力消费 | 秒杀场景缓冲请求 |
+
+## 📨 消息模式
+
+### 代码示例
+
+```js
+// ========== 两种消息模式实现 ==========
+
+// 基础消息类
+class Message {
+  constructor(topic, body, properties = {}) {
+    this.id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.topic = topic;
+    this.body = body;
+    this.properties = properties;
+    this.timestamp = Date.now();
+  }
+}
+
+// ========== 点对点模式（Queue）==========
+// 特点：一条消息只被一个消费者消费
+class PointToPointQueue {
+  constructor(queueName) {
+    this.queueName = queueName;
+    this.messages = [];
+    this.consumers = [];
+    this.currentConsumerIndex = 0;
+  }
+
+  // 生产消息
+  send(message) {
+    this.messages.push(message);
+    console.log(`[P2P:${this.queueName}] 收到消息: ${message.body}`);
+    this.dispatch();
+  }
+
+  // 注册消费者
+  addConsumer(consumerId, handler) {
+    this.consumers.push({ consumerId, handler });
+    console.log(`[P2P:${this.queueName}] 消费者 ${consumerId} 注册`);
+  }
+
+  // 分发消息（轮询给消费者，每条消息只被一个消费者处理）
+  dispatch() {
+    while (this.messages.length > 0 && this.consumers.length > 0) {
+      const message = this.messages.shift();
+      const consumer = this.consumers[this.currentConsumerIndex % this.consumers.length];
+      this.currentConsumerIndex++;
+
+      console.log(`  → ${consumer.consumerId} 消费: ${message.body}`);
+      consumer.handler(message);
+    }
+  }
+}
+
+// ========== 发布订阅模式（Topic）==========
+// 特点：一条消息被所有订阅者消费
+class PubSubTopic {
+  constructor(topicName) {
+    this.topicName = topicName;
+    this.subscriptions = new Map(); // groupId → { consumers, offset }
+  }
+
+  // 创建订阅组
+  subscribe(groupId, handler) {
+    if (!this.subscriptions.has(groupId)) {
+      this.subscriptions.set(groupId, { handler, messageCount: 0 });
+    }
+    console.log(`[PubSub:${this.topicName}] 订阅组 ${groupId} 注册`);
+  }
+
+  // 发布消息（所有订阅组都会收到）
+  publish(message) {
+    console.log(`[PubSub:${this.topicName}] 发布消息: ${message.body}`);
+
+    for (const [groupId, subscription] of this.subscriptions) {
+      subscription.messageCount++;
+      console.log(`  → 订阅组 ${groupId} 收到消息`);
+      subscription.handler(message, groupId);
+    }
+  }
+}
+
+// ========== 使用示例 ==========
+
+// 点对点：多个消费者竞争消费（任务分发）
+console.log('=== 点对点模式 ===');
+const taskQueue = new PointToPointQueue('task-queue');
+taskQueue.addConsumer('worker-1', (msg) => console.log(`    worker-1 处理: ${msg.body}`));
+taskQueue.addConsumer('worker-2', (msg) => console.log(`    worker-2 处理: ${msg.body}`));
+
+taskQueue.send(new Message('task', '处理订单 #1001'));
+taskQueue.send(new Message('task', '处理订单 #1002'));
+taskQueue.send(new Message('task', '处理订单 #1003'));
+
+// 发布订阅：多个系统各自独立消费
+console.log('\n=== 发布订阅模式 ===');
+const orderTopic = new PubSubTopic('order-created');
+orderTopic.subscribe('logistics-group', (msg) => console.log(`    物流系统处理: ${msg.body}`));
+orderTopic.subscribe('sms-group', (msg) => console.log(`    短信系统处理: ${msg.body}`));
+orderTopic.subscribe('analytics-group', (msg) => console.log(`    统计系统处理: ${msg.body}`));
+
+orderTopic.publish(new Message('order-created', '订单 #2001 已创建'));
+```
+
+## 🏗️ 主流消息队列对比
+
+### Kafka
+
+```
+架构特点：
+  ┌──────────────────────────────────────────┐
+  │               Kafka Cluster               │
+  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  │
+  │  │ Broker 0│  │ Broker 1│  │ Broker 2│  │
+  │  │         │  │         │  │         │  │
+  │  │ Topic-A │  │ Topic-A │  │ Topic-A │  │
+  │  │ Part-0  │  │ Part-1  │  │ Part-2  │  │
+  │  │ (Leader)│  │ (Leader)│  │ (Leader)│  │
+  │  │ Part-1  │  │ Part-2  │  │ Part-0  │  │
+  │  │(Replica)│  │(Replica)│  │(Replica)│  │
+  │  └─────────┘  └─────────┘  └─────────┘  │
+  └──────────────────────────────────────────┘
+```
+
+| 特性 | 说明 |
+|------|------|
+| **存储** | 顺序追加写磁盘（Append-Only Log），高吞吐 |
+| **消费模型** | 消费者拉取（Pull），消费者管理 offset |
+| **消息保留** | 按时间或大小保留，消费后不删除 |
+| **吞吐量** | 百万级/秒 |
+| **适用场景** | 日志收集、流处理、事件溯源、大数据管道 |
+
+### RocketMQ
+
+| 特性 | 说明 |
+|------|------|
+| **存储** | CommitLog 统一存储 + ConsumeQueue 索引 |
+| **消费模型** | 推拉结合（长轮询） |
+| **特色功能** | 事务消息、延迟消息、消息回溯、死信队列 |
+| **吞吐量** | 十万级/秒 |
+| **适用场景** | 电商交易、金融场景、订单处理 |
+
+### RabbitMQ
+
+| 特性 | 说明 |
+|------|------|
+| **协议** | AMQP 标准协议 |
+| **路由** | Exchange + Binding + Queue 灵活路由 |
+| **消费模型** | 推送（Push） |
+| **特色功能** | 死信队列、优先级队列、延迟插件 |
+| **吞吐量** | 万级/秒 |
+| **适用场景** | 企业集成、复杂路由、中小规模系统 |
+
+### Pulsar
+
+| 特性 | 说明 |
+|------|------|
+| **架构** | 计算存储分离（Broker + BookKeeper） |
+| **消费模型** | 推拉结合 |
+| **多租户** | 原生支持租户、命名空间隔离 |
+| **特色功能** | 分层存储、Schema 演进、跨地域复制 |
+| **适用场景** | 云原生、多租户、需要弹性伸缩的场景 |
+
+## 🔒 消息可靠性保证
+
+### 代码示例：三种可靠性级别
+
+```js
+// ========== 消息可靠性保证 ==========
+
+class ReliableMessageBroker {
+  constructor() {
+    this.partitions = [
+      { id: 0, messages: [], replicas: [[], []] },
+      { id: 1, messages: [], replicas: [[], []] },
+    ];
+    this.deliveredMessages = new Map();  // messageId → ack 状态
+  }
+
+  // ===== 生产端可靠性 =====
+
+  // acks=0: 发送后不等待确认（最快，可能丢消息）
+  sendFireAndForget(message) {
+    const partition = this.partitions[Math.abs(this.hashCode(message.id)) % this.partitions.length];
+    partition.messages.push(message);
+    console.log(`[acks=0] 消息 ${message.id} 已发送（不等待确认）`);
+    return { success: true, latency: 'lowest' };
+  }
+
+  // acks=1: 等待 Leader 确认（平衡性能和可靠性）
+  sendLeaderAck(message) {
+    const partition = this.partitions[Math.abs(this.hashCode(message.id)) % this.partitions.length];
+    partition.messages.push(message);
+    // Leader 写入成功即确认
+    console.log(`[acks=1] 消息 ${message.id} 已写入 Leader（分区 ${partition.id}）`);
+    return { success: true, latency: 'medium', confirmedBy: 'leader' };
+  }
+
+  // acks=all: 等待所有 ISR 副本确认（最可靠，最慢）
+  sendAllAck(message) {
+    const partition = this.partitions[Math.abs(this.hashCode(message.id)) % this.partitions.length];
+    partition.messages.push(message);
+    // 同步写入所有副本
+    for (const replica of partition.replicas) {
+      replica.push(message);
+    }
+    console.log(`[acks=all] 消息 ${message.id} 已写入 Leader + ${partition.replicas.length} 个副本（分区 ${partition.id}）`);
+    return { success: true, latency: 'highest', confirmedBy: 'all-isr' };
+  }
+
+  // ===== 消费端可靠性 =====
+
+  // 消费并手动确认（At-Least-Once 语义）
+  consumeWithManualAck(partitionId, consumerHandler) {
+    const partition = this.partitions[partitionId];
+    if (partition.messages.length === 0) return null;
+
+    const message = partition.messages[0]; // peek，不移除
+
+    try {
+      // 先处理
+      consumerHandler(message);
+      // 处理成功后再确认（移除消息）
+      partition.messages.shift();
+      this.deliveredMessages.set(message.id, 'acked');
+      console.log(`[消费] 消息 ${message.id} 处理成功，已确认`);
+      return { success: true, messageId: message.id };
+    } catch (error) {
+      // 处理失败，消息不移除，等待重试
+      console.log(`[消费] 消息 ${message.id} 处理失败: ${error.message}，将重试`);
+      return { success: false, messageId: message.id, error: error.message };
+    }
+  }
+
+  hashCode(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+    return hash;
+  }
+}
+
+// ===== 幂等消费者（解决 At-Least-Once 的重复消费问题）=====
+class IdempotentConsumer {
+  constructor(consumerName) {
+    this.consumerName = consumerName;
+    this.processedIds = new Set(); // 已处理的消息 ID（实际中用数据库/Redis）
+  }
+
+  consume(message) {
+    // 幂等检查：是否已处理过
+    if (this.processedIds.has(message.id)) {
+      console.log(`[${this.consumerName}] 消息 ${message.id} 已处理过，跳过（幂等保护）`);
+      return { processed: false, reason: 'duplicate' };
+    }
+
+    // 处理消息
+    console.log(`[${this.consumerName}] 处理消息: ${message.body}`);
+
+    // 记录已处理（实际中应与业务操作在同一事务中）
+    this.processedIds.add(message.id);
+    return { processed: true };
+  }
+}
+
+// 运行
+const broker = new ReliableMessageBroker();
+
+console.log('=== 生产端可靠性级别 ===');
+broker.sendFireAndForget(new Message('test', '消息A'));
+broker.sendLeaderAck(new Message('test', '消息B'));
+broker.sendAllAck(new Message('test', '消息C'));
+
+console.log('\n=== 消费端幂等 ===');
+const consumer = new IdempotentConsumer('order-consumer');
+const msg = new Message('order', '创建订单 #3001');
+consumer.consume(msg);      // 第一次：正常处理
+consumer.consume(msg);      // 第二次：幂等跳过
+```
+
+### 三种投递语义
+
+| 语义 | 含义 | 实现方式 | 适用场景 |
+|------|------|---------|---------|
+| **At-Most-Once** | 最多一次，可能丢 | 先 ack 再处理 | 日志采集（可容忍少量丢失） |
+| **At-Least-Once** | 至少一次，可能重复 | 先处理再 ack + 重试 | 大多数业务场景（配合幂等） |
+| **Exactly-Once** | 恰好一次 | 事务消息 / 幂等 + At-Least-Once | 金融交易（实现成本最高） |
+
+## 📏 消息顺序性
+
+### 代码示例
+
+```js
+// ========== 消息顺序性保证 ==========
+
+class OrderedMessageBroker {
+  constructor(partitionCount) {
+    this.partitions = Array.from({ length: partitionCount }, (_, i) => ({
+      id: i,
+      messages: [],
+    }));
+  }
+
+  // 通过分区 Key 保证同一业务实体的消息有序
+  send(message, partitionKey) {
+    // 相同的 partitionKey 总是路由到同一分区
+    const partitionIndex = Math.abs(this.hashCode(partitionKey)) % this.partitions.length;
+    const partition = this.partitions[partitionIndex];
+    partition.messages.push(message);
+    console.log(`[发送] 消息 "${message.body}" → 分区 ${partitionIndex}（key="${partitionKey}"）`);
+  }
+
+  // 单分区内顺序消费
+  consumePartition(partitionIndex) {
+    const partition = this.partitions[partitionIndex];
+    console.log(`\n[消费分区 ${partitionIndex}]（共 ${partition.messages.length} 条，严格有序）`);
+    const results = [];
+    while (partition.messages.length > 0) {
+      const message = partition.messages.shift();
+      console.log(`  → ${message.body}`);
+      results.push(message);
+    }
+    return results;
+  }
+
+  hashCode(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+    return hash;
+  }
+}
+
+// 场景：同一订单的状态变更必须有序
+const broker = new OrderedMessageBroker(4);
+
+// 订单 #1001 的状态变更（同一 partitionKey → 同一分区 → 有序）
+broker.send(new Message('order', '订单 #1001 已创建'), 'order-1001');
+broker.send(new Message('order', '订单 #1001 已支付'), 'order-1001');
+broker.send(new Message('order', '订单 #1001 已发货'), 'order-1001');
+
+// 订单 #1002 的状态变更（不同订单可以并行，不需要跨订单有序）
+broker.send(new Message('order', '订单 #1002 已创建'), 'order-1002');
+broker.send(new Message('order', '订单 #1002 已支付'), 'order-1002');
+
+// 消费：同一分区内严格有序
+for (let i = 0; i < 4; i++) {
+  if (broker.partitions[i].messages.length > 0) {
+    broker.consumePartition(i);
+  }
+}
+```
+
+### 顺序性保证策略
+
+| 策略 | 方法 | 代价 |
+|------|------|------|
+| **全局有序** | 单分区 + 单消费者 | 吞吐量极低，不推荐 |
+| **分区有序** | 相同 key 路由到同一分区 | 平衡有序性和吞吐量 |
+| **业务层排序** | 消息携带序号，消费端排序 | 实现复杂，需要缓冲窗口 |
+
+## 🏭 高级消息模式
+
+### 代码示例：延迟消息与死信队列
+
+```js
+// ========== 延迟消息与死信队列 ==========
+
+class AdvancedMessageBroker {
+  constructor() {
+    this.mainQueue = [];
+    this.delayBuckets = new Map();   // delayLevel → [messages]
+    this.deadLetterQueue = [];        // 死信队列
+    this.maxRetries = 3;              // 最大重试次数
+    this.retryCount = new Map();      // messageId → 重试次数
+  }
+
+  // 发送延迟消息
+  sendDelayMessage(message, delayMs) {
+    const deliverAt = Date.now() + delayMs;
+    const delayEntry = { message, deliverAt };
+
+    if (!this.delayBuckets.has(delayMs)) {
+      this.delayBuckets.set(delayMs, []);
+    }
+    this.delayBuckets.get(delayMs).push(delayEntry);
+
+    console.log(`[延迟消息] "${message.body}" 将在 ${delayMs}ms 后投递`);
+  }
+
+  // 检查并投递到期的延迟消息
+  checkDelayMessages() {
+    const now = Date.now();
+    let delivered = 0;
+
+    for (const [, entries] of this.delayBuckets) {
+      const readyEntries = entries.filter(e => e.deliverAt <= now);
+      for (const entry of readyEntries) {
+        this.mainQueue.push(entry.message);
+        delivered++;
+        console.log(`[延迟消息] "${entry.message.body}" 已投递到主队列`);
+      }
+      // 移除已投递的
+      const remaining = entries.filter(e => e.deliverAt > now);
+      entries.length = 0;
+      entries.push(...remaining);
+    }
+    return delivered;
+  }
+
+  // 消费消息（带重试和死信机制）
+  consume(handler) {
+    if (this.mainQueue.length === 0) return null;
+
+    const message = this.mainQueue.shift();
+    const retries = this.retryCount.get(message.id) || 0;
+
+    try {
+      handler(message);
+      this.retryCount.delete(message.id);
+      console.log(`[消费] "${message.body}" 处理成功`);
+      return { success: true };
+    } catch (error) {
+      const newRetries = retries + 1;
+      this.retryCount.set(message.id, newRetries);
+
+      if (newRetries >= this.maxRetries) {
+        // 超过最大重试次数，进入死信队列
+        this.deadLetterQueue.push({
+          originalMessage: message,
+          error: error.message,
+          retries: newRetries,
+          deadAt: Date.now(),
+        });
+        this.retryCount.delete(message.id);
+        console.log(`[死信] "${message.body}" 重试 ${newRetries} 次失败，进入死信队列`);
+        return { success: false, deadLetter: true };
+      }
+
+      // 重新入队重试（可以加延迟）
+      this.mainQueue.push(message);
+      console.log(`[重试] "${message.body}" 第 ${newRetries} 次重试`);
+      return { success: false, retries: newRetries };
+    }
+  }
+
+  // 查看死信队列
+  getDeadLetters() {
+    return this.deadLetterQueue.map(dl => ({
+      messageBody: dl.originalMessage.body,
+      error: dl.error,
+      retries: dl.retries,
+    }));
+  }
+}
+
+// 演示
+const advBroker = new AdvancedMessageBroker();
+
+// 延迟消息：30 分钟后检查订单是否支付
+console.log('=== 延迟消息 ===');
+advBroker.sendDelayMessage(new Message('order', '检查订单 #4001 支付状态'), 0); // 用 0ms 模拟立即到期
+advBroker.sendDelayMessage(new Message('order', '检查订单 #4002 支付状态'), 1800000);
+
+// 投递到期消息
+advBroker.checkDelayMessages();
+
+// 消费
+console.log('\n=== 消费与死信 ===');
+advBroker.mainQueue.push(new Message('order', '处理异常订单 #5001'));
+
+// 模拟处理失败场景
+let attemptCount = 0;
+advBroker.consume(() => {
+  console.log('    检查订单支付状态: 已支付');
+});
+
+for (let i = 0; i < 4; i++) {
+  advBroker.consume(() => {
+    attemptCount++;
+    throw new Error(`第三方服务超时（第 ${attemptCount} 次）`);
+  });
+}
+
+console.log('\n死信队列:', advBroker.getDeadLetters());
+```
+
+## 📊 消息队列选型总结
+
+| 维度 | Kafka | RocketMQ | RabbitMQ | Pulsar |
+|------|-------|----------|----------|--------|
+| **吞吐量** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **延迟** | 毫秒级 | 毫秒级 | 微秒级 | 毫秒级 |
+| **可靠性** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **顺序性** | 分区级有序 | 分区级有序 | 队列级有序 | 分区级有序 |
+| **事务消息** | ✅（0.11+） | ✅（原生支持） | ❌ | ✅ |
+| **延迟消息** | ❌（需外部） | ✅（18个级别） | ✅（插件） | ✅ |
+| **协议** | 自定义 | 自定义 | AMQP | 自定义 |
+| **推荐场景** | 日志/流处理/大数据 | 电商/金融/交易 | 企业集成/中小系统 | 云原生/多租户 |
+
+### 选型决策树
+
+```js
+function chooseMessageQueue(requirements) {
+  const { throughput, transactionSupport, delayMessage, protocolStandard, cloudNative, scale } = requirements;
+
+  if (throughput === 'ultra-high' && scale === 'large') {
+    return {
+      recommendation: 'Kafka',
+      reason: '百万级吞吐，适合大规模日志收集和流处理',
+    };
+  }
+
+  if (transactionSupport && delayMessage) {
+    return {
+      recommendation: 'RocketMQ',
+      reason: '原生支持事务消息和延迟消息，适合电商交易场景',
+    };
+  }
+
+  if (protocolStandard === 'AMQP' || scale === 'small') {
+    return {
+      recommendation: 'RabbitMQ',
+      reason: '标准 AMQP 协议，灵活路由，适合中小规模企业应用',
+    };
+  }
+
+  if (cloudNative) {
+    return {
+      recommendation: 'Pulsar',
+      reason: '计算存储分离，原生多租户，适合云原生架构',
+    };
+  }
+
+  return {
+    recommendation: 'Kafka',
+    reason: '生态最完善，社区最活跃，是大多数场景的默认选择',
+  };
+}
+
+console.log(chooseMessageQueue({
+  throughput: 'ultra-high', scale: 'large',
+}));
+
+console.log(chooseMessageQueue({
+  transactionSupport: true, delayMessage: true,
+}));
+
+console.log(chooseMessageQueue({
+  protocolStandard: 'AMQP', scale: 'small',
+}));
+
+console.log(chooseMessageQueue({
+  cloudNative: true,
+}));
+```
+
+## 🔗 相关概念
+
+- **[RPC 框架](/architect/03-distributed-systems/02-distributed-communication/02-rpc-frameworks)**：同步通信的另一种选择
+- **[API 设计](/architect/03-distributed-systems/02-distributed-communication/04-api-design)**：API 网关与消息队列的配合
+- **[分布式事务](/architect/03-distributed-systems/03-distributed-data/02-distributed-transactions)**：事务消息实现最终一致性
+- **[容错设计](/architect/03-distributed-systems/04-distributed-reliability/02-fault-tolerance)**：消息队列作为削峰和容错的基础设施
+
+## ✅ 学习检查点
+
+- [ ] 理解消息队列的三大核心价值（解耦、异步、削峰）
+- [ ] 能够区分点对点和发布订阅两种模式
+- [ ] 理解三种投递语义（At-Most-Once / At-Least-Once / Exactly-Once）
+- [ ] 掌握通过分区 Key 保证消息顺序性的方法
+- [ ] 能够根据业务场景选择合适的消息队列
+
+## 🚀 下一步
+
+→ [API 设计](/architect/03-distributed-systems/02-distributed-communication/04-api-design)

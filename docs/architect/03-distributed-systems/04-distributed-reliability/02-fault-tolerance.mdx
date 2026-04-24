@@ -14,4 +14,833 @@
 - 掌握优雅降级的策略设计
 - 理解重试与指数退避（Exponential Backoff）策略
 
-> 🚧 详细内容正在编写中...
+## 🔌 熔断器模式（Circuit Breaker）
+
+### 核心思想
+
+熔断器模式借鉴了电路保险丝的概念：当下游服务持续故障时，**快速失败**而不是让请求堆积，保护系统不被拖垮。
+
+### 状态机
+
+```
+                 失败率超过阈值
+     ┌─────────────────────────────────┐
+     │                                 ↓
+ ┌────────┐     成功       ┌──────────────┐
+ │ Closed │ ←──────────── │  Half-Open   │
+ │ (正常)  │               │ (半开/试探)   │
+ └────────┘               └──────────────┘
+     │                         ↑
+     │                         │ 冷却期结束
+     │                         │
+     │                    ┌─────────┐
+     └───────────────────→│  Open   │
+        失败率超过阈值      │ (熔断)  │
+                          └─────────┘
+```
+
+### 代码示例
+
+```js
+// ========== 熔断器完整实现 ==========
+
+class CircuitBreaker {
+  constructor(options = {}) {
+    this.name = options.name || 'default';
+    this.failureThreshold = options.failureThreshold || 5;     // 触发熔断的失败次数
+    this.successThreshold = options.successThreshold || 3;     // 半开状态恢复所需的成功次数
+    this.cooldownMs = options.cooldownMs || 10000;             // 熔断冷却时间
+    this.timeoutMs = options.timeoutMs || 5000;                // 请求超时时间
+
+    this.state = 'closed';         // closed | open | half-open
+    this.failureCount = 0;
+    this.successCount = 0;
+    this.lastFailureTime = null;
+    this.totalRequests = 0;
+    this.totalFailures = 0;
+    this.totalSuccesses = 0;
+  }
+
+  // 执行受保护的操作
+  execute(operation) {
+    this.totalRequests++;
+
+    // 熔断状态：快速失败
+    if (this.state === 'open') {
+      // 检查是否到了冷却期
+      if (Date.now() - this.lastFailureTime >= this.cooldownMs) {
+        this.transitionTo('half-open');
+      } else {
+        console.log(`  [熔断器:${this.name}] 🔴 熔断中，快速失败`);
+        return { success: false, error: '服务熔断中', circuitState: 'open' };
+      }
+    }
+
+    // 执行操作
+    try {
+      const result = operation();
+      this.onSuccess();
+      return { success: true, data: result, circuitState: this.state };
+    } catch (error) {
+      this.onFailure();
+      return { success: false, error: error.message, circuitState: this.state };
+    }
+  }
+
+  onSuccess() {
+    this.totalSuccesses++;
+
+    if (this.state === 'half-open') {
+      this.successCount++;
+      console.log(`  [熔断器:${this.name}] 🟡 半开状态成功 (${this.successCount}/${this.successThreshold})`);
+
+      if (this.successCount >= this.successThreshold) {
+        this.transitionTo('closed');
+      }
+    } else {
+      // closed 状态：重置失败计数
+      this.failureCount = 0;
+    }
+  }
+
+  onFailure() {
+    this.totalFailures++;
+    this.failureCount++;
+    this.lastFailureTime = Date.now();
+
+    if (this.state === 'half-open') {
+      // 半开状态下任何失败都重新熔断
+      console.log(`  [熔断器:${this.name}] 🟡→🔴 半开状态失败，重新熔断`);
+      this.transitionTo('open');
+    } else if (this.failureCount >= this.failureThreshold) {
+      console.log(`  [熔断器:${this.name}] 🟢→🔴 失败 ${this.failureCount} 次，触发熔断`);
+      this.transitionTo('open');
+    } else {
+      console.log(`  [熔断器:${this.name}] 失败 (${this.failureCount}/${this.failureThreshold})`);
+    }
+  }
+
+  transitionTo(newState) {
+    const oldState = this.state;
+    this.state = newState;
+
+    if (newState === 'closed') {
+      this.failureCount = 0;
+      this.successCount = 0;
+      console.log(`  [熔断器:${this.name}] 🔴→🟢 恢复正常`);
+    } else if (newState === 'open') {
+      this.successCount = 0;
+    } else if (newState === 'half-open') {
+      this.successCount = 0;
+      console.log(`  [熔断器:${this.name}] 🔴→🟡 进入半开状态（试探）`);
+    }
+  }
+
+  getStatus() {
+    return {
+      name: this.name,
+      state: this.state,
+      failureCount: this.failureCount,
+      totalRequests: this.totalRequests,
+      totalSuccesses: this.totalSuccesses,
+      totalFailures: this.totalFailures,
+      successRate: this.totalRequests > 0
+        ? `${((this.totalSuccesses / this.totalRequests) * 100).toFixed(1)}%`
+        : '0%',
+    };
+  }
+}
+
+// ========== 模拟场景 ==========
+const breaker = new CircuitBreaker({
+  name: 'PaymentService',
+  failureThreshold: 3,
+  successThreshold: 2,
+  cooldownMs: 100, // 缩短冷却时间便于演示
+});
+
+// 模拟不稳定的服务
+let serviceHealthy = true;
+function callPaymentService() {
+  if (!serviceHealthy) {
+    throw new Error('支付服务超时');
+  }
+  return { transactionId: `TXN-${Date.now()}` };
+}
+
+// 正常请求
+console.log('=== 正常请求 ===');
+console.log(breaker.execute(() => callPaymentService()));
+console.log(breaker.execute(() => callPaymentService()));
+
+// 服务故障
+console.log('\n=== 服务故障 ===');
+serviceHealthy = false;
+for (let i = 0; i < 4; i++) {
+  console.log(breaker.execute(() => callPaymentService()));
+}
+
+// 熔断中的快速失败
+console.log('\n=== 熔断中 ===');
+console.log(breaker.execute(() => callPaymentService())); // 快速失败
+
+// 冷却期后进入半开状态
+console.log('\n=== 等待冷却后恢复 ===');
+breaker.lastFailureTime = Date.now() - 200; // 模拟冷却期已过
+serviceHealthy = true; // 服务恢复
+console.log(breaker.execute(() => callPaymentService())); // 半开：成功
+console.log(breaker.execute(() => callPaymentService())); // 半开：成功 → 恢复
+
+console.log('\n=== 恢复正常 ===');
+console.log(breaker.execute(() => callPaymentService()));
+
+console.log('\n熔断器状态:', breaker.getStatus());
+```
+
+## 🚰 限流（Rate Limiting）
+
+### 代码示例：四种限流算法
+
+```js
+// ========== 限流算法实现 ==========
+
+// 1. 固定窗口计数器
+class FixedWindowRateLimiter {
+  constructor(limit, windowMs) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    this.currentWindow = 0;
+    this.count = 0;
+  }
+
+  allowRequest() {
+    const now = Date.now();
+    const window = Math.floor(now / this.windowMs);
+
+    if (window !== this.currentWindow) {
+      this.currentWindow = window;
+      this.count = 0;
+    }
+
+    if (this.count < this.limit) {
+      this.count++;
+      return true;
+    }
+    return false;
+  }
+}
+
+// 2. 滑动窗口计数器
+class SlidingWindowRateLimiter {
+  constructor(limit, windowMs) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    this.requests = []; // 记录每个请求的时间戳
+  }
+
+  allowRequest() {
+    const now = Date.now();
+    // 清除窗口外的记录
+    this.requests = this.requests.filter(t => now - t < this.windowMs);
+
+    if (this.requests.length < this.limit) {
+      this.requests.push(now);
+      return true;
+    }
+    return false;
+  }
+}
+
+// 3. 令牌桶（Token Bucket）
+class TokenBucketRateLimiter {
+  constructor(capacity, refillRate) {
+    this.capacity = capacity;        // 桶容量
+    this.refillRate = refillRate;    // 每秒添加的令牌数
+    this.tokens = capacity;          // 当前令牌数
+    this.lastRefillTime = Date.now();
+  }
+
+  refill() {
+    const now = Date.now();
+    const elapsed = (now - this.lastRefillTime) / 1000;
+    const newTokens = elapsed * this.refillRate;
+
+    this.tokens = Math.min(this.capacity, this.tokens + newTokens);
+    this.lastRefillTime = now;
+  }
+
+  allowRequest(tokensNeeded = 1) {
+    this.refill();
+
+    if (this.tokens >= tokensNeeded) {
+      this.tokens -= tokensNeeded;
+      return true;
+    }
+    return false;
+  }
+}
+
+// 4. 漏桶（Leaky Bucket）
+class LeakyBucketRateLimiter {
+  constructor(capacity, leakRate) {
+    this.capacity = capacity;      // 桶容量
+    this.leakRate = leakRate;      // 每秒漏出的请求数（处理速率）
+    this.water = 0;                // 当前水量
+    this.lastLeakTime = Date.now();
+  }
+
+  leak() {
+    const now = Date.now();
+    const elapsed = (now - this.lastLeakTime) / 1000;
+    const leaked = elapsed * this.leakRate;
+
+    this.water = Math.max(0, this.water - leaked);
+    this.lastLeakTime = now;
+  }
+
+  allowRequest() {
+    this.leak();
+
+    if (this.water < this.capacity) {
+      this.water++;
+      return true;
+    }
+    return false;
+  }
+}
+
+// ========== 对比测试 ==========
+
+function testRateLimiter(name, limiter, totalRequests) {
+  let allowed = 0;
+  let denied = 0;
+
+  for (let i = 0; i < totalRequests; i++) {
+    if (limiter.allowRequest()) {
+      allowed++;
+    } else {
+      denied++;
+    }
+  }
+
+  console.log(`${name}: ${allowed} 允许 / ${denied} 拒绝（共 ${totalRequests} 请求）`);
+  return { allowed, denied };
+}
+
+console.log('=== 限流算法对比（限制每秒 10 个请求，发送 20 个）===\n');
+
+testRateLimiter('固定窗口', new FixedWindowRateLimiter(10, 1000), 20);
+testRateLimiter('滑动窗口', new SlidingWindowRateLimiter(10, 1000), 20);
+testRateLimiter('令牌桶  ', new TokenBucketRateLimiter(10, 10), 20);
+testRateLimiter('漏桶    ', new LeakyBucketRateLimiter(10, 10), 20);
+```
+
+### 算法对比
+
+| 算法 | 突发流量处理 | 精确度 | 内存 | 适用场景 |
+|------|------------|--------|------|---------|
+| **固定窗口** | 边界处可能突发 2 倍 | 低 | 最低 | 简单场景 |
+| **滑动窗口** | 均匀 | 高 | 中 | 需要精确控制 |
+| **令牌桶** | 允许一定突发 | 高 | 低 | API 限流（推荐） |
+| **漏桶** | 严格恒速 | 高 | 低 | 流量整形（削峰） |
+
+## 📉 优雅降级
+
+### 代码示例
+
+```js
+// ========== 优雅降级策略 ==========
+
+class DegradationManager {
+  constructor() {
+    this.degradationLevel = 0;  // 0=正常, 1=轻微, 2=中等, 3=严重
+    this.features = new Map();
+  }
+
+  // 注册功能及其降级策略
+  registerFeature(name, config) {
+    this.features.set(name, {
+      name,
+      normalHandler: config.normal,
+      degradedHandlers: config.degraded || {},  // level → handler
+      priority: config.priority || 'normal',    // critical | normal | optional
+    });
+  }
+
+  // 设置降级等级
+  setDegradationLevel(level) {
+    const oldLevel = this.degradationLevel;
+    this.degradationLevel = level;
+
+    const labels = ['正常', '轻微降级', '中等降级', '严重降级'];
+    console.log(`\n[降级] ${labels[oldLevel]} → ${labels[level]}`);
+
+    // 自动关闭低优先级功能
+    if (level >= 2) {
+      console.log('  → 关闭所有 optional 功能');
+    }
+    if (level >= 3) {
+      console.log('  → 关闭所有 normal 功能，仅保留 critical 功能');
+    }
+  }
+
+  // 执行功能
+  execute(featureName, ...args) {
+    const feature = this.features.get(featureName);
+    if (!feature) {
+      return { error: `功能 ${featureName} 未注册` };
+    }
+
+    // 根据降级等级和优先级决定行为
+    if (this.degradationLevel >= 3 && feature.priority === 'normal') {
+      console.log(`  [${featureName}] 🔴 严重降级，normal 功能关闭`);
+      return { degraded: true, message: '功能暂时不可用' };
+    }
+
+    if (this.degradationLevel >= 2 && feature.priority === 'optional') {
+      console.log(`  [${featureName}] 🔴 中等降级，optional 功能关闭`);
+      return { degraded: true, message: '功能暂时不可用' };
+    }
+
+    // 查找当前降级等级的处理器
+    const degradedHandler = feature.degradedHandlers[this.degradationLevel];
+    if (degradedHandler && this.degradationLevel > 0) {
+      console.log(`  [${featureName}] 🟡 降级模式执行`);
+      return degradedHandler(...args);
+    }
+
+    // 正常执行
+    return feature.normalHandler(...args);
+  }
+}
+
+// ========== 使用示例 ==========
+const degradation = new DegradationManager();
+
+// 注册功能
+degradation.registerFeature('getProductDetail', {
+  priority: 'critical',
+  normal: (productId) => ({
+    id: productId,
+    name: '机械键盘',
+    price: 599,
+    reviews: [{ user: '张三', content: '很好用' }],
+    recommendations: ['鼠标', '桌垫', '支架'],
+    inventory: { stock: 100, warehouses: ['北京', '上海'] },
+  }),
+  degraded: {
+    1: (productId) => ({
+      id: productId,
+      name: '机械键盘',
+      price: 599,
+      reviews: '评论加载中...',         // 评论降级为占位
+      recommendations: [],              // 推荐关闭
+      inventory: { stock: 100 },        // 仓库详情省略
+    }),
+    2: (productId) => ({
+      id: productId,
+      name: '机械键盘',
+      price: 599,                       // 仅保留核心信息
+    }),
+  },
+});
+
+degradation.registerFeature('getRecommendations', {
+  priority: 'optional',
+  normal: () => ['鼠标', '桌垫', '显示器支架', '键帽'],
+});
+
+degradation.registerFeature('createOrder', {
+  priority: 'critical',
+  normal: (userId, productId) => ({
+    orderId: `ORD-${Date.now()}`,
+    userId,
+    productId,
+    status: 'created',
+  }),
+});
+
+degradation.registerFeature('sendNotification', {
+  priority: 'normal',
+  normal: (userId, message) => ({ sent: true, userId, message }),
+  degraded: {
+    1: (userId, message) => {
+      console.log(`    通知加入队列，延迟发送: ${message}`);
+      return { sent: false, queued: true };
+    },
+  },
+});
+
+// 正常模式
+console.log('=== 正常模式 ===');
+console.log(degradation.execute('getProductDetail', 'PROD-001'));
+console.log(degradation.execute('getRecommendations'));
+
+// 轻微降级
+degradation.setDegradationLevel(1);
+console.log(degradation.execute('getProductDetail', 'PROD-001'));
+console.log(degradation.execute('sendNotification', 'user-1', '订单已创建'));
+
+// 中等降级
+degradation.setDegradationLevel(2);
+console.log(degradation.execute('getProductDetail', 'PROD-001'));
+console.log(degradation.execute('getRecommendations'));  // optional 关闭
+console.log(degradation.execute('createOrder', 'user-1', 'PROD-001'));  // critical 正常
+
+// 严重降级
+degradation.setDegradationLevel(3);
+console.log(degradation.execute('sendNotification', 'user-1', '测试'));  // normal 关闭
+console.log(degradation.execute('createOrder', 'user-1', 'PROD-001'));   // critical 仍可用
+```
+
+## 🔁 重试与退避策略
+
+### 代码示例
+
+```js
+// ========== 重试与退避策略 ==========
+
+class RetryPolicy {
+  constructor(options = {}) {
+    this.maxRetries = options.maxRetries || 3;
+    this.baseDelayMs = options.baseDelayMs || 1000;
+    this.maxDelayMs = options.maxDelayMs || 30000;
+    this.strategy = options.strategy || 'exponential'; // fixed | linear | exponential | exponential-jitter
+    this.retryableErrors = options.retryableErrors || []; // 可重试的错误类型
+  }
+
+  // 计算延迟时间
+  calculateDelay(attempt) {
+    let delay;
+
+    switch (this.strategy) {
+      case 'fixed':
+        // 固定间隔：每次等待相同时间
+        delay = this.baseDelayMs;
+        break;
+
+      case 'linear':
+        // 线性增长：1s, 2s, 3s, ...
+        delay = this.baseDelayMs * attempt;
+        break;
+
+      case 'exponential':
+        // 指数退避：1s, 2s, 4s, 8s, ...
+        delay = this.baseDelayMs * Math.pow(2, attempt - 1);
+        break;
+
+      case 'exponential-jitter':
+        // 指数退避 + 随机抖动：避免多个客户端同时重试（惊群效应）
+        delay = this.baseDelayMs * Math.pow(2, attempt - 1);
+        delay = Math.random() * delay; // Full Jitter
+        break;
+
+      default:
+        delay = this.baseDelayMs;
+    }
+
+    return Math.min(delay, this.maxDelayMs);
+  }
+
+  // 判断错误是否可重试
+  isRetryable(error) {
+    if (this.retryableErrors.length === 0) return true;
+    return this.retryableErrors.some(errorType => error.message.includes(errorType));
+  }
+
+  // 执行带重试的操作
+  execute(operation, operationName = 'operation') {
+    let lastError;
+
+    for (let attempt = 1; attempt <= this.maxRetries + 1; attempt++) {
+      try {
+        const result = operation();
+        if (attempt > 1) {
+          console.log(`  [重试] ${operationName} 第 ${attempt} 次尝试成功`);
+        }
+        return { success: true, data: result, attempts: attempt };
+      } catch (error) {
+        lastError = error;
+
+        if (attempt > this.maxRetries) {
+          console.log(`  [重试] ${operationName} 已达最大重试次数 ${this.maxRetries}，放弃`);
+          break;
+        }
+
+        if (!this.isRetryable(error)) {
+          console.log(`  [重试] ${operationName} 错误不可重试: ${error.message}`);
+          break;
+        }
+
+        const delay = this.calculateDelay(attempt);
+        console.log(`  [重试] ${operationName} 第 ${attempt} 次失败: ${error.message}，${delay.toFixed(0)}ms 后重试`);
+      }
+    }
+
+    return { success: false, error: lastError.message, attempts: this.maxRetries + 1 };
+  }
+}
+
+// ========== 演示不同退避策略 ==========
+console.log('=== 退避策略延迟对比 ===\n');
+
+const strategies = ['fixed', 'linear', 'exponential', 'exponential-jitter'];
+for (const strategy of strategies) {
+  const policy = new RetryPolicy({ strategy, baseDelayMs: 1000, maxRetries: 5 });
+  const delays = [];
+  for (let i = 1; i <= 5; i++) {
+    delays.push(`${policy.calculateDelay(i).toFixed(0)}ms`);
+  }
+  console.log(`${strategy.padEnd(22)}: ${delays.join(' → ')}`);
+}
+
+// ========== 实际使用 ==========
+console.log('\n=== 重试执行 ===');
+
+let callCount = 0;
+const unreliableService = () => {
+  callCount++;
+  if (callCount <= 2) {
+    throw new Error('连接超时');
+  }
+  return { data: '请求成功' };
+};
+
+const retryPolicy = new RetryPolicy({
+  maxRetries: 3,
+  strategy: 'exponential',
+  baseDelayMs: 100,
+  retryableErrors: ['连接超时', '服务不可用'],
+});
+
+console.log(retryPolicy.execute(unreliableService, '支付服务'));
+
+// 不可重试的错误
+console.log('\n=== 不可重试的错误 ===');
+const authError = () => {
+  throw new Error('认证失败: Token 无效');
+};
+console.log(retryPolicy.execute(authError, '用户认证'));
+```
+
+## ⏱️ 超时控制
+
+### 代码示例
+
+```js
+// ========== 超时控制策略 ==========
+
+class TimeoutManager {
+  constructor() {
+    this.timeoutConfig = new Map(); // service → timeout config
+  }
+
+  // 注册服务超时配置
+  configureService(serviceName, config) {
+    this.timeoutConfig.set(serviceName, {
+      connectTimeoutMs: config.connectTimeoutMs || 3000,
+      readTimeoutMs: config.readTimeoutMs || 5000,
+      writeTimeoutMs: config.writeTimeoutMs || 10000,
+      totalTimeoutMs: config.totalTimeoutMs || 15000,
+    });
+  }
+
+  // 模拟带超时的调用
+  callWithTimeout(serviceName, operation, actualDurationMs) {
+    const config = this.timeoutConfig.get(serviceName);
+    if (!config) {
+      return { error: `服务 ${serviceName} 未配置超时` };
+    }
+
+    const startTime = Date.now();
+
+    // 检查是否超时
+    if (actualDurationMs > config.totalTimeoutMs) {
+      const elapsed = config.totalTimeoutMs;
+      console.log(`[超时] ${serviceName}: 请求超时 (${elapsed}ms > 总超时 ${config.totalTimeoutMs}ms)`);
+      return {
+        success: false,
+        error: `请求超时: ${elapsed}ms`,
+        timeoutType: 'total',
+      };
+    }
+
+    if (actualDurationMs > config.readTimeoutMs) {
+      console.log(`[超时] ${serviceName}: 读取超时 (${actualDurationMs}ms > 读超时 ${config.readTimeoutMs}ms)`);
+      return {
+        success: false,
+        error: `读取超时: ${actualDurationMs}ms`,
+        timeoutType: 'read',
+      };
+    }
+
+    // 正常返回
+    const result = operation();
+    console.log(`[成功] ${serviceName}: ${actualDurationMs}ms`);
+    return { success: true, data: result, durationMs: actualDurationMs };
+  }
+
+  // 超时预算（级联调用的超时分配）
+  calculateTimeoutBudget(totalBudgetMs, callChain) {
+    console.log(`\n=== 超时预算分配（总预算: ${totalBudgetMs}ms）===`);
+
+    const totalWeight = callChain.reduce((sum, call) => sum + call.weight, 0);
+    let remainingBudget = totalBudgetMs;
+
+    const allocations = callChain.map((call, index) => {
+      const allocated = index === callChain.length - 1
+        ? remainingBudget  // 最后一个服务获得剩余预算
+        : Math.floor((call.weight / totalWeight) * totalBudgetMs);
+
+      remainingBudget -= allocated;
+
+      console.log(`  ${call.service}: ${allocated}ms（权重 ${call.weight}）`);
+      return { service: call.service, timeoutMs: allocated };
+    });
+
+    return allocations;
+  }
+}
+
+// 使用
+const timeoutManager = new TimeoutManager();
+
+timeoutManager.configureService('UserService', {
+  connectTimeoutMs: 1000,
+  readTimeoutMs: 3000,
+  totalTimeoutMs: 5000,
+});
+
+timeoutManager.configureService('PaymentService', {
+  connectTimeoutMs: 2000,
+  readTimeoutMs: 10000,
+  totalTimeoutMs: 15000,
+});
+
+console.log('=== 超时控制 ===');
+timeoutManager.callWithTimeout('UserService', () => ({ user: '张三' }), 500);    // 正常
+timeoutManager.callWithTimeout('UserService', () => ({ user: '张三' }), 4000);   // 读取超时
+timeoutManager.callWithTimeout('PaymentService', () => ({ txn: 'ok' }), 20000);  // 总超时
+
+// 超时预算：网关总超时 5 秒，分配给三个级联调用
+timeoutManager.calculateTimeoutBudget(5000, [
+  { service: '用户认证', weight: 1 },
+  { service: '库存检查', weight: 1 },
+  { service: '支付处理', weight: 3 },  // 支付权重最高，分配更多时间
+]);
+```
+
+## 🛡️ 舱壁隔离（Bulkhead）
+
+### 代码示例
+
+```js
+// ========== 舱壁隔离模式 ==========
+// 借鉴船舶的水密隔舱设计：即使一个隔舱进水，不会影响整条船
+
+class BulkheadIsolation {
+  constructor() {
+    this.pools = new Map(); // service → { maxConcurrent, currentCount }
+  }
+
+  // 为服务分配独立的资源池
+  createPool(serviceName, maxConcurrent) {
+    this.pools.set(serviceName, {
+      maxConcurrent,
+      currentCount: 0,
+      queuedRequests: 0,
+      rejectedRequests: 0,
+    });
+    console.log(`[舱壁] 创建资源池: ${serviceName}（最大并发: ${maxConcurrent}）`);
+  }
+
+  // 使用资源池执行操作
+  execute(serviceName, operation) {
+    const pool = this.pools.get(serviceName);
+    if (!pool) {
+      throw new Error(`资源池 ${serviceName} 未创建`);
+    }
+
+    if (pool.currentCount >= pool.maxConcurrent) {
+      pool.rejectedRequests++;
+      console.log(`  [舱壁:${serviceName}] ❌ 资源池已满 (${pool.currentCount}/${pool.maxConcurrent})，拒绝请求`);
+      return { success: false, error: '资源池已满，请稍后重试' };
+    }
+
+    pool.currentCount++;
+    console.log(`  [舱壁:${serviceName}] 获取资源 (${pool.currentCount}/${pool.maxConcurrent})`);
+
+    try {
+      const result = operation();
+      return { success: true, data: result };
+    } catch (error) {
+      return { success: false, error: error.message };
+    } finally {
+      pool.currentCount--;
+    }
+  }
+
+  getStatus() {
+    const status = {};
+    for (const [name, pool] of this.pools) {
+      status[name] = {
+        current: pool.currentCount,
+        max: pool.maxConcurrent,
+        rejected: pool.rejectedRequests,
+        utilization: `${((pool.currentCount / pool.maxConcurrent) * 100).toFixed(0)}%`,
+      };
+    }
+    return status;
+  }
+}
+
+// 使用
+const bulkhead = new BulkheadIsolation();
+
+// 不同服务分配不同的资源池容量
+bulkhead.createPool('OrderService', 10);       // 订单服务：最多 10 并发
+bulkhead.createPool('RecommendService', 3);    // 推荐服务：最多 3 并发（非核心）
+bulkhead.createPool('PaymentService', 5);      // 支付服务：最多 5 并发
+
+console.log('\n=== 正常执行 ===');
+bulkhead.execute('OrderService', () => '订单创建成功');
+bulkhead.execute('RecommendService', () => '推荐列表');
+
+// 模拟推荐服务被打满（不影响订单服务）
+console.log('\n=== 推荐服务资源池耗尽 ===');
+// 手动模拟占满资源池
+bulkhead.pools.get('RecommendService').currentCount = 3;
+bulkhead.execute('RecommendService', () => '推荐列表');  // 被拒绝
+bulkhead.execute('OrderService', () => '订单依然正常');   // 不受影响
+
+console.log('\n资源池状态:', bulkhead.getStatus());
+```
+
+### 容错设计模式总结
+
+| 模式 | 解决的问题 | 核心机制 | 典型实现 |
+|------|-----------|---------|---------|
+| **熔断器** | 级联故障 | 快速失败 + 自动恢复 | Hystrix、Sentinel、Resilience4j |
+| **限流** | 流量过载 | 控制请求速率 | Sentinel、Nginx、API 网关 |
+| **降级** | 资源不足 | 关闭非核心功能 | 开关配置 + 降级逻辑 |
+| **重试** | 暂时性故障 | 自动重试 + 退避 | gRPC 内建、自定义 |
+| **超时** | 请求阻塞 | 限制等待时间 | HTTP Client 配置 |
+| **舱壁** | 资源竞争 | 资源池隔离 | 线程池隔离、信号量隔离 |
+
+## 🔗 相关概念
+
+- **[高可用设计](/architect/03-distributed-systems/04-distributed-reliability/03-high-availability)**：容错是高可用的基础
+- **[API 设计](/architect/03-distributed-systems/02-distributed-communication/04-api-design)**：API 网关中的限流和熔断
+- **[消息队列](/architect/03-distributed-systems/02-distributed-communication/03-message-queues)**：异步通信天然具有削峰容错能力
+
+## ✅ 学习检查点
+
+- [ ] 能够实现熔断器的三状态切换（Closed → Open → Half-Open）
+- [ ] 能够区分令牌桶和漏桶算法的适用场景
+- [ ] 能够设计分级降级策略（关闭非核心功能保护核心功能）
+- [ ] 理解指数退避 + 抖动为什么能避免惊群效应
+- [ ] 理解舱壁隔离如何防止一个服务的故障拖垮整个系统
+
+## 🚀 下一步
+
+→ [高可用设计](/architect/03-distributed-systems/04-distributed-reliability/03-high-availability)
