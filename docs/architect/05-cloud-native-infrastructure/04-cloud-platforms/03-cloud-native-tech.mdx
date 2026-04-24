@@ -3,15 +3,604 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解云原生技术生态，包括服务网格（Istio/Linkerd）、云原生存储（CSI）和云原生安全（OPA、Falco）。
+云原生技术是构建和运行可扩展应用的一套方法体系，包括容器编排、服务网格、不可变基础设施和声明式 API。本节将讲解服务网格、云原生存储和云原生安全等核心技术。
 
-## 🎯 学习目标
+### 云原生技术栈
 
-- 理解服务网格的架构和核心能力
-- 了解云原生存储接口（CSI）的设计
-- 掌握云原生安全工具（OPA、Falco）的使用
-- 能够评估是否需要引入这些云原生技术
+```
+┌─────────────────────────────────────────────────────────┐
+│                    应用层                                 │
+│              (微服务、Serverless)                        │
+└─────────────────────────────────────────────────────────┘
+                           ↕
+┌─────────────────────────────────────────────────────────┐
+│                  服务网格层                               │
+│              (Istio、Linkerd)                            │
+└─────────────────────────────────────────────────────────┘
+                           ↕
+┌─────────────────────────────────────────────────────────┐
+│                  容器编排层                               │
+│              (Kubernetes)                                │
+└─────────────────────────────────────────────────────────┘
+                           ↕
+┌─────────────────────────────────────────────────────────┐
+│                  基础设施层                               │
+│              (云平台、虚拟机)                             │
+└─────────────────────────────────────────────────────────┘
+```
 
-> 🚧 详细内容正在编写中...
+## 🎯 服务网格
+
+### 服务网格架构
+
+服务网格是一个基础设施层，用于处理服务间通信。它通过 Sidecar 代理模式，将网络通信能力从应用代码中剥离到基础设施层。
+
+```
+应用 A          应用 B
+    ↓              ↓
+Sidecar ←──→ Sidecar ←──→ Sidecar
+    ↓              ↓              ↓
+┌─────────────────────────────────────┐
+│         Control Plane               │
+│      (Pilot、Citadel、Galley)        │
+└─────────────────────────────────────┘
+```
+
+### Istio 核心组件
+
+**Control Plane（控制平面）：**
+- **Istiod**：统一的服务发现、配置和证书管理
+- **Pilot**：流量管理和策略配置
+- **Citadel**：安全身份认证和证书管理
+- **Galley**：配置验证和分发
+
+**Data Plane（数据平面）：**
+- **Envoy Proxy**：高性能的 Sidecar 代理
+
+### Istio 部署
+
+**使用 Helm 安装 Istio：**
+```bash
+# 添加 Istio Helm 仓库
+helm repo add istio https://istio-release.storage.googleapis.com/charts
+helm repo update
+
+# 安装 Istio
+helm install istio-base istio/base -n istio-system --set defaultRevision=default
+helm install istiod istio/istiod -n istio-system --wait
+
+# 安装 Ingress Gateway
+helm install istio-ingress istio/gateway -n istio-system --wait
+
+# 安装 Egress Gateway
+helm install istio-egress istio/gateway -n istio-system --set service.ports[0].name=istio-egress --set service.ports[0].port=80 --set service.ports[0].targetPort=8080
+```
+
+**启用自动注入：**
+```bash
+# 标记命名空间启用自动注入
+kubectl label namespace default istio-injection=enabled
+
+# 验证
+kubectl get namespace -L istio-injection
+```
+
+### 流量管理
+
+**VirtualService 配置：**
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: my-app
+spec:
+  hosts:
+  - my-app
+  http:
+  # 路由到 v1 版本
+  - match:
+    - headers:
+        x-version:
+          exact: "v1"
+    route:
+    - destination:
+        host: my-app
+        subset: v1
+  # 路由到 v2 版本
+  - match:
+    - headers:
+        x-version:
+          exact: "v2"
+    route:
+    - destination:
+        host: my-app
+        subset: v2
+  # 默认路由：90% v1，10% v2
+  - route:
+    - destination:
+        host: my-app
+        subset: v1
+      weight: 90
+    - destination:
+        host: my-app
+        subset: v2
+      weight: 10
+```
+
+**DestinationRule 配置：**
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: my-app
+spec:
+  host: my-app
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+    trafficPolicy:
+      loadBalancer:
+        simple: ROUND_ROBIN
+  - name: v2
+    labels:
+      version: v2
+    trafficPolicy:
+      loadBalancer:
+        simple: RANDOM
+```
+
+**Gateway 配置：**
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: my-app-gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "my-app.example.com"
+```
+
+### 安全配置
+
+**启用 mTLS：**
+```yaml
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: default
+spec:
+  mtls:
+    mode: STRICT
+```
+
+**授权策略：**
+```yaml
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: my-app-policy
+spec:
+  selector:
+    matchLabels:
+      app: my-app
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/default/sa/frontend
+    to:
+    - operation:
+        methods:
+        - GET
+        paths:
+        - /api/*
+```
+
+## 💾 云原生存储（CSI）
+
+### CSI 架构
+
+CSI（Container Storage Interface）是 Kubernetes 的存储插件标准，支持动态卷供应、卷挂载和卷管理。
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Kubernetes                            │
+│                  (PV、PVC、StorageClass)                 │
+└─────────────────────────────────────────────────────────┘
+                           ↕
+┌─────────────────────────────────────────────────────────┐
+│                    CSI Driver                            │
+│              (csi-provisioner、csi-attacher)             │
+└─────────────────────────────────────────────────────────┘
+                           ↕
+┌─────────────────────────────────────────────────────────┐
+│                  Storage Backend                         │
+│          (AWS EBS、Azure Disk、Ceph RBD)                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+### StorageClass 配置
+
+**AWS EBS StorageClass：**
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-sc
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  iops: "3000"
+  throughput: "125"
+  encrypted: "true"
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+```
+
+**Azure Disk StorageClass：**
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-disk-sc
+provisioner: disk.csi.azure.com
+parameters:
+  storageaccounttype: Premium_LRS
+  kind: Managed
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+```
+
+### PVC 配置
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-app-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: ebs-sc
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+### StatefulSet 使用示例
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: my-app
+spec:
+  serviceName: my-app
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: app
+        image: my-app:1.0.0
+        ports:
+        - containerPort: 3000
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      storageClassName: ebs-sc
+      resources:
+        requests:
+          storage: 10Gi
+```
+
+## 🔒 云原生安全
+
+### OPA（Open Policy Agent）
+
+OPA 是一个开源的通用策略引擎，用于在云原生环境中实现细粒度的访问控制和策略管理。
+
+**OPA Gatekeeper 安装：**
+```bash
+# 安装 Gatekeeper
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper/release-3.13/deploy/gatekeeper.yaml
+
+# 验证安装
+kubectl get pods -n gatekeeper-system
+```
+
+**ConstraintTemplate：**
+```yaml
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredlabels
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredLabels
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            labels:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredlabels
+        
+        violation[{"msg": msg, "details": {"missing_labels": missing}}] {
+          provided := {label | input.review.object.metadata.labels[label]}
+          required := {label | label := input.parameters.labels[_]}
+          missing := required - provided
+          count(missing) > 0
+          msg := sprintf("missing required labels: %v", [missing])
+        }
+```
+
+**Constraint：**
+```yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredLabels
+metadata:
+  name: must-have-env-label
+spec:
+  match:
+    kinds:
+    - apiGroups: [""]
+      kinds: ["Pod"]
+  parameters:
+    labels:
+    - "environment"
+    - "app"
+```
+
+### Falco
+
+Falco 是一个云原生的运行时安全工具，用于检测异常行为和安全威胁。
+
+**Falco 安装：**
+```bash
+# 添加 Helm 仓库
+helm repo add falcosecurity https://falcosecurity.github.io/charts
+helm repo update
+
+# 安装 Falco
+helm install falco falcosecurity/falco -n falco --set driver.kind=ebpf
+
+# 验证安装
+kubectl get pods -n falco
+```
+
+**Falco 规则：**
+```yaml
+- macro: shell_in_container
+  condition: >
+    spawned_process
+    and proc.name in (shell_binaries)
+    and container
+    and not proc.pname in (shell_binaries)
+    and not proc.pname in (falco_suppressed_procs)
+    and not user.name in (falco_suppressed_users)
+
+- rule: Detect shell in container
+  desc: >
+    A shell was spawned by a program in a container other than the
+    entrypoint. This is usually a sign of someone breaking into a container.
+  condition: >
+    shell_in_container
+    and not proc.aname[2] in (shell_binaries)
+    and not fd.sip in (allowed_sip_addresses)
+  output: >
+    Shell spawned in container (user=%user.name container_name=%container.name
+    container_id=%container.id shell=%proc.name parent=%proc.pname cmdline=%proc.cmdline)
+  priority: WARNING
+```
+
+**Falco 告警集成：**
+```yaml
+# falco.yaml
+falco:
+  json_output: true
+  json_include_output_property: true
+  http_output:
+    enabled: true
+    url: "http://falco-event-generator:2801"
+```
+
+## 📝 实际应用示例
+
+### 完整的服务网格部署
+
+**1. 部署应用：**
+```yaml
+# deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app-v1
+  labels:
+    app: my-app
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: my-app
+        version: v1
+    spec:
+      containers:
+      - name: app
+        image: my-app:1.0.0
+        ports:
+        - containerPort: 3000
+        env:
+        - name: VERSION
+          value: "v1"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app-v2
+  labels:
+    app: my-app
+    version: v2
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: my-app
+        version: v2
+    spec:
+      containers:
+      - name: app
+        image: my-app:2.0.0
+        ports:
+        - containerPort: 3000
+        env:
+        - name: VERSION
+          value: "v2"
+```
+
+**2. 配置服务网格：**
+```yaml
+# service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app
+spec:
+  selector:
+    app: my-app
+  ports:
+  - port: 80
+    targetPort: 3000
+
+---
+# virtualservice.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: my-app
+spec:
+  hosts:
+  - my-app
+  http:
+  - route:
+    - destination:
+        host: my-app
+        subset: v1
+      weight: 80
+    - destination:
+        host: my-app
+        subset: v2
+      weight: 20
+
+---
+# destinationrule.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: my-app
+spec:
+  host: my-app
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+```
+
+**3. 配置安全策略：**
+```yaml
+# peerauthentication.yaml
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# authorizationpolicy.yaml
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: my-app-policy
+spec:
+  selector:
+    matchLabels:
+      app: my-app
+  rules:
+  - from:
+    - source:
+        namespaces:
+        - default
+    to:
+    - operation:
+        methods:
+        - GET
+        - POST
+```
+
+## 🔗 相关概念
+
+- **容器编排**：Docker / Kubernetes
+- **CI/CD**：GitHub Actions / GitLab CI
+- **可观测性**：Prometheus / Grafana / ELK
+
+## 📚 学习检查点
+
+- [ ] 能否理解服务网格的架构？
+- [ ] 能否配置 Istio 的流量管理？
+- [ ] 能否使用 CSI 管理存储？
+- [ ] 能否配置 OPA 和 Falco？
+
+## 🚀 下一步
+
+→ [第六阶段：系统设计](/architect/06-system-design/01-high-concurrency/01-high-concurrency-overview)

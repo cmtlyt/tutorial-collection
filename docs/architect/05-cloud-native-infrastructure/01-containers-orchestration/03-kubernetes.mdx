@@ -3,15 +3,693 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-系统讲解 Kubernetes 容器编排平台，包括核心概念、调度与资源管理、服务发现、Helm Charts、Operator 模式和网络策略。
+Kubernetes（K8s）是目前最流行的容器编排平台，它提供了自动部署、扩展和管理容器化应用的能力。本节将系统讲解 Kubernetes 的核心概念和高级特性。
 
-## 🎯 学习目标
+### 核心架构
 
-- 掌握 Pod、Service、Deployment 等核心概念
-- 理解 Kubernetes 的调度机制和资源管理
-- 掌握 Helm Charts 的应用管理
-- 了解 Operator 模式的设计与实现
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Control Plane                        │
+├─────────────────────────────────────────────────────────┤
+│  API Server  │  etcd  │  Scheduler  │  Controller Mgr  │
+└─────────────────────────────────────────────────────────┘
+                           ↕
+┌─────────────────────────────────────────────────────────┐
+│                    Worker Nodes                         │
+├─────────────────────────────────────────────────────────┤
+│  kubelet  │  kube-proxy  │  Container Runtime          │
+└─────────────────────────────────────────────────────────┘
+```
 
-> 🚧 详细内容正在编写中...
+### 核心概念
+
+- **Pod**：Kubernetes 最小的调度单元，包含一个或多个容器
+- **Deployment**：管理无状态应用的部署和滚动更新
+- **Service**：提供稳定的网络访问入口和服务发现
+- **ConfigMap/Secret**：配置管理和敏感信息存储
+- **Ingress**：HTTP/HTTPS 路由规则
+
+## 🎯 核心资源对象
+
+### Pod 基础配置
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app-pod
+  labels:
+    app: my-app
+    version: v1
+spec:
+  # 容器定义
+  containers:
+  - name: app-container
+    image: my-app:1.0.0
+    ports:
+    - containerPort: 3000
+      name: http
+    # 资源限制
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    # 健康检查
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 3000
+      initialDelaySeconds: 30
+      periodSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: 3000
+      initialDelaySeconds: 5
+      periodSeconds: 5
+    # 环境变量
+    env:
+    - name: NODE_ENV
+      value: "production"
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: app-secrets
+          key: database-url
+    # 挂载配置
+    volumeMounts:
+    - name: config-volume
+      mountPath: /app/config
+      readOnly: true
+  # 卷定义
+  volumes:
+  - name: config-volume
+    configMap:
+      name: app-config
+  # 重启策略
+  restartPolicy: Always
+```
+
+### Deployment 部署应用
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app-deployment
+  labels:
+    app: my-app
+spec:
+  # 副本数
+  replicas: 3
+  # 选择器
+  selector:
+    matchLabels:
+      app: my-app
+  # 模板
+  template:
+    metadata:
+      labels:
+        app: my-app
+        version: v1
+    spec:
+      containers:
+      - name: app
+        image: my-app:1.0.0
+        ports:
+        - containerPort: 3000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        env:
+        - name: NODE_ENV
+          value: "production"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  # 滚动更新策略
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # 最多可以多创建的 Pod 数
+      maxUnavailable: 0  # 最多可以不可用的 Pod 数
+```
+
+### Service 服务发现
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app-service
+spec:
+  type: ClusterIP
+  selector:
+    app: my-app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+    protocol: TCP
+```
+
+**不同类型的 Service：**
+
+```yaml
+# ClusterIP - 集群内部访问（默认）
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: my-app
+  ports:
+  - port: 80
+    targetPort: 3000
+
+---
+# NodePort - 通过节点端口访问
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: my-app
+  ports:
+  - port: 80
+    targetPort: 3000
+    nodePort: 30080
+
+---
+# LoadBalancer - 通过云厂商负载均衡器访问
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app-loadbalancer
+spec:
+  type: LoadBalancer
+  selector:
+    app: my-app
+  ports:
+  - port: 80
+    targetPort: 3000
+```
+
+### Ingress HTTP 路由
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: my-app.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: my-app-service
+            port:
+              number: 80
+```
+
+## 📊 调度与资源管理
+
+### 资源配额
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources
+  namespace: my-namespace
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    persistentvolumeclaims: "4"
+```
+
+### LimitRange 限制资源
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: limit-range
+  namespace: my-namespace
+spec:
+  limits:
+  - default:
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    type: Container
+```
+
+### Pod 亲和性与反亲和性
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache-deployment
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cache
+  template:
+    metadata:
+      labels:
+        app: cache
+    spec:
+      # 亲和性规则
+      affinity:
+        # Pod 亲和性 - 调度到相同节点的 Pod
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - web
+            topologyKey: kubernetes.io/hostname
+        # Pod 反亲和性 - 调度到不同节点的 Pod
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - cache
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+```
+
+## 📦 Helm Charts 应用管理
+
+### Helm Chart 目录结构
+
+```
+my-app-chart/
+├── Chart.yaml          # Chart 元信息
+├── values.yaml         # 默认配置值
+├── templates/          # 模板文件
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   ├── ingress.yaml
+│   ├── configmap.yaml
+│   └── _helpers.tpl    # 模板辅助函数
+└── README.md           # Chart 说明文档
+```
+
+### Chart.yaml
+
+```yaml
+apiVersion: v2
+name: my-app
+description: A Helm chart for my application
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - web
+  - application
+maintainers:
+  - name: Your Name
+    email: your.email@example.com
+```
+
+### values.yaml
+
+```yaml
+# 镜像配置
+image:
+  repository: my-registry/my-app
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+# 副本数
+replicaCount: 3
+
+# 服务配置
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+# Ingress 配置
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: my-app.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+# 资源配置
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# 环境变量
+env:
+  NODE_ENV: production
+
+# ConfigMap
+config:
+  logLevel: info
+  featureFlags:
+    featureA: true
+    featureB: false
+```
+
+### deployment.yaml 模板
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "my-app.fullname" . }}
+  labels:
+    {{- include "my-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "my-app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "my-app.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: {{ .Chart.Name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.targetPort }}
+          protocol: TCP
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+        env:
+        - name: NODE_ENV
+          value: {{ .Values.env.NODE_ENV | quote }}
+```
+
+### 使用 Helm 部署
+
+```bash
+# 添加 Helm 仓库
+helm repo add my-repo https://charts.example.com
+
+# 更新仓库
+helm repo update
+
+# 安装 Chart
+helm install my-app ./my-app-chart
+
+# 使用自定义配置安装
+helm install my-app ./my-app-chart --set image.tag=1.1.0 --set replicaCount=5
+
+# 使用自定义 values 文件安装
+helm install my-app ./my-app-chart -f custom-values.yaml
+
+# 升级应用
+helm upgrade my-app ./my-app-chart --set image.tag=1.2.0
+
+# 回滚到上一个版本
+helm rollback my-app
+
+# 卸载应用
+helm uninstall my-app
+```
+
+## 🔧 Operator 模式
+
+### Operator 概念
+
+Operator 是一种使用 Kubernetes 自定义资源（CRD）和控制器来管理应用的方法。它将运维知识编码到软件中，实现应用的自动化管理。
+
+### 简单的 CRD 定义
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: databases.myapp.example.com
+spec:
+  group: myapp.example.com
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              replicas:
+                type: integer
+              storage:
+                type: string
+              version:
+                type: string
+  scope: Namespaced
+  names:
+    plural: databases
+    singular: database
+    kind: Database
+    shortNames:
+    - db
+```
+
+### 自定义资源示例
+
+```yaml
+apiVersion: myapp.example.com/v1alpha1
+kind: Database
+metadata:
+  name: my-database
+spec:
+  replicas: 3
+  storage: 10Gi
+  version: "15.0"
+```
+
+## 📝 实际应用示例
+
+### 完整的应用部署清单
+
+**deployment.yaml：**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  labels:
+    app: web-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: web-app
+        image: web-app:1.0.0
+        ports:
+        - containerPort: 3000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: REDIS_HOST
+          value: "redis-service"
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+      volumes:
+      - name: config
+        configMap:
+          name: web-app-config
+```
+
+**service.yaml：**
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-service
+spec:
+  type: ClusterIP
+  selector:
+    app: web-app
+  ports:
+  - port: 80
+    targetPort: 3000
+```
+
+**configmap.yaml：**
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-app-config
+data:
+  config.json: |
+    {
+      "logLevel": "info",
+      "features": {
+        "featureA": true,
+        "featureB": false
+      }
+    }
+```
+
+**ingress.yaml：**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-app-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: web-app.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-app-service
+            port:
+              number: 80
+```
+
+**部署命令：**
+```bash
+# 应用所有配置
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+kubectl apply -f configmap.yaml
+kubectl apply -f ingress.yaml
+
+# 查看部署状态
+kubectl get deployments
+kubectl get pods
+kubectl get services
+kubectl get ingress
+
+# 查看日志
+kubectl logs -f deployment/web-app
+
+# 扩缩容
+kubectl scale deployment web-app --replicas=5
+
+# 滚动更新
+kubectl set image deployment/web-app web-app=web-app:1.1.0
+
+# 查看更新状态
+kubectl rollout status deployment/web-app
+
+# 回滚
+kubectl rollout undo deployment/web-app
+```
+
+## 🔗 相关概念
+
+- **服务网格**：Istio / Linkerd
+- **云原生安全**：OPA / Falco
+- **可观测性**：Prometheus / Grafana / Jaeger
+
+## 📚 学习检查点
+
+- [ ] 能否解释 Pod 的生命周期和探针机制？
+- [ ] 能否设计一个 Kubernetes 集群的资源管理策略？
+- [ ] 能否用 Helm 管理应用的多环境部署？
+- [ ] 能否理解 Operator 的设计思想？
+
+## 🚀 下一步
+
+→ [5.2 CI/CD 与 DevOps](/architect/05-cloud-native-infrastructure/02-cicd-devops/01-cicd-devops-overview)

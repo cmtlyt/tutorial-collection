@@ -3,15 +3,429 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-深入讲解 Docker 容器化技术，包括镜像构建与优化、容器网络、存储卷管理和多阶段构建。
+Docker 是容器化技术的代表，它通过镜像分层、资源隔离和标准化打包，解决了"在我的机器上能运行"的经典问题。本节将深入讲解 Docker 的核心概念和最佳实践。
 
-## 🎯 学习目标
+### 核心概念
 
-- 掌握 Docker 镜像的分层原理和构建优化
-- 理解 Docker 网络模型（bridge、host、overlay）
-- 掌握存储卷的使用和管理
-- 能够编写高效的多阶段构建 Dockerfile
+- **镜像（Image）**：只读的应用运行环境模板，采用分层存储
+- **容器（Container）**：镜像的运行实例，拥有独立的文件系统、网络和进程空间
+- **分层存储**：镜像由多层只读层组成，启动容器时添加可写层
+- **多阶段构建**：分离构建环境和运行环境，减小最终镜像体积
 
-> 🚧 详细内容正在编写中...
+## 🎯 镜像构建与优化
+
+### 基础 Dockerfile
+
+```dockerfile
+# 使用官方 Node.js 镜像作为基础镜像
+FROM node:18-alpine
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制 package.json 和 package-lock.json
+COPY package*.json ./
+
+# 安装依赖
+RUN npm ci --only=production
+
+# 复制应用代码
+COPY . .
+
+# 暴露端口
+EXPOSE 3000
+
+# 启动应用
+CMD ["node", "index.js"]
+```
+
+### 多阶段构建优化
+
+多阶段构建是 2025 年的 Docker 最佳实践，可以显著减小镜像体积并提高安全性。
+
+```dockerfile
+# ==================== 构建阶段 ====================
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# 复制依赖文件
+COPY package*.json ./
+
+# 安装所有依赖（包括开发依赖）
+RUN npm ci
+
+# 复制源代码
+COPY . .
+
+# 构建应用（TypeScript 示例）
+RUN npm run build
+
+# ==================== 运行阶段 ====================
+FROM node:18-alpine AS runtime
+
+# 安装 dumb-init 以正确处理信号
+RUN apk add --no-cache dumb-init
+
+# 创建非 root 用户
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+WORKDIR /app
+
+# 从构建阶段复制依赖文件
+COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
+
+# 从构建阶段复制构建产物
+COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+
+# 切换到非 root 用户
+USER nodejs
+
+# 使用 dumb-init 启动
+ENTRYPOINT ["dumb-init", "--"]
+
+# 启动应用
+CMD ["node", "dist/index.js"]
+```
+
+### 镜像层优化技巧
+
+```dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# ✅ 好的做法：先复制依赖文件，利用 Docker 层缓存
+COPY package*.json ./
+RUN npm ci --only=production
+
+# ✅ 好的做法：只复制需要的文件
+COPY src/ ./src/
+COPY tsconfig.json ./
+
+# ❌ 避免：复制整个项目导致缓存失效
+# COPY . .
+
+# ✅ 好的做法：合并 RUN 命令减少层数
+RUN npm run build && \
+    npm prune --production && \
+    rm -rf src tsconfig.json
+
+# ✅ 好的做法：使用 .dockerignore 排除不需要的文件
+# .dockerignore 内容：
+# node_modules
+# npm-debug.log
+# .git
+# .env
+# *.md
+```
+
+### .dockerignore 配置
+
+```dockerignore
+# 依赖目录
+node_modules
+npm-debug.log
+yarn-error.log
+
+# 版本控制
+.git
+.gitignore
+.svn
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+
+# 测试和文档
+*.md
+test
+coverage
+.vscode
+.idea
+
+# 构建产物（如果使用多阶段构建）
+dist
+build
+
+# 其他
+.DS_Store
+```
+
+## 🌐 容器网络
+
+### Docker 网络模式对比
+
+| 模式 | 说明 | 适用场景 |
+|------|------|---------|
+| **bridge** | 默认模式，容器通过 veth pair 连接到 docker0 网桥 | 单机多容器通信 |
+| **host** | 容器使用宿主机网络栈 | 高性能网络需求 |
+| **overlay** | 跨主机通信网络 | Docker Swarm / Kubernetes |
+| **none** | 无网络配置 | 自定义网络配置 |
+| **macvlan** | 容器拥有独立 MAC 地址 | 需要容器直接接入物理网络 |
+
+### 创建和使用自定义网络
+
+```bash
+# 创建自定义 bridge 网络
+docker network create --driver bridge --subnet 172.20.0.0/16 my-app-network
+
+# 查看网络详情
+docker network inspect my-app-network
+
+# 连接容器到网络
+docker run -d --name app1 --network my-app-network -p 8080:8080 my-app:latest
+docker run -d --name app2 --network my-app-network my-app:latest
+
+# 容器间通过容器名互相访问
+# 在 app1 中可以 ping app2
+docker exec app1 ping app2
+```
+
+### Docker Compose 网络配置
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    networks:
+      - frontend
+
+  api:
+    build: ./api
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_PASSWORD: example
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true  # 内部网络，无法访问外网
+
+volumes:
+  db-data:
+```
+
+## 💾 存储卷管理
+
+### 卷类型对比
+
+| 类型 | 说明 | 生命周期 | 适用场景 |
+|------|------|---------|---------|
+| **bind mount** | 挂载宿主机目录 | 由宿主机管理 | 开发环境、配置文件 |
+| **volume** | Docker 管理的存储 | 由 Docker 管理 | 数据持久化、数据共享 |
+| **tmpfs** | 内存文件系统 | 容器生命周期 | 临时数据、敏感信息 |
+
+### 使用 Volume 持久化数据
+
+```bash
+# 创建命名卷
+docker volume create my-app-data
+
+# 查看卷详情
+docker volume inspect my-app-data
+
+# 使用卷启动容器
+docker run -d \
+  --name postgres \
+  -v my-app-data:/var/lib/postgresql/data \
+  -e POSTGRES_PASSWORD=example \
+  postgres:15-alpine
+
+# 清理卷（谨慎操作）
+docker volume rm my-app-data
+```
+
+### Docker Compose 卷配置
+
+```yaml
+version: '3.8'
+
+services:
+  app:
+    build: .
+    volumes:
+      # 命名卷 - 数据持久化
+      - app-data:/app/data
+      
+      # bind mount - 开发环境代码热更新
+      - ./src:/app/src:ro
+      
+      # tmpfs - 临时缓存
+      - cache:/tmp/cache:rw,noexec,nosuid,size=100m
+
+  redis:
+    image: redis:alpine
+    volumes:
+      - redis-data:/data
+
+volumes:
+  app-data:
+    driver: local
+  redis-data:
+    driver: local
+```
+
+## 📝 实际应用示例
+
+### 完整的 Node.js 应用 Docker 化
+
+**项目结构：**
+```
+my-app/
+├── src/
+│   ├── index.ts
+│   └── utils.ts
+├── package.json
+├── tsconfig.json
+├── Dockerfile
+├── .dockerignore
+└── docker-compose.yml
+```
+
+**Dockerfile：**
+```dockerfile
+# 构建阶段
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# 复制依赖文件
+COPY package*.json ./
+
+# 安装所有依赖
+RUN npm ci
+
+# 复制源代码
+COPY . .
+
+# 构建应用
+RUN npm run build
+
+# 运行阶段
+FROM node:18-alpine AS runtime
+
+# 安装生产环境依赖
+RUN apk add --no-cache dumb-init curl
+
+# 创建非 root 用户
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+WORKDIR /app
+
+# 从构建阶段复制依赖
+COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
+
+# 从构建阶段复制构建产物
+COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:3000/health || exit 1
+
+# 切换用户
+USER nodejs
+
+# 使用 dumb-init
+ENTRYPOINT ["dumb-init", "--"]
+
+# 启动应用
+CMD ["node", "dist/index.js"]
+```
+
+**docker-compose.yml：**
+```yaml
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - app-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+```
+
+**启动应用：**
+```bash
+# 构建并启动
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f app
+
+# 停止服务
+docker-compose down
+
+# 停止并删除数据卷
+docker-compose down -v
+```
+
+## 🔗 相关概念
+
+- **容器编排**：Docker Swarm / Kubernetes
+- **镜像仓库**：Docker Hub / Harbor / 阿里云容器镜像服务
+- **容器安全**：镜像扫描、运行时安全、最小化镜像
+
+## 📚 学习检查点
+
+- [ ] 能否解释 Docker 镜像的分层原理？
+- [ ] 能否编写一个优化的多阶段 Dockerfile？
+- [ ] 能否区分 Docker 的不同网络模式？
+- [ ] 能否正确使用 Volume 进行数据持久化？
+
+## 🚀 下一步
+
+→ [5.1.3 Kubernetes](/architect/05-cloud-native-infrastructure/01-containers-orchestration/03-kubernetes)

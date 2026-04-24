@@ -3,15 +3,760 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解基础设施即代码的核心理念和实践，包括 Terraform、Ansible/Puppet 和环境一致性管理。
+基础设施即代码（Infrastructure as Code，IaC）是一种通过代码来管理和配置基础设施的方法，它将基础设施像应用代码一样进行版本控制、测试和自动化部署。
 
-## 🎯 学习目标
+### 核心原则
 
-- 掌握 Terraform 的核心概念和使用方法
-- 理解 Ansible 和 Puppet 的配置管理方式
-- 能够用 IaC 管理多环境的一致性
-- 理解声明式和命令式 IaC 工具的差异
+- **声明式配置**：描述期望状态而非执行步骤
+- **幂等性**：多次执行产生相同结果
+- **版本控制**：所有变更都通过 Git 管理
+- **自动化测试**：对基础设施代码进行测试验证
+- **不可变基础设施**：替换而非修改现有资源
 
-> 🚧 详细内容正在编写中...
+### IaC 工具对比
+
+| 工具 | 类型 | 语言 | 适用场景 | 特点 |
+|------|------|------|---------|------|
+| **Terraform** | 声明式 | HCL | 云资源管理 | 多云支持、状态管理 |
+| **Ansible** | 命令式 | YAML | 配置管理 | 无代理、简单易用 |
+| **Puppet** | 声明式 | Ruby DSL | 配置管理 | 强大的依赖管理 |
+| **CloudFormation** | 声明式 | YAML/JSON | AWS 专用 | AWS 原生集成 |
+
+## 🎯 Terraform
+
+### 基础配置
+
+**项目结构：**
+```
+terraform/
+├── main.tf              # 主配置文件
+├── variables.tf         # 变量定义
+├── outputs.tf           # 输出定义
+├── provider.tf          # 提供商配置
+├── terraform.tfvars     # 变量值文件
+├── modules/
+│   ├── vpc/
+│   ├── ec2/
+│   └── rds/
+└── environments/
+    ├── dev/
+    ├── staging/
+    └── prod/
+```
+
+**provider.tf：**
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+  
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+  
+  backend "s3" {
+    bucket         = "my-terraform-state"
+    key            = "prod/terraform.tfstate"
+    region         = "us-west-2"
+    encrypt        = true
+    dynamodb_table = "terraform-locks"
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+  
+  default_tags {
+    tags = {
+      Environment = var.environment
+      ManagedBy   = "Terraform"
+      Project     = var.project_name
+    }
+  }
+}
+```
+
+**variables.tf：**
+```hcl
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-west-2"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "Environment must be dev, staging, or prod."
+  }
+}
+
+variable "project_name" {
+  description = "Project name"
+  type        = string
+  default     = "my-project"
+}
+
+variable "vpc_cidr" {
+  description = "VPC CIDR block"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "availability_zones" {
+  description = "List of availability zones"
+  type        = list(string)
+  default     = ["us-west-2a", "us-west-2b"]
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "db_instance_class" {
+  description = "RDS instance class"
+  type        = string
+  default     = "db.t3.micro"
+}
+```
+
+**main.tf：**
+```hcl
+# VPC
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+  
+  tags = {
+    Name = "${var.project_name}-vpc-${var.environment}"
+  }
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+  
+  tags = {
+    Name = "${var.project_name}-igw-${var.environment}"
+  }
+}
+
+# Public Subnets
+resource "aws_subnet" "public" {
+  count                   = length(var.availability_zones)
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone       = var.availability_zones[count.index]
+  map_public_ip_on_launch = true
+  
+  tags = {
+    Name = "${var.project_name}-public-${count.index}-${var.environment}"
+  }
+}
+
+# Private Subnets
+resource "aws_subnet" "private" {
+  count             = length(var.availability_zones)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
+  availability_zone = var.availability_zones[count.index]
+  
+  tags = {
+    Name = "${var.project_name}-private-${count.index}-${var.environment}"
+  }
+}
+
+# Database Subnets
+resource "aws_subnet" "database" {
+  count             = length(var.availability_zones)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 20)
+  availability_zone = var.availability_zones[count.index]
+  
+  tags = {
+    Name = "${var.project_name}-database-${count.index}-${var.environment}"
+  }
+}
+
+# Route Table for Public Subnets
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+  
+  tags = {
+    Name = "${var.project_name}-public-rt-${var.environment}"
+  }
+}
+
+# Route Table Association for Public Subnets
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+# Elastic IP for NAT Gateway
+resource "aws_eip" "nat" {
+  count  = length(var.availability_zones)
+  domain = "vpc"
+  
+  tags = {
+    Name = "${var.project_name}-nat-eip-${count.index}-${var.environment}"
+  }
+  
+  depends_on = [aws_internet_gateway.main]
+}
+
+# NAT Gateway
+resource "aws_nat_gateway" "main" {
+  count         = length(var.availability_zones)
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
+  
+  tags = {
+    Name = "${var.project_name}-nat-${count.index}-${var.environment}"
+  }
+  
+  depends_on = [aws_internet_gateway.main]
+}
+
+# Route Table for Private Subnets
+resource "aws_route_table" "private" {
+  count  = length(var.availability_zones)
+  vpc_id = aws_vpc.main.id
+  
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main[count.index].id
+  }
+  
+  tags = {
+    Name = "${var.project_name}-private-rt-${count.index}-${var.environment}"
+  }
+}
+
+# Route Table Association for Private Subnets
+resource "aws_route_table_association" "private" {
+  count          = length(aws_subnet.private)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[count.index].id
+}
+
+# Security Group for Application
+resource "aws_security_group" "app" {
+  name_prefix = "${var.project_name}-app-"
+  vpc_id      = aws_vpc.main.id
+  
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  tags = {
+    Name = "${var.project_name}-app-sg-${var.environment}"
+  }
+  
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# EC2 Instance
+resource "aws_instance" "app" {
+  count                  = var.environment == "prod" ? 3 : 1
+  ami                    = data.aws_ami.amazon_linux_2.id
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.public[count.index % length(var.availability_zones)].id
+  vpc_security_group_ids = [aws_security_group.app.id]
+  
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y docker
+              systemctl start docker
+              systemctl enable docker
+              docker run -d -p 80:80 nginx:alpine
+              EOF
+  
+  tags = {
+    Name = "${var.project_name}-app-${count.index}-${var.environment}"
+  }
+}
+
+# Application Load Balancer
+resource "aws_lb" "app" {
+  name               = "${var.project_name}-alb-${var.environment}"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.app.id]
+  subnets            = aws_subnet.public[*].id
+  
+  enable_deletion_protection = false
+  
+  tags = {
+    Name = "${var.project_name}-alb-${var.environment}"
+  }
+}
+
+# Target Group
+resource "aws_lb_target_group" "app" {
+  name     = "${var.project_name}-tg-${var.environment}"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+  
+  health_check {
+    path                = "/"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+}
+
+# Listener
+resource "aws_lb_listener" "app" {
+  load_balancer_arn = aws_lb.app.arn
+  port              = 80
+  protocol          = "HTTP"
+  
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.app.arn
+  }
+}
+
+# Attach instances to target group
+resource "aws_lb_target_group_attachment" "app" {
+  count            = length(aws_instance.app)
+  target_group_arn = aws_lb_target_group.app.arn
+  target_id        = aws_instance.app[count.index].id
+  port             = 80
+}
+
+# RDS Subnet Group
+resource "aws_db_subnet_group" "main" {
+  name       = "${var.project_name}-db-subnet-group-${var.environment}"
+  subnet_ids = aws_subnet.database[*].id
+  
+  tags = {
+    Name = "${var.project_name}-db-subnet-group-${var.environment}"
+  }
+}
+
+# RDS Instance
+resource "aws_db_instance" "main" {
+  allocated_storage      = 20
+  storage_type           = "gp2"
+  engine                 = "mysql"
+  engine_version         = "8.0"
+  instance_class         = var.db_instance_class
+  db_name                = "myapp"
+  username               = var.environment == "prod" ? "admin" : "dev"
+  password               = var.db_password
+  parameter_group_name   = "default.mysql8.0"
+  skip_final_snapshot    = var.environment != "prod"
+  db_subnet_group_name   = aws_db_subnet_group.main.name
+  vpc_security_group_ids = [aws_security_group.app.id]
+  multi_az               = var.environment == "prod"
+  
+  tags = {
+    Name = "${var.project_name}-db-${var.environment}"
+  }
+}
+
+# Data source for latest Amazon Linux 2 AMI
+data "aws_ami" "amazon_linux_2" {
+  most_recent = true
+  owners      = ["amazon"]
+  
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+}
+```
+
+**outputs.tf：**
+```hcl
+output "vpc_id" {
+  description = "VPC ID"
+  value       = aws_vpc.main.id
+}
+
+output "public_subnet_ids" {
+  description = "Public subnet IDs"
+  value       = aws_subnet.public[*].id
+}
+
+output "private_subnet_ids" {
+  description = "Private subnet IDs"
+  value       = aws_subnet.private[*].id
+}
+
+output "database_subnet_ids" {
+  description = "Database subnet IDs"
+  value       = aws_subnet.database[*].id
+}
+
+output "load_balancer_dns" {
+  description = "Load balancer DNS name"
+  value       = aws_lb.app.dns_name
+}
+
+output "database_endpoint" {
+  description = "Database endpoint"
+  value       = aws_db_instance.main.endpoint
+  sensitive   = true
+}
+```
+
+**terraform.tfvars：**
+```hcl
+aws_region       = "us-west-2"
+environment      = "dev"
+project_name     = "my-project"
+vpc_cidr         = "10.0.0.0/16"
+instance_type    = "t3.micro"
+db_instance_class = "db.t3.micro"
+```
+
+### Terraform 命令
+
+```bash
+# 初始化工作目录
+terraform init
+
+# 格式化配置文件
+terraform fmt
+
+# 验证配置
+terraform validate
+
+# 查看变更计划
+terraform plan
+
+# 应用变更
+terraform apply
+
+# 自动批准变更
+terraform apply -auto-approve
+
+# 查看状态
+terraform show
+
+# 列出资源
+terraform state list
+
+# 导入现有资源
+terraform import aws_instance.app i-1234567890abcdef0
+
+# 销毁资源
+terraform destroy
+
+# 查看输出
+terraform output load_balancer_dns
+
+# 工作区管理
+terraform workspace new dev
+terraform workspace list
+terraform workspace select dev
+```
+
+## 🔧 Ansible
+
+### 基础配置
+
+**项目结构：**
+```
+ansible/
+├── inventory/
+│   ├── dev.ini
+│   ├── staging.ini
+│   └── prod.ini
+├── playbooks/
+│   ├── setup-web.yml
+│   ├── setup-db.yml
+│   └── deploy-app.yml
+├── roles/
+│   ├── web/
+│   │   ├── tasks/
+│   │   ├── handlers/
+│   │   ├── files/
+│   │   ├── templates/
+│   │   └── vars/
+│   └── db/
+└── group_vars/
+    ├── all.yml
+    ├── dev.yml
+    ├── staging.yml
+    └── prod.yml
+```
+
+**inventory/dev.ini：**
+```ini
+[web]
+web1.dev.example.com ansible_user=ubuntu
+web2.dev.example.com ansible_user=ubuntu
+
+[db]
+db1.dev.example.com ansible_user=ubuntu
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+environment=dev
+```
+
+**playbooks/setup-web.yml：**
+```yaml
+---
+- name: Setup Web Servers
+  hosts: web
+  become: yes
+  vars:
+    nginx_version: "1.24"
+    app_port: 3000
+  
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+    
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - docker.io
+          - docker-compose
+        state: present
+    
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+    
+    - name: Create app directory
+      file:
+        path: /opt/app
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+    
+    - name: Copy Docker Compose file
+      copy:
+        src: docker-compose.yml
+        dest: /opt/app/docker-compose.yml
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+    
+    - name: Pull latest Docker images
+      docker_compose:
+        project_src: /opt/app
+        pull: yes
+    
+    - name: Start application
+      docker_compose:
+        project_src: /opt/app
+        state: present
+    
+    - name: Configure Nginx reverse proxy
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-available/app
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart nginx
+    
+    - name: Enable site
+      file:
+        src: /etc/nginx/sites-available/app
+        dest: /etc/nginx/sites-enabled/app
+        state: link
+      notify: restart nginx
+  
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+```
+
+**roles/web/templates/nginx.conf.j2：**
+```nginx
+upstream app {
+    server 127.0.0.1:{{ app_port }};
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    location / {
+        proxy_pass http://app;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+}
+```
+
+**playbooks/deploy-app.yml：**
+```yaml
+---
+- name: Deploy Application
+  hosts: web
+  become: yes
+  vars:
+    app_version: "{{ lookup('env', 'APP_VERSION') | default('latest', true) }}"
+    docker_image: "my-registry/my-app:{{ app_version }}"
+  
+  tasks:
+    - name: Pull new Docker image
+      docker_image:
+        name: "{{ docker_image }}"
+        source: pull
+        force_source: yes
+    
+    - name: Update Docker Compose image
+      lineinfile:
+        path: /opt/app/docker-compose.yml
+        regexp: '^  image:'
+        line: '  image: {{ docker_image }}'
+    
+    - name: Restart application
+      docker_compose:
+        project_src: /opt/app
+        state: present
+        restarted: yes
+    
+    - name: Wait for application to be healthy
+      uri:
+        url: http://localhost/health
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 30
+      delay: 5
+```
+
+### Ansible 命令
+
+```bash
+# 检查连接
+ansible all -i inventory/dev.ini -m ping
+
+# 运行 Playbook
+ansible-playbook -i inventory/dev.ini playbooks/setup-web.yml
+
+# 指定变量运行
+ansible-playbook -i inventory/dev.ini playbooks/deploy-app.yml -e "APP_VERSION=v1.0.0"
+
+# 检查模式（不执行变更）
+ansible-playbook -i inventory/dev.ini playbooks/setup-web.yml --check
+
+# 详细输出
+ansible-playbook -i inventory/dev.ini playbooks/setup-web.yml -v
+
+# 限制执行的主机
+ansible-playbook -i inventory/dev.ini playbooks/setup-web.yml --limit web1.dev.example.com
+
+# 列出主机
+ansible all -i inventory/dev.ini --list-hosts
+
+# 在远程主机执行命令
+ansible web -i inventory/dev.ini -m shell -a "docker ps"
+
+# 复制文件到远程主机
+ansible web -i inventory/dev.ini -m copy -a "src=/local/file dest=/remote/file"
+```
+
+## 📝 实际应用示例
+
+### 完整的 IaC 工作流
+
+**1. 使用 Terraform 创建基础设施：**
+```bash
+cd terraform/environments/prod
+terraform init
+terraform plan -out=tfplan
+terraform apply tfplan
+```
+
+**2. 使用 Ansible 配置服务器：**
+```bash
+cd ansible
+ansible-playbook -i inventory/prod.ini playbooks/setup-web.yml
+ansible-playbook -i inventory/prod.ini playbooks/setup-db.yml
+```
+
+**3. 部署应用：**
+```bash
+export APP_VERSION=v1.0.0
+ansible-playbook -i inventory/prod.ini playbooks/deploy-app.yml
+```
+
+**4. 更新基础设施：**
+```bash
+# 修改 Terraform 配置
+cd terraform/environments/prod
+terraform plan
+terraform apply
+```
+
+## 🔗 相关概念
+
+- **持续集成/持续部署**：GitHub Actions / GitLab CI
+- **容器化**：Docker / Kubernetes
+- **可观测性**：Prometheus / Grafana / ELK
+
+## 📚 学习检查点
+
+- [ ] 能否用 Terraform 管理云资源？
+- [ ] 能否用 Ansible 配置服务器？
+- [ ] 能否理解声明式和命令式 IaC 的差异？
+- [ ] 能否设计多环境的 IaC 管理方案？
+
+## 🚀 下一步
+
+→ [5.3 可观测性](/architect/05-cloud-native-infrastructure/03-observability/01-observability-overview)

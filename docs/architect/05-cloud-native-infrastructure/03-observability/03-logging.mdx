@@ -3,15 +3,555 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解企业级日志管理方案，包括 ELK/EFK Stack、结构化日志和日志聚合与分析。
+日志是可观测性的三大支柱之一，记录了系统运行过程中发生的事件。本节将讲解如何构建企业级日志管理方案，实现日志的收集、存储、分析和可视化。
 
-## 🎯 学习目标
+### 核心概念
 
-- 掌握 ELK/EFK Stack 的架构和搭建
-- 理解结构化日志的设计规范
-- 能够实现日志的集中收集和聚合分析
-- 了解日志在故障排查中的最佳实践
+- **结构化日志**：使用 JSON 等格式，便于机器解析和分析
+- **日志级别**：DEBUG、INFO、WARN、ERROR、FATAL
+- **日志聚合**：将分散的日志集中收集到统一的存储系统
+- **日志分析**：通过搜索、过滤、聚合等操作提取有价值的信息
 
-> 🚧 详细内容正在编写中...
+### ELK Stack 架构
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   Beats     │───→│  Logstash   │───→│ Elasticsearch│
+│  (日志采集)  │    │  (日志处理)  │    │   (日志存储)  │
+└─────────────┘    └─────────────┘    └──────┬──────┘
+                                              ↓
+                                      ┌─────────────┐
+                                      │   Kibana    │
+                                      │  (日志可视化) │
+                                      └─────────────┘
+```
+
+## 🎯 结构化日志
+
+### 日志格式设计
+
+**JSON 结构化日志示例：**
+```javascript
+const winston = require('winston');
+
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    winston.format.splat(),
+    winston.format.json()
+  ),
+  defaultMeta: {
+    service: 'my-app',
+    environment: process.env.NODE_ENV || 'development',
+    version: process.env.APP_VERSION || '1.0.0'
+  },
+  transports: [
+    new winston.transports.Console({
+      format: winston.format.simple()
+    }),
+    new winston.transports.File({ 
+      filename: 'error.log', 
+      level: 'error' 
+    }),
+    new winston.transports.File({ 
+      filename: 'combined.log' 
+    })
+  ]
+});
+
+// 使用示例
+logger.info('User logged in', {
+  userId: '12345',
+  username: 'john.doe',
+  ip: '192.168.1.1',
+  userAgent: 'Mozilla/5.0...',
+  duration: 45
+});
+
+logger.error('Database connection failed', {
+  error: 'Connection timeout',
+  database: 'postgres',
+  host: 'localhost',
+  port: 5432,
+  stack: new Error().stack
+});
+
+logger.warn('High memory usage', {
+  memoryUsage: process.memoryUsage(),
+  threshold: 500 * 1024 * 1024
+});
+```
+
+### 日志级别规范
+
+```javascript
+// 日志级别使用规范
+const LogLevel = {
+  DEBUG: 'debug',    // 调试信息，仅在开发环境使用
+  INFO: 'info',      // 一般信息，记录正常的业务流程
+  WARN: 'warn',      // 警告信息，不影响业务但需要关注
+  ERROR: 'error',    // 错误信息，影响业务但可以恢复
+  FATAL: 'fatal'     // 致命错误，导致服务不可用
+};
+
+// 日志记录最佳实践
+function processPayment(paymentData) {
+  logger.info('Payment processing started', {
+    paymentId: paymentData.id,
+    amount: paymentData.amount,
+    currency: paymentData.currency
+  });
+
+  try {
+    // 业务逻辑
+    const result = await paymentService.process(paymentData);
+    
+    logger.info('Payment processed successfully', {
+      paymentId: paymentData.id,
+      transactionId: result.transactionId,
+      duration: result.duration
+    });
+    
+    return result;
+  } catch (error) {
+    logger.error('Payment processing failed', {
+      paymentId: paymentData.id,
+      error: error.message,
+      code: error.code,
+      stack: error.stack,
+      retryable: error.retryable
+    });
+    
+    throw error;
+  }
+}
+```
+
+## 📊 ELK Stack 部署
+
+### Elasticsearch 配置
+
+**elasticsearch.yml：**
+```yaml
+cluster.name: "my-cluster"
+node.name: "node-1"
+network.host: 0.0.0.0
+http.port: 9200
+
+# 发现配置
+discovery.seed_hosts: ["node-1", "node-2", "node-3"]
+cluster.initial_master_nodes: ["node-1", "node-2", "node-3"]
+
+# 内存配置
+bootstrap.memory_lock: true
+
+# 安全配置
+xpack.security.enabled: true
+xpack.security.transport.ssl.enabled: true
+xpack.security.http.ssl.enabled: true
+
+# 索引配置
+index.number_of_shards: 3
+index.number_of_replicas: 1
+```
+
+**索引模板配置：**
+```javascript
+// 创建索引模板
+PUT _template/logs-template
+{
+  "index_patterns": ["logs-*"],
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1,
+    "index.lifecycle.name": "logs-policy",
+    "index.lifecycle.rollover_alias": "logs"
+  },
+  "mappings": {
+    "properties": {
+      "@timestamp": {
+        "type": "date"
+      },
+      "level": {
+        "type": "keyword"
+      },
+      "message": {
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
+      },
+      "service": {
+        "type": "keyword"
+      },
+      "environment": {
+        "type": "keyword"
+      },
+      "userId": {
+        "type": "keyword"
+      },
+      "requestId": {
+        "type": "keyword"
+      },
+      "duration": {
+        "type": "long"
+      },
+      "error": {
+        "type": "object"
+      }
+    }
+  }
+}
+```
+
+### Logstash 配置
+
+**logstash.conf：**
+```conf
+input {
+  # 从 Beats 接收日志
+  beats {
+    port => 5044
+  }
+  
+  # 从文件读取日志
+  file {
+    path => "/var/log/*.log"
+    start_position => "beginning"
+    sincedb_path => "/dev/null"
+  }
+}
+
+filter {
+  # 解析 JSON 日志
+  if [message] =~ /^\{.*\}$/ {
+    json {
+      source => "message"
+    }
+  }
+  
+  # 添加时间戳
+  date {
+    match => ["timestamp", "ISO8601"]
+    target => "@timestamp"
+  }
+  
+  # 添加主机信息
+  mutate {
+    add_field => {
+      "[host][name]" => "${HOSTNAME}"
+      "[host][ip]" => "${HOST_IP}"
+    }
+  }
+  
+  # 根据日志级别添加标签
+  if [level] == "error" or [level] == "fatal" {
+    mutate {
+      add_tag => ["error"]
+    }
+  }
+  
+  # 移除不需要的字段
+  mutate {
+    remove_field => ["message"]
+  }
+  
+  # 用户代理解析
+  if [userAgent] {
+    useragent {
+      source => "userAgent"
+      target => "ua"
+    }
+  }
+  
+  # IP 地址地理位置解析
+  if [ip] {
+    geoip {
+      source => "ip"
+      target => "geo"
+    }
+  }
+}
+
+output {
+  # 输出到 Elasticsearch
+  elasticsearch {
+    hosts => ["elasticsearch:9200"]
+    index => "logs-%{+YYYY.MM.dd}"
+    user => "elastic"
+    password => "${ES_PASSWORD}"
+  }
+  
+  # 输出到标准输出（调试用）
+  stdout {
+    codec => rubydebug
+  }
+}
+```
+
+### Kibana 配置
+
+**kibana.yml：**
+```yaml
+server.name: "kibana"
+server.host: "0.0.0.0"
+server.port: 5601
+
+# Elasticsearch 配置
+elasticsearch.hosts: ["http://elasticsearch:9200"]
+elasticsearch.username: "elastic"
+elasticsearch.password: "${ES_PASSWORD}"
+
+# 国际化
+i18n.locale: "zh-CN"
+
+# 安全配置
+xpack.security.enabled: true
+xpack.encryptedSavedObjects.encryptionKey: "${ENCRYPTION_KEY}"
+
+# 监控配置
+monitoring.ui.container.elasticsearch.enabled: true
+```
+
+## 🔧 日志采集
+
+### Filebeat 配置
+
+**filebeat.yml：**
+```yaml
+filebeat.inputs:
+- type: log
+  enabled: true
+  paths:
+    - /var/log/my-app/*.log
+  fields:
+    service: my-app
+    environment: production
+  fields_under_root: true
+  multiline:
+    pattern: '^\['
+    negate: true
+    match: after
+
+- type: container
+  enabled: true
+  paths:
+    - /var/log/containers/*.log
+  processors:
+  - add_kubernetes_metadata:
+      host: ${NODE_NAME}
+      matchers:
+      - logs_path:
+          logs_path: "/var/log/containers/"
+
+# 输出到 Logstash
+output.logstash:
+  hosts: ["logstash:5044"]
+  loadbalance: true
+
+# 输出到 Elasticsearch（备选）
+# output.elasticsearch:
+#   hosts: ["elasticsearch:9200"]
+#   index: "filebeat-%{+yyyy.MM.dd}"
+
+# 处理器配置
+processors:
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+  - add_cloud_metadata: ~
+  - add_docker_metadata: ~
+  - add_kubernetes_metadata: ~
+
+# 日志级别配置
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+```
+
+### Fluent Bit 配置
+
+**fluent-bit.conf：**
+```conf
+[SERVICE]
+    Flush         1
+    Daemon        Off
+    Log_Level     info
+    Parsers_File  parsers.conf
+
+# 输入：从文件读取
+[INPUT]
+    Name              tail
+    Path              /var/log/my-app/*.log
+    Parser            json
+    Tag               my-app
+    Mem_Buf_Limit     5MB
+    Skip_Long_Lines   On
+    Refresh_Interval  10
+
+# 输入：从 Docker 容器读取
+[INPUT]
+    Name              systemd
+    Tag               host.*
+    Systemd_Filter    _SYSTEMD_UNIT=docker.service
+
+# 过滤器：添加 Kubernetes 元数据
+[FILTER]
+    Name                kubernetes
+    Match               kube.*
+    Kube_URL            https://kubernetes.default.svc:443
+    Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+    Kube_Tag_Prefix     kube.var.log.containers.
+    Merge_Log           On
+    Keep_Log            Off
+    K8S-Logging.Parser  On
+    K8S-Logging.Exclude On
+
+# 过滤器：添加主机信息
+[FILTER]
+    Name                record_modifier
+    Match               *
+    Record              hostname ${HOSTNAME}
+
+# 输出：Elasticsearch
+[OUTPUT]
+    Name            es
+    Match           *
+    Host            elasticsearch
+    Port            9200
+    Index           logs-%{kubernetes.namespace_name}-%{kubernetes.pod_name}-%{kubernetes.container_name}
+    Logstash_Format On
+    Logstash_Prefix logs
+    Retry_Limit     False
+
+# 输出：标准输出（调试用）
+[OUTPUT]
+    Name  stdout
+    Match *
+```
+
+## 📝 日志分析
+
+### Elasticsearch 查询
+
+```javascript
+// 基础查询
+GET /logs-*/_search
+{
+  "query": {
+    "match_all": {}
+  }
+}
+
+// 按日志级别查询
+GET /logs-*/_search
+{
+  "query": {
+    "term": {
+      "level": "error"
+    }
+  }
+}
+
+// 按时间范围查询
+GET /logs-*/_search
+{
+  "query": {
+    "range": {
+      "@timestamp": {
+        "gte": "now-1h",
+        "lte": "now"
+      }
+    }
+  }
+}
+
+// 组合查询
+GET /logs-*/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "term": { "level": "error" } },
+        { "term": { "service": "my-app" } }
+      ],
+      "filter": [
+        { "range": { "@timestamp": { "gte": "now-1h" } } }
+      ]
+    }
+  }
+}
+
+// 聚合统计
+GET /logs-*/_search
+{
+  "size": 0,
+  "aggs": {
+    "by_level": {
+      "terms": {
+        "field": "level"
+      }
+    },
+    "by_service": {
+      "terms": {
+        "field": "service"
+      }
+    },
+    "errors_over_time": {
+      "date_histogram": {
+        "field": "@timestamp",
+        "calendar_interval": "1h"
+      },
+      "aggs": {
+        "top_errors": {
+          "top_hits": {
+            "size": 10,
+            "sort": [
+              { "@timestamp": { "order": "desc" } }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Kibana 可视化
+
+**创建仪表板：**
+1. 创建索引模式：`logs-*`
+2. 创建可视化：
+   - 日志级别饼图
+   - 错误率趋势图
+   - 服务分布柱状图
+   - 响应时间分布图
+3. 创建仪表板，组合所有可视化
+
+## 🔗 相关概念
+
+- **监控体系**：Prometheus / Grafana
+- **分布式追踪**：Jaeger / Zipkin / OpenTelemetry
+- **APM**：New Relic / Datadog
+
+## 📚 学习检查点
+
+- [ ] 能否设计结构化日志格式？
+- [ ] 能否部署 ELK Stack？
+- [ ] 能否配置日志采集？
+- [ ] 能否进行日志分析和查询？
+
+## 🚀 下一步
+
+→ [5.3.4 分布式追踪](/architect/05-cloud-native-infrastructure/03-observability/04-distributed-tracing)

@@ -3,15 +3,636 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解各种部署策略（蓝绿部署、金丝雀发布、滚动更新、灰度发布）和 GitOps 实践（ArgoCD、Flux）。
+持续部署（Continuous Deployment，CD）是持续集成的延伸，它将通过所有测试的代码自动部署到生产环境。本节将讲解各种部署策略和 GitOps 实践。
 
-## 🎯 学习目标
+### 核心原则
 
-- 掌握蓝绿部署、金丝雀发布等部署策略
-- 理解 GitOps 的核心原则和工作流
-- 能够根据业务场景选择合适的部署策略
-- 掌握 ArgoCD 或 Flux 的配置和使用
+- **自动化部署**：所有部署都通过自动化流程完成
+- **零停机部署**：部署过程中不影响用户访问
+- **快速回滚**：出现问题能够快速回滚到上一版本
+- **渐进式发布**：逐步向用户推送新版本，降低风险
 
-> 🚧 详细内容正在编写中...
+### 部署策略对比
+
+| 策略 | 停机时间 | 回滚速度 | 资源成本 | 复杂度 | 适用场景 |
+|------|---------|---------|---------|-------|---------|
+| **蓝绿部署** | 无 | 极快 | 2x | 中 | 关键业务、需要快速回滚 |
+| **金丝雀发布** | 无 | 快 | 1.x | 高 | 需要验证的变更、A/B测试 |
+| **滚动更新** | 无 | 中 | 1x | 低 | 常规变更、无状态服务 |
+| **灰度发布** | 无 | 快 | 1.x | 高 | 按用户群验证、渐进式发布 |
+
+## 🎯 部署策略
+
+### 蓝绿部署
+
+蓝绿部署维护两套完全相同的生产环境（蓝色和绿色），新版本部署到空闲环境，验证通过后切换流量。
+
+```yaml
+# Kubernetes 蓝绿部署配置
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app-blue
+  labels:
+    app: my-app
+    version: blue
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: my-app
+        version: blue
+    spec:
+      containers:
+      - name: app
+        image: my-app:1.0.0
+        ports:
+        - containerPort: 3000
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app-green
+  labels:
+    app: my-app
+    version: green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+      version: green
+  template:
+    metadata:
+      labels:
+        app: my-app
+        version: green
+    spec:
+      containers:
+      - name: app
+        image: my-app:1.1.0
+        ports:
+        - containerPort: 3000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app-service
+spec:
+  selector:
+    app: my-app
+    version: blue  # 切换到 blue 或 green
+  ports:
+  - port: 80
+    targetPort: 3000
+```
+
+**蓝绿部署脚本：**
+```bash
+#!/bin/bash
+
+# 部署新版本到绿色环境
+kubectl apply -f my-app-green.yaml
+
+# 等待绿色环境就绪
+kubectl rollout status deployment/my-app-green
+
+# 健康检查
+kubectl get pods -l version=green
+
+# 切换流量到绿色环境
+kubectl patch service my-app-service -p '{"spec":{"selector":{"version":"green"}}}'
+
+# 验证新版本
+sleep 30
+curl http://my-app-service/health
+
+# 如果出现问题，回滚到蓝色环境
+# kubectl patch service my-app-service -p '{"spec":{"selector":{"version":"blue"}}}'
+```
+
+### 金丝雀发布
+
+金丝雀发布将新版本先部署给少量用户，验证通过后逐步扩大范围。
+
+```yaml
+# 使用 Istio 进行金丝雀发布
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: my-app
+spec:
+  hosts:
+  - my-app
+  http:
+  - match:
+    - headers:
+        x-canary:
+          exact: "true"
+    route:
+    - destination:
+        host: my-app
+        subset: v2  # 新版本
+      weight: 100
+  - route:
+    - destination:
+        host: my-app
+        subset: v1  # 旧版本
+      weight: 90
+    - destination:
+        host: my-app
+        subset: v2  # 新版本
+      weight: 10  # 10% 流量到新版本
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: my-app
+spec:
+  host: my-app
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+```
+
+**渐进式金丝雀发布脚本：**
+```bash
+#!/bin/bash
+
+# 阶段1：5% 流量
+kubectl patch virtualservice my-app --type=json -p='[
+  {
+    "op": "replace",
+    "path": "/spec/http/1/route/1/weight",
+    "value": 5
+  },
+  {
+    "op": "replace",
+    "path": "/spec/http/1/route/0/weight",
+    "value": 95
+  }
+]'
+
+echo "等待 5 分钟..."
+sleep 300
+
+# 检查错误率
+ERROR_RATE=$(kubectl logs -l app=my-app,version=v2 --tail=1000 | grep "ERROR" | wc -l)
+if [ $ERROR_RATE -gt 10 ]; then
+  echo "错误率过高，回滚"
+  exit 1
+fi
+
+# 阶段2：25% 流量
+kubectl patch virtualservice my-app --type=json -p='[
+  {
+    "op": "replace",
+    "path": "/spec/http/1/route/1/weight",
+    "value": 25
+  },
+  {
+    "op": "replace",
+    "path": "/spec/http/1/route/0/weight",
+    "value": 75
+  }
+]'
+
+echo "等待 10 分钟..."
+sleep 600
+
+# 阶段3：50% 流量
+kubectl patch virtualservice my-app --type=json -p='[
+  {
+    "op": "replace",
+    "path": "/spec/http/1/route/1/weight",
+    "value": 50
+  },
+  {
+    "op": "replace",
+    "path": "/spec/http/1/route/0/weight",
+    "value": 50
+  }
+]'
+
+echo "等待 15 分钟..."
+sleep 900
+
+# 阶段4：100% 流量
+kubectl patch virtualservice my-app --type=json -p='[
+  {
+    "op": "replace",
+    "path": "/spec/http/1/route/1/weight",
+    "value": 100
+  },
+  {
+    "op": "replace",
+    "path": "/spec/http/1/route/0/weight",
+    "value": 0
+  }
+]'
+
+echo "金丝雀发布完成"
+```
+
+### 滚动更新
+
+滚动更新是 Kubernetes Deployment 的默认更新策略，逐步替换旧版本的 Pod。
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2        # 最多可以多创建 2 个 Pod
+      maxUnavailable: 0  # 最多可以不可用 0 个 Pod
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: app
+        image: my-app:1.0.0
+        ports:
+        - containerPort: 3000
+        # 健康检查确保新 Pod 就绪后才继续
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+```
+
+**滚动更新命令：**
+```bash
+# 更新镜像版本
+kubectl set image deployment/my-app app=my-app:1.1.0
+
+# 查看更新状态
+kubectl rollout status deployment/my-app
+
+# 查看更新历史
+kubectl rollout history deployment/my-app
+
+# 暂停更新
+kubectl rollout pause deployment/my-app
+
+# 恢复更新
+kubectl rollout resume deployment/my-app
+
+# 回滚到上一版本
+kubectl rollout undo deployment/my-app
+
+# 回滚到指定版本
+kubectl rollout undo deployment/my-app --to-revision=2
+```
+
+## 🔧 GitOps
+
+### GitOps 核心原则
+
+GitOps 是一种使用 Git 作为单一事实来源的持续部署方法：
+
+1. **声明式**：整个系统状态通过代码声明
+2. **版本化**：所有变更都通过 Git 提交
+3. **自动化**：自动将 Git 状态同步到集群
+4. **持续协调**：持续监控并确保期望状态
+
+### ArgoCD 配置
+
+**Application 配置：**
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app
+  namespace: argocd
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/myorg/my-app-k8s
+    targetRevision: main
+    path: manifests/
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  
+  syncPolicy:
+    automated:
+      prune: true      # 自动删除不再需要的资源
+      selfHeal: true   # 自动修复配置漂移
+    syncOptions:
+    - CreateNamespace=true
+    - PrunePropagationPolicy=foreground
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+```
+
+**AppProject 配置：**
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: default
+  namespace: argocd
+spec:
+  description: Default project
+  
+  sourceRepos:
+  - https://github.com/myorg/*
+  
+  destinations:
+  - namespace: '*'
+    server: https://kubernetes.default.svc
+  
+  clusterResourceWhitelist:
+  - group: ''
+    kind: Namespace
+  
+  orphanedResources:
+    warn: false
+```
+
+### ArgoCD 工作流
+
+```bash
+# 安装 ArgoCD
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# 访问 ArgoCD UI
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+
+# 初始密码
+argocd admin initial-password -n argocd
+
+# 创建应用
+argocd app create my-app \
+  --repo https://github.com/myorg/my-app-k8s \
+  --path manifests \
+  --dest-server https://kubernetes.default.svc \
+  --dest-namespace production
+
+# 同步应用
+argocd app sync my-app
+
+# 查看应用状态
+argocd app get my-app
+
+# 查看应用日志
+argocd app logs my-app
+
+# 回滚应用
+argocd app rollback my-app
+```
+
+### Flux 配置
+
+**GitRepository 配置：**
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: my-app
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/myorg/my-app-k8s
+  ref:
+    branch: main
+  secretRef:
+    name: github-credentials
+```
+
+**Kustomization 配置：**
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: my-app
+  namespace: flux-system
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: my-app
+  path: ./manifests/production
+  prune: true
+  validation: client
+  healthChecks:
+  - apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+    namespace: production
+```
+
+## 📝 实际应用示例
+
+### 完整的 GitOps 工作流
+
+**目录结构：**
+```
+my-app-k8s/
+├── apps/
+│   ├── base/
+│   │   ├── deployment.yaml
+│   │   ├── service.yaml
+│   │   └── kustomization.yaml
+│   ├── overlays/
+│   │   ├── development/
+│   │   │   ├── kustomization.yaml
+│   │   │   └── values.yaml
+│   │   └── production/
+│   │       ├── kustomization.yaml
+│   │       └── values.yaml
+└── argocd/
+    ├── application.yaml
+    └── project.yaml
+```
+
+**base/deployment.yaml：**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: app
+        image: my-registry/my-app:$(IMAGE_TAG)
+        ports:
+        - containerPort: 3000
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+```
+
+**base/kustomization.yaml：**
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: my-app
+
+resources:
+  - deployment.yaml
+  - service.yaml
+
+images:
+  - name: my-registry/my-app
+    newName: my-registry/my-app
+    newTag: latest
+```
+
+**overlays/production/kustomization.yaml：**
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: production
+
+resources:
+  - ../../base
+
+images:
+  - name: my-registry/my-app
+    newName: my-registry/my-app
+    newTag: v1.0.0
+
+replicas:
+  - name: my-app
+    count: 10
+
+patchesStrategicMerge:
+  - values.yaml
+```
+
+**argocd/application.yaml：**
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/myorg/my-app-k8s
+    targetRevision: main
+    path: apps/overlays/production
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+```
+
+**部署流程：**
+```bash
+# 1. 更新镜像标签
+cd apps/overlays/production
+sed -i 's/newTag: .*/newTag: v1.1.0/' kustomization.yaml
+
+# 2. 提交并推送
+git add .
+git commit -m "Update my-app to v1.1.0"
+git push origin main
+
+# 3. ArgoCD 自动同步
+# 查看同步状态
+argocd app get my-app
+
+# 4. 手动触发同步（如果需要）
+argocd app sync my-app
+
+# 5. 如果出现问题，回滚
+git revert HEAD
+git push origin main
+argocd app sync my-app
+```
+
+## 🔗 相关概念
+
+- **持续集成**：GitHub Actions / GitLab CI
+- **基础设施即代码**：Terraform / Ansible
+- **可观测性**：Prometheus / Grafana / ELK
+
+## 📚 学习检查点
+
+- [ ] 能否对比各种部署策略的优劣？
+- [ ] 能否根据业务场景选择合适的部署策略？
+- [ ] 能否配置 ArgoCD 实现 GitOps？
+- [ ] 能否设计一个完整的 GitOps 工作流？
+
+## 🚀 下一步
+
+→ [5.2.4 基础设施即代码](/architect/05-cloud-native-infrastructure/02-cicd-devops/04-infrastructure-as-code)

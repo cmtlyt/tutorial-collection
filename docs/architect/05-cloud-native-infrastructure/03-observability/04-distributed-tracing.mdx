@@ -3,15 +3,557 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解分布式链路追踪技术，包括 Jaeger、Zipkin、SkyWalking、OpenTelemetry 和全链路压测。
+分布式追踪是可观测性的三大支柱之一，它通过跟踪请求在分布式系统中的流转路径，帮助我们理解系统行为、定位性能瓶颈和排查故障。本节将讲解分布式追踪的核心概念和实现方法。
 
-## 🎯 学习目标
+### 核心概念
 
-- 掌握 Jaeger/Zipkin/SkyWalking 的核心架构
-- 理解 OpenTelemetry 的标准化观测框架
-- 能够实现端到端的链路追踪和性能分析
-- 了解全链路压测的设计和实施方法
+- **Trace（追踪）**：一个请求在分布式系统中的完整执行路径
+- **Span（跨度）**：追踪中的一个基本工作单元，表示系统中的一个操作
+- **Span Context（跨度上下文）**：在服务间传递的追踪信息，包含 Trace ID 和 Span ID
+- **Baggage（行李）**：在服务间传递的键值对数据
+- **OpenTelemetry**：云原生的可观测性框架，提供统一的 API 和 SDK
 
-> 🚧 详细内容正在编写中...
+### 分布式追踪架构
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  Service A  │───→│  Service B  │───→│  Service C  │
+│             │    │             │    │             │
+│  (Tracer)   │    │  (Tracer)   │    │  (Tracer)   │
+└──────┬──────┘    └──────┬──────┘    └──────┬──────┘
+       │                  │                  │
+       │                  │                  │
+       └──────────────────┼──────────────────┘
+                          │
+                          ↓
+                   ┌─────────────┐
+                   │   Jaeger    │
+                   │  (Collector)│
+                   └──────┬──────┘
+                          │
+                          ↓
+                   ┌─────────────┐
+                   │ Elasticsearch│
+                   │  (Storage)  │
+                   └──────┬──────┘
+                          │
+                          ↓
+                   ┌─────────────┐
+                   │   Jaeger UI │
+                   │  (Query)    │
+                   └─────────────┘
+```
+
+## 🎯 OpenTelemetry
+
+### OpenTelemetry 基础
+
+OpenTelemetry（OTel）是可观测性的行业标准，提供统一的 API 和 SDK 来生成和收集遥测数据。
+
+**核心组件：**
+- **API**：定义接口，不依赖具体实现
+- **SDK**：提供具体实现和配置
+- **Collector**：接收、处理和导出遥测数据
+- **Instrumentation**：自动或手动插桩库
+
+### Node.js 集成示例
+
+```javascript
+const { trace } = require('@opentelemetry/api');
+const { NodeTracerProvider } = require('@opentelemetry/sdk-trace-node');
+const { Resource } = require('@opentelemetry/resources');
+const { SemanticResourceAttributes } = require('@opentelemetry/semantic-conventions');
+const { JaegerExporter } = require('@opentelemetry/exporter-jaeger');
+const { BatchSpanProcessor } = require('@opentelemetry/sdk-trace-base');
+const { ExpressInstrumentation } = require('@opentelemetry/instrumentation-express');
+const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http');
+const { registerInstrumentations } = require('@opentelemetry/instrumentation');
+
+// 创建资源
+const resource = Resource.default().merge(
+  new Resource({
+    [SemanticResourceAttributes.SERVICE_NAME]: 'my-app',
+    [SemanticResourceAttributes.SERVICE_VERSION]: '1.0.0',
+    [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: 'production'
+  })
+);
+
+// 创建 Tracer Provider
+const provider = new NodeTracerProvider({ resource });
+
+// 配置 Jaeger Exporter
+const jaegerExporter = new JaegerExporter({
+  endpoint: 'http://jaeger-collector:14268/api/traces',
+  maxPacketSize: 65000
+});
+
+// 添加 Span Processor
+provider.addSpanProcessor(new BatchSpanProcessor(jaegerExporter));
+
+// 注册全局 Tracer Provider
+provider.register();
+
+// 注册自动插桩
+registerInstrumentations({
+  instrumentations: [
+    new HttpInstrumentation(),
+    new ExpressInstrumentation()
+  ]
+});
+
+// 获取 Tracer
+const tracer = trace.getTracer('my-app', '1.0.0');
+
+// 手动创建 Span
+async function processOrder(orderId) {
+  const span = tracer.startSpan('processOrder', {
+    attributes: {
+      'order.id': orderId,
+      'order.type': 'purchase'
+    }
+  });
+
+  try {
+    // 添加事件
+    span.addEvent('order-received', { orderId });
+    
+    // 处理订单
+    const result = await orderService.process(orderId);
+    
+    // 添加事件
+    span.addEvent('order-processed', { 
+      orderId,
+      status: result.status 
+    });
+    
+    span.setStatus({ code: trace.SpanStatusCode.OK });
+    return result;
+  } catch (error) {
+    span.recordException(error);
+    span.setStatus({
+      code: trace.SpanStatusCode.ERROR,
+      message: error.message
+    });
+    throw error;
+  } finally {
+    span.end();
+  }
+}
+
+// Express 中间件示例
+const express = require('express');
+const app = express();
+
+app.use((req, res, next) => {
+  const span = trace.getActiveSpan();
+  if (span) {
+    span.setAttribute('http.method', req.method);
+    span.setAttribute('http.url', req.url);
+    span.setAttribute('http.user_agent', req.get('user-agent'));
+  }
+  next();
+});
+
+app.get('/orders/:id', async (req, res) => {
+  const span = tracer.startSpan('get-order');
+  
+  try {
+    const order = await orderService.get(req.params.id);
+    res.json(order);
+    span.setStatus({ code: trace.SpanStatusCode.OK });
+  } catch (error) {
+    span.recordException(error);
+    res.status(500).json({ error: error.message });
+    span.setStatus({
+      code: trace.SpanStatusCode.ERROR,
+      message: error.message
+    });
+  } finally {
+    span.end();
+  }
+});
+
+app.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
+```
+
+### 跨服务追踪
+
+```javascript
+// Service A
+const axios = require('axios');
+const { propagation } = require('@opentelemetry/api');
+
+async function callServiceB(data) {
+  const span = tracer.startSpan('call-service-b');
+  
+  try {
+    // 创建 HTTP 请求头
+    const headers = {};
+    propagation.inject(trace.setSpan(context.active(), span), headers, {
+      set: (carrier, key, value) => {
+        carrier[key] = value;
+      }
+    });
+    
+    // 调用 Service B
+    const response = await axios.post('http://service-b/api', data, {
+      headers
+    });
+    
+    return response.data;
+  } finally {
+    span.end();
+  }
+}
+
+// Service B
+app.use((req, res, next) => {
+  // 从请求头中提取 Span Context
+  const parentContext = propagation.extract(context.active(), req.headers, {
+    get: (carrier, key) => {
+      return carrier[key];
+    }
+  });
+  
+  // 创建子 Span
+  const span = tracer.startSpan('handle-request', {
+    parentContext
+  });
+  
+  context.with(trace.setSpan(context.active(), span), () => {
+    next();
+  });
+  
+  res.on('finish', () => {
+    span.end();
+  });
+});
+```
+
+## 📊 Jaeger 部署
+
+### Docker Compose 部署
+
+**docker-compose.yml：**
+```yaml
+version: '3.8'
+
+services:
+  jaeger-collector:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "5775:5775/udp"
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+      - "16686:16686"
+      - "14268:14268"
+      - "14250:14250"
+      - "9411:9411"
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - jaeger
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+    networks:
+      - jaeger
+
+networks:
+  jaeger:
+    driver: bridge
+```
+
+### Kubernetes 部署
+
+**jaeger-deployment.yaml：**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  labels:
+    app: jaeger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+    spec:
+      containers:
+      - name: jaeger
+        image: jaegertracing/all-in-one:latest
+        ports:
+        - containerPort: 5775
+          protocol: UDP
+        - containerPort: 6831
+          protocol: UDP
+        - containerPort: 6832
+          protocol: UDP
+        - containerPort: 5778
+        - containerPort: 16686
+        - containerPort: 14268
+        - containerPort: 14250
+        - containerPort: 9411
+        env:
+        - name: COLLECTOR_ZIPKIN_HOST_PORT
+          value: ":9411"
+        - name: COLLECTOR_OTLP_ENABLED
+          value: "true"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+spec:
+  selector:
+    app: jaeger
+  ports:
+  - name: udp-zipkin-thrift
+    port: 5775
+    protocol: UDP
+  - name: udp-compact-thrift
+    port: 6831
+    protocol: UDP
+  - name: udp-binary-thrift
+    port: 6832
+    protocol: UDP
+  - name: zipkin-compact
+    port: 5778
+  - name: query
+    port: 16686
+  - name: collector-http
+    port: 14268
+  - name: collector-grpc
+    port: 14250
+  - name: zipkin
+    port: 9411
+  type: LoadBalancer
+```
+
+## 🔍 链路分析
+
+### 常见性能问题识别
+
+**1. 慢查询识别：**
+```javascript
+// 在 Span 中记录查询时间
+const span = tracer.startSpan('database-query');
+const startTime = Date.now();
+
+try {
+  const result = await db.query('SELECT * FROM users WHERE id = ?', [userId]);
+  const duration = Date.now() - startTime;
+  
+  span.setAttribute('db.statement', 'SELECT * FROM users WHERE id = ?');
+  span.setAttribute('db.system', 'postgresql');
+  span.setAttribute('db.user', 'app_user');
+  span.setAttribute('db.duration_ms', duration);
+  
+  if (duration > 1000) {
+    span.addEvent('slow-query', { duration });
+  }
+  
+  return result;
+} finally {
+  span.end();
+}
+```
+
+**2. 外部服务调用分析：**
+```javascript
+async function callExternalAPI(url, data) {
+  const span = tracer.startSpan('external-api-call', {
+    attributes: {
+      'http.url': url,
+      'http.method': 'POST',
+      'http.scheme': 'https'
+    }
+  });
+
+  try {
+    const startTime = Date.now();
+    const response = await axios.post(url, data);
+    const duration = Date.now() - startTime;
+    
+    span.setAttribute('http.status_code', response.status);
+    span.setAttribute('http.response_size', response.headers['content-length']);
+    span.setAttribute('http.duration_ms', duration);
+    
+    return response.data;
+  } catch (error) {
+    span.recordException(error);
+    span.setAttribute('http.status_code', error.response?.status || 0);
+    throw error;
+  } finally {
+    span.end();
+  }
+}
+```
+
+**3. 缓存命中率分析：**
+```javascript
+async function getUser(userId) {
+  const span = tracer.startSpan('get-user');
+  
+  try {
+    // 尝试从缓存获取
+    const cached = await cache.get(`user:${userId}`);
+    if (cached) {
+      span.setAttribute('cache.hit', true);
+      span.addEvent('cache-hit', { userId });
+      return JSON.parse(cached);
+    }
+    
+    // 缓存未命中，从数据库获取
+    span.setAttribute('cache.hit', false);
+    span.addEvent('cache-miss', { userId });
+    
+    const user = await db.query('SELECT * FROM users WHERE id = ?', [userId]);
+    
+    // 写入缓存
+    await cache.set(`user:${userId}`, JSON.stringify(user), 3600);
+    
+    return user;
+  } finally {
+    span.end();
+  }
+}
+```
+
+## 📝 全链路压测
+
+### 压测方案设计
+
+**1. 压测标记：**
+```javascript
+// 在请求头中添加压测标记
+app.use((req, res, next) => {
+  const isLoadTest = req.headers['x-load-test'] === 'true';
+  
+  const span = trace.getActiveSpan();
+  if (span) {
+    span.setAttribute('load_test', isLoadTest);
+  }
+  
+  // 压测数据写入独立的数据源
+  if (isLoadTest) {
+    req.loadTestDB = loadTestDB;
+  } else {
+    req.loadTestDB = null;
+  }
+  
+  next();
+});
+```
+
+**2. 数据隔离：**
+```javascript
+// 根据压测标记选择数据源
+function getDatabase(req) {
+  if (req.loadTestDB) {
+    return req.loadTestDB;
+  }
+  return productionDB;
+}
+
+// 使用隔离的数据源
+async function getUser(req, userId) {
+  const db = getDatabase(req);
+  return await db.query('SELECT * FROM users WHERE id = ?', [userId]);
+}
+```
+
+**3. 压测脚本：**
+```javascript
+// 使用 k6 进行压测
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+import { Rate } from 'k6/metrics';
+
+// 自定义指标
+const errorRate = new Rate('errors');
+
+export const options = {
+  stages: [
+    { duration: '2m', target: 100 },   // 逐步增加到 100 用户
+    { duration: '5m', target: 100 },   // 保持 100 用户
+    { duration: '2m', target: 200 },   // 增加到 200 用户
+    { duration: '5m', target: 200 },   // 保持 200 用户
+    { duration: '2m', target: 0 },     // 逐步减少到 0
+  ],
+  thresholds: {
+    http_req_duration: ['p(95)<500'],  // 95% 请求延迟 < 500ms
+    errors: ['rate<0.01'],             // 错误率 < 1%
+  },
+};
+
+const BASE_URL = 'http://my-app.example.com';
+
+export default function () {
+  // 添加压测标记
+  const params = {
+    headers: {
+      'x-load-test': 'true',
+      'Content-Type': 'application/json',
+    },
+  };
+
+  // 测试 API
+  const res = http.post(`${BASE_URL}/api/orders`, JSON.stringify({
+    userId: `user_${__VU}`,
+    amount: 100,
+  }), params);
+
+  // 检查响应
+  const success = check(res, {
+    'status is 200': (r) => r.status === 200,
+    'response time < 500ms': (r) => r.timings.duration < 500,
+  });
+
+  errorRate.add(!success);
+
+  sleep(1);
+}
+```
+
+## 🔗 相关概念
+
+- **监控体系**：Prometheus / Grafana
+- **日志管理**：ELK / EFK Stack
+- **APM**：New Relic / Datadog
+
+## 📚 学习检查点
+
+- [ ] 能否理解分布式追踪的核心概念？
+- [ ] 能否集成 OpenTelemetry 到应用中？
+- [ ] 能否部署和使用 Jaeger？
+- [ ] 能否通过链路追踪分析性能问题？
+
+## 🚀 下一步
+
+→ [5.4 云平台](/architect/05-cloud-native-infrastructure/04-cloud-platforms/01-cloud-platforms-overview)

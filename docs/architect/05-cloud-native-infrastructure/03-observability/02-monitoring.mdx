@@ -3,15 +3,646 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解系统监控体系的构建，包括 Prometheus + Grafana、指标体系设计（RED、USE 方法）、SLI/SLO/SLA 和告警策略。
+监控是可观测性的三大支柱之一，通过收集和分析系统指标，帮助我们了解系统的运行状态、发现问题和优化性能。本节将讲解如何构建完整的监控体系。
 
-## 🎯 学习目标
+### 核心概念
 
-- 掌握 Prometheus 的数据模型和 PromQL 查询
-- 能够设计合理的指标体系（RED、USE 方法）
-- 理解 SLI/SLO/SLA 的定义和管理
-- 能够设计有效的告警策略，减少告警疲劳
+- **指标（Metrics）**：数值化的时间序列数据，反映系统的状态
+- **PromQL**：Prometheus 查询语言，用于查询和分析指标
+- **SLI（Service Level Indicator）**：服务级别指标，衡量服务质量的具体指标
+- **SLO（Service Level Objective）**：服务级别目标，SLI 的目标值
+- **SLA（Service Level Agreement）**：服务级别协议，与服务提供商达成的协议
 
-> 🚧 详细内容正在编写中...
+### RED 与 USE 方法
+
+**RED 方法**（面向服务）：
+- **Rate（请求速率）**：每秒请求数
+- **Errors（错误率）**：请求失败的比例
+- **Duration（延迟）**：请求处理时间
+
+**USE 方法**（面向资源）：
+- **Utilization（利用率）**：资源使用百分比
+- **Saturation（饱和度）**：资源负载程度
+- **Errors（错误数）**：资源错误数量
+
+## 🎯 Prometheus 基础
+
+### Prometheus 架构
+
+```
+┌─────────────┐
+│   Targets   │
+│  (Exporters)│
+└──────┬──────┘
+       │ 拉取指标
+       ↓
+┌─────────────────┐
+│   Prometheus    │
+│   (存储+查询)   │
+└──────┬──────────┘
+       │ 查询
+       ↓
+┌─────────────────┐     ┌─────────────┐
+│    Grafana      │────→│  Alerting   │
+│   (可视化)      │     │   (告警)    │
+└─────────────────┘     └──────┬──────┘
+                              │
+                              ↓
+                       ┌─────────────┐
+                       │ Alertmanager│
+                       │ (告警路由)  │
+                       └─────────────┘
+```
+
+### Prometheus 配置
+
+**prometheus.yml：**
+```yaml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'production'
+    environment: 'prod'
+
+# 告警规则文件
+rule_files:
+  - 'alerts/*.yml'
+
+# 告警管理器配置
+alerting:
+  alertmanagers:
+  - static_configs:
+    - targets:
+      - alertmanager:9093
+
+# 抓取配置
+scrape_configs:
+  # Prometheus 自身监控
+  - job_name: 'prometheus'
+    static_configs:
+    - targets: ['localhost:9090']
+
+  # Kubernetes 节点监控
+  - job_name: 'kubernetes-nodes'
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    kubernetes_sd_configs:
+    - role: node
+    relabel_configs:
+    - source_labels: [__address__]
+      regex: '(.*):10250'
+      replacement: '${1}:9100'
+      target_label: __address__
+
+  # Kubernetes Pod 监控
+  - job_name: 'kubernetes-pods'
+    kubernetes_sd_configs:
+    - role: pod
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+      action: keep
+      regex: true
+    - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+      action: replace
+      target_label: __metrics_path__
+      regex: (.+)
+    - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+      action: replace
+      regex: ([^:]+)(?::\d+)?;(\d+)
+      replacement: $1:$2
+      target_label: __address__
+    - action: labelmap
+      regex: __meta_kubernetes_pod_label_(.+)
+    - source_labels: [__meta_kubernetes_namespace]
+      action: replace
+      target_label: kubernetes_namespace
+    - source_labels: [__meta_kubernetes_pod_name]
+      action: replace
+      target_label: kubernetes_pod_name
+
+  # 应用监控
+  - job_name: 'my-app'
+    static_configs:
+    - targets: ['my-app:3000']
+      labels:
+        app: 'my-app'
+        environment: 'production'
+```
+
+### 应用指标暴露
+
+**Node.js 应用示例：**
+```javascript
+const express = require('express');
+const promClient = require('prom-client');
+
+const app = express();
+const register = new promClient.Registry();
+
+// 添加默认指标（CPU、内存等）
+promClient.collectDefaultMetrics({ register });
+
+// 自定义指标
+const httpRequestDuration = new promClient.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['method', 'route', 'status_code'],
+  buckets: [0.1, 0.5, 1, 2, 5]
+});
+
+const httpRequestsTotal = new promClient.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'status_code']
+});
+
+const activeConnections = new promClient.Gauge({
+  name: 'active_connections',
+  help: 'Number of active connections'
+});
+
+// 注册指标
+register.registerMetric(httpRequestDuration);
+register.registerMetric(httpRequestsTotal);
+register.registerMetric(activeConnections);
+
+// 中间件
+app.use((req, res, next) => {
+  const start = Date.now();
+  activeConnections.inc();
+  
+  res.on('finish', () => {
+    const duration = (Date.now() - start) / 1000;
+    const route = req.route ? req.route.path : req.path;
+    
+    httpRequestDuration
+      .labels(req.method, route, res.statusCode)
+      .observe(duration);
+    
+    httpRequestsTotal
+      .labels(req.method, route, res.statusCode)
+      .inc();
+    
+    activeConnections.dec();
+  });
+  
+  next();
+});
+
+// 指标端点
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
+});
+
+// 健康检查
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy' });
+});
+
+app.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
+```
+
+## 📊 PromQL 查询
+
+### 基础查询
+
+```promql
+# 查询所有指标
+http_requests_total
+
+# 查询特定标签的指标
+http_requests_total{job="my-app", method="GET"}
+
+# 正则匹配标签
+http_requests_total{method=~"GET|POST"}
+
+# 范围查询（最近5分钟）
+http_requests_total[5m]
+
+# 速率（每秒请求数）
+rate(http_requests_total[5m])
+
+# 增长量（总请求数）
+increase(http_requests_total[5m])
+
+# 百分位数
+histogram_quantile(0.95, http_request_duration_seconds_bucket)
+```
+
+### 高级查询
+
+```promql
+# 计算 P95 延迟
+histogram_quantile(0.95, 
+  sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+)
+
+# 计算错误率
+sum(rate(http_requests_total{status_code=~"5.."}[5m])) by (job)
+/
+sum(rate(http_requests_total[5m])) by (job)
+* 100
+
+# 计算可用性
+1 - 
+sum(rate(http_requests_total{status_code=~"5.."}[5m])) by (job)
+/
+sum(rate(http_requests_total[5m])) by (job)
+
+# 计算平均延迟
+rate(http_request_duration_seconds_sum[5m])
+/
+rate(http_request_duration_seconds_count[5m])
+
+# 计算资源使用率
+(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100
+
+# 预测磁盘空间使用
+predict_linear(node_filesystem_avail_bytes[1h], 4*3600) < 0
+```
+
+## 🚨 告警规则
+
+### 告警规则配置
+
+**alerts/app.yml：**
+```yaml
+groups:
+- name: app_alerts
+  interval: 30s
+  rules:
+  # 高错误率告警
+  - alert: HighErrorRate
+    expr: |
+      sum(rate(http_requests_total{status_code=~"5.."}[5m])) by (job)
+      /
+      sum(rate(http_requests_total[5m])) by (job)
+      > 0.05
+    for: 5m
+    labels:
+      severity: warning
+      team: backend
+    annotations:
+      summary: "High error rate detected"
+      description: "Job {{ $labels.job }} has error rate > 5% for 5 minutes"
+
+  # 服务不可用告警
+  - alert: ServiceDown
+    expr: up{job="my-app"} == 0
+    for: 1m
+    labels:
+      severity: critical
+      team: backend
+    annotations:
+      summary: "Service is down"
+      description: "Job {{ $labels.job }} has been down for more than 1 minute"
+
+  # 高延迟告警
+  - alert: HighLatency
+    expr: |
+      histogram_quantile(0.95, 
+        sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+      ) > 1
+    for: 5m
+    labels:
+      severity: warning
+      team: backend
+    annotations:
+      summary: "High latency detected"
+      description: "Job {{ $labels.job }} has P95 latency > 1s for 5 minutes"
+
+  # 资源使用率告警
+  - alert: HighCPUUsage
+    expr: |
+      100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+    for: 10m
+    labels:
+      severity: warning
+      team: ops
+    annotations:
+      summary: "High CPU usage"
+      description: "Instance {{ $labels.instance }} has CPU usage > 80% for 10 minutes"
+
+  # 磁盘空间告警
+  - alert: DiskSpaceLow
+    expr: |
+      (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 10
+    for: 5m
+    labels:
+      severity: warning
+      team: ops
+    annotations:
+      summary: "Disk space low"
+      description: "Instance {{ $labels.instance }} has < 10% disk space available"
+
+- name: kubernetes_alerts
+  interval: 30s
+  rules:
+  # Pod 崩溃告警
+  - alert: PodCrashLooping
+    expr: |
+      rate(kube_pod_container_status_restarts_total[1h]) > 0
+    for: 5m
+    labels:
+      severity: warning
+      team: k8s
+    annotations:
+      summary: "Pod is crash looping"
+      description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is crash looping"
+
+  # Pod 未就绪告警
+  - alert: PodNotReady
+    expr: |
+      kube_pod_status_ready{condition="false"} == 1
+    for: 10m
+    labels:
+      severity: warning
+      team: k8s
+    annotations:
+      summary: "Pod not ready"
+      description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is not ready"
+```
+
+### Alertmanager 配置
+
+**alertmanager.yml：**
+```yaml
+global:
+  resolve_timeout: 5m
+  slack_api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+
+route:
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+  receiver: 'default'
+
+  routes:
+  # 关键告警立即发送
+  - match:
+      severity: critical
+    receiver: 'critical'
+    group_wait: 0s
+    repeat_interval: 5m
+
+  # 警告告警
+  - match:
+      severity: warning
+    receiver: 'warnings'
+    group_wait: 30s
+    repeat_interval: 1h
+
+  # 特定团队的告警
+  - match:
+      team: backend
+    receiver: 'backend-team'
+
+receivers:
+- name: 'default'
+  slack_configs:
+  - channel: '#alerts'
+    send_resolved: true
+
+- name: 'critical'
+  slack_configs:
+  - channel: '#critical-alerts'
+    send_resolved: true
+    title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+    text: |
+      {{ range .Alerts }}
+      *Alert:* {{ .Annotations.summary }}
+      *Description:* {{ .Annotations.description }}
+      *Labels:* {{ .Labels }}
+      {{ end }}
+  webhook_configs:
+  - url: 'https://your-pagerduty-webhook-url'
+
+- name: 'warnings'
+  slack_configs:
+  - channel: '#warnings'
+    send_resolved: true
+
+- name: 'backend-team'
+  slack_configs:
+  - channel: '#backend-alerts'
+    send_resolved: true
+```
+
+## 📈 Grafana 仪表板
+
+### 仪表板配置
+
+**dashboard.json：**
+```json
+{
+  "dashboard": {
+    "title": "Application Overview",
+    "panels": [
+      {
+        "title": "Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total[5m])) by (job)",
+            "legendFormat": "{{job}}"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": "Requests/sec"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{status_code=~\"5..\"}[5m])) by (job) / sum(rate(http_requests_total[5m])) by (job) * 100",
+            "legendFormat": "{{job}}"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percent",
+            "label": "Error Rate %"
+          }
+        ],
+        "alert": {
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [5],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "handler": 1,
+          "name": "High Error Rate",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
+        "title": "P95 Latency",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job))",
+            "legendFormat": "{{job}}"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "s",
+            "label": "Duration"
+          }
+        ]
+      },
+      {
+        "title": "Active Connections",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "active_connections",
+            "legendFormat": "Active"
+          }
+        ]
+      },
+      {
+        "title": "Request Distribution",
+        "type": "piechart",
+        "targets": [
+          {
+            "expr": "sum(http_requests_total) by (status_code)",
+            "legendFormat": "{{status_code}}"
+          }
+        ]
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "10s"
+  }
+}
+```
+
+## 📝 SLI/SLO 管理
+
+### SLI 定义
+
+```yaml
+# sli/slos.yml
+service: my-app
+description: "My Application Service"
+
+slos:
+  # 可用性 SLO
+  - name: availability
+    description: "Service availability"
+    target: 0.999
+    window: 30d
+    sli:
+      name: request_success_rate
+      query: |
+        sum(rate(http_requests_total{status_code!~"5.."}[5m]))
+        /
+        sum(rate(http_requests_total[5m]))
+
+  # 延迟 SLO
+  - name: latency
+    description: "Request latency"
+    target: 0.95
+    window: 30d
+    sli:
+      name: request_latency_p95
+      query: |
+        histogram_quantile(0.95,
+          sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+        )
+
+  # 错误率 SLO
+  - name: error_rate
+    description: "Error rate"
+    target: 0.01
+    window: 30d
+    sli:
+      name: request_error_rate
+      query: |
+        sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+        /
+        sum(rate(http_requests_total[5m]))
+```
+
+### SLO 监控
+
+```promql
+# 计算 SLO 合规率
+# 可用性
+avg_over_time(
+  sum(rate(http_requests_total{status_code!~"5.."}[5m]))
+  /
+  sum(rate(http_requests_total[5m]))
+  [30d:1d]
+)
+
+# 延迟
+avg_over_time(
+  1 - histogram_quantile(0.95,
+    sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+  )
+  [30d:1d]
+)
+
+# 错误率
+avg_over_time(
+  1 - (
+    sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+    /
+    sum(rate(http_requests_total[5m]))
+  )
+  [30d:1d]
+)
+```
+
+## 🔗 相关概念
+
+- **日志管理**：ELK / EFK Stack
+- **分布式追踪**：Jaeger / Zipkin / OpenTelemetry
+- **APM**：New Relic / Datadog
+
+## 📚 学习检查点
+
+- [ ] 能否设计合理的指标体系？
+- [ ] 能否编写 PromQL 查询？
+- [ ] 能否配置有效的告警规则？
+- [ ] 能否定义和管理 SLI/SLO？
+
+## 🚀 下一步
+
+→ [5.3.3 日志管理](/architect/05-cloud-native-infrastructure/03-observability/03-logging)

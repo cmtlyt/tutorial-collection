@@ -3,15 +3,592 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解持续集成的核心实践，包括 Jenkins、GitLab CI、GitHub Actions 等工具的使用，以及构建流水线设计、自动化测试集成和代码质量门禁。
+持续集成（Continuous Integration，CI）是一种开发实践，要求开发人员频繁地（通常每天多次）将代码集成到共享仓库中。每次集成都通过自动化的构建和测试来验证，尽早发现集成错误。
 
-## 🎯 学习目标
+### 核心原则
 
-- 掌握主流 CI 工具（Jenkins / GitLab CI / GitHub Actions）
-- 能够设计高效的构建流水线
-- 理解自动化测试在 CI 中的集成方式
-- 能够搭建代码质量门禁体系
+- **频繁集成**：开发人员每天至少提交一次代码
+- **自动化构建**：每次提交都触发自动构建
+- **自动化测试**：构建后自动运行测试套件
+- **快速反馈**：构建失败时立即通知团队
+- **保持构建绿色**：构建失败时优先修复
 
-> 🚧 详细内容正在编写中...
+### CI 流程
+
+```
+代码提交 → 触发构建 → 代码检查 → 单元测试 → 集成测试 → 构建产物 → 部署到测试环境
+    ↓
+    失败 → 通知开发者 → 修复 → 重新构建
+```
+
+## 🎯 GitHub Actions
+
+### 基础工作流配置
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+    
+    - name: 设置 Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: 代码检查
+      run: npm run lint
+    
+    - name: 单元测试
+      run: npm run test:unit
+    
+    - name: 集成测试
+      run: npm run test:integration
+    
+    - name: 代码覆盖率
+      run: npm run test:coverage
+    
+    - name: 上传覆盖率报告
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+```
+
+### 多阶段构建流水线
+
+```yaml
+name: Multi-Stage CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # 阶段1：代码质量检查
+  quality:
+    name: 代码质量检查
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: ESLint 检查
+      run: npm run lint
+    
+    - name: Prettier 检查
+      run: npm run format:check
+    
+    - name: TypeScript 类型检查
+      run: npm run type-check
+
+  # 阶段2：单元测试
+  test:
+    name: 单元测试
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: 运行单元测试
+      run: npm run test:unit -- --coverage
+    
+    - name: 上传覆盖率
+      uses: codecov/codecov-action@v4
+
+  # 阶段3：构建
+  build:
+    name: 构建应用
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: 构建应用
+      run: npm run build
+    
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts
+        path: dist/
+        retention-days: 7
+
+  # 阶段4：Docker 镜像构建
+  docker:
+    name: 构建 Docker 镜像
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 设置 Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: 登录到 Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    
+    - name: 构建并推送镜像
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: |
+          my-registry/my-app:${{ github.sha }}
+          my-registry/my-app:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+```
+
+### 代码质量门禁
+
+```yaml
+name: Quality Gates
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整历史用于 SonarQube
+    
+    - name: 设置 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: 运行测试并生成覆盖率
+      run: npm run test:coverage
+    
+    - name: SonarQube 扫描
+      uses: SonarSource/sonarqube-scan-action@master
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+    
+    - name: 质量门禁检查
+      run: |
+        if [ $? -ne 0 ]; then
+          echo "❌ 质量门禁检查失败"
+          exit 1
+        fi
+        echo "✅ 质量门禁检查通过"
+```
+
+## 🔧 GitLab CI
+
+### GitLab CI 配置
+
+```yaml
+# .gitlab-ci.yml
+stages:
+  - quality
+  - test
+  - build
+  - deploy
+
+variables:
+  NODE_VERSION: "20"
+  CACHE_KEY: "${CI_COMMIT_REF_SLUG}"
+
+# 缓存配置
+cache:
+  key: ${CACHE_KEY}
+  paths:
+    - node_modules/
+
+# 代码质量检查
+code_quality:
+  stage: quality
+  image: node:${NODE_VERSION}
+  before_script:
+    - npm ci
+  script:
+    - npm run lint
+    - npm run format:check
+    - npm run type-check
+  only:
+    - branches
+    - merge_requests
+
+# 单元测试
+unit_test:
+  stage: test
+  image: node:${NODE_VERSION}
+  before_script:
+    - npm ci
+  script:
+    - npm run test:unit -- --coverage
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+  only:
+    - branches
+    - merge_requests
+
+# 集成测试
+integration_test:
+  stage: test
+  image: node:${NODE_VERSION}
+  services:
+    - postgres:15-alpine
+    - redis:7-alpine
+  variables:
+    POSTGRES_DB: test_db
+    POSTGRES_USER: test_user
+    POSTGRES_PASSWORD: test_pass
+    REDIS_HOST: redis
+  before_script:
+    - npm ci
+  script:
+    - npm run test:integration
+  only:
+    - branches
+    - merge_requests
+
+# 构建应用
+build:
+  stage: build
+  image: node:${NODE_VERSION}
+  before_script:
+    - npm ci
+  script:
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+  only:
+    - main
+    - develop
+
+# 部署到开发环境
+deploy_dev:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan $DEPLOY_HOST >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - scp -r dist/* $DEPLOY_USER@$DEPLOY_HOST:/var/www/dev/
+    - ssh $DEPLOY_USER@$DEPLOY_HOST "cd /var/www/dev && pm2 restart all"
+  only:
+    - develop
+  when: manual
+
+# 部署到生产环境
+deploy_prod:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan $DEPLOY_HOST >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - scp -r dist/* $DEPLOY_USER@$DEPLOY_HOST:/var/www/prod/
+    - ssh $DEPLOY_USER@$DEPLOY_HOST "cd /var/www/prod && pm2 restart all"
+  only:
+    - main
+  when: manual
+```
+
+## 📝 实际应用示例
+
+### 完整的 GitHub Actions CI/CD 流水线
+
+```yaml
+name: Complete CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # 代码质量检查
+  quality:
+    name: 代码质量检查
+    runs-on: ubuntu-latest
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: 设置 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: ESLint 检查
+      run: npm run lint
+    
+    - name: Prettier 检查
+      run: npm run format:check
+    
+    - name: TypeScript 类型检查
+      run: npm run type-check
+    
+    - name: 安全审计
+      run: npm audit --audit-level=moderate
+
+  # 测试
+  test:
+    name: 测试
+    runs-on: ubuntu-latest
+    needs: quality
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pass
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+    
+    - name: 设置 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: 运行测试
+      run: npm run test:ci
+      env:
+        DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/test_db
+        REDIS_URL: redis://localhost:6379
+    
+    - name: 上传覆盖率
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+
+  # 构建
+  build:
+    name: 构建
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+    
+    - name: 设置 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+    
+    - name: 安装依赖
+      run: npm ci
+    
+    - name: 构建应用
+      run: npm run build
+    
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts
+        path: dist/
+        retention-days: 7
+
+  # Docker 镜像构建和推送
+  docker:
+    name: Docker 镜像构建
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+    
+    - name: 设置 Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: 登录到容器注册表
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: 提取元数据
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+    
+    - name: 构建并推送镜像
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  # 部署到开发环境
+  deploy_dev:
+    name: 部署到开发环境
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: development
+      url: https://dev.example.com
+    steps:
+    - name: 部署到开发环境
+      run: |
+        echo "部署到开发环境..."
+        # 这里添加实际的部署逻辑
+
+  # 部署到生产环境
+  deploy_prod:
+    name: 部署到生产环境
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.event_name == 'release'
+    environment:
+      name: production
+      url: https://example.com
+    steps:
+    - name: 部署到生产环境
+      run: |
+        echo "部署到生产环境..."
+        # 这里添加实际的部署逻辑
+```
+
+## 🔗 相关概念
+
+- **持续部署**：自动将通过 CI 的代码部署到生产环境
+- **基础设施即代码**：Terraform / Ansible
+- **可观测性**：Prometheus / Grafana / ELK
+
+## 📚 学习检查点
+
+- [ ] 能否设计一条完整的 CI 流水线？
+- [ ] 能否配置代码质量门禁？
+- [ ] 能否在 CI 中集成自动化测试？
+- [ ] 能否配置多阶段构建流水线？
+
+## 🚀 下一步
+
+→ [5.2.3 持续部署](/architect/05-cloud-native-infrastructure/02-cicd-devops/03-continuous-deployment)
