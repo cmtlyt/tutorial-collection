@@ -5,7 +5,7 @@
 
 ## 📖 概述
 
-讲解各编程语言的内存管理策略，包括手动管理、GC 和所有权系统，以及生产环境中的性能调优方法。
+讲解各编程语言的内存管理策略，包括手动管理、GC 和所有权系统，以及生产环境中的性能调优方法。内存管理是影响系统性能和稳定性的关键因素，架构师需要理解不同语言的内存模型，才能做出合理的容量规划和性能优化决策。
 
 ## 🎯 学习目标
 
@@ -14,4 +14,760 @@
 - 了解 Rust 所有权系统的内存安全保证
 - 能够进行生产环境的内存问题诊断
 
-> 🚧 详细内容正在编写中...
+## 📦 内存基础
+
+### 栈内存与堆内存
+
+程序运行时的内存主要分为栈和堆两个区域，它们有着截然不同的特性：
+
+```
+进程内存布局（从高地址到低地址）：
+┌─────────────────────────┐ 高地址
+│  内核空间                │
+├─────────────────────────┤
+│  栈（Stack）             │ ← 向下增长
+│  - 函数调用栈帧          │
+│  - 局部变量              │
+│  - 返回地址              │
+│         ↓               │
+│                         │
+│         ↑               │
+│  堆（Heap）              │ ← 向上增长
+│  - 动态分配的对象         │
+│  - 需要 GC 或手动释放    │
+├─────────────────────────┤
+│  BSS段（未初始化全局变量） │
+├─────────────────────────┤
+│  数据段（已初始化全局变量） │
+├─────────────────────────┤
+│  代码段（机器指令）       │
+└─────────────────────────┘ 低地址
+```
+
+```js
+// 栈 vs 堆的分配演示
+function demonstrateMemoryAllocation() {
+  // 栈分配：原始类型的值直接存储在栈上
+  const age = 25;           // 8 bytes on stack
+  const isActive = true;    // 1 byte on stack
+  const price = 99.99;      // 8 bytes on stack
+
+  // 堆分配：对象和数组存储在堆上，栈上只保存引用
+  const user = {            // 引用在栈上，对象在堆上
+    name: "Alice",
+    scores: [95, 87, 92],
+  };
+
+  // 当函数返回时：
+  // - 栈上的原始值和引用自动释放（栈帧弹出）
+  // - 堆上的对象由 GC 在合适时机回收
+  return user;
+}
+
+const result = demonstrateMemoryAllocation();
+// result 持有对堆上对象的引用
+// 函数内的栈帧已被释放
+```
+
+### 内存对齐与缓存友好性
+
+```js
+// 数据布局对性能的影响
+// 现代 CPU 通过缓存行（Cache Line，通常 64 字节）访问内存
+
+// 不友好的布局：结构体数组（AoS - Array of Structures）
+// 访问所有 x 坐标时，每次缓存行加载都包含不需要的 y、z 数据
+const particlesAoS = Array.from({ length: 10000 }, () => ({
+  x: Math.random(),
+  y: Math.random(),
+  z: Math.random(),
+  mass: Math.random(),
+  velocityX: Math.random(),
+  velocityY: Math.random(),
+  velocityZ: Math.random(),
+  charge: Math.random(),
+}));
+
+// 友好的布局：数组结构体（SoA - Structure of Arrays）
+// 访问所有 x 坐标时，数据在内存中连续，缓存命中率高
+const particlesSoA = {
+  x: new Float64Array(10000),
+  y: new Float64Array(10000),
+  z: new Float64Array(10000),
+  mass: new Float64Array(10000),
+  velocityX: new Float64Array(10000),
+  velocityY: new Float64Array(10000),
+  velocityZ: new Float64Array(10000),
+  charge: new Float64Array(10000),
+};
+
+// 初始化 SoA 数据
+for (let i = 0; i < 10000; i++) {
+  particlesSoA.x[i] = Math.random();
+  particlesSoA.y[i] = Math.random();
+  particlesSoA.z[i] = Math.random();
+}
+
+// 性能对比：计算所有粒子 x 坐标的和
+function sumXPositionsAoS(particles) {
+  let sum = 0;
+  for (let i = 0; i < particles.length; i++) {
+    sum += particles[i].x; // 每次访问需要跨越整个对象的内存
+  }
+  return sum;
+}
+
+function sumXPositionsSoA(particles) {
+  let sum = 0;
+  const xArray = particles.x;
+  for (let i = 0; i < xArray.length; i++) {
+    sum += xArray[i]; // 连续内存访问，缓存命中率极高
+  }
+  return sum;
+}
+
+console.log("AoS sum:", sumXPositionsAoS(particlesAoS));
+console.log("SoA sum:", sumXPositionsSoA(particlesSoA));
+// SoA 布局在大数据量下通常快 2-5 倍
+```
+
+## 🔧 JavaScript（V8）内存管理
+
+### V8 内存结构
+
+```
+V8 堆内存分区：
+┌─────────────────────────────────────┐
+│  新生代（Young Generation）          │
+│  ┌───────────────┬───────────────┐  │
+│  │  From 空间     │  To 空间      │  │
+│  │  (Semi-space)  │  (Semi-space) │  │
+│  │  1-8MB         │  1-8MB        │  │
+│  └───────────────┴───────────────┘  │
+│  - 存放新创建的短生命周期对象         │
+│  - 使用 Scavenge（复制算法）收集      │
+├─────────────────────────────────────┤
+│  老生代（Old Generation）            │
+│  ┌─────────────────────────────┐    │
+│  │  Old Space (数百MB)          │    │
+│  │  - 从新生代晋升的长生命周期对象│    │
+│  │  - 使用 Mark-Sweep-Compact   │    │
+│  └─────────────────────────────┘    │
+│  ┌─────────────────────────────┐    │
+│  │  Large Object Space          │    │
+│  │  - 超过阈值的大对象直接分配   │    │
+│  └─────────────────────────────┘    │
+│  ┌─────────────────────────────┐    │
+│  │  Code Space                  │    │
+│  │  - JIT 编译后的机器码        │    │
+│  └─────────────────────────────┘    │
+│  ┌─────────────────────────────┐    │
+│  │  Map Space                   │    │
+│  │  - 隐藏类（Hidden Classes）  │    │
+│  └─────────────────────────────┘    │
+└─────────────────────────────────────┘
+```
+
+### 常见内存泄漏模式与诊断
+
+```js
+// 模式1：意外的全局变量
+function leakGlobal() {
+  // 忘记 const/let，变量泄漏到全局作用域
+  // leakedData = new Array(1000000); // 严禁这样做
+  const localData = new Array(1000000); // 正确做法
+  return localData.length;
+}
+
+// 模式2：被遗忘的定时器
+class Poller {
+  constructor() {
+    this.data = new Array(100000).fill("important-data");
+    this.timerId = null;
+  }
+
+  start() {
+    this.timerId = setInterval(() => {
+      // this.data 被闭包引用，即使 Poller 实例不再需要
+      // 只要定时器还在运行，data 就不会被回收
+      console.log(`Polling... data size: ${this.data.length}`);
+    }, 1000);
+  }
+
+  stop() {
+    // 必须清除定时器来释放引用
+    if (this.timerId) {
+      clearInterval(this.timerId);
+      this.timerId = null;
+    }
+  }
+}
+
+const poller = new Poller();
+poller.start();
+// 当不再需要时，必须调用 stop()
+poller.stop();
+
+// 模式3：闭包引起的内存泄漏
+function createProcessor() {
+  const hugeDataset = new Array(1000000).fill("data");
+
+  return {
+    // 这个方法只需要 dataset 的长度，却意外保持了整个数组的引用
+    getSize() {
+      return hugeDataset.length;
+    },
+  };
+}
+
+// 改进版本：只保留需要的数据
+function createProcessorOptimized() {
+  const hugeDataset = new Array(1000000).fill("data");
+  const dataSize = hugeDataset.length;
+  // hugeDataset 在函数返回后不再被引用，可被 GC 回收
+
+  return {
+    getSize() {
+      return dataSize;
+    },
+  };
+}
+
+// 模式4：DOM 引用泄漏（浏览器环境）
+class DomLeakExample {
+  constructor() {
+    this.elements = new Map();
+  }
+
+  cacheElement(id, element) {
+    this.elements.set(id, element);
+  }
+
+  removeElement(id) {
+    const element = this.elements.get(id);
+    if (element && element.parentNode) {
+      element.parentNode.removeChild(element);
+    }
+    // 关键：从 Map 中也要删除引用
+    this.elements.delete(id);
+  }
+}
+
+// 使用 WeakRef 和 FinalizationRegistry 处理缓存
+class WeakCache {
+  constructor() {
+    this.cache = new Map();
+    this.registry = new FinalizationRegistry((key) => {
+      const ref = this.cache.get(key);
+      if (ref && ref.deref() === undefined) {
+        this.cache.delete(key);
+        console.log(`Cache entry "${key}" was garbage collected`);
+      }
+    });
+  }
+
+  set(key, value) {
+    const weakRef = new WeakRef(value);
+    this.cache.set(key, weakRef);
+    this.registry.register(value, key);
+  }
+
+  get(key) {
+    const weakRef = this.cache.get(key);
+    if (weakRef) {
+      const value = weakRef.deref();
+      if (value !== undefined) {
+        return value;
+      }
+      this.cache.delete(key);
+    }
+    return undefined;
+  }
+}
+
+const weakCache = new WeakCache();
+let largeObject = { data: new Array(10000).fill("cached") };
+weakCache.set("myData", largeObject);
+console.log("Cached:", weakCache.get("myData") !== undefined); // true
+
+// 当 largeObject 不再被其他地方引用时，GC 可以回收它
+largeObject = null;
+// 之后某个时刻 weakCache.get("myData") 会返回 undefined
+```
+
+### Node.js 内存监控
+
+```js
+// Node.js 内存使用监控
+function getMemoryUsage() {
+  const usage = process.memoryUsage();
+  return {
+    rss: `${(usage.rss / 1024 / 1024).toFixed(2)} MB`,
+    heapTotal: `${(usage.heapTotal / 1024 / 1024).toFixed(2)} MB`,
+    heapUsed: `${(usage.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+    external: `${(usage.external / 1024 / 1024).toFixed(2)} MB`,
+    arrayBuffers: `${(usage.arrayBuffers / 1024 / 1024).toFixed(2)} MB`,
+  };
+}
+
+// 内存使用趋势追踪
+class MemoryTracker {
+  constructor(intervalMs = 5000) {
+    this.snapshots = [];
+    this.intervalMs = intervalMs;
+    this.timerId = null;
+  }
+
+  start() {
+    this.timerId = setInterval(() => {
+      const usage = process.memoryUsage();
+      this.snapshots.push({
+        timestamp: Date.now(),
+        heapUsed: usage.heapUsed,
+        heapTotal: usage.heapTotal,
+        rss: usage.rss,
+      });
+
+      // 只保留最近 100 个快照
+      if (this.snapshots.length > 100) {
+        this.snapshots.shift();
+      }
+
+      this.checkForLeaks();
+    }, this.intervalMs);
+  }
+
+  stop() {
+    if (this.timerId) {
+      clearInterval(this.timerId);
+      this.timerId = null;
+    }
+  }
+
+  checkForLeaks() {
+    if (this.snapshots.length < 10) return;
+
+    const recent = this.snapshots.slice(-10);
+    const heapGrowth = recent[recent.length - 1].heapUsed - recent[0].heapUsed;
+    const growthPerSnapshot = heapGrowth / recent.length;
+
+    if (growthPerSnapshot > 1024 * 1024) {
+      console.warn(
+        `⚠️ Potential memory leak detected: heap growing ~${(growthPerSnapshot / 1024 / 1024).toFixed(2)} MB per interval`
+      );
+    }
+  }
+
+  getReport() {
+    if (this.snapshots.length === 0) return "No data collected";
+
+    const first = this.snapshots[0];
+    const last = this.snapshots[this.snapshots.length - 1];
+    const peakHeap = Math.max(...this.snapshots.map((s) => s.heapUsed));
+
+    return {
+      duration: `${((last.timestamp - first.timestamp) / 1000).toFixed(1)}s`,
+      heapGrowth: `${((last.heapUsed - first.heapUsed) / 1024 / 1024).toFixed(2)} MB`,
+      peakHeapUsed: `${(peakHeap / 1024 / 1024).toFixed(2)} MB`,
+      currentHeapUsed: `${(last.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+      snapshots: this.snapshots.length,
+    };
+  }
+}
+
+console.log("Current memory:", getMemoryUsage());
+// Current memory: { rss: '30.12 MB', heapTotal: '6.23 MB', heapUsed: '4.15 MB', ... }
+```
+
+## ☕ JVM 内存管理与 GC 调优
+
+### JVM 堆内存分代模型
+
+```
+JVM 堆内存（以 G1 为例）：
+┌─────────────────────────────────────────┐
+│  Eden 区                                │
+│  ┌────┐ ┌────┐ ┌────┐ ┌────┐           │
+│  │ R  │ │ R  │ │ R  │ │ R  │  Region   │
+│  └────┘ └────┘ └────┘ └────┘           │
+├─────────────────────────────────────────┤
+│  Survivor 区                            │
+│  ┌────┐ ┌────┐                          │
+│  │ R  │ │ R  │                          │
+│  └────┘ └────┘                          │
+├─────────────────────────────────────────┤
+│  Old 区                                 │
+│  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐   │
+│  │ R  │ │ R  │ │ R  │ │ R  │ │ R  │   │
+│  └────┘ └────┘ └────┘ └────┘ └────┘   │
+├─────────────────────────────────────────┤
+│  Humongous 区（大对象，跨多个 Region）   │
+│  ┌────────────────────┐                 │
+│  │ R  │ R  │ R  │ R  │                 │
+│  └────────────────────┘                 │
+└─────────────────────────────────────────┘
+
+对象生命周期：
+新对象 → Eden → (Minor GC) → Survivor → (多次Minor GC) → Old
+                    ↓                          ↓
+                 被回收                  (Major GC) → 被回收
+```
+
+### GC 调优核心参数
+
+```
+关键 JVM 参数（以 G1GC 为例）：
+
+基础配置：
+-Xms4g                         初始堆大小
+-Xmx4g                         最大堆大小（建议与 Xms 相同，避免动态扩容）
+-XX:+UseG1GC                   使用 G1 垃圾收集器
+
+G1 专属参数：
+-XX:MaxGCPauseMillis=200       目标最大 GC 停顿时间（毫秒）
+-XX:G1HeapRegionSize=8m        Region 大小（1MB-32MB，建议 2000+ 个 Region）
+-XX:InitiatingHeapOccupancyPercent=45  触发并发标记的堆占用率
+
+分代比例：
+-XX:G1NewSizePercent=5         新生代最小占比
+-XX:G1MaxNewSizePercent=60     新生代最大占比
+
+ZGC 参数（JDK 15+ 生产就绪）：
+-XX:+UseZGC                    使用 ZGC
+-XX:+ZGenerational             分代 ZGC（JDK 21+，推荐）
+-Xmx16g                        ZGC 支持 TB 级堆
+# ZGC 停顿时间通常 < 1ms，无需调优停顿参数
+```
+
+### GC 日志分析
+
+```js
+// 模拟 GC 日志分析工具
+class GcLogAnalyzer {
+  constructor() {
+    this.gcEvents = [];
+  }
+
+  parseGcEvent(logLine) {
+    // 模拟解析 GC 日志行
+    // 实际格式: [2026-04-24T10:00:00.000+0800][gc] GC(0) Pause Young 50M->20M(256M) 5.123ms
+    const event = {
+      timestamp: new Date().toISOString(),
+      type: logLine.includes("Young") ? "minor" : "major",
+      heapBefore: parseInt(logLine.match(/(\d+)M->/)?.[1] || "0"),
+      heapAfter: parseInt(logLine.match(/->(\d+)M/)?.[1] || "0"),
+      heapTotal: parseInt(logLine.match(/\((\d+)M\)/)?.[1] || "0"),
+      pauseMs: parseFloat(logLine.match(/([\d.]+)ms/)?.[1] || "0"),
+    };
+    this.gcEvents.push(event);
+    return event;
+  }
+
+  getStatistics() {
+    if (this.gcEvents.length === 0) return { message: "No GC events" };
+
+    const minorGcs = this.gcEvents.filter((e) => e.type === "minor");
+    const majorGcs = this.gcEvents.filter((e) => e.type === "major");
+    const allPauses = this.gcEvents.map((e) => e.pauseMs);
+
+    return {
+      totalGcEvents: this.gcEvents.length,
+      minorGcCount: minorGcs.length,
+      majorGcCount: majorGcs.length,
+      avgPauseMs: (allPauses.reduce((a, b) => a + b, 0) / allPauses.length).toFixed(2),
+      maxPauseMs: Math.max(...allPauses).toFixed(2),
+      p99PauseMs: this.percentile(allPauses, 99).toFixed(2),
+      totalPauseMs: allPauses.reduce((a, b) => a + b, 0).toFixed(2),
+    };
+  }
+
+  percentile(values, p) {
+    const sorted = [...values].sort((a, b) => a - b);
+    const index = Math.ceil((p / 100) * sorted.length) - 1;
+    return sorted[Math.max(0, index)];
+  }
+
+  detectIssues() {
+    const issues = [];
+    const stats = this.getStatistics();
+
+    if (parseFloat(stats.maxPauseMs) > 500) {
+      issues.push({
+        severity: "HIGH",
+        issue: "GC 停顿时间过长",
+        detail: `最大停顿 ${stats.maxPauseMs}ms，超过 500ms 阈值`,
+        suggestion: "考虑切换到 ZGC 或调整 -XX:MaxGCPauseMillis",
+      });
+    }
+
+    if (parseInt(stats.majorGcCount) > parseInt(stats.minorGcCount) * 0.1) {
+      issues.push({
+        severity: "MEDIUM",
+        issue: "Full GC 频率过高",
+        detail: `Full GC ${stats.majorGcCount} 次，占总 GC 的 ${((parseInt(stats.majorGcCount) / parseInt(stats.totalGcEvents)) * 100).toFixed(1)}%`,
+        suggestion: "增大堆内存或检查是否有内存泄漏",
+      });
+    }
+
+    return issues;
+  }
+}
+
+const analyzer = new GcLogAnalyzer();
+analyzer.parseGcEvent("GC(0) Pause Young 50M->20M(256M) 5.123ms");
+analyzer.parseGcEvent("GC(1) Pause Young 55M->22M(256M) 4.567ms");
+analyzer.parseGcEvent("GC(2) Pause Young 60M->25M(256M) 6.789ms");
+analyzer.parseGcEvent("GC(3) Pause Full 200M->50M(256M) 120.456ms");
+
+console.log("GC Statistics:", analyzer.getStatistics());
+console.log("Issues:", analyzer.detectIssues());
+// GC Statistics: { totalGcEvents: 4, minorGcCount: 3, majorGcCount: 1, avgPauseMs: '34.23', ... }
+// Issues: [{ severity: 'MEDIUM', issue: 'Full GC 频率过高', ... }]
+```
+
+## 🦀 Rust 所有权与内存安全
+
+### 所有权系统核心规则
+
+Rust 通过所有权系统在编译期保证内存安全，无需 GC：
+
+```
+Rust 所有权规则：
+┌──────────────────────────────────────────┐
+│ 规则1：每个值有且只有一个所有者          │
+│                                          │
+│  let s1 = String::from("hello");         │
+│  let s2 = s1;  // s1 的所有权移动到 s2   │
+│  // s1 不再有效，编译器会阻止使用 s1     │
+├──────────────────────────────────────────┤
+│ 规则2：所有者离开作用域时，值被自动释放   │
+│                                          │
+│  {                                       │
+│    let s = String::from("hello");        │
+│    // s 在这里可用                        │
+│  } // s 离开作用域，内存自动释放（drop）  │
+├──────────────────────────────────────────┤
+│ 规则3：引用规则（借用检查器）             │
+│                                          │
+│  在任意时刻，只能有以下之一：             │
+│  - 一个可变引用（&mut T）                │
+│  - 任意数量的不可变引用（&T）            │
+│  这在编译期阻止了数据竞争                 │
+└──────────────────────────────────────────┘
+```
+
+### 所有权 vs GC 的权衡
+
+```
+对比维度         Rust 所有权         GC (Java/Go/JS)
+──────────────────────────────────────────────────
+运行时开销       零                  有 GC 停顿和 CPU 开销
+内存释放时机     确定性（作用域结束）  不确定（GC 周期）
+内存使用效率     最优                有碎片和额外开销
+开发效率         较低（学习曲线陡）   较高
+编译时间         较长（借用检查）     不适用
+循环引用         编译期阻止           需要 GC 检测
+适用场景         系统编程、嵌入式     应用开发、Web 服务
+```
+
+## 📊 性能调优方法论
+
+### 性能分析流程
+
+```
+性能调优四步法：
+┌──────────────────────────────────────┐
+│ 1. 度量（Measure）                    │
+│    - 建立性能基线                     │
+│    - 确定关键指标（延迟、吞吐、内存）  │
+│    - 使用 Profiler 定位热点           │
+├──────────────────────────────────────┤
+│ 2. 分析（Analyze）                    │
+│    - 识别瓶颈所在层次                 │
+│    - 区分 CPU bound vs I/O bound     │
+│    - 分析 GC 行为和内存分配模式       │
+├──────────────────────────────────────┤
+│ 3. 优化（Optimize）                   │
+│    - 算法和数据结构优化               │
+│    - 减少内存分配（对象池、复用）      │
+│    - GC 参数调优                      │
+│    - 缓存优化                         │
+├──────────────────────────────────────┤
+│ 4. 验证（Verify）                     │
+│    - 对比优化前后的指标               │
+│    - 回归测试确保功能正确             │
+│    - 压测验证在高负载下的表现         │
+└──────────────────────────────────────┘
+```
+
+### 对象池模式
+
+```js
+// 对象池：通过复用对象减少 GC 压力
+class ObjectPool {
+  constructor(factory, initialSize = 10) {
+    this.factory = factory;
+    this.available = [];
+    this.inUse = new Set();
+    this.stats = { created: 0, reused: 0, returned: 0 };
+
+    // 预分配对象
+    for (let i = 0; i < initialSize; i++) {
+      this.available.push(this.factory());
+      this.stats.created++;
+    }
+  }
+
+  acquire() {
+    let object;
+    if (this.available.length > 0) {
+      object = this.available.pop();
+      this.stats.reused++;
+    } else {
+      object = this.factory();
+      this.stats.created++;
+    }
+    this.inUse.add(object);
+    return object;
+  }
+
+  release(object) {
+    if (this.inUse.has(object)) {
+      this.inUse.delete(object);
+      this.available.push(object);
+      this.stats.returned++;
+    }
+  }
+
+  getStats() {
+    return {
+      ...this.stats,
+      available: this.available.length,
+      inUse: this.inUse.size,
+      reuseRate: this.stats.reused > 0
+        ? `${((this.stats.reused / (this.stats.reused + this.stats.created)) * 100).toFixed(1)}%`
+        : "0%",
+    };
+  }
+}
+
+// 实际应用：数据库连接池（简化模型）
+class ConnectionPool {
+  constructor(maxConnections = 10) {
+    this.pool = new ObjectPool(
+      () => ({
+        id: Math.random().toString(36).slice(2, 8),
+        createdAt: Date.now(),
+        query(sql) {
+          return `Result of "${sql}" from connection ${this.id}`;
+        },
+      }),
+      maxConnections
+    );
+  }
+
+  async executeQuery(sql) {
+    const connection = this.pool.acquire();
+    try {
+      const result = connection.query(sql);
+      return result;
+    } finally {
+      this.pool.release(connection);
+    }
+  }
+
+  getStats() {
+    return this.pool.getStats();
+  }
+}
+
+const dbPool = new ConnectionPool(5);
+
+async function main() {
+  // 模拟并发查询
+  const queries = [
+    "SELECT * FROM users",
+    "SELECT * FROM orders",
+    "SELECT * FROM products",
+    "SELECT COUNT(*) FROM users",
+    "SELECT * FROM categories",
+  ];
+
+  const results = await Promise.all(
+    queries.map((sql) => dbPool.executeQuery(sql))
+  );
+  results.forEach((result) => console.log(result));
+  console.log("Pool stats:", dbPool.getStats());
+}
+
+main();
+// Result of "SELECT * FROM users" from connection abc123
+// ...
+// Pool stats: { created: 5, reused: 0, returned: 5, available: 5, inUse: 0, reuseRate: '0%' }
+```
+
+### Buffer 复用与零拷贝
+
+```js
+// Buffer 复用：减少频繁的内存分配和 GC
+class BufferPool {
+  constructor(bufferSize, poolSize) {
+    this.bufferSize = bufferSize;
+    this.pool = [];
+
+    for (let i = 0; i < poolSize; i++) {
+      this.pool.push(Buffer.alloc(bufferSize));
+    }
+  }
+
+  acquire() {
+    if (this.pool.length > 0) {
+      return this.pool.pop();
+    }
+    // 池耗尽时创建新的（可以添加上限控制）
+    return Buffer.alloc(this.bufferSize);
+  }
+
+  release(buffer) {
+    buffer.fill(0); // 清空内容
+    this.pool.push(buffer);
+  }
+}
+
+// 使用 Buffer 池处理网络数据
+const bufferPool = new BufferPool(4096, 20);
+
+function processNetworkPacket(rawData) {
+  const buffer = bufferPool.acquire();
+  try {
+    // 将数据写入复用的 buffer
+    buffer.write(rawData, 0, Math.min(rawData.length, 4096));
+    // 处理数据...
+    const processed = buffer.toString("utf8", 0, rawData.length);
+    return processed.toUpperCase();
+  } finally {
+    bufferPool.release(buffer);
+  }
+}
+
+const result = processNetworkPacket("hello, world");
+console.log(result); // HELLO, WORLD
+```
+
+## 🔗 相关概念
+
+- **[语言运行时原理](./02-language-runtime.mdx)**：运行时架构决定了内存管理策略
+- **[并发编程模型](./03-concurrency-models.mdx)**：并发环境下的内存管理更具挑战性
+- **[分布式缓存](/architect/03-distributed-systems/03-distributed-data/04-distributed-cache)**：从单机内存管理到分布式缓存的延伸
+
+## 📚 学习检查点
+
+- [ ] 能否解释栈内存和堆内存的区别及各自的分配策略？
+- [ ] 能否识别 JavaScript 中常见的内存泄漏模式？
+- [ ] 能否解释 JVM 分代收集的原理和 G1 GC 的工作方式？
+- [ ] 能否使用 Node.js 的 `process.memoryUsage()` 进行内存监控？
+- [ ] 理解对象池模式如何减少 GC 压力
+
+## 🚀 下一步
+
+→ [多语言视野](./05-multi-language-vision.mdx)

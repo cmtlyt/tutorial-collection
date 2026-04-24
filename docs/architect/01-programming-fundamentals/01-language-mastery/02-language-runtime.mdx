@@ -5,7 +5,7 @@
 
 ## 📖 概述
 
-深入理解主流编程语言的运行时原理，包括 JVM、V8 引擎和 GC 机制，为架构设计中的技术选型和性能调优打下基础。
+深入理解主流编程语言的运行时原理，包括 JVM、V8 引擎和 GC 机制，为架构设计中的技术选型和性能调优打下基础。架构师需要理解代码在运行时是如何被执行的，才能做出合理的性能预判和技术选型决策。
 
 ## 🎯 学习目标
 
@@ -14,4 +14,390 @@
 - 深入理解各类 GC 算法与调优策略
 - 了解 Go Runtime 和 Rust 的零成本抽象
 
-> 🚧 详细内容正在编写中...
+## 🏗️ JVM 架构与运行原理
+
+### JVM 整体架构
+
+JVM（Java Virtual Machine）是 Java 生态的核心，它提供了"一次编写，到处运行"的跨平台能力。JVM 的架构分为三大部分：
+
+```
+Java 源码 (.java)
+    ↓ javac 编译
+字节码 (.class)
+    ↓
+┌─────────────────────────────────────┐
+│  JVM                                │
+│  ┌───────────────────────────────┐  │
+│  │ 类加载子系统                    │  │
+│  │ (加载 → 链接 → 初始化)         │  │
+│  └───────────────────────────────┘  │
+│              ↓                      │
+│  ┌───────────────────────────────┐  │
+│  │ 运行时数据区                    │  │
+│  │ ┌─────┐ ┌─────┐ ┌──────────┐ │  │
+│  │ │方法区│ │ 堆  │ │ 虚拟机栈  │ │  │
+│  │ └─────┘ └─────┘ └──────────┘ │  │
+│  │ ┌──────────┐ ┌─────────────┐ │  │
+│  │ │ 程序计数器 │ │ 本地方法栈   │ │  │
+│  │ └──────────┘ └─────────────┘ │  │
+│  └───────────────────────────────┘  │
+│              ↓                      │
+│  ┌───────────────────────────────┐  │
+│  │ 执行引擎                       │  │
+│  │ (解释器 + JIT 编译器 + GC)     │  │
+│  └───────────────────────────────┘  │
+└─────────────────────────────────────┘
+```
+
+### JVM 内存区域
+
+JVM 运行时数据区分为线程私有和线程共享两部分：
+
+**线程私有**：
+- **程序计数器（PC Register）**：记录当前线程执行到哪条字节码指令，是唯一不会发生 OOM 的区域
+- **虚拟机栈（VM Stack）**：每个方法调用创建一个栈帧，包含局部变量表、操作数栈、动态链接和方法返回地址
+- **本地方法栈（Native Method Stack）**：为 Native 方法（如 C/C++ 实现）服务
+
+**线程共享**：
+- **堆（Heap）**：对象实例的主要分配区域，也是 GC 的主战场
+- **方法区（Method Area）**：存储类信息、常量、静态变量等，JDK 8 后由元空间（Metaspace）实现
+
+### JIT 编译与分层编译
+
+JVM 采用解释执行与编译执行混合的策略。代码一开始以解释方式运行，当某个方法被频繁调用（达到热点阈值）时，JIT 编译器会将其编译为本地机器码：
+
+```
+字节码解释执行（启动快，执行慢）
+        ↓ 方法调用次数达到阈值
+C1 编译器（Client Compiler）
+  - 简单优化：方法内联、常量折叠
+  - 编译速度快
+        ↓ 继续达到更高阈值
+C2 编译器（Server Compiler）
+  - 深度优化：逃逸分析、标量替换、锁消除
+  - 生成高度优化的本地代码
+```
+
+### 类加载机制
+
+JVM 使用双亲委派模型进行类加载，确保类的唯一性和安全性：
+
+```
+Bootstrap ClassLoader（启动类加载器）
+  加载 rt.jar 等核心类库
+        ↑ 委派
+Extension ClassLoader（扩展类加载器）
+  加载 ext 目录下的扩展类
+        ↑ 委派
+Application ClassLoader（应用类加载器）
+  加载用户类路径下的类
+        ↑ 委派
+Custom ClassLoader（自定义类加载器）
+  热部署、模块隔离等场景
+```
+
+**架构意义**：理解类加载机制对于设计热部署系统、解决类冲突、实现模块隔离（如 OSGi、Java Module System）至关重要。
+
+## ⚙️ V8 引擎工作原理
+
+### V8 架构概览
+
+V8 是 Google 开发的高性能 JavaScript 引擎，用于 Chrome 和 Node.js。其核心设计目标是极致的执行速度：
+
+```
+JavaScript 源码
+    ↓ Parser（解析器）
+AST（抽象语法树）
+    ↓ Ignition（解释器）
+字节码（Bytecode）
+    ↓ 热点代码检测
+TurboFan（优化编译器）
+    ↓
+优化的机器码
+    ↓ 如果假设失效
+反优化（Deoptimization）→ 回到字节码
+```
+
+### Ignition 解释器
+
+Ignition 是 V8 的字节码解释器，负责将 AST 编译为紧凑的字节码并执行：
+
+```js
+// 这段简单的函数
+function add(a, b) {
+  return a + b;
+}
+
+// 会被 Ignition 编译为类似这样的字节码：
+// Ldar a1         -- 加载参数 b 到累加器
+// Add a0, [0]     -- 将参数 a 加到累加器
+// Return          -- 返回累加器中的值
+```
+
+Ignition 在执行过程中还会收集类型反馈信息（Type Feedback），记录变量的实际类型，为后续的优化编译提供依据。
+
+### TurboFan 优化编译器
+
+当某段代码被多次执行时，TurboFan 会根据类型反馈进行推测性优化：
+
+```js
+// V8 会根据实际调用推测类型
+function multiply(x, y) {
+  return x * y;
+}
+
+// 如果 multiply 总是被传入整数
+multiply(3, 4);
+multiply(5, 6);
+multiply(7, 8);
+// TurboFan 会生成整数乘法的优化代码
+
+// 但如果突然传入字符串
+multiply("hello", 3);
+// 触发反优化（Deoptimization），回退到字节码执行
+```
+
+**架构启示**：这就是为什么 JavaScript 代码中保持类型一致性能够显著提升性能。在 Node.js 微服务中，热路径的代码应避免频繁的类型变化。
+
+### 隐藏类（Hidden Classes）与内联缓存（Inline Caches）
+
+V8 为动态类型的 JavaScript 对象创建隐藏类，使属性访问效率接近静态类型语言：
+
+```js
+// V8 为相同结构的对象共享隐藏类
+const pointA = { x: 1, y: 2 };  // 创建隐藏类 C0 → C1(x) → C2(x,y)
+const pointB = { x: 3, y: 4 };  // 复用隐藏类 C2
+
+// 但不同的属性添加顺序会创建不同的隐藏类
+const pointC = { y: 5, x: 6 };  // 创建新的隐藏类 C0' → C1'(y) → C2'(y,x)
+
+// 最佳实践：保持对象结构一致
+// 好的做法 - 所有对象使用相同的属性初始化顺序
+function createPoint(x, y) {
+  return { x, y };
+}
+
+const points = [
+  createPoint(1, 2),
+  createPoint(3, 4),
+  createPoint(5, 6),
+];
+// 所有 point 共享同一个隐藏类，属性访问极快
+```
+
+## 🔄 Go Runtime
+
+### Goroutine 调度模型（GMP）
+
+Go Runtime 使用 GMP 模型管理 Goroutine 的调度：
+
+```
+G (Goroutine)：用户级轻量线程，初始栈仅 2KB
+M (Machine)：操作系统线程，真正执行代码
+P (Processor)：逻辑处理器，连接 G 和 M
+
+┌───────────────────────────────────────┐
+│  Go Runtime Scheduler                 │
+│                                       │
+│  P0          P1          P2           │
+│  ┌────┐     ┌────┐     ┌────┐        │
+│  │ M0 │     │ M1 │     │ M2 │        │
+│  └──┬─┘     └──┬─┘     └──┬─┘        │
+│     │          │          │           │
+│  ┌──▼──┐   ┌──▼──┐   ┌──▼──┐        │
+│  │ G1  │   │ G4  │   │ G7  │ 运行中  │
+│  └─────┘   └─────┘   └─────┘        │
+│                                       │
+│  Local Queue:                         │
+│  P0: [G2, G3]                         │
+│  P1: [G5, G6]                         │
+│  P2: [G8]                             │
+│                                       │
+│  Global Queue: [G9, G10, ...]         │
+└───────────────────────────────────────┘
+```
+
+**关键调度策略**：
+- **工作窃取（Work Stealing）**：当某个 P 的本地队列为空时，它会从其他 P 的队列中窃取一半的 Goroutine
+- **系统调用处理**：当 Goroutine 进行系统调用阻塞时，P 会与 M 解绑，寻找其他可用的 M 继续执行
+- **抢占式调度**：Go 1.14 引入基于信号的异步抢占，防止 Goroutine 长时间占用 CPU
+
+### Go 的垃圾回收
+
+Go 使用三色标记清除算法配合写屏障实现并发 GC：
+
+```
+三色标记过程：
+1. 初始状态：所有对象为白色
+2. 从根对象开始，标记为灰色
+3. 遍历灰色对象的引用，将引用标记为灰色，自身标记为黑色
+4. 重复步骤3，直到没有灰色对象
+5. 剩余的白色对象即为垃圾
+
+白色(待回收) → 灰色(待扫描) → 黑色(已扫描)
+```
+
+**架构意义**：Go 的 GC 设计目标是低延迟（STW 通常在微秒级），这使得 Go 特别适合需要低延迟的网络服务和微服务架构。
+
+## 🦀 Rust 零成本抽象
+
+### 所有权系统
+
+Rust 通过编译期的所有权检查替代了运行时 GC，实现"零成本抽象"：
+
+```
+Rust 的三条所有权规则：
+1. 每个值都有且只有一个所有者
+2. 当所有者离开作用域时，值会被自动释放
+3. 在任意时刻，要么有一个可变引用，要么有多个不可变引用
+```
+
+**无运行时开销**：Rust 没有垃圾回收器、没有运行时、没有虚拟机。内存管理的决策在编译期完成，运行时没有额外开销。
+
+### 与其他运行时的对比
+
+| 特性 | JVM (Java) | V8 (JavaScript) | Go Runtime | Rust |
+|------|-----------|----------------|------------|------|
+| **内存管理** | GC（分代收集） | GC（分代 + 增量） | GC（三色标记） | 所有权系统（编译期） |
+| **启动时间** | 较慢（类加载 + JIT 预热） | 中等 | 快 | 极快（原生二进制） |
+| **峰值性能** | 高（JIT 深度优化） | 高（TurboFan 优化） | 高 | 极高（零开销抽象） |
+| **内存占用** | 较大（JVM 本身开销） | 中等 | 较小 | 最小 |
+| **GC 停顿** | 可能较长（取决于 GC 算法） | 增量式，停顿短 | 微秒级 STW | 无 GC |
+| **并发模型** | 线程 + 线程池 | 事件循环 + Worker | Goroutine（GMP） | 线程 + async/await |
+| **适用场景** | 企业级应用、中间件 | Web 应用、BFF 层 | 微服务、云原生 | 系统编程、高性能服务 |
+
+## 📝 GC 算法对比
+
+### 常见 GC 算法
+
+```
+标记-清除（Mark-Sweep）
+  优点：实现简单
+  缺点：内存碎片化
+  使用：CMS 的老年代收集
+
+复制算法（Copying）
+  优点：无碎片，分配快
+  缺点：浪费一半空间
+  使用：新生代收集
+
+标记-整理（Mark-Compact）
+  优点：无碎片，空间利用率高
+  缺点：需要移动对象，开销大
+  使用：老年代收集
+
+分代收集（Generational）
+  思想：根据对象存活周期分为新生代和老年代
+  新生代：复制算法（对象朝生夕灭）
+  老年代：标记-清除或标记-整理
+
+并发收集（Concurrent）
+  代表：CMS、G1、ZGC、Shenandoah
+  思想：GC 线程与应用线程并发执行，减少停顿
+```
+
+### JVM 垃圾收集器演进
+
+| 收集器 | 类型 | 特点 | 适用场景 |
+|--------|------|------|---------|
+| **Serial** | 单线程，STW | 简单高效 | 客户端应用、小堆 |
+| **Parallel** | 多线程，STW | 吞吐量优先 | 后台计算任务 |
+| **CMS** | 并发标记清除 | 低延迟，但有碎片问题 | Web 应用（已废弃） |
+| **G1** | 分区域并发收集 | 可预测的停顿时间 | 大堆通用场景（JDK 9+ 默认） |
+| **ZGC** | 并发压缩 | 停顿 < 1ms，支持 TB 级堆 | 超大堆、低延迟要求 |
+| **Shenandoah** | 并发压缩 | 低延迟，与 ZGC 类似 | 低延迟要求（RedHat） |
+
+## 📝 实际应用场景
+
+### 技术选型中的运行时考量
+
+```js
+// 模拟一个技术选型决策过程
+const runtimeProfiles = {
+  jvm: {
+    startupTime: "3-10s",
+    memoryFootprint: "200MB+",
+    peakPerformance: "excellent",
+    gcPause: "1ms-200ms (depends on collector)",
+    bestFor: ["enterprise apps", "middleware", "data processing"],
+    tradeoff: "高峰值性能，但启动慢、内存占用大",
+  },
+  v8: {
+    startupTime: "50-200ms",
+    memoryFootprint: "50-150MB",
+    peakPerformance: "good",
+    gcPause: "1-10ms (incremental)",
+    bestFor: ["web servers", "BFF", "serverless", "real-time apps"],
+    tradeoff: "快速开发迭代，动态类型带来灵活性但牺牲部分性能",
+  },
+  goRuntime: {
+    startupTime: "<10ms",
+    memoryFootprint: "10-50MB",
+    peakPerformance: "very good",
+    gcPause: "<1ms",
+    bestFor: ["microservices", "cloud native", "CLI tools", "network services"],
+    tradeoff: "低延迟 + 快速启动，适合容器化部署",
+  },
+  rust: {
+    startupTime: "<1ms",
+    memoryFootprint: "1-10MB",
+    peakPerformance: "best",
+    gcPause: "none",
+    bestFor: ["systems programming", "embedded", "high-frequency trading", "WebAssembly"],
+    tradeoff: "极致性能但学习曲线陡峭，开发效率较低",
+  },
+};
+
+function recommendRuntime(requirements) {
+  const { latencyRequirement, memoryBudget, teamExperience, deploymentModel } = requirements;
+
+  if (latencyRequirement === "ultra-low" && memoryBudget === "minimal") {
+    return "rust";
+  }
+  if (deploymentModel === "containerized" && latencyRequirement === "low") {
+    return "goRuntime";
+  }
+  if (teamExperience === "javascript" && deploymentModel === "serverless") {
+    return "v8";
+  }
+  return "jvm";
+}
+
+// 场景1：云原生微服务
+const microserviceChoice = recommendRuntime({
+  latencyRequirement: "low",
+  memoryBudget: "limited",
+  teamExperience: "go",
+  deploymentModel: "containerized",
+});
+console.log(`微服务推荐: ${microserviceChoice}`);
+// 输出: 微服务推荐: goRuntime
+
+// 场景2：高频交易系统
+const tradingChoice = recommendRuntime({
+  latencyRequirement: "ultra-low",
+  memoryBudget: "minimal",
+  teamExperience: "systems",
+  deploymentModel: "bare-metal",
+});
+console.log(`交易系统推荐: ${tradingChoice}`);
+// 输出: 交易系统推荐: rust
+```
+
+## 🔗 相关概念
+
+- **[内存管理与性能调优](./04-memory-management.mdx)**：深入各语言的内存管理策略和调优方法
+- **[并发编程模型](./03-concurrency-models.mdx)**：运行时的并发支持直接影响并发模型的选择
+- **[多语言视野](./05-multi-language-vision.mdx)**：从运行时角度理解不同语言的设计哲学
+
+## 📚 学习检查点
+
+- [ ] 能否画出 JVM 的内存区域并解释各区域的作用？
+- [ ] 能否解释 V8 的 Ignition + TurboFan 执行流水线？
+- [ ] 能否对比 JVM GC、Go GC 和 Rust 所有权系统的差异？
+- [ ] 能否根据业务场景选择合适的运行时？
+- [ ] 理解 JIT 编译的分层编译策略及其对性能的影响
+
+## 🚀 下一步
+
+→ [并发编程模型](./03-concurrency-models.mdx)

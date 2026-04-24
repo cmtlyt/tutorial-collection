@@ -5,7 +5,7 @@
 
 ## 📖 概述
 
-深入讲解面向对象设计的五大 SOLID 原则：单一职责（SRP）、开闭（OCP）、里氏替换（LSP）、接口隔离（ISP）和依赖反转（DIP），以及它们在架构层面的应用。
+深入讲解面向对象设计的五大 SOLID 原则：单一职责（SRP）、开闭（OCP）、里氏替换（LSP）、接口隔离（ISP）和依赖反转（DIP），以及它们在架构层面的应用。SOLID 由 Robert C. Martin 提出，是编写可维护、可扩展软件的基石。
 
 ## 🎯 学习目标
 
@@ -14,4 +14,959 @@
 - 能够识别违反 SOLID 原则的代码和设计
 - 理解原则之间的关联和权衡
 
-> 🚧 详细内容正在编写中...
+## 🎯 S — 单一职责原则（SRP）
+
+### 核心思想
+
+> **一个类应该只有一个引起它变化的理由。**
+
+SRP 不是说一个类只做一件事，而是说一个类只对一个"角色"或"利益相关者"负责。当不同的变化理由混合在一起时，修改一个需求可能意外破坏另一个。
+
+### 违反 SRP 的例子
+
+```js
+// ❌ 违反 SRP：一个类承担了太多职责
+class Employee {
+  constructor(name, salary) {
+    this.name = name;
+    this.salary = salary;
+  }
+
+  // 职责1：计算薪资（由财务部门驱动变化）
+  calculatePay() {
+    return this.salary * 1.2; // 含绩效系数
+  }
+
+  // 职责2：生成报表（由报表团队驱动变化）
+  generateReport() {
+    return `Employee Report: ${this.name}, Pay: ${this.calculatePay()}`;
+  }
+
+  // 职责3：数据持久化（由 DBA 驱动变化）
+  saveToDatabase() {
+    console.log(`Saving ${this.name} to database...`);
+  }
+}
+```
+
+### 遵守 SRP 的重构
+
+```js
+// ✅ 遵守 SRP：每个类只有一个变化的理由
+
+// 领域实体：只包含员工的核心数据和行为
+class Employee {
+  constructor(name, salary) {
+    this.name = name;
+    this.salary = salary;
+  }
+}
+
+// 薪资计算器：由财务规则驱动变化
+class PayCalculator {
+  calculate(employee) {
+    const performanceMultiplier = 1.2;
+    return employee.salary * performanceMultiplier;
+  }
+
+  calculateWithBonus(employee, bonusRate) {
+    return this.calculate(employee) * (1 + bonusRate);
+  }
+}
+
+// 报表生成器：由报表格式需求驱动变化
+class EmployeeReportGenerator {
+  constructor(payCalculator) {
+    this.payCalculator = payCalculator;
+  }
+
+  generateSummary(employee) {
+    const pay = this.payCalculator.calculate(employee);
+    return `Employee Report: ${employee.name}, Pay: ${pay.toFixed(2)}`;
+  }
+
+  generateDetailed(employee) {
+    const basePay = employee.salary;
+    const totalPay = this.payCalculator.calculate(employee);
+    return [
+      `=== Detailed Report ===`,
+      `Name: ${employee.name}`,
+      `Base Salary: ${basePay.toFixed(2)}`,
+      `Total Pay: ${totalPay.toFixed(2)}`,
+      `Performance Bonus: ${(totalPay - basePay).toFixed(2)}`,
+    ].join("\n");
+  }
+}
+
+// 持久化服务：由存储技术驱动变化
+class EmployeeRepository {
+  constructor() {
+    this.store = new Map();
+  }
+
+  save(employee) {
+    this.store.set(employee.name, { ...employee });
+    console.log(`Saved ${employee.name} to database`);
+  }
+
+  findByName(name) {
+    return this.store.get(name);
+  }
+}
+
+// 使用
+const employee = new Employee("Alice", 5000);
+const payCalc = new PayCalculator();
+const reporter = new EmployeeReportGenerator(payCalc);
+const repo = new EmployeeRepository();
+
+console.log(reporter.generateSummary(employee));
+// Employee Report: Alice, Pay: $6000.00
+
+console.log(reporter.generateDetailed(employee));
+// === Detailed Report ===
+// Name: Alice
+// Base Salary: $5000.00
+// Total Pay: $6000.00
+// Performance Bonus: $1000.00
+
+repo.save(employee);
+// Saved Alice to database
+```
+
+### 架构层面的 SRP
+
+```
+微服务的单一职责：
+
+❌ 巨石服务
+┌─────────────────────────────────┐
+│  OrderService                   │
+│  - 订单创建                     │
+│  - 支付处理                     │
+│  - 库存管理                     │
+│  - 用户通知                     │
+│  - 物流跟踪                     │
+└─────────────────────────────────┘
+
+✅ 按职责拆分的微服务
+┌──────────┐ ┌──────────┐ ┌──────────┐
+│ Order    │ │ Payment  │ │Inventory │
+│ Service  │ │ Service  │ │ Service  │
+└──────────┘ └──────────┘ └──────────┘
+┌──────────┐ ┌──────────┐
+│Notify    │ │Logistics │
+│ Service  │ │ Service  │
+└──────────┘ └──────────┘
+```
+
+## 🔓 O — 开闭原则（OCP）
+
+### 核心思想
+
+> **软件实体（类、模块、函数等）应该对扩展开放，对修改关闭。**
+
+当需要新增功能时，应该通过增加新代码来实现，而不是修改已有代码。
+
+### 违反 OCP 的例子
+
+```js
+// ❌ 违反 OCP：每新增一种折扣类型都要修改这个函数
+function calculateDiscount(order, discountType) {
+  switch (discountType) {
+    case "percentage":
+      return order.total * 0.1;
+    case "fixed":
+      return 50;
+    case "bogo": // buy one get one
+      return order.total * 0.5;
+    // 新增折扣类型？必须修改此函数 ❌
+    default:
+      return 0;
+  }
+}
+```
+
+### 遵守 OCP 的重构
+
+```js
+// ✅ 遵守 OCP：通过策略模式实现对扩展开放
+
+// 折扣策略接口（通过约定实现）
+class PercentageDiscount {
+  constructor(rate) {
+    this.rate = rate;
+  }
+
+  calculate(order) {
+    return order.total * this.rate;
+  }
+
+  describe() {
+    return `${(this.rate * 100).toFixed(0)}% off`;
+  }
+}
+
+class FixedDiscount {
+  constructor(amount) {
+    this.amount = amount;
+  }
+
+  calculate(order) {
+    return Math.min(this.amount, order.total);
+  }
+
+  describe() {
+    return `${this.amount} off`;
+  }
+}
+
+class BuyOneGetOneFreeDiscount {
+  calculate(order) {
+    return order.total * 0.5;
+  }
+
+  describe() {
+    return "Buy one get one free";
+  }
+}
+
+// 新增折扣类型无需修改已有代码，只需新增一个类 ✅
+class TieredDiscount {
+  constructor(tiers) {
+    // tiers: [{ threshold: 100, rate: 0.05 }, { threshold: 200, rate: 0.1 }]
+    this.tiers = tiers.sort((a, b) => b.threshold - a.threshold);
+  }
+
+  calculate(order) {
+    const tier = this.tiers.find((t) => order.total >= t.threshold);
+    return tier ? order.total * tier.rate : 0;
+  }
+
+  describe() {
+    return "Tiered discount based on order total";
+  }
+}
+
+// 订单计算器对修改关闭
+class OrderCalculator {
+  applyDiscount(order, discountStrategy) {
+    const discountAmount = discountStrategy.calculate(order);
+    return {
+      ...order,
+      discount: discountAmount,
+      discountDescription: discountStrategy.describe(),
+      finalTotal: order.total - discountAmount,
+    };
+  }
+}
+
+// 使用
+const calculator = new OrderCalculator();
+const order = { id: "ORD-001", total: 250, items: 5 };
+
+const results = [
+  calculator.applyDiscount(order, new PercentageDiscount(0.1)),
+  calculator.applyDiscount(order, new FixedDiscount(30)),
+  calculator.applyDiscount(order, new BuyOneGetOneFreeDiscount()),
+  calculator.applyDiscount(order, new TieredDiscount([
+    { threshold: 100, rate: 0.05 },
+    { threshold: 200, rate: 0.1 },
+    { threshold: 500, rate: 0.15 },
+  ])),
+];
+
+results.forEach((result) => {
+  console.log(`${result.discountDescription}: ${result.discount.toFixed(2)} off → ${result.finalTotal.toFixed(2)}`);
+});
+// 10% off: $25.00 off → $225.00
+// $30 off: $30.00 off → $220.00
+// Buy one get one free: $125.00 off → $125.00
+// Tiered discount based on order total: $25.00 off → $225.00
+```
+
+### 架构层面的 OCP
+
+```
+插件化架构体现 OCP：
+
+核心系统（对修改关闭）
+┌──────────────────────────┐
+│  Plugin Manager          │
+│  ┌────────────────────┐  │
+│  │ Plugin Interface   │  │  ← 稳定的扩展点
+│  │  - init()          │  │
+│  │  - execute()       │  │
+│  │  - destroy()       │  │
+│  └────────────────────┘  │
+└──────────────────────────┘
+
+插件（对扩展开放）
+┌──────────┐ ┌──────────┐ ┌──────────┐
+│Plugin A  │ │Plugin B  │ │Plugin C  │
+│(日志)    │ │(监控)    │ │(缓存)    │
+└──────────┘ └──────────┘ └──────────┘
+
+新增插件不需要修改核心系统代码
+```
+
+## 🔄 L — 里氏替换原则（LSP）
+
+### 核心思想
+
+> **子类型必须能够替换其父类型，而不改变程序的正确性。**
+
+如果代码使用了父类的引用，那么换成任何一个子类的实例，程序行为应该保持一致。
+
+### 违反 LSP 的经典案例
+
+```js
+// ❌ 违反 LSP：正方形不是矩形的合理子类型
+
+class Rectangle {
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+  }
+
+  setWidth(width) {
+    this.width = width;
+  }
+
+  setHeight(height) {
+    this.height = height;
+  }
+
+  getArea() {
+    return this.width * this.height;
+  }
+}
+
+class Square extends Rectangle {
+  constructor(side) {
+    super(side, side);
+  }
+
+  // 违反 LSP：修改宽度时同时修改了高度
+  setWidth(width) {
+    this.width = width;
+    this.height = width; // 父类没有这个副作用
+  }
+
+  setHeight(height) {
+    this.width = height;
+    this.height = height; // 父类没有这个副作用
+  }
+}
+
+// 使用父类型引用的代码
+function increaseRectangleWidth(rect) {
+  const originalHeight = rect.height;
+  rect.setWidth(rect.width + 10);
+
+  // 期望：高度不变
+  console.log(`Height unchanged: ${rect.height === originalHeight}`);
+  // Rectangle: true ✅
+  // Square: false ❌ — 行为不一致！
+}
+
+const rect = new Rectangle(5, 10);
+increaseRectangleWidth(rect); // Height unchanged: true
+
+const square = new Square(5);
+increaseRectangleWidth(square); // Height unchanged: false — 违反 LSP！
+```
+
+### 遵守 LSP 的设计
+
+```js
+// ✅ 遵守 LSP：使用组合和接口契约
+
+// 定义形状的契约
+class Shape {
+  getArea() {
+    throw new Error("getArea() must be implemented");
+  }
+
+  getPerimeter() {
+    throw new Error("getPerimeter() must be implemented");
+  }
+
+  describe() {
+    return `${this.constructor.name}: area=${this.getArea().toFixed(2)}, perimeter=${this.getPerimeter().toFixed(2)}`;
+  }
+}
+
+class Rectangle extends Shape {
+  constructor(width, height) {
+    super();
+    this.width = width;
+    this.height = height;
+  }
+
+  getArea() {
+    return this.width * this.height;
+  }
+
+  getPerimeter() {
+    return 2 * (this.width + this.height);
+  }
+}
+
+class Square extends Shape {
+  constructor(side) {
+    super();
+    this.side = side;
+  }
+
+  getArea() {
+    return this.side * this.side;
+  }
+
+  getPerimeter() {
+    return 4 * this.side;
+  }
+}
+
+class Circle extends Shape {
+  constructor(radius) {
+    super();
+    this.radius = radius;
+  }
+
+  getArea() {
+    return Math.PI * this.radius * this.radius;
+  }
+
+  getPerimeter() {
+    return 2 * Math.PI * this.radius;
+  }
+}
+
+// 所有 Shape 子类都可以安全替换父类
+function printShapeInfo(shape) {
+  console.log(shape.describe());
+}
+
+const shapes = [
+  new Rectangle(5, 10),
+  new Square(7),
+  new Circle(3),
+];
+
+shapes.forEach(printShapeInfo);
+// Rectangle: area=50.00, perimeter=30.00
+// Square: area=49.00, perimeter=28.00
+// Circle: area=28.27, perimeter=18.85
+
+// 计算总面积 — 任何 Shape 子类都能正确工作
+function totalArea(shapes) {
+  return shapes.reduce((sum, shape) => sum + shape.getArea(), 0);
+}
+
+console.log(`Total area: ${totalArea(shapes).toFixed(2)}`);
+// Total area: 127.27
+```
+
+### 架构层面的 LSP
+
+```
+LSP 在 API 设计中的体现：
+
+API 版本兼容性：
+  v1 的所有行为在 v2 中必须保持一致
+  v2 可以新增功能，但不能破坏 v1 的契约
+
+微服务替换：
+  服务 A v1.0 → 服务 A v2.0
+  所有调用方无需修改即可正常工作
+
+数据库迁移：
+  新的存储实现必须满足原有存储接口的所有契约
+```
+
+## 🧩 I — 接口隔离原则（ISP）
+
+### 核心思想
+
+> **客户端不应该被迫依赖它不使用的接口。**
+
+应该将臃肿的接口拆分为更小、更具体的接口，让每个客户端只需要知道它关心的方法。
+
+### 违反 ISP 的例子
+
+```js
+// ❌ 违反 ISP：一个接口包含太多方法，不是所有实现者都需要全部方法
+
+class AllInOnePrinter {
+  print(document) {
+    console.log(`Printing: ${document}`);
+  }
+
+  scan(document) {
+    console.log(`Scanning: ${document}`);
+  }
+
+  fax(document) {
+    console.log(`Faxing: ${document}`);
+  }
+
+  staple(document) {
+    console.log(`Stapling: ${document}`);
+  }
+}
+
+// 简单打印机被迫实现它不支持的功能
+class SimplePrinter extends AllInOnePrinter {
+  scan() {
+    throw new Error("SimplePrinter does not support scanning");
+  }
+
+  fax() {
+    throw new Error("SimplePrinter does not support faxing");
+  }
+
+  staple() {
+    throw new Error("SimplePrinter does not support stapling");
+  }
+}
+```
+
+### 遵守 ISP 的重构
+
+```js
+// ✅ 遵守 ISP：将接口拆分为独立的能力
+
+// 定义细粒度的能力接口（通过 Mixin 模式实现）
+const Printable = (Base) =>
+  class extends Base {
+    print(document) {
+      console.log(`[${this.constructor.name}] Printing: ${document}`);
+    }
+  };
+
+const Scannable = (Base) =>
+  class extends Base {
+    scan(document) {
+      console.log(`[${this.constructor.name}] Scanning: ${document}`);
+      return `Scanned: ${document}`;
+    }
+  };
+
+const Faxable = (Base) =>
+  class extends Base {
+    fax(document, recipient) {
+      console.log(`[${this.constructor.name}] Faxing "${document}" to ${recipient}`);
+    }
+  };
+
+class Device {
+  constructor(name) {
+    this.name = name;
+  }
+}
+
+// 简单打印机只实现 Printable
+class SimplePrinter extends Printable(Device) {
+  constructor() {
+    super("SimplePrinter");
+  }
+}
+
+// 多功能打印机组合多个能力
+class MultiFunctionPrinter extends Faxable(Scannable(Printable(Device))) {
+  constructor() {
+    super("MultiFunctionPrinter");
+  }
+}
+
+// 使用：每个函数只依赖它需要的能力
+function printDocuments(printer, documents) {
+  // 只需要 print 能力
+  documents.forEach((doc) => printer.print(doc));
+}
+
+function scanAndPrint(device, document) {
+  // 需要 scan 和 print 能力
+  const scanned = device.scan(document);
+  device.print(scanned);
+}
+
+const simplePrinter = new SimplePrinter();
+const mfp = new MultiFunctionPrinter();
+
+printDocuments(simplePrinter, ["Report.pdf", "Invoice.pdf"]);
+// [SimplePrinter] Printing: Report.pdf
+// [SimplePrinter] Printing: Invoice.pdf
+
+printDocuments(mfp, ["Contract.pdf"]);
+// [MultiFunctionPrinter] Printing: Contract.pdf
+
+scanAndPrint(mfp, "Photo.jpg");
+// [MultiFunctionPrinter] Scanning: Photo.jpg
+// [MultiFunctionPrinter] Printing: Scanned: Photo.jpg
+
+mfp.fax("Contract.pdf", "+1-555-0123");
+// [MultiFunctionPrinter] Faxing "Contract.pdf" to +1-555-0123
+```
+
+### 架构层面的 ISP
+
+```
+API 粒度设计：
+
+❌ 一个大而全的 API
+GET /api/user?include=profile,orders,reviews,recommendations
+
+✅ 按客户端需求拆分
+GET /api/user/profile      ← 用户中心使用
+GET /api/user/orders       ← 订单页面使用
+GET /api/user/reviews      ← 评价模块使用
+
+BFF（Backend for Frontend）模式：
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│ Mobile   │  │  Web     │  │ Admin    │
+│  BFF     │  │  BFF     │  │  BFF     │
+│(精简接口) │  │(完整接口) │  │(管理接口) │
+└────┬─────┘  └────┬─────┘  └────┬─────┘
+     │             │             │
+     └─────────────┼─────────────┘
+                   ↓
+          ┌────────────────┐
+          │ Microservices  │
+          └────────────────┘
+```
+
+## 🔃 D — 依赖反转原则（DIP）
+
+### 核心思想
+
+> **高层模块不应该依赖低层模块，两者都应该依赖抽象。抽象不应该依赖细节，细节应该依赖抽象。**
+
+### 违反 DIP 的例子
+
+```js
+// ❌ 违反 DIP：高层模块直接依赖低层模块的具体实现
+
+class MySQLDatabase {
+  save(data) {
+    console.log(`Saving to MySQL: ${JSON.stringify(data)}`);
+  }
+
+  findById(id) {
+    console.log(`Finding from MySQL: ${id}`);
+    return { id, name: "Alice" };
+  }
+}
+
+class UserService {
+  constructor() {
+    // 直接依赖具体实现 — 如果要换成 PostgreSQL，必须修改 UserService
+    this.database = new MySQLDatabase();
+  }
+
+  createUser(userData) {
+    this.database.save(userData);
+  }
+}
+```
+
+### 遵守 DIP 的重构
+
+```js
+// ✅ 遵守 DIP：依赖注入 + 面向接口编程
+
+// 抽象层：定义数据访问的契约
+class UserRepository {
+  save(user) {
+    throw new Error("save() must be implemented");
+  }
+
+  findById(id) {
+    throw new Error("findById() must be implemented");
+  }
+
+  findAll() {
+    throw new Error("findAll() must be implemented");
+  }
+}
+
+// 低层模块1：MySQL 实现
+class MySQLUserRepository extends UserRepository {
+  constructor() {
+    super();
+    this.store = new Map();
+  }
+
+  save(user) {
+    this.store.set(user.id, { ...user });
+    console.log(`[MySQL] Saved user: ${user.name}`);
+    return user;
+  }
+
+  findById(id) {
+    const user = this.store.get(id);
+    console.log(`[MySQL] Found user: ${user?.name || "not found"}`);
+    return user || null;
+  }
+
+  findAll() {
+    return Array.from(this.store.values());
+  }
+}
+
+// 低层模块2：内存实现（测试用）
+class InMemoryUserRepository extends UserRepository {
+  constructor() {
+    super();
+    this.store = new Map();
+  }
+
+  save(user) {
+    this.store.set(user.id, { ...user });
+    console.log(`[InMemory] Saved user: ${user.name}`);
+    return user;
+  }
+
+  findById(id) {
+    const user = this.store.get(id);
+    console.log(`[InMemory] Found user: ${user?.name || "not found"}`);
+    return user || null;
+  }
+
+  findAll() {
+    return Array.from(this.store.values());
+  }
+}
+
+// 抽象层：通知服务契约
+class NotificationService {
+  notify(recipient, message) {
+    throw new Error("notify() must be implemented");
+  }
+}
+
+class EmailNotificationService extends NotificationService {
+  notify(recipient, message) {
+    console.log(`[Email] To ${recipient}: ${message}`);
+  }
+}
+
+class ConsoleNotificationService extends NotificationService {
+  notify(recipient, message) {
+    console.log(`[Console] To ${recipient}: ${message}`);
+  }
+}
+
+// 高层模块：依赖抽象，而非具体实现
+class UserService {
+  constructor(userRepository, notificationService) {
+    this.userRepository = userRepository;       // 依赖抽象
+    this.notificationService = notificationService; // 依赖抽象
+  }
+
+  createUser(userData) {
+    const user = this.userRepository.save(userData);
+    this.notificationService.notify(user.name, "Welcome! Your account has been created.");
+    return user;
+  }
+
+  getUser(id) {
+    return this.userRepository.findById(id);
+  }
+
+  listUsers() {
+    return this.userRepository.findAll();
+  }
+}
+
+// 组装依赖（组合根 / IoC 容器）
+function createProductionServices() {
+  const userRepo = new MySQLUserRepository();
+  const notifier = new EmailNotificationService();
+  return new UserService(userRepo, notifier);
+}
+
+function createTestServices() {
+  const userRepo = new InMemoryUserRepository();
+  const notifier = new ConsoleNotificationService();
+  return new UserService(userRepo, notifier);
+}
+
+// 生产环境
+console.log("=== Production ===");
+const prodService = createProductionServices();
+prodService.createUser({ id: "1", name: "Alice", email: "alice@example.com" });
+prodService.getUser("1");
+// === Production ===
+// [MySQL] Saved user: Alice
+// [Email] To Alice: Welcome! Your account has been created.
+// [MySQL] Found user: Alice
+
+// 测试环境 — 无需修改 UserService 的代码
+console.log("\n=== Testing ===");
+const testService = createTestServices();
+testService.createUser({ id: "1", name: "Bob", email: "bob@test.com" });
+testService.getUser("1");
+// === Testing ===
+// [InMemory] Saved user: Bob
+// [Console] To Bob: Welcome! Your account has been created.
+// [InMemory] Found user: Bob
+```
+
+### 架构层面的 DIP
+
+```
+整洁架构中的依赖方向：
+
+外层依赖内层，内层不依赖外层
+
+┌─────────────────────────────────────┐
+│ 框架和驱动层                         │
+│ (Web框架, DB驱动, 外部API)           │
+│  ┌─────────────────────────────┐    │
+│  │ 接口适配层                    │    │
+│  │ (Controller, Gateway, Repo) │    │
+│  │  ┌─────────────────────┐    │    │
+│  │  │ 用例层               │    │    │
+│  │  │ (Application Logic) │    │    │
+│  │  │  ┌─────────────┐    │    │    │
+│  │  │  │ 实体层       │    │    │    │
+│  │  │  │ (Domain)    │    │    │    │
+│  │  │  └─────────────┘    │    │    │
+│  │  └─────────────────────┘    │    │
+│  └─────────────────────────────┘    │
+└─────────────────────────────────────┘
+
+依赖方向：外 → 内（框架依赖用例，用例依赖实体）
+数据流方向：任意方向
+```
+
+## 📝 SOLID 原则综合实践
+
+```js
+// 综合案例：一个简单的通知系统，同时体现 SOLID 五大原则
+
+// SRP：每个类只有一个职责
+// OCP：新增通知渠道不需要修改已有代码
+// LSP：所有通知渠道可以替换使用
+// ISP：通知接口只包含必要的方法
+// DIP：通知调度器依赖抽象而非具体实现
+
+// 通知渠道接口（抽象）
+class NotificationChannel {
+  send(recipient, message) {
+    throw new Error("send() must be implemented");
+  }
+
+  getName() {
+    throw new Error("getName() must be implemented");
+  }
+}
+
+// 具体渠道实现（OCP：新增渠道只需新增类）
+class EmailChannel extends NotificationChannel {
+  send(recipient, message) {
+    console.log(`  📧 Email → ${recipient}: ${message}`);
+    return { success: true, channel: "email" };
+  }
+
+  getName() {
+    return "Email";
+  }
+}
+
+class SmsChannel extends NotificationChannel {
+  send(recipient, message) {
+    console.log(`  📱 SMS → ${recipient}: ${message}`);
+    return { success: true, channel: "sms" };
+  }
+
+  getName() {
+    return "SMS";
+  }
+}
+
+class SlackChannel extends NotificationChannel {
+  send(recipient, message) {
+    console.log(`  💬 Slack → ${recipient}: ${message}`);
+    return { success: true, channel: "slack" };
+  }
+
+  getName() {
+    return "Slack";
+  }
+}
+
+// 通知策略（SRP：只负责决定发送给哪些渠道）
+class NotificationStrategy {
+  selectChannels(priority, channels) {
+    throw new Error("selectChannels() must be implemented");
+  }
+}
+
+class PriorityBasedStrategy extends NotificationStrategy {
+  selectChannels(priority, channels) {
+    if (priority === "critical") return channels; // 所有渠道
+    if (priority === "high") return channels.slice(0, 2); // 前两个
+    return channels.slice(0, 1); // 只用第一个
+  }
+}
+
+// 通知调度器（DIP：依赖抽象的 channel 和 strategy）
+class NotificationDispatcher {
+  constructor(channels, strategy) {
+    this.channels = channels;   // 依赖抽象
+    this.strategy = strategy;   // 依赖抽象
+  }
+
+  dispatch(recipient, message, priority = "normal") {
+    const selectedChannels = this.strategy.selectChannels(priority, this.channels);
+    console.log(`Dispatching [${priority}] notification to ${recipient}:`);
+
+    const results = selectedChannels.map((channel) => {
+      return channel.send(recipient, message);
+    });
+
+    return {
+      recipient,
+      priority,
+      channelsUsed: selectedChannels.map((ch) => ch.getName()),
+      results,
+    };
+  }
+}
+
+// 组装和使用
+const channels = [new EmailChannel(), new SmsChannel(), new SlackChannel()];
+const strategy = new PriorityBasedStrategy();
+const dispatcher = new NotificationDispatcher(channels, strategy);
+
+dispatcher.dispatch("alice@example.com", "Server is down!", "critical");
+// Dispatching [critical] notification to alice@example.com:
+//   📧 Email → alice@example.com: Server is down!
+//   📱 SMS → alice@example.com: Server is down!
+//   💬 Slack → alice@example.com: Server is down!
+
+dispatcher.dispatch("bob@example.com", "Deployment complete", "normal");
+// Dispatching [normal] notification to bob@example.com:
+//   📧 Email → bob@example.com: Deployment complete
+```
+
+## 🔗 相关概念
+
+- **[其他设计原则](./03-other-design-principles.mdx)**：DRY、KISS、YAGNI 等原则与 SOLID 互补
+- **[设计模式](/architect/01-programming-fundamentals/03-design-patterns/01-design-patterns-overview)**：设计模式是 SOLID 原则的具体应用
+- **[架构风格](/architect/02-architecture-fundamentals/01-architecture-styles/01-architecture-styles-overview)**：SOLID 在架构层面的体现
+
+## 📚 学习检查点
+
+- [ ] 能否用自己的话解释 SOLID 每个原则的核心思想？
+- [ ] 能否识别代码中违反 SOLID 原则的坏味道？
+- [ ] 能否说出每个原则在架构层面的对应应用？
+- [ ] 理解 SOLID 原则之间的关联（如 OCP 和 DIP 的配合）
+- [ ] 能否在实际重构中灵活运用 SOLID 原则？
+
+## 🚀 下一步
+
+→ [其他重要设计原则](./03-other-design-principles.mdx)

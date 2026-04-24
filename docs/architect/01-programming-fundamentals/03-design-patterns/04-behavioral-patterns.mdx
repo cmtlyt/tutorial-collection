@@ -5,7 +5,7 @@
 
 ## 📖 概述
 
-系统讲解七种常用行为型设计模式：策略、观察者、责任链、模板方法、状态、命令和迭代器，理解如何优雅地管理对象间的交互和职责分配。
+系统讲解七种常用行为型设计模式：策略、观察者、责任链、模板方法、状态、命令和迭代器，理解如何优雅地管理对象间的交互和职责分配。行为型模式关注的是**对象之间如何通信和协作**，将复杂的控制流解耦为灵活可扩展的结构。
 
 ## 🎯 学习目标
 
@@ -14,4 +14,1169 @@
 - 了解行为型模式在架构层面的延伸（事件驱动、中间件管道等）
 - 能够在复杂业务逻辑中灵活运用行为型模式
 
-> 🚧 详细内容正在编写中...
+## 🎯 策略模式（Strategy）
+
+### 意图
+
+> 定义一系列算法，把它们封装起来，并且使它们可以相互替换。策略模式让算法独立于使用它的客户端。
+
+### 结构与实现
+
+```js
+// 场景：电商运费计算 — 不同的物流策略
+
+// 策略接口：运费计算
+class ShippingStrategy {
+  calculate(weight, distance) {
+    throw new Error("calculate() must be implemented");
+  }
+
+  getName() {
+    throw new Error("getName() must be implemented");
+  }
+}
+
+// 具体策略：标准快递
+class StandardShipping extends ShippingStrategy {
+  calculate(weight, distance) {
+    const baseFee = 8;
+    const weightFee = weight * 1.5;
+    const distanceFee = distance * 0.01;
+    return Math.round((baseFee + weightFee + distanceFee) * 100) / 100;
+  }
+
+  getName() {
+    return "Standard Shipping (3-5 days)";
+  }
+}
+
+// 具体策略：加急快递
+class ExpressShipping extends ShippingStrategy {
+  calculate(weight, distance) {
+    const baseFee = 20;
+    const weightFee = weight * 3;
+    const distanceFee = distance * 0.03;
+    return Math.round((baseFee + weightFee + distanceFee) * 100) / 100;
+  }
+
+  getName() {
+    return "Express Shipping (1-2 days)";
+  }
+}
+
+// 具体策略：免费包邮（满足条件）
+class FreeShipping extends ShippingStrategy {
+  constructor(minOrderAmount) {
+    super();
+    this.minOrderAmount = minOrderAmount;
+  }
+
+  calculate(weight, distance) {
+    return 0;
+  }
+
+  getName() {
+    return `Free Shipping (orders over ${this.minOrderAmount})`;
+  }
+}
+
+// 上下文：使用策略的购物车
+class ShoppingCart {
+  constructor() {
+    this.items = [];
+    this.shippingStrategy = new StandardShipping(); // 默认策略
+  }
+
+  addItem(name, price, weight) {
+    this.items.push({ name, price, weight });
+    return this;
+  }
+
+  setShippingStrategy(strategy) {
+    this.shippingStrategy = strategy;
+    return this;
+  }
+
+  getSubtotal() {
+    return this.items.reduce((sum, item) => sum + item.price, 0);
+  }
+
+  getTotalWeight() {
+    return this.items.reduce((sum, item) => sum + item.weight, 0);
+  }
+
+  checkout(distance) {
+    const subtotal = this.getSubtotal();
+    const weight = this.getTotalWeight();
+    const shippingCost = this.shippingStrategy.calculate(weight, distance);
+
+    return {
+      items: this.items.length,
+      subtotal: subtotal.toFixed(2),
+      shipping: shippingCost.toFixed(2),
+      shippingMethod: this.shippingStrategy.getName(),
+      total: (subtotal + shippingCost).toFixed(2),
+    };
+  }
+}
+
+// 根据不同条件选择不同策略
+const cart = new ShoppingCart()
+  .addItem("Laptop", 999.99, 2.5)
+  .addItem("Mouse", 29.99, 0.2);
+
+// 标准快递
+console.log("Standard:", cart.setShippingStrategy(new StandardShipping()).checkout(500));
+// Standard: { items: 2, subtotal: '1029.98', shipping: '16.05', shippingMethod: 'Standard Shipping (3-5 days)', total: '1046.03' }
+
+// 加急快递
+console.log("Express:", cart.setShippingStrategy(new ExpressShipping()).checkout(500));
+// Express: { items: 2, subtotal: '1029.98', shipping: '43.10', shippingMethod: 'Express Shipping (1-2 days)', total: '1073.08' }
+
+// 免费包邮（订单超过 $500）
+console.log("Free:", cart.setShippingStrategy(new FreeShipping(500)).checkout(500));
+// Free: { items: 2, subtotal: '1029.98', shipping: '0.00', shippingMethod: 'Free Shipping (orders over $500)', total: '1029.98' }
+```
+
+### 架构延伸
+
+```
+策略模式 → 负载均衡策略
+
+API 网关根据配置选择不同的负载均衡算法：
+  - RoundRobin 策略
+  - WeightedRandom 策略
+  - LeastConnections 策略
+  - ConsistentHash 策略
+
+运行时可动态切换策略，无需修改网关代码
+```
+
+## 👁️ 观察者模式（Observer）
+
+### 意图
+
+> 定义对象间一对多的依赖关系，当一个对象的状态发生改变时，所有依赖于它的对象都会得到通知并自动更新。
+
+### 结构与实现
+
+```js
+// 场景：事件总线 — 系统内的事件发布与订阅
+
+class EventBus {
+  constructor() {
+    this.listeners = new Map();
+  }
+
+  on(event, callback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, []);
+    }
+    this.listeners.get(event).push(callback);
+    // 返回取消订阅函数
+    return () => this.off(event, callback);
+  }
+
+  off(event, callback) {
+    const callbacks = this.listeners.get(event);
+    if (callbacks) {
+      const index = callbacks.indexOf(callback);
+      if (index > -1) {
+        callbacks.splice(index, 1);
+      }
+    }
+  }
+
+  emit(event, data) {
+    const callbacks = this.listeners.get(event);
+    if (callbacks) {
+      callbacks.forEach((callback) => {
+        try {
+          callback(data);
+        } catch (error) {
+          console.error(`Error in listener for "${event}":`, error.message);
+        }
+      });
+    }
+  }
+
+  once(event, callback) {
+    const wrapper = (data) => {
+      callback(data);
+      this.off(event, wrapper);
+    };
+    this.on(event, wrapper);
+  }
+}
+
+// 使用事件总线构建松耦合的系统
+
+const bus = new EventBus();
+
+// 订单模块：发布事件
+class OrderModule {
+  constructor(eventBus) {
+    this.eventBus = eventBus;
+  }
+
+  createOrder(order) {
+    console.log(`[Order] Created: ${order.id}`);
+    this.eventBus.emit("order:created", order);
+  }
+
+  cancelOrder(orderId) {
+    console.log(`[Order] Cancelled: ${orderId}`);
+    this.eventBus.emit("order:cancelled", { orderId });
+  }
+}
+
+// 库存模块：监听订单事件
+class InventoryModule {
+  constructor(eventBus) {
+    eventBus.on("order:created", (order) => {
+      console.log(`[Inventory] Reserving stock for order ${order.id}: ${order.items.length} items`);
+    });
+    eventBus.on("order:cancelled", ({ orderId }) => {
+      console.log(`[Inventory] Releasing stock for order ${orderId}`);
+    });
+  }
+}
+
+// 通知模块：监听订单事件
+class NotificationModule {
+  constructor(eventBus) {
+    eventBus.on("order:created", (order) => {
+      console.log(`[Notification] Sending confirmation email for order ${order.id}`);
+    });
+    eventBus.on("order:cancelled", ({ orderId }) => {
+      console.log(`[Notification] Sending cancellation notice for order ${orderId}`);
+    });
+  }
+}
+
+// 分析模块：监听订单事件
+class AnalyticsModule {
+  constructor(eventBus) {
+    this.orderCount = 0;
+    eventBus.on("order:created", (order) => {
+      this.orderCount++;
+      console.log(`[Analytics] Order count: ${this.orderCount}, revenue: ${order.total}`);
+    });
+  }
+}
+
+// 初始化模块（各模块互不感知）
+const orderModule = new OrderModule(bus);
+const inventoryModule = new InventoryModule(bus);
+const notificationModule = new NotificationModule(bus);
+const analyticsModule = new AnalyticsModule(bus);
+
+// 创建订单 — 自动触发库存、通知、分析
+orderModule.createOrder({
+  id: "ORD-001",
+  items: [{ name: "Laptop" }, { name: "Mouse" }],
+  total: 1029.98,
+});
+// [Order] Created: ORD-001
+// [Inventory] Reserving stock for order ORD-001: 2 items
+// [Notification] Sending confirmation email for order ORD-001
+// [Analytics] Order count: 1, revenue: $1029.98
+
+console.log("");
+orderModule.cancelOrder("ORD-001");
+// [Order] Cancelled: ORD-001
+// [Inventory] Releasing stock for order ORD-001
+// [Notification] Sending cancellation notice for order ORD-001
+```
+
+### 架构延伸
+
+```
+观察者模式 → 事件驱动架构
+
+本地 EventBus → 分布式消息队列（Kafka / RabbitMQ）
+
+发布者（Producer）→ 消息队列 → 消费者（Consumer）
+
+核心优势：
+  - 发布者与消费者完全解耦
+  - 支持异步处理
+  - 支持消息持久化和重放
+  - 支持多消费者并行处理
+```
+
+## ⛓️ 责任链模式（Chain of Responsibility）
+
+### 意图
+
+> 使多个对象都有机会处理请求，从而避免请求的发送者和接收者之间的耦合关系。将这些对象连成一条链，沿着这条链传递请求，直到有一个对象处理它。
+
+### 结构与实现
+
+```js
+// 场景：审批流程 — 不同金额级别由不同层级审批
+
+class ApprovalHandler {
+  constructor(name, limit) {
+    this.name = name;
+    this.limit = limit;
+    this.nextHandler = null;
+  }
+
+  setNext(handler) {
+    this.nextHandler = handler;
+    return handler; // 支持链式设置
+  }
+
+  handle(request) {
+    if (request.amount <= this.limit) {
+      console.log(`  ✅ ${this.name} approved: ${request.amount} for "${request.description}"`);
+      return { approved: true, approver: this.name, amount: request.amount };
+    }
+
+    if (this.nextHandler) {
+      console.log(`  ⏩ ${this.name} cannot approve ${request.amount} (limit: ${this.limit}), forwarding...`);
+      return this.nextHandler.handle(request);
+    }
+
+    console.log(`  ❌ No one can approve ${request.amount} — request denied`);
+    return { approved: false, amount: request.amount, reason: "Exceeds all approval limits" };
+  }
+}
+
+// 构建审批链
+const teamLead = new ApprovalHandler("Team Lead", 1000);
+const manager = new ApprovalHandler("Manager", 5000);
+const director = new ApprovalHandler("Director", 20000);
+const vp = new ApprovalHandler("VP", 100000);
+
+teamLead.setNext(manager).setNext(director).setNext(vp);
+
+// 测试不同金额的审批
+const requests = [
+  { amount: 500, description: "Team dinner" },
+  { amount: 3000, description: "Training course" },
+  { amount: 15000, description: "Server hardware" },
+  { amount: 80000, description: "New office furniture" },
+  { amount: 200000, description: "Office renovation" },
+];
+
+requests.forEach((request) => {
+  console.log(`\nProcessing: ${request.amount} — "${request.description}"`);
+  const result = teamLead.handle(request);
+  console.log(`  Result: ${JSON.stringify(result)}`);
+});
+// Processing: $500 — "Team dinner"
+//   ✅ Team Lead approved: $500 for "Team dinner"
+//   Result: {"approved":true,"approver":"Team Lead","amount":500}
+//
+// Processing: $3000 — "Training course"
+//   ⏩ Team Lead cannot approve $3000 (limit: $1000), forwarding...
+//   ✅ Manager approved: $3000 for "Training course"
+//   Result: {"approved":true,"approver":"Manager","amount":3000}
+//
+// Processing: $15000 — "Server hardware"
+//   ⏩ Team Lead cannot approve... → ⏩ Manager cannot approve... → ✅ Director approved
+//
+// Processing: $200000 — "Office renovation"
+//   ⏩ ... → ❌ No one can approve $200000 — request denied
+```
+
+### 另一种形式：中间件管道
+
+```js
+// 责任链的变体：每个处理器都参与处理，而非只有一个处理
+
+class Pipeline {
+  constructor() {
+    this.handlers = [];
+  }
+
+  use(handler) {
+    this.handlers.push(handler);
+    return this;
+  }
+
+  async execute(context) {
+    let index = 0;
+
+    const next = async () => {
+      if (index < this.handlers.length) {
+        const handler = this.handlers[index++];
+        await handler(context, next);
+      }
+    };
+
+    await next();
+    return context;
+  }
+}
+
+// 数据处理管道
+const pipeline = new Pipeline()
+  .use(async (ctx, next) => {
+    // 步骤1：数据验证
+    console.log("1. Validating data...");
+    if (!ctx.data.name) {
+      ctx.errors = ctx.errors || [];
+      ctx.errors.push("Name is required");
+    }
+    await next();
+  })
+  .use(async (ctx, next) => {
+    // 步骤2：数据清洗
+    if (!ctx.errors) {
+      console.log("2. Cleaning data...");
+      ctx.data.name = ctx.data.name.trim();
+      ctx.data.email = ctx.data.email.toLowerCase().trim();
+    }
+    await next();
+  })
+  .use(async (ctx, next) => {
+    // 步骤3：数据转换
+    if (!ctx.errors) {
+      console.log("3. Transforming data...");
+      ctx.data.slug = ctx.data.name.toLowerCase().replace(/\s+/g, "-");
+      ctx.data.processedAt = new Date().toISOString();
+    }
+    await next();
+  })
+  .use(async (ctx, next) => {
+    // 步骤4：数据持久化
+    if (!ctx.errors) {
+      console.log("4. Saving data...");
+      ctx.result = { id: Math.random().toString(36).slice(2, 8), ...ctx.data };
+    }
+    await next();
+  });
+
+async function main() {
+  const context = {
+    data: { name: "  Alice Johnson  ", email: "  ALICE@Example.COM  " },
+  };
+
+  await pipeline.execute(context);
+  console.log("Result:", context.result);
+}
+
+main();
+// 1. Validating data...
+// 2. Cleaning data...
+// 3. Transforming data...
+// 4. Saving data...
+// Result: { id: 'abc123', name: 'Alice Johnson', email: 'alice@example.com', slug: 'alice-johnson', processedAt: '...' }
+```
+
+### 架构延伸
+
+```
+责任链模式 → 中间件管道
+
+Express.js 中间件链：
+  request → logger → auth → rateLimit → handler → response
+
+Koa.js 洋葱模型：
+  request → middleware1(入) → middleware2(入) → handler
+                                                ↓
+  response ← middleware1(出) ← middleware2(出) ← result
+```
+
+## 📋 模板方法模式（Template Method）
+
+### 意图
+
+> 定义一个操作中的算法骨架，将某些步骤延迟到子类中。模板方法使得子类可以不改变算法结构即可重定义某些特定步骤。
+
+### 结构与实现
+
+```js
+// 场景：数据导出 — 不同格式共享相同的处理流程
+
+class DataExporter {
+  // 模板方法：定义算法骨架（不可被子类修改）
+  export(data) {
+    console.log(`\n=== Exporting as ${this.getFormatName()} ===`);
+
+    const validated = this.validate(data);
+    const transformed = this.transform(validated);
+    const formatted = this.format(transformed);
+    const output = this.addHeader(formatted);
+
+    console.log(`Export complete: ${output.length} characters`);
+    return output;
+  }
+
+  // 通用步骤：验证数据
+  validate(data) {
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error("Data must be a non-empty array");
+    }
+    console.log(`  Validated: ${data.length} records`);
+    return data;
+  }
+
+  // 以下方法由子类实现
+  getFormatName() {
+    throw new Error("getFormatName() must be implemented");
+  }
+
+  transform(data) {
+    throw new Error("transform() must be implemented");
+  }
+
+  format(data) {
+    throw new Error("format() must be implemented");
+  }
+
+  addHeader(content) {
+    throw new Error("addHeader() must be implemented");
+  }
+}
+
+// CSV 导出器
+class CsvExporter extends DataExporter {
+  getFormatName() {
+    return "CSV";
+  }
+
+  transform(data) {
+    // CSV 不需要嵌套，展平数据
+    return data.map((record) => ({
+      ...record,
+      tags: Array.isArray(record.tags) ? record.tags.join(";") : record.tags,
+    }));
+  }
+
+  format(data) {
+    if (data.length === 0) return "";
+    const headers = Object.keys(data[0]);
+    const rows = data.map((record) =>
+      headers.map((header) => `"${String(record[header]).replace(/"/g, '""')}"`).join(",")
+    );
+    return [headers.join(","), ...rows].join("\n");
+  }
+
+  addHeader(content) {
+    return `# Generated at ${new Date().toISOString()}\n${content}`;
+  }
+}
+
+// JSON 导出器
+class JsonExporter extends DataExporter {
+  getFormatName() {
+    return "JSON";
+  }
+
+  transform(data) {
+    // JSON 保留原始结构，添加元数据
+    return data.map((record, index) => ({
+      _index: index,
+      ...record,
+    }));
+  }
+
+  format(data) {
+    return JSON.stringify(data, null, 2);
+  }
+
+  addHeader(content) {
+    const wrapper = {
+      exportedAt: new Date().toISOString(),
+      recordCount: JSON.parse(content).length,
+      data: JSON.parse(content),
+    };
+    return JSON.stringify(wrapper, null, 2);
+  }
+}
+
+// Markdown 表格导出器
+class MarkdownExporter extends DataExporter {
+  getFormatName() {
+    return "Markdown Table";
+  }
+
+  transform(data) {
+    return data.map((record) => ({
+      ...record,
+      tags: Array.isArray(record.tags) ? record.tags.join(", ") : record.tags,
+    }));
+  }
+
+  format(data) {
+    if (data.length === 0) return "";
+    const headers = Object.keys(data[0]);
+    const headerRow = `| ${headers.join(" | ")} |`;
+    const separator = `| ${headers.map(() => "---").join(" | ")} |`;
+    const rows = data.map(
+      (record) => `| ${headers.map((h) => String(record[h])).join(" | ")} |`
+    );
+    return [headerRow, separator, ...rows].join("\n");
+  }
+
+  addHeader(content) {
+    return `## Data Export\n\n_Generated: ${new Date().toISOString()}_\n\n${content}`;
+  }
+}
+
+// 使用模板方法
+const sampleData = [
+  { name: "Alice", email: "alice@example.com", role: "admin", tags: ["vip", "active"] },
+  { name: "Bob", email: "bob@example.com", role: "user", tags: ["active"] },
+  { name: "Charlie", email: "charlie@example.com", role: "user", tags: ["inactive"] },
+];
+
+const csvOutput = new CsvExporter().export(sampleData);
+console.log(csvOutput);
+
+const jsonOutput = new JsonExporter().export(sampleData);
+console.log(jsonOutput.slice(0, 200) + "...");
+
+const mdOutput = new MarkdownExporter().export(sampleData);
+console.log(mdOutput);
+```
+
+## 🔄 状态模式（State）
+
+### 意图
+
+> 允许一个对象在其内部状态改变时改变它的行为。对象看起来似乎修改了它的类。
+
+### 结构与实现
+
+```js
+// 场景：订单状态机 — 订单在不同状态下有不同的行为
+
+// 状态接口
+class OrderState {
+  constructor(order) {
+    this.order = order;
+  }
+
+  pay() {
+    throw new Error(`Cannot pay in ${this.getName()} state`);
+  }
+
+  ship() {
+    throw new Error(`Cannot ship in ${this.getName()} state`);
+  }
+
+  deliver() {
+    throw new Error(`Cannot deliver in ${this.getName()} state`);
+  }
+
+  cancel() {
+    throw new Error(`Cannot cancel in ${this.getName()} state`);
+  }
+
+  getName() {
+    throw new Error("getName() must be implemented");
+  }
+}
+
+// 具体状态：待支付
+class PendingPaymentState extends OrderState {
+  getName() {
+    return "Pending Payment";
+  }
+
+  pay() {
+    console.log(`  💳 Payment processed for order ${this.order.id}`);
+    this.order.setState(new PaidState(this.order));
+  }
+
+  cancel() {
+    console.log(`  ❌ Order ${this.order.id} cancelled before payment`);
+    this.order.setState(new CancelledState(this.order));
+  }
+}
+
+// 具体状态：已支付
+class PaidState extends OrderState {
+  getName() {
+    return "Paid";
+  }
+
+  ship() {
+    console.log(`  📦 Order ${this.order.id} shipped`);
+    this.order.setState(new ShippedState(this.order));
+  }
+
+  cancel() {
+    console.log(`  ❌ Order ${this.order.id} cancelled, refund initiated`);
+    this.order.setState(new CancelledState(this.order));
+  }
+}
+
+// 具体状态：已发货
+class ShippedState extends OrderState {
+  getName() {
+    return "Shipped";
+  }
+
+  deliver() {
+    console.log(`  ✅ Order ${this.order.id} delivered`);
+    this.order.setState(new DeliveredState(this.order));
+  }
+}
+
+// 具体状态：已送达
+class DeliveredState extends OrderState {
+  getName() {
+    return "Delivered";
+  }
+}
+
+// 具体状态：已取消
+class CancelledState extends OrderState {
+  getName() {
+    return "Cancelled";
+  }
+}
+
+// 上下文：订单
+class Order {
+  constructor(id, items) {
+    this.id = id;
+    this.items = items;
+    this.stateHistory = [];
+    this.state = new PendingPaymentState(this);
+    this.stateHistory.push({ state: this.state.getName(), at: new Date().toISOString() });
+  }
+
+  setState(newState) {
+    this.state = newState;
+    this.stateHistory.push({ state: newState.getName(), at: new Date().toISOString() });
+  }
+
+  pay() {
+    try {
+      this.state.pay();
+    } catch (error) {
+      console.log(`  ⚠️ ${error.message}`);
+    }
+  }
+
+  ship() {
+    try {
+      this.state.ship();
+    } catch (error) {
+      console.log(`  ⚠️ ${error.message}`);
+    }
+  }
+
+  deliver() {
+    try {
+      this.state.deliver();
+    } catch (error) {
+      console.log(`  ⚠️ ${error.message}`);
+    }
+  }
+
+  cancel() {
+    try {
+      this.state.cancel();
+    } catch (error) {
+      console.log(`  ⚠️ ${error.message}`);
+    }
+  }
+
+  getStatus() {
+    return this.state.getName();
+  }
+
+  getHistory() {
+    return this.stateHistory;
+  }
+}
+
+// 正常流程
+console.log("=== Normal Order Flow ===");
+const order1 = new Order("ORD-001", ["Laptop", "Mouse"]);
+console.log(`Status: ${order1.getStatus()}`); // Pending Payment
+
+order1.pay();     // 💳 Payment processed
+console.log(`Status: ${order1.getStatus()}`); // Paid
+
+order1.ship();    // 📦 Shipped
+console.log(`Status: ${order1.getStatus()}`); // Shipped
+
+order1.deliver(); // ✅ Delivered
+console.log(`Status: ${order1.getStatus()}`); // Delivered
+
+// 尝试非法操作
+order1.cancel();  // ⚠️ Cannot cancel in Delivered state
+
+console.log("\nOrder History:", order1.getHistory());
+
+// 取消流程
+console.log("\n=== Cancel Order Flow ===");
+const order2 = new Order("ORD-002", ["Keyboard"]);
+order2.pay();
+order2.cancel(); // ❌ Cancelled, refund initiated
+order2.ship();   // ⚠️ Cannot ship in Cancelled state
+```
+
+## 📝 命令模式（Command）
+
+### 意图
+
+> 将请求封装为对象，从而支持参数化配置、请求排队、日志记录和撤销操作。
+
+### 结构与实现
+
+```js
+// 场景：文本编辑器 — 支持撤销/重做
+
+// 命令接口
+class Command {
+  execute() {
+    throw new Error("execute() must be implemented");
+  }
+
+  undo() {
+    throw new Error("undo() must be implemented");
+  }
+
+  describe() {
+    throw new Error("describe() must be implemented");
+  }
+}
+
+// 文本编辑器（接收者）
+class TextEditor {
+  constructor() {
+    this.content = "";
+  }
+
+  insertAt(position, text) {
+    this.content = this.content.slice(0, position) + text + this.content.slice(position);
+  }
+
+  deleteRange(position, length) {
+    const deleted = this.content.slice(position, position + length);
+    this.content = this.content.slice(0, position) + this.content.slice(position + length);
+    return deleted;
+  }
+
+  getContent() {
+    return this.content;
+  }
+}
+
+// 具体命令：插入文本
+class InsertCommand extends Command {
+  constructor(editor, position, text) {
+    super();
+    this.editor = editor;
+    this.position = position;
+    this.text = text;
+  }
+
+  execute() {
+    this.editor.insertAt(this.position, this.text);
+  }
+
+  undo() {
+    this.editor.deleteRange(this.position, this.text.length);
+  }
+
+  describe() {
+    return `Insert "${this.text}" at position ${this.position}`;
+  }
+}
+
+// 具体命令：删除文本
+class DeleteCommand extends Command {
+  constructor(editor, position, length) {
+    super();
+    this.editor = editor;
+    this.position = position;
+    this.length = length;
+    this.deletedText = ""; // 保存被删除的文本用于撤销
+  }
+
+  execute() {
+    this.deletedText = this.editor.deleteRange(this.position, this.length);
+  }
+
+  undo() {
+    this.editor.insertAt(this.position, this.deletedText);
+  }
+
+  describe() {
+    return `Delete ${this.length} chars at position ${this.position}`;
+  }
+}
+
+// 调用者：命令管理器（支持撤销/重做）
+class CommandManager {
+  constructor() {
+    this.history = [];
+    this.redoStack = [];
+  }
+
+  execute(command) {
+    command.execute();
+    this.history.push(command);
+    this.redoStack = []; // 执行新命令后清空重做栈
+    console.log(`  Executed: ${command.describe()}`);
+  }
+
+  undo() {
+    if (this.history.length === 0) {
+      console.log("  Nothing to undo");
+      return;
+    }
+    const command = this.history.pop();
+    command.undo();
+    this.redoStack.push(command);
+    console.log(`  Undone: ${command.describe()}`);
+  }
+
+  redo() {
+    if (this.redoStack.length === 0) {
+      console.log("  Nothing to redo");
+      return;
+    }
+    const command = this.redoStack.pop();
+    command.execute();
+    this.history.push(command);
+    console.log(`  Redone: ${command.describe()}`);
+  }
+}
+
+// 使用
+const editor = new TextEditor();
+const manager = new CommandManager();
+
+manager.execute(new InsertCommand(editor, 0, "Hello"));
+console.log(`  Content: "${editor.getContent()}"`);
+// Executed: Insert "Hello" at position 0
+// Content: "Hello"
+
+manager.execute(new InsertCommand(editor, 5, " World"));
+console.log(`  Content: "${editor.getContent()}"`);
+// Executed: Insert " World" at position 5
+// Content: "Hello World"
+
+manager.execute(new InsertCommand(editor, 11, "!"));
+console.log(`  Content: "${editor.getContent()}"`);
+// Executed: Insert "!" at position 11
+// Content: "Hello World!"
+
+// 撤销
+console.log("\n--- Undo ---");
+manager.undo();
+console.log(`  Content: "${editor.getContent()}"`);
+// Undone: Insert "!" at position 11
+// Content: "Hello World"
+
+manager.undo();
+console.log(`  Content: "${editor.getContent()}"`);
+// Undone: Insert " World" at position 5
+// Content: "Hello"
+
+// 重做
+console.log("\n--- Redo ---");
+manager.redo();
+console.log(`  Content: "${editor.getContent()}"`);
+// Redone: Insert " World" at position 5
+// Content: "Hello World"
+```
+
+### 架构延伸
+
+```
+命令模式 → CQRS（命令查询职责分离）
+
+Command（写操作）：封装为命令对象
+  → CreateOrderCommand
+  → UpdateInventoryCommand
+  → ProcessPaymentCommand
+
+Query（读操作）：从读模型直接查询
+  → GetOrderById
+  → ListUserOrders
+
+事件溯源（Event Sourcing）：
+  所有命令执行后生成事件
+  通过重放事件可以重建任意时刻的状态
+```
+
+## 🔁 迭代器模式（Iterator）
+
+### 意图
+
+> 提供一种方法顺序访问一个聚合对象中的各元素，而又不暴露该对象的内部表示。
+
+### 结构与实现
+
+```js
+// JavaScript 原生支持迭代器协议（Symbol.iterator）
+
+// 自定义可迭代集合：分页数据源
+class PaginatedDataSource {
+  constructor(data, pageSize) {
+    this.data = data;
+    this.pageSize = pageSize;
+  }
+
+  // 实现迭代器协议
+  [Symbol.iterator]() {
+    let currentIndex = 0;
+    const data = this.data;
+    const pageSize = this.pageSize;
+
+    return {
+      next() {
+        if (currentIndex < data.length) {
+          const pageStart = currentIndex;
+          const pageEnd = Math.min(currentIndex + pageSize, data.length);
+          const page = data.slice(pageStart, pageEnd);
+          currentIndex = pageEnd;
+
+          return {
+            value: {
+              pageNumber: Math.ceil(pageEnd / pageSize),
+              items: page,
+              hasMore: pageEnd < data.length,
+            },
+            done: false,
+          };
+        }
+        return { done: true };
+      },
+    };
+  }
+
+  // 使用生成器语法（更简洁）
+  *pages() {
+    for (let i = 0; i < this.data.length; i += this.pageSize) {
+      yield {
+        pageNumber: Math.floor(i / this.pageSize) + 1,
+        items: this.data.slice(i, i + this.pageSize),
+        hasMore: i + this.pageSize < this.data.length,
+      };
+    }
+  }
+}
+
+// 使用
+const allUsers = Array.from({ length: 23 }, (_, i) => ({
+  id: i + 1,
+  name: `User ${i + 1}`,
+}));
+
+const dataSource = new PaginatedDataSource(allUsers, 5);
+
+// 使用 for...of 遍历（基于 Symbol.iterator）
+console.log("=== Using for...of ===");
+for (const page of dataSource) {
+  console.log(`Page ${page.pageNumber}: ${page.items.map((u) => u.name).join(", ")} (hasMore: ${page.hasMore})`);
+}
+// Page 1: User 1, User 2, User 3, User 4, User 5 (hasMore: true)
+// Page 2: User 6, User 7, User 8, User 9, User 10 (hasMore: true)
+// Page 3: User 11, User 12, User 13, User 14, User 15 (hasMore: true)
+// Page 4: User 16, User 17, User 18, User 19, User 20 (hasMore: true)
+// Page 5: User 21, User 22, User 23 (hasMore: false)
+
+// 使用生成器方法
+console.log("\n=== Using generator ===");
+for (const page of dataSource.pages()) {
+  console.log(`Page ${page.pageNumber}: ${page.items.length} items`);
+}
+
+// 使用展开运算符收集所有页
+const allPages = [...dataSource];
+console.log(`\nTotal pages: ${allPages.length}`);
+// Total pages: 5
+```
+
+### 生成器实现惰性求值
+
+```js
+// 生成器实现无限序列的惰性求值
+function* fibonacci() {
+  let previous = 0;
+  let current = 1;
+  while (true) {
+    yield current;
+    [previous, current] = [current, previous + current];
+  }
+}
+
+// 工具函数：从迭代器中取前 N 个值
+function take(iterator, count) {
+  const results = [];
+  for (const value of iterator) {
+    results.push(value);
+    if (results.length >= count) break;
+  }
+  return results;
+}
+
+// 工具函数：过滤迭代器
+function* filter(iterator, predicate) {
+  for (const value of iterator) {
+    if (predicate(value)) {
+      yield value;
+    }
+  }
+}
+
+// 工具函数：映射迭代器
+function* map(iterator, transform) {
+  for (const value of iterator) {
+    yield transform(value);
+  }
+}
+
+// 惰性计算管道：取前 10 个偶数斐波那契数，并求平方
+const evenFibSquares = take(
+  map(
+    filter(fibonacci(), (n) => n % 2 === 0),
+    (n) => n * n
+  ),
+  10
+);
+
+console.log("First 10 even Fibonacci numbers squared:");
+console.log(evenFibSquares);
+// [4, 64, 2304, 75076, 2448964, ...]
+
+// 前 15 个斐波那契数
+console.log("\nFirst 15 Fibonacci numbers:");
+console.log(take(fibonacci(), 15));
+// [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610]
+```
+
+## 📊 行为型模式对比
+
+| 模式 | 解决的问题 | 适用场景 | 架构延伸 |
+|------|-----------|---------|---------|
+| **策略** | 算法可互换 | 多种算法按需切换 | 负载均衡、路由策略 |
+| **观察者** | 一对多通知 | 事件驱动、状态变化通知 | 消息队列、事件总线 |
+| **责任链** | 请求逐级处理 | 审批流、中间件 | 过滤器链、中间件管道 |
+| **模板方法** | 算法骨架固定，步骤可变 | 流程固定但步骤可定制 | ETL 流程、构建管道 |
+| **状态** | 状态决定行为 | 有限状态机 | 订单状态、工作流引擎 |
+| **命令** | 请求参数化、可撤销 | 操作历史、任务队列 | CQRS、事件溯源 |
+| **迭代器** | 统一集合遍历 | 自定义集合遍历 | 分页查询、流处理 |
+
+## 🔗 相关概念
+
+- **[创建型模式](./02-creational-patterns.mdx)**：关注对象的创建方式
+- **[结构型模式](./03-structural-patterns.mdx)**：关注对象的组合方式
+- **[架构风格](/architect/02-architecture-fundamentals/01-architecture-styles/01-architecture-styles-overview)**：行为型模式在架构层面的延伸
+
+## 📚 学习检查点
+
+- [ ] 能否区分策略模式和状态模式的适用场景？
+- [ ] 能否用观察者模式实现模块间的松耦合通信？
+- [ ] 能否用责任链模式构建中间件管道？
+- [ ] 理解命令模式如何支持撤销/重做功能
+- [ ] 能否用 JavaScript 迭代器协议实现自定义可迭代对象？
+- [ ] 能否将行为型模式映射到对应的架构模式？
+
+## 🚀 下一步
+
+→ [第二阶段：软件架构基础](/architect/02-architecture-fundamentals/01-architecture-styles/01-architecture-styles-overview)

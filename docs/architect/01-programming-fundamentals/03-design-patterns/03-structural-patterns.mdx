@@ -5,7 +5,7 @@
 
 ## 📖 概述
 
-系统讲解六种结构型设计模式：适配器、桥接、组合、装饰器、外观和代理，理解如何通过组合对象来构建更灵活的结构。
+系统讲解六种结构型设计模式：适配器、桥接、组合、装饰器、外观和代理，理解如何通过组合对象来构建更灵活的结构。结构型模式关注的是**如何将对象和类组合成更大的结构**，同时保持结构的灵活和高效。
 
 ## 🎯 学习目标
 
@@ -14,4 +14,862 @@
 - 了解结构型模式在架构层面的延伸（API 网关、BFF 等）
 - 能够根据设计需求选择合适的结构型模式
 
-> 🚧 详细内容正在编写中...
+## 🔌 适配器模式（Adapter）
+
+### 意图
+
+> 将一个类的接口转换成客户端期望的另一个接口。适配器让原本接口不兼容的类可以一起工作。
+
+### 结构与实现
+
+```js
+// 场景：集成多种第三方支付 API，它们各自的接口格式不同
+
+// 第三方支付 API（各自接口不统一）
+class StripeAPI {
+  createCharge(amountInCents, currency, cardToken) {
+    console.log(`[Stripe] Charging ${amountInCents} cents (${currency}) with token ${cardToken}`);
+    return { id: `stripe_ch_${Date.now()}`, amount: amountInCents, status: "succeeded" };
+  }
+
+  retrieveCharge(chargeId) {
+    return { id: chargeId, status: "succeeded" };
+  }
+}
+
+class PayPalAPI {
+  makePayment(amount, currencyCode, payerId) {
+    console.log(`[PayPal] Payment of ${amount} ${currencyCode} from payer ${payerId}`);
+    return { paymentId: `pp_${Date.now()}`, state: "approved", total: amount };
+  }
+
+  getPaymentDetails(paymentId) {
+    return { paymentId, state: "approved" };
+  }
+}
+
+class AlipayAPI {
+  tradePay(outTradeNo, totalAmount, subject) {
+    console.log(`[Alipay] Trade ${outTradeNo}: ${totalAmount} yuan for "${subject}"`);
+    return { tradeNo: `ali_${Date.now()}`, outTradeNo, totalAmount, tradeStatus: "TRADE_SUCCESS" };
+  }
+
+  tradeQuery(outTradeNo) {
+    return { outTradeNo, tradeStatus: "TRADE_SUCCESS" };
+  }
+}
+
+// 统一支付接口（目标接口）
+// 所有适配器都要实现这个接口
+class PaymentAdapter {
+  pay(orderId, amountInYuan, description) {
+    throw new Error("pay() must be implemented");
+  }
+
+  queryStatus(transactionId) {
+    throw new Error("queryStatus() must be implemented");
+  }
+
+  getProviderName() {
+    throw new Error("getProviderName() must be implemented");
+  }
+}
+
+// Stripe 适配器
+class StripeAdapter extends PaymentAdapter {
+  constructor() {
+    super();
+    this.stripe = new StripeAPI();
+  }
+
+  pay(orderId, amountInYuan, description) {
+    const amountInCents = Math.round(amountInYuan * 100);
+    const result = this.stripe.createCharge(amountInCents, "CNY", `token_${orderId}`);
+    return {
+      transactionId: result.id,
+      orderId,
+      amount: amountInYuan,
+      status: result.status === "succeeded" ? "success" : "failed",
+      provider: this.getProviderName(),
+    };
+  }
+
+  queryStatus(transactionId) {
+    const result = this.stripe.retrieveCharge(transactionId);
+    return { transactionId, status: result.status === "succeeded" ? "success" : "pending" };
+  }
+
+  getProviderName() {
+    return "Stripe";
+  }
+}
+
+// PayPal 适配器
+class PayPalAdapter extends PaymentAdapter {
+  constructor() {
+    super();
+    this.paypal = new PayPalAPI();
+  }
+
+  pay(orderId, amountInYuan, description) {
+    const result = this.paypal.makePayment(amountInYuan, "CNY", `payer_${orderId}`);
+    return {
+      transactionId: result.paymentId,
+      orderId,
+      amount: amountInYuan,
+      status: result.state === "approved" ? "success" : "failed",
+      provider: this.getProviderName(),
+    };
+  }
+
+  queryStatus(transactionId) {
+    const result = this.paypal.getPaymentDetails(transactionId);
+    return { transactionId, status: result.state === "approved" ? "success" : "pending" };
+  }
+
+  getProviderName() {
+    return "PayPal";
+  }
+}
+
+// Alipay 适配器
+class AlipayAdapter extends PaymentAdapter {
+  constructor() {
+    super();
+    this.alipay = new AlipayAPI();
+  }
+
+  pay(orderId, amountInYuan, description) {
+    const result = this.alipay.tradePay(orderId, amountInYuan, description);
+    return {
+      transactionId: result.tradeNo,
+      orderId,
+      amount: amountInYuan,
+      status: result.tradeStatus === "TRADE_SUCCESS" ? "success" : "failed",
+      provider: this.getProviderName(),
+    };
+  }
+
+  queryStatus(transactionId) {
+    const result = this.alipay.tradeQuery(transactionId);
+    return { transactionId, status: result.tradeStatus === "TRADE_SUCCESS" ? "success" : "pending" };
+  }
+
+  getProviderName() {
+    return "Alipay";
+  }
+}
+
+// 业务代码只依赖统一接口，与具体支付提供商解耦
+function processPayment(adapter, orderId, amount, description) {
+  console.log(`\nProcessing payment via ${adapter.getProviderName()}:`);
+  const result = adapter.pay(orderId, amount, description);
+  console.log(`  Result: ${JSON.stringify(result)}`);
+  return result;
+}
+
+processPayment(new StripeAdapter(), "ORD-001", 99.99, "Premium Plan");
+processPayment(new PayPalAdapter(), "ORD-002", 49.99, "Basic Plan");
+processPayment(new AlipayAdapter(), "ORD-003", 199.00, "Enterprise Plan");
+// Processing payment via Stripe:
+// [Stripe] Charging 9999 cents (CNY) with token token_ORD-001
+//   Result: {"transactionId":"stripe_ch_...","orderId":"ORD-001","amount":99.99,"status":"success","provider":"Stripe"}
+// ...
+```
+
+### 架构延伸
+
+```
+适配器模式 → 防腐层（Anti-Corruption Layer）
+
+当集成外部系统或遗留系统时，适配器层保护核心域不受外部接口变化影响：
+
+  核心域 → 适配器层 → 外部系统/遗留系统
+```
+
+## 🌉 桥接模式（Bridge）
+
+### 意图
+
+> 将抽象部分与它的实现部分分离，使它们可以独立变化。
+
+### 结构与实现
+
+```js
+// 场景：消息系统 — 消息类型（普通/紧急/定时）× 发送渠道（邮件/短信/推送）
+// 如果用继承，需要 3 × 3 = 9 个子类；用桥接模式只需要 3 + 3 = 6 个类
+
+// 实现维度：发送渠道
+class EmailSender {
+  send(recipient, content) {
+    console.log(`  📧 Email → ${recipient}: ${content}`);
+    return { channel: "email", delivered: true };
+  }
+}
+
+class SmsSender {
+  send(recipient, content) {
+    console.log(`  📱 SMS → ${recipient}: ${content}`);
+    return { channel: "sms", delivered: true };
+  }
+}
+
+class PushSender {
+  send(recipient, content) {
+    console.log(`  🔔 Push → ${recipient}: ${content}`);
+    return { channel: "push", delivered: true };
+  }
+}
+
+// 抽象维度：消息类型
+class Message {
+  constructor(sender) {
+    this.sender = sender; // 桥接到具体的发送渠道
+  }
+
+  send(recipient, content) {
+    throw new Error("send() must be implemented");
+  }
+}
+
+class NormalMessage extends Message {
+  send(recipient, content) {
+    console.log("[Normal Message]");
+    return this.sender.send(recipient, content);
+  }
+}
+
+class UrgentMessage extends Message {
+  send(recipient, content) {
+    const urgentContent = `🚨 URGENT: ${content}`;
+    console.log("[Urgent Message]");
+    return this.sender.send(recipient, urgentContent);
+  }
+}
+
+class ScheduledMessage extends Message {
+  constructor(sender, delayMs) {
+    super(sender);
+    this.delayMs = delayMs;
+  }
+
+  send(recipient, content) {
+    console.log(`[Scheduled Message - delay: ${this.delayMs}ms]`);
+    // 实际场景中会用定时任务，这里用同步方式演示
+    return this.sender.send(recipient, `[Scheduled] ${content}`);
+  }
+}
+
+// 使用桥接模式：任意消息类型 × 任意发送渠道
+const normalEmail = new NormalMessage(new EmailSender());
+normalEmail.send("alice@example.com", "Meeting at 3pm");
+
+const urgentSms = new UrgentMessage(new SmsSender());
+urgentSms.send("+86-138xxxx", "Server is down!");
+
+const scheduledPush = new ScheduledMessage(new PushSender(), 3600000);
+scheduledPush.send("user-123", "Your subscription expires tomorrow");
+
+// [Normal Message]
+//   📧 Email → alice@example.com: Meeting at 3pm
+// [Urgent Message]
+//   📱 SMS → +86-138xxxx: 🚨 URGENT: Server is down!
+// [Scheduled Message - delay: 3600000ms]
+//   🔔 Push → user-123: [Scheduled] Your subscription expires tomorrow
+
+// 新增一种消息类型或渠道只需要新增一个类，不影响其他组合
+```
+
+### 桥接 vs 适配器
+
+```
+适配器模式：让已有的不兼容接口能一起工作（事后补救）
+桥接模式：在设计阶段就将抽象和实现分离（提前规划）
+```
+
+## 🌲 组合模式（Composite）
+
+### 意图
+
+> 将对象组合成树形结构以表示"部分-整体"的层次结构。组合模式使得客户端对单个对象和组合对象的使用具有一致性。
+
+### 结构与实现
+
+```js
+// 场景：文件系统 — 文件和文件夹的统一操作
+
+// 组件接口：文件和文件夹的统一接口
+class FileSystemNode {
+  constructor(name) {
+    this.name = name;
+  }
+
+  getSize() {
+    throw new Error("getSize() must be implemented");
+  }
+
+  display(indent = 0) {
+    throw new Error("display() must be implemented");
+  }
+
+  find(predicate) {
+    throw new Error("find() must be implemented");
+  }
+}
+
+// 叶子节点：文件
+class File extends FileSystemNode {
+  constructor(name, sizeKB) {
+    super(name);
+    this.sizeKB = sizeKB;
+  }
+
+  getSize() {
+    return this.sizeKB;
+  }
+
+  display(indent = 0) {
+    console.log(`${"  ".repeat(indent)}📄 ${this.name} (${this.sizeKB}KB)`);
+  }
+
+  find(predicate) {
+    return predicate(this) ? [this] : [];
+  }
+}
+
+// 组合节点：文件夹
+class Directory extends FileSystemNode {
+  constructor(name) {
+    super(name);
+    this.children = [];
+  }
+
+  add(node) {
+    this.children.push(node);
+    return this;
+  }
+
+  remove(name) {
+    this.children = this.children.filter((child) => child.name !== name);
+    return this;
+  }
+
+  getSize() {
+    return this.children.reduce((total, child) => total + child.getSize(), 0);
+  }
+
+  display(indent = 0) {
+    console.log(`${"  ".repeat(indent)}📁 ${this.name}/ (${this.getSize()}KB)`);
+    this.children.forEach((child) => child.display(indent + 1));
+  }
+
+  find(predicate) {
+    let results = predicate(this) ? [this] : [];
+    this.children.forEach((child) => {
+      results = results.concat(child.find(predicate));
+    });
+    return results;
+  }
+}
+
+// 构建文件树
+const root = new Directory("project")
+  .add(new File("package.json", 2))
+  .add(new File("README.md", 5))
+  .add(
+    new Directory("src")
+      .add(new File("index.js", 3))
+      .add(new File("app.js", 8))
+      .add(
+        new Directory("components")
+          .add(new File("Header.js", 4))
+          .add(new File("Footer.js", 3))
+          .add(new File("Sidebar.js", 6))
+      )
+      .add(
+        new Directory("utils")
+          .add(new File("helpers.js", 2))
+          .add(new File("constants.js", 1))
+      )
+  )
+  .add(
+    new Directory("tests")
+      .add(new File("app.test.js", 5))
+      .add(new File("helpers.test.js", 3))
+  );
+
+// 统一操作：不区分文件和文件夹
+root.display();
+// 📁 project/ (42KB)
+//   📄 package.json (2KB)
+//   📄 README.md (5KB)
+//   📁 src/ (27KB)
+//     📄 index.js (3KB)
+//     📄 app.js (8KB)
+//     📁 components/ (13KB)
+//       📄 Header.js (4KB)
+//       📄 Footer.js (3KB)
+//       📄 Sidebar.js (6KB)
+//     📁 utils/ (3KB)
+//       📄 helpers.js (2KB)
+//       📄 constants.js (1KB)
+//   📁 tests/ (8KB)
+//     📄 app.test.js (5KB)
+//     📄 helpers.test.js (3KB)
+
+console.log(`\nTotal size: ${root.getSize()}KB`);
+// Total size: 42KB
+
+// 查找所有大于 4KB 的文件
+const largeFiles = root.find((node) => node instanceof File && node.sizeKB > 4);
+console.log("\nFiles larger than 4KB:");
+largeFiles.forEach((file) => console.log(`  ${file.name} (${file.sizeKB}KB)`));
+// Files larger than 4KB:
+//   README.md (5KB)
+//   app.js (8KB)
+//   Sidebar.js (6KB)
+//   app.test.js (5KB)
+```
+
+## 🎀 装饰器模式（Decorator）
+
+### 意图
+
+> 动态地给一个对象添加额外的职责。就增加功能来说，装饰器模式比继承更加灵活。
+
+### 结构与实现
+
+```js
+// 场景：HTTP 请求处理链 — 动态添加日志、认证、缓存、压缩等功能
+
+// 基础组件：简单的 HTTP 处理器
+class HttpHandler {
+  async handle(request) {
+    // 模拟业务逻辑处理
+    return {
+      status: 200,
+      body: { message: `Handled: ${request.method} ${request.path}` },
+      headers: {},
+    };
+  }
+}
+
+// 装饰器基类
+class HandlerDecorator {
+  constructor(handler) {
+    this.handler = handler;
+  }
+
+  async handle(request) {
+    return this.handler.handle(request);
+  }
+}
+
+// 日志装饰器
+class LoggingDecorator extends HandlerDecorator {
+  async handle(request) {
+    const start = Date.now();
+    console.log(`→ ${request.method} ${request.path}`);
+    const response = await this.handler.handle(request);
+    const duration = Date.now() - start;
+    console.log(`← ${request.method} ${request.path} [${response.status}] ${duration}ms`);
+    return response;
+  }
+}
+
+// 认证装饰器
+class AuthDecorator extends HandlerDecorator {
+  async handle(request) {
+    if (!request.headers?.authorization) {
+      console.log("  🔒 Auth: Rejected (no token)");
+      return { status: 401, body: { error: "Unauthorized" }, headers: {} };
+    }
+    console.log("  🔓 Auth: Passed");
+    request.user = { id: "user-123", role: "admin" };
+    return this.handler.handle(request);
+  }
+}
+
+// 缓存装饰器
+class CacheDecorator extends HandlerDecorator {
+  constructor(handler) {
+    super(handler);
+    this.cache = new Map();
+    this.ttlMs = 60000;
+  }
+
+  async handle(request) {
+    if (request.method !== "GET") {
+      return this.handler.handle(request);
+    }
+
+    const cacheKey = `${request.method}:${request.path}`;
+    const cached = this.cache.get(cacheKey);
+
+    if (cached && Date.now() - cached.timestamp < this.ttlMs) {
+      console.log("  💾 Cache: HIT");
+      return { ...cached.response, headers: { ...cached.response.headers, "X-Cache": "HIT" } };
+    }
+
+    console.log("  💾 Cache: MISS");
+    const response = await this.handler.handle(request);
+    this.cache.set(cacheKey, { response, timestamp: Date.now() });
+    return { ...response, headers: { ...response.headers, "X-Cache": "MISS" } };
+  }
+}
+
+// 限流装饰器
+class RateLimitDecorator extends HandlerDecorator {
+  constructor(handler, maxRequests, windowMs) {
+    super(handler);
+    this.maxRequests = maxRequests;
+    this.windowMs = windowMs;
+    this.requests = [];
+  }
+
+  async handle(request) {
+    const now = Date.now();
+    this.requests = this.requests.filter((t) => now - t < this.windowMs);
+
+    if (this.requests.length >= this.maxRequests) {
+      console.log("  ⛔ RateLimit: Exceeded");
+      return { status: 429, body: { error: "Too many requests" }, headers: {} };
+    }
+
+    this.requests.push(now);
+    console.log(`  ✅ RateLimit: ${this.requests.length}/${this.maxRequests}`);
+    return this.handler.handle(request);
+  }
+}
+
+// 通过组合装饰器构建处理链
+// 执行顺序（从外到内）：日志 → 限流 → 认证 → 缓存 → 业务逻辑
+const handler = new LoggingDecorator(
+  new RateLimitDecorator(
+    new AuthDecorator(
+      new CacheDecorator(
+        new HttpHandler()
+      )
+    ),
+    100,
+    60000
+  )
+);
+
+async function main() {
+  const request = {
+    method: "GET",
+    path: "/api/users",
+    headers: { authorization: "Bearer token123" },
+  };
+
+  console.log("=== Request 1 ===");
+  await handler.handle(request);
+
+  console.log("\n=== Request 2 (same path, cache hit) ===");
+  await handler.handle(request);
+}
+
+main();
+// === Request 1 ===
+// → GET /api/users
+//   ✅ RateLimit: 1/100
+//   🔓 Auth: Passed
+//   💾 Cache: MISS
+// ← GET /api/users [200] 0ms
+//
+// === Request 2 (same path, cache hit) ===
+// → GET /api/users
+//   ✅ RateLimit: 2/100
+//   🔓 Auth: Passed
+//   💾 Cache: HIT
+// ← GET /api/users [200] 0ms
+```
+
+### 架构延伸
+
+```
+装饰器模式 → AOP（面向切面编程）/ 中间件
+
+Express/Koa 中间件、Java 的注解拦截器、
+Spring AOP 都是装饰器模式在架构层面的体现
+```
+
+## 🏛️ 外观模式（Facade）
+
+### 意图
+
+> 为子系统中的一组接口提供一个统一的高层接口。外观模式定义了一个高层接口，使得子系统更容易使用。
+
+### 结构与实现
+
+```js
+// 场景：电商下单 — 涉及多个子系统的复杂操作
+
+// 子系统1：库存服务
+class InventoryService {
+  checkStock(productId, quantity) {
+    console.log(`  [Inventory] Checking stock for product ${productId}, qty: ${quantity}`);
+    return { available: true, remaining: 50 };
+  }
+
+  reserveStock(productId, quantity) {
+    console.log(`  [Inventory] Reserved ${quantity} units of product ${productId}`);
+    return { reserved: true };
+  }
+}
+
+// 子系统2：支付服务
+class PaymentService {
+  processPayment(userId, amount) {
+    console.log(`  [Payment] Processing ${amount} payment for user ${userId}`);
+    return { transactionId: `txn_${Date.now()}`, status: "completed" };
+  }
+}
+
+// 子系统3：物流服务
+class ShippingService {
+  createShipment(orderId, address) {
+    console.log(`  [Shipping] Creating shipment for order ${orderId} to ${address.city}`);
+    return { trackingNumber: `SHP_${Date.now()}`, estimatedDays: 3 };
+  }
+}
+
+// 子系统4：通知服务
+class NotificationService {
+  sendOrderConfirmation(userId, orderId, trackingNumber) {
+    console.log(`  [Notification] Sent confirmation to user ${userId}: order ${orderId}, tracking: ${trackingNumber}`);
+  }
+}
+
+// 外观：将复杂的子系统交互封装为简单的接口
+class OrderFacade {
+  constructor() {
+    this.inventory = new InventoryService();
+    this.payment = new PaymentService();
+    this.shipping = new ShippingService();
+    this.notification = new NotificationService();
+  }
+
+  placeOrder(userId, items, shippingAddress) {
+    console.log(`\n=== Placing Order for User ${userId} ===`);
+
+    // 步骤1：检查并预留库存
+    for (const item of items) {
+      const stock = this.inventory.checkStock(item.productId, item.quantity);
+      if (!stock.available) {
+        throw new Error(`Product ${item.productId} is out of stock`);
+      }
+      this.inventory.reserveStock(item.productId, item.quantity);
+    }
+
+    // 步骤2：处理支付
+    const totalAmount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const payment = this.payment.processPayment(userId, totalAmount);
+
+    // 步骤3：创建物流
+    const orderId = `ORD_${Date.now()}`;
+    const shipment = this.shipping.createShipment(orderId, shippingAddress);
+
+    // 步骤4：发送通知
+    this.notification.sendOrderConfirmation(userId, orderId, shipment.trackingNumber);
+
+    const result = {
+      orderId,
+      totalAmount,
+      transactionId: payment.transactionId,
+      trackingNumber: shipment.trackingNumber,
+      estimatedDelivery: `${shipment.estimatedDays} days`,
+    };
+
+    console.log(`\n✅ Order completed: ${JSON.stringify(result, null, 2)}`);
+    return result;
+  }
+}
+
+// 客户端代码极其简洁
+const orderFacade = new OrderFacade();
+orderFacade.placeOrder(
+  "user-456",
+  [
+    { productId: "PROD-A", quantity: 2, price: 29.99 },
+    { productId: "PROD-B", quantity: 1, price: 49.99 },
+  ],
+  { street: "123 Main St", city: "Shanghai", zip: "200000" }
+);
+```
+
+### 架构延伸
+
+```
+外观模式 → BFF（Backend for Frontend）
+
+前端 → BFF（外观层）→ 多个微服务
+
+BFF 聚合多个后端服务的调用，
+为前端提供定制化的简化 API
+```
+
+## 🛡️ 代理模式（Proxy）
+
+### 意图
+
+> 为另一个对象提供一个替身或占位符以控制对这个对象的访问。
+
+### 结构与实现
+
+```js
+// 多种代理类型的综合演示
+
+// 真实的数据服务
+class DataService {
+  fetchData(query) {
+    // 模拟耗时操作
+    console.log(`  [DataService] Executing query: ${query}`);
+    return { query, results: [{ id: 1, value: "data-1" }, { id: 2, value: "data-2" }] };
+  }
+}
+
+// 保护代理：控制访问权限
+class AuthProxy {
+  constructor(realService, allowedRoles) {
+    this.realService = realService;
+    this.allowedRoles = allowedRoles;
+  }
+
+  fetchData(query, user) {
+    if (!user || !this.allowedRoles.includes(user.role)) {
+      console.log(`  [AuthProxy] Access denied for role "${user?.role || "anonymous"}"`);
+      throw new Error("Access denied");
+    }
+    console.log(`  [AuthProxy] Access granted for ${user.name} (${user.role})`);
+    return this.realService.fetchData(query);
+  }
+}
+
+// 缓存代理：缓存查询结果
+class CacheProxy {
+  constructor(realService) {
+    this.realService = realService;
+    this.cache = new Map();
+    this.hitCount = 0;
+    this.missCount = 0;
+  }
+
+  fetchData(query, user) {
+    const cacheKey = query;
+    if (this.cache.has(cacheKey)) {
+      this.hitCount++;
+      console.log(`  [CacheProxy] Cache HIT (hits: ${this.hitCount}, misses: ${this.missCount})`);
+      return this.cache.get(cacheKey);
+    }
+
+    this.missCount++;
+    console.log(`  [CacheProxy] Cache MISS (hits: ${this.hitCount}, misses: ${this.missCount})`);
+    const result = this.realService.fetchData(query, user);
+    this.cache.set(cacheKey, result);
+    return result;
+  }
+}
+
+// 日志代理：记录操作日志
+class LoggingProxy {
+  constructor(realService) {
+    this.realService = realService;
+    this.accessLog = [];
+  }
+
+  fetchData(query, user) {
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      user: user?.name || "anonymous",
+      query,
+    };
+    this.accessLog.push(logEntry);
+    console.log(`  [LoggingProxy] Logging access by ${logEntry.user}`);
+    return this.realService.fetchData(query, user);
+  }
+
+  getAccessLog() {
+    return this.accessLog;
+  }
+}
+
+// 组合多层代理
+const dataService = new DataService();
+const loggingProxy = new LoggingProxy(dataService);
+const cacheProxy = new CacheProxy(loggingProxy);
+const authProxy = new AuthProxy(cacheProxy, ["admin", "analyst"]);
+
+// 调用链：Auth → Cache → Logging → DataService
+
+const adminUser = { name: "Alice", role: "admin" };
+const viewerUser = { name: "Bob", role: "viewer" };
+
+console.log("=== Request 1: Admin queries data ===");
+authProxy.fetchData("SELECT * FROM users", adminUser);
+
+console.log("\n=== Request 2: Same query (cache hit) ===");
+authProxy.fetchData("SELECT * FROM users", adminUser);
+
+console.log("\n=== Request 3: Unauthorized user ===");
+try {
+  authProxy.fetchData("SELECT * FROM users", viewerUser);
+} catch (error) {
+  console.log(`  Error: ${error.message}`);
+}
+// === Request 1: Admin queries data ===
+//   [AuthProxy] Access granted for Alice (admin)
+//   [CacheProxy] Cache MISS (hits: 0, misses: 1)
+//   [LoggingProxy] Logging access by Alice
+//   [DataService] Executing query: SELECT * FROM users
+//
+// === Request 2: Same query (cache hit) ===
+//   [AuthProxy] Access granted for Alice (admin)
+//   [CacheProxy] Cache HIT (hits: 1, misses: 1)
+//
+// === Request 3: Unauthorized user ===
+//   [AuthProxy] Access denied for role "viewer"
+//   Error: Access denied
+```
+
+### 架构延伸
+
+```
+代理模式在架构中的体现：
+
+保护代理 → API 网关的认证鉴权
+缓存代理 → CDN、Redis 缓存层
+日志代理 → 分布式追踪（Sidecar Proxy）
+远程代理 → RPC 框架的本地存根
+虚拟代理 → 延迟加载、图片懒加载
+```
+
+## 📊 结构型模式对比
+
+| 模式 | 解决的问题 | 适用场景 | 架构延伸 |
+|------|-----------|---------|---------|
+| **适配器** | 接口不兼容 | 集成第三方系统 | 防腐层 |
+| **桥接** | 抽象与实现独立变化 | 多维度变化的场景 | 跨平台适配 |
+| **组合** | 部分-整体层次结构 | 树形结构数据 | 组织架构、菜单系统 |
+| **装饰器** | 动态添加功能 | 功能增强可组合 | 中间件、AOP |
+| **外观** | 简化复杂子系统 | 多子系统协调 | BFF、API 聚合 |
+| **代理** | 控制对象访问 | 权限、缓存、日志 | API 网关、Sidecar |
+
+## 🔗 相关概念
+
+- **[创建型模式](./02-creational-patterns.mdx)**：关注对象的创建方式
+- **[行为型模式](./04-behavioral-patterns.mdx)**：关注对象间的交互
+- **[SOLID 原则](/architect/01-programming-fundamentals/02-design-principles/02-solid-principles)**：结构型模式是 OCP、ISP 等原则的具体体现
+
+## 📚 学习检查点
+
+- [ ] 能否区分适配器和桥接模式的使用场景？
+- [ ] 能否用装饰器模式为已有功能动态添加能力？
+- [ ] 理解外观模式如何简化多子系统交互
+- [ ] 能否说明代理模式的不同变体（保护、缓存、日志、远程）？
+- [ ] 能否将结构型模式映射到对应的架构模式？
+
+## 🚀 下一步
+
+→ [行为型模式](./04-behavioral-patterns.mdx)

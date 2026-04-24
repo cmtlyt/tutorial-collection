@@ -5,7 +5,7 @@
 
 ## 📖 概述
 
-讲解 DRY、KISS、YAGNI、关注点分离、最小知识原则和组合优于继承等实用设计原则，帮助你在日常开发和架构设计中做出更好的决策。
+讲解 DRY、KISS、YAGNI、关注点分离、最小知识原则和组合优于继承等实用设计原则，帮助你在日常开发和架构设计中做出更好的决策。这些原则与 SOLID 互补，共同构成了软件设计的指导框架。
 
 ## 🎯 学习目标
 
@@ -14,4 +14,764 @@
 - 理解组合优于继承的设计思想
 - 能够在实际项目中灵活运用这些原则
 
-> 🚧 详细内容正在编写中...
+## 🔁 DRY — Don't Repeat Yourself
+
+### 核心思想
+
+> **每一条知识都应该在系统中有且只有一个明确的、权威的表示。**
+
+DRY 不仅仅是"不要复制粘贴代码"。它的本质是避免**知识的重复**——同一个业务规则、算法或数据定义不应该出现在多个地方。
+
+### 代码级别的 DRY
+
+```js
+// ❌ 违反 DRY：相同的验证逻辑散落在多处
+function createUser(email, password) {
+  if (!email.includes("@") || email.length < 5) {
+    throw new Error("Invalid email");
+  }
+  if (password.length < 8) {
+    throw new Error("Password too short");
+  }
+  return { email, password, createdAt: new Date() };
+}
+
+function updateUserEmail(user, newEmail) {
+  // 重复了邮箱验证逻辑
+  if (!newEmail.includes("@") || newEmail.length < 5) {
+    throw new Error("Invalid email");
+  }
+  return { ...user, email: newEmail };
+}
+
+// ✅ 遵守 DRY：提取通用的验证逻辑
+class Validator {
+  static email(email) {
+    if (!email.includes("@") || email.length < 5) {
+      throw new Error(`Invalid email: "${email}"`);
+    }
+    return email.trim().toLowerCase();
+  }
+
+  static password(password) {
+    if (password.length < 8) {
+      throw new Error("Password must be at least 8 characters");
+    }
+    if (!/[A-Z]/.test(password)) {
+      throw new Error("Password must contain at least one uppercase letter");
+    }
+    if (!/[0-9]/.test(password)) {
+      throw new Error("Password must contain at least one number");
+    }
+    return password;
+  }
+
+  static required(value, fieldName) {
+    if (value === undefined || value === null || value === "") {
+      throw new Error(`${fieldName} is required`);
+    }
+    return value;
+  }
+}
+
+function createUser(email, password) {
+  return {
+    email: Validator.email(email),
+    password: Validator.password(password),
+    createdAt: new Date(),
+  };
+}
+
+function updateUserEmail(user, newEmail) {
+  return { ...user, email: Validator.email(newEmail) };
+}
+
+const user = createUser("Alice@Example.com", "SecurePass1");
+console.log(user.email); // alice@example.com
+
+const updated = updateUserEmail(user, "Bob@Example.com");
+console.log(updated.email); // bob@example.com
+```
+
+### DRY 的过度应用
+
+```js
+// ⚠️ 过度 DRY：为了消除表面的相似性强行合并不同的逻辑
+// 这两个函数看起来结构相似，但服务于完全不同的业务场景
+
+// 用户折扣计算（由市场部驱动）
+function calculateUserDiscount(user) {
+  if (user.isVip) return 0.2;
+  if (user.orderCount > 10) return 0.1;
+  return 0;
+}
+
+// 员工折扣计算（由 HR 部驱动）
+function calculateEmployeeDiscount(employee) {
+  if (employee.yearsOfService > 5) return 0.2;
+  if (employee.department === "engineering") return 0.1;
+  return 0;
+}
+
+// ❌ 过度 DRY：强行合并了两个独立变化的逻辑
+// function calculateDiscount(entity, type) { ... }
+// 当用户折扣规则变化时，可能意外影响员工折扣
+
+// ✅ 正确做法：它们看起来相似但变化原因不同，应该保持独立
+// 这是 DRY 与 SRP 之间的权衡：
+// 如果两段代码因不同原因变化，即使当前看起来相同也不应合并
+```
+
+## 💋 KISS — Keep It Simple, Stupid
+
+### 核心思想
+
+> **简单是可靠的先决条件。大多数系统如果保持简单而非复杂，会工作得最好。**
+
+### 简单 vs 复杂
+
+```js
+// ❌ 过度设计：用了设计模式但增加了不必要的复杂性
+class AbstractNotificationFactory {
+  createNotification() {
+    throw new Error("Must implement");
+  }
+}
+
+class EmailNotificationFactory extends AbstractNotificationFactory {
+  createNotification() {
+    return new EmailNotificationBuilder()
+      .setStrategy(new DefaultEmailStrategy())
+      .setFormatter(new HtmlEmailFormatter())
+      .build();
+  }
+}
+
+// 当实际上只需要发一封邮件时...
+
+// ✅ KISS：从简单开始，当复杂性确实需要时再引入抽象
+function sendEmail(to, subject, body) {
+  console.log(`Sending email to ${to}: [${subject}] ${body}`);
+  return { success: true, to, subject };
+}
+
+// 只有当需求确实变复杂时（多种渠道、多种格式），再逐步引入抽象
+// 避免"提前优化架构"
+const result = sendEmail("alice@example.com", "Welcome", "Hello Alice!");
+console.log(result);
+// { success: true, to: 'alice@example.com', subject: 'Welcome' }
+```
+
+### KISS 在架构中的体现
+
+```js
+// 场景：构建一个配置读取系统
+
+// ❌ 过度工程：构建了一个全功能配置中心
+// - 支持热更新
+// - 支持多数据源（文件、环境变量、远程配置中心）
+// - 支持配置加密
+// - 支持配置版本管理
+// 但实际上只有 5 个配置项...
+
+// ✅ KISS：用最简单的方式满足当前需求
+class Config {
+  constructor(overrides = {}) {
+    this.values = {
+      port: parseInt(process.env.PORT || "3000"),
+      host: process.env.HOST || "localhost",
+      logLevel: process.env.LOG_LEVEL || "info",
+      dbUrl: process.env.DATABASE_URL || "sqlite://local.db",
+      maxConnections: parseInt(process.env.MAX_CONNECTIONS || "10"),
+      ...overrides,
+    };
+  }
+
+  get(key) {
+    if (!(key in this.values)) {
+      throw new Error(`Unknown config key: "${key}"`);
+    }
+    return this.values[key];
+  }
+
+  getAll() {
+    return { ...this.values };
+  }
+}
+
+const config = new Config();
+console.log(`Server: ${config.get("host")}:${config.get("port")}`);
+console.log(`Log level: ${config.get("logLevel")}`);
+// Server: localhost:3000
+// Log level: info
+
+// 测试时可以轻松覆盖
+const testConfig = new Config({ port: 0, logLevel: "error", dbUrl: "sqlite://:memory:" });
+console.log(`Test DB: ${testConfig.get("dbUrl")}`);
+// Test DB: sqlite://:memory:
+```
+
+## 🚫 YAGNI — You Aren't Gonna Need It
+
+### 核心思想
+
+> **不要实现你当前不需要的功能。等到真正需要时再实现。**
+
+YAGNI 是极限编程（XP）的核心原则之一，它告诫我们：预测未来需求的准确率远低于我们的想象。
+
+### 避免过度设计
+
+```js
+// ❌ 违反 YAGNI：为了"未来可能的需求"增加了大量未使用的代码
+
+class UserService {
+  constructor(repository) {
+    this.repository = repository;
+    // this.cache = new CacheManager();        // 还没有性能问题
+    // this.rateLimiter = new RateLimiter();    // 还没有流量问题
+    // this.auditLogger = new AuditLogger();    // 还没有审计需求
+    // this.featureFlags = new FeatureFlags();  // 还没有灰度需求
+  }
+
+  // 当前只需要基本的 CRUD
+  createUser(userData) {
+    return this.repository.save(userData);
+  }
+
+  getUser(id) {
+    return this.repository.findById(id);
+  }
+}
+
+// ✅ 遵守 YAGNI：只实现当前需要的功能
+class UserService {
+  constructor(repository) {
+    this.repository = repository;
+  }
+
+  createUser(userData) {
+    const user = {
+      id: crypto.randomUUID(),
+      ...userData,
+      createdAt: new Date().toISOString(),
+    };
+    this.repository.save(user);
+    console.log(`User created: ${user.id}`);
+    return user;
+  }
+
+  getUser(id) {
+    const user = this.repository.findById(id);
+    if (!user) {
+      throw new Error(`User not found: ${id}`);
+    }
+    return user;
+  }
+
+  listUsers() {
+    return this.repository.findAll();
+  }
+}
+
+// 简单的内存仓储 — 当前够用
+class InMemoryUserRepository {
+  constructor() {
+    this.store = new Map();
+  }
+
+  save(user) {
+    this.store.set(user.id, { ...user });
+  }
+
+  findById(id) {
+    return this.store.get(id) || null;
+  }
+
+  findAll() {
+    return Array.from(this.store.values());
+  }
+}
+
+const repo = new InMemoryUserRepository();
+const service = new UserService(repo);
+
+const alice = service.createUser({ name: "Alice", email: "alice@example.com" });
+console.log("Created:", alice);
+// User created: <uuid>
+// Created: { id: '<uuid>', name: 'Alice', email: 'alice@example.com', createdAt: '...' }
+
+const found = service.getUser(alice.id);
+console.log("Found:", found.name);
+// Found: Alice
+```
+
+### DRY、KISS、YAGNI 之间的权衡
+
+```
+三个原则有时会产生冲突，需要权衡：
+
+DRY vs KISS
+  DRY 说：消除重复，提取公共逻辑
+  KISS 说：不要为了消除少量重复引入复杂抽象
+  权衡：如果消除重复会让代码更难理解，适度重复反而更好
+  经验法则：Rule of Three — 出现三次再提取
+
+KISS vs YAGNI
+  KISS 说：保持简单
+  YAGNI 说：不要提前实现
+  通常一致：两者都倾向于当前最简单的方案
+
+DRY vs YAGNI
+  DRY 说：建立通用抽象
+  YAGNI 说：不要为了未来的复用提前设计抽象
+  权衡：如果当前只有一个使用场景，不要急于抽象化
+```
+
+## 🎯 关注点分离（Separation of Concerns）
+
+### 核心思想
+
+> **将系统分解为不同的部分，每个部分解决一个独立的关注点。**
+
+### 代码级别的关注点分离
+
+```js
+// ❌ 混合了多个关注点
+async function handleCreateOrder(requestBody) {
+  // 关注点1：输入验证
+  if (!requestBody.items || requestBody.items.length === 0) {
+    return { status: 400, error: "Items required" };
+  }
+
+  // 关注点2：业务逻辑
+  let total = 0;
+  for (const item of requestBody.items) {
+    total += item.price * item.quantity;
+  }
+  const tax = total * 0.08;
+
+  // 关注点3：数据持久化
+  const orderId = Math.random().toString(36).slice(2);
+  console.log(`INSERT INTO orders (id, total) VALUES ('${orderId}', ${total + tax})`);
+
+  // 关注点4：外部通知
+  console.log(`Sending email: Order ${orderId} confirmed`);
+
+  return { status: 201, orderId, total: total + tax };
+}
+
+// ✅ 分离关注点
+
+// 验证层
+class OrderValidator {
+  validate(orderData) {
+    const errors = [];
+    if (!orderData.items || orderData.items.length === 0) {
+      errors.push("At least one item is required");
+    }
+    if (orderData.items) {
+      orderData.items.forEach((item, index) => {
+        if (!item.price || item.price <= 0) errors.push(`Item ${index}: invalid price`);
+        if (!item.quantity || item.quantity <= 0) errors.push(`Item ${index}: invalid quantity`);
+      });
+    }
+    return { valid: errors.length === 0, errors };
+  }
+}
+
+// 业务逻辑层
+class OrderService {
+  constructor(repository, notifier) {
+    this.repository = repository;
+    this.notifier = notifier;
+    this.taxRate = 0.08;
+  }
+
+  createOrder(orderData) {
+    const subtotal = orderData.items.reduce(
+      (sum, item) => sum + item.price * item.quantity, 0
+    );
+    const tax = subtotal * this.taxRate;
+    const order = {
+      id: Math.random().toString(36).slice(2, 10),
+      items: orderData.items,
+      subtotal,
+      tax,
+      total: subtotal + tax,
+      status: "confirmed",
+      createdAt: new Date().toISOString(),
+    };
+    this.repository.save(order);
+    this.notifier.notify(orderData.customerEmail, `Order ${order.id} confirmed. Total: ${order.total.toFixed(2)}`);
+    return order;
+  }
+}
+
+// 持久化层
+class OrderRepository {
+  constructor() {
+    this.orders = new Map();
+  }
+
+  save(order) {
+    this.orders.set(order.id, { ...order });
+    console.log(`[DB] Order ${order.id} saved`);
+  }
+
+  findById(id) {
+    return this.orders.get(id);
+  }
+}
+
+// 通知层
+class Notifier {
+  notify(recipient, message) {
+    console.log(`[Notification] To ${recipient}: ${message}`);
+  }
+}
+
+// 控制器层（编排）
+class OrderController {
+  constructor() {
+    this.validator = new OrderValidator();
+    this.service = new OrderService(new OrderRepository(), new Notifier());
+  }
+
+  handleCreateOrder(requestBody) {
+    const validation = this.validator.validate(requestBody);
+    if (!validation.valid) {
+      return { status: 400, errors: validation.errors };
+    }
+    const order = this.service.createOrder(requestBody);
+    return { status: 201, data: order };
+  }
+}
+
+const controller = new OrderController();
+const response = controller.handleCreateOrder({
+  customerEmail: "alice@example.com",
+  items: [
+    { name: "Book", price: 29.99, quantity: 2 },
+    { name: "Pen", price: 4.99, quantity: 5 },
+  ],
+});
+console.log("Response:", JSON.stringify(response, null, 2));
+// [DB] Order xxxxxxxx saved
+// [Notification] To alice@example.com: Order xxxxxxxx confirmed. Total: $91.85
+// Response: { status: 201, data: { id: 'xxxxxxxx', ... } }
+```
+
+## 🔒 最小知识原则（Law of Demeter）
+
+### 核心思想
+
+> **一个对象应该只与它的直接朋友通信，不与陌生人通信。**
+
+换句话说，避免"火车残骸"式的链式调用：`a.getB().getC().getD().doSomething()`。
+
+### 违反与遵守
+
+```js
+// ❌ 违反最小知识原则：深层调用链暴露了内部结构
+class Engine {
+  constructor(horsepower) {
+    this.horsepower = horsepower;
+    this.running = false;
+  }
+
+  start() {
+    this.running = true;
+  }
+
+  stop() {
+    this.running = false;
+  }
+}
+
+class Car {
+  constructor(make, model, horsepower) {
+    this.make = make;
+    this.model = model;
+    this.engine = new Engine(horsepower); // 暴露内部结构
+  }
+}
+
+// 客户端直接操作 Car 内部的 Engine
+// const car = new Car("Toyota", "Camry", 200);
+// car.engine.start();  // ❌ 客户端了解 Car 的内部结构
+// console.log(car.engine.horsepower);  // ❌ 穿透了封装
+
+// ✅ 遵守最小知识原则：通过委托方法隐藏内部结构
+class CarRefactored {
+  #engine;
+
+  constructor(make, model, horsepower) {
+    this.make = make;
+    this.model = model;
+    this.#engine = new Engine(horsepower);
+  }
+
+  start() {
+    this.#engine.start();
+    console.log(`${this.make} ${this.model} started`);
+  }
+
+  stop() {
+    this.#engine.stop();
+    console.log(`${this.make} ${this.model} stopped`);
+  }
+
+  getHorsepower() {
+    return this.#engine.horsepower;
+  }
+
+  getInfo() {
+    return `${this.make} ${this.model} (${this.getHorsepower()}hp) - ${this.#engine.running ? "Running" : "Stopped"}`;
+  }
+}
+
+const car = new CarRefactored("Toyota", "Camry", 200);
+car.start();            // Toyota Camry started
+console.log(car.getInfo()); // Toyota Camry (200hp) - Running
+car.stop();             // Toyota Camry stopped
+```
+
+### 架构层面的最小知识原则
+
+```
+微服务间的通信应遵守最小知识原则：
+
+❌ 服务 A 了解服务 B 的内部结构
+  A → B.getUserService().getProfileModule().getAvatar()
+
+✅ 通过清晰的 API 边界通信
+  A → B.getUserProfile(userId)
+
+API 网关模式：
+  前端 → API Gateway → 微服务
+  前端不需要知道后面有多少个微服务
+```
+
+## 🧱 组合优于继承（Composition over Inheritance）
+
+### 核心思想
+
+> **优先使用对象组合而非类继承来实现代码复用。**
+
+继承建立的是"is-a"关系，组合建立的是"has-a"关系。组合更灵活，耦合度更低。
+
+### 继承的问题
+
+```js
+// ❌ 继承层次过深导致的问题
+class Animal {
+  constructor(name) {
+    this.name = name;
+  }
+
+  move() {
+    console.log(`${this.name} moves`);
+  }
+}
+
+class Bird extends Animal {
+  fly() {
+    console.log(`${this.name} flies`);
+  }
+}
+
+class Duck extends Bird {
+  swim() {
+    console.log(`${this.name} swims`);
+  }
+
+  quack() {
+    console.log(`${this.name} quacks`);
+  }
+}
+
+// 问题：企鹅是鸟但不会飞！
+// class Penguin extends Bird {
+//   fly() {
+//     throw new Error("Penguins can't fly"); // 违反 LSP
+//   }
+// }
+```
+
+### 用组合替代继承
+
+```js
+// ✅ 组合方式：将能力作为独立的组件
+
+// 定义能力
+const createFlyer = (entity) => ({
+  fly() {
+    console.log(`${entity.name} flies through the air`);
+  },
+});
+
+const createSwimmer = (entity) => ({
+  swim() {
+    console.log(`${entity.name} swims in the water`);
+  },
+});
+
+const createWalker = (entity) => ({
+  walk() {
+    console.log(`${entity.name} walks on the ground`);
+  },
+});
+
+const createSpeaker = (sound) => (entity) => ({
+  speak() {
+    console.log(`${entity.name} says "${sound}"`);
+  },
+});
+
+// 通过组合能力创建不同的动物
+function createAnimal(name, ...abilities) {
+  const animal = { name };
+  const composed = abilities.reduce(
+    (acc, ability) => ({ ...acc, ...ability(animal) }),
+    animal
+  );
+  return composed;
+}
+
+// 鸭子：会飞、会游泳、会走路、会叫
+const duck = createAnimal("Duck", createFlyer, createSwimmer, createWalker, createSpeaker("Quack!"));
+duck.fly();    // Duck flies through the air
+duck.swim();   // Duck swims in the water
+duck.walk();   // Duck walks on the ground
+duck.speak();  // Duck says "Quack!"
+
+// 企鹅：会游泳、会走路（不会飞！）
+const penguin = createAnimal("Penguin", createSwimmer, createWalker, createSpeaker("Squawk!"));
+penguin.swim();  // Penguin swims in the water
+penguin.walk();  // Penguin walks on the ground
+penguin.speak(); // Penguin says "Squawk!"
+
+// 鹰：会飞、会走路
+const eagle = createAnimal("Eagle", createFlyer, createWalker, createSpeaker("Screech!"));
+eagle.fly();   // Eagle flies through the air
+eagle.walk();  // Eagle walks on the ground
+eagle.speak(); // Eagle says "Screech!"
+```
+
+### 实际应用：可组合的中间件
+
+```js
+// 组合模式在中间件管道中的实际应用
+class MiddlewarePipeline {
+  constructor() {
+    this.middlewares = [];
+  }
+
+  use(middleware) {
+    this.middlewares.push(middleware);
+    return this; // 支持链式调用
+  }
+
+  async execute(context) {
+    let index = 0;
+    const next = async () => {
+      if (index < this.middlewares.length) {
+        const middleware = this.middlewares[index++];
+        await middleware(context, next);
+      }
+    };
+    await next();
+    return context;
+  }
+}
+
+// 独立的中间件（每个都是一个纯粹的关注点）
+function loggingMiddleware(context, next) {
+  const start = Date.now();
+  console.log(`→ ${context.method} ${context.path}`);
+  return next().then(() => {
+    const duration = Date.now() - start;
+    console.log(`← ${context.method} ${context.path} [${context.status}] ${duration}ms`);
+  });
+}
+
+function authMiddleware(context, next) {
+  if (!context.headers?.authorization) {
+    context.status = 401;
+    context.body = { error: "Unauthorized" };
+    return;
+  }
+  context.user = { id: "user-123", name: "Alice" };
+  return next();
+}
+
+function rateLimitMiddleware(context, next) {
+  const requestCount = 5; // 模拟当前请求计数
+  if (requestCount > 100) {
+    context.status = 429;
+    context.body = { error: "Too many requests" };
+    return;
+  }
+  return next();
+}
+
+function handlerMiddleware(context, next) {
+  context.status = 200;
+  context.body = { message: `Hello, ${context.user.name}!`, path: context.path };
+  return next();
+}
+
+// 通过组合构建不同的处理管道
+const pipeline = new MiddlewarePipeline()
+  .use(loggingMiddleware)
+  .use(rateLimitMiddleware)
+  .use(authMiddleware)
+  .use(handlerMiddleware);
+
+async function main() {
+  const context = {
+    method: "GET",
+    path: "/api/greeting",
+    headers: { authorization: "Bearer token123" },
+    status: 200,
+    body: null,
+  };
+
+  await pipeline.execute(context);
+  console.log("Response:", context.body);
+}
+
+main();
+// → GET /api/greeting
+// ← GET /api/greeting [200] 0ms
+// Response: { message: 'Hello, Alice!', path: '/api/greeting' }
+```
+
+## 📊 设计原则总结对照表
+
+| 原则 | 核心问题 | 指导方向 | 架构延伸 |
+|------|---------|---------|---------|
+| **DRY** | 知识是否重复？ | 提取公共抽象 | 共享库、API 契约 |
+| **KISS** | 是否过度复杂？ | 选择最简方案 | 简单架构优先 |
+| **YAGNI** | 是否提前实现？ | 按需实现功能 | 增量式架构演进 |
+| **SoC** | 关注点是否混杂？ | 分层分模块 | 微服务、分层架构 |
+| **LoD** | 是否了解太多内部细节？ | 通过接口通信 | API 网关、防腐层 |
+| **CoI** | 继承是否适合？ | 优先用组合 | 中间件管道、插件 |
+
+## 🔗 相关概念
+
+- **[SOLID 原则](./02-solid-principles.mdx)**：SOLID 与这些原则共同构成设计原则体系
+- **[设计模式](/architect/01-programming-fundamentals/03-design-patterns/01-design-patterns-overview)**：设计模式是这些原则的具体实现
+- **[架构风格](/architect/02-architecture-fundamentals/01-architecture-styles/01-architecture-styles-overview)**：架构风格是设计原则在系统层面的体现
+
+## 📚 学习检查点
+
+- [ ] 能否区分 DRY 的合理应用与过度应用？
+- [ ] 能否在设计中识别过度工程（违反 KISS/YAGNI）的征兆？
+- [ ] 能否解释关注点分离在分层架构中的体现？
+- [ ] 能否说明最小知识原则如何降低耦合？
+- [ ] 理解何时选择组合、何时选择继承
+
+## 🚀 下一步
+
+→ [1.3 设计模式](/architect/01-programming-fundamentals/03-design-patterns/01-design-patterns-overview)
