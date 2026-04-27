@@ -3,15 +3,856 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解系统的故障治理方法，包括故障检测与自愈、优雅降级策略、混沌工程和故障演练。
+故障治理是保障系统稳定运行的关键能力。本节将深入讲解故障检测与自愈、优雅降级策略、混沌工程和故障演练。
 
-## 🎯 学习目标
+## 🎯 故障检测与自愈
 
-- 掌握故障检测和自愈机制的设计
-- 理解优雅降级的策略和实现
-- 了解混沌工程（Chaos Engineering）的原则和实践
-- 能够制定和执行故障演练计划
+### 健康检查机制
 
-> 🚧 详细内容正在编写中...
+```js
+// 健康检查系统
+class HealthCheckSystem {
+  constructor(config) {
+    this.checks = new Map()
+    this.interval = config.interval || 10000
+    this.threshold = config.threshold || 3  // 连续失败次数阈值
+    this.running = false
+  }
+
+  // 注册健康检查
+  register(name, checkFn) {
+    this.checks.set(name, {
+      fn: checkFn,
+      failures: 0,
+      lastCheck: null,
+      status: 'unknown'
+    })
+  }
+
+  // 执行健康检查
+  async check(name) {
+    const check = this.checks.get(name)
+    if (!check) {
+      throw new Error(`Health check ${name} not found`)
+    }
+
+    try {
+      const result = await check.fn()
+      check.failures = 0
+      check.status = 'healthy'
+      check.lastCheck = Date.now()
+      return { name, status: 'healthy', result }
+    } catch (error) {
+      check.failures++
+      check.status = check.failures >= this.threshold ? 'unhealthy' : 'degraded'
+      check.lastCheck = Date.now()
+      
+      if (check.status === 'unhealthy') {
+        this.triggerAutoHealing(name, error)
+      }
+      
+      return { name, status: check.status, error: error.message }
+    }
+  }
+
+  // 执行所有健康检查
+  async checkAll() {
+    const results = []
+    for (const name of this.checks.keys()) {
+      const result = await this.check(name)
+      results.push(result)
+    }
+    return results
+  }
+
+  // 启动定期检查
+  start() {
+    if (this.running) return
+    
+    this.running = true
+    this.timer = setInterval(async () => {
+      await this.checkAll()
+    }, this.interval)
+    
+    console.log('[HealthCheck] Started')
+  }
+
+  // 停止定期检查
+  stop() {
+    if (!this.running) return
+    
+    this.running = false
+    clearInterval(this.timer)
+    console.log('[HealthCheck] Stopped')
+  }
+
+  // 触发自愈
+  async triggerAutoHealing(name, error) {
+    console.log(`[AutoHealing] Triggered for ${name}:`, error.message)
+    
+    // 实际项目中这里会执行自愈操作
+    // 例如：重启服务、切换流量、清理资源等
+  }
+}
+
+// 使用示例
+const healthSystem = new HealthCheckSystem({
+  interval: 5000,
+  threshold: 3
+})
+
+// 注册健康检查
+healthSystem.register('database', async () => {
+  // 模拟数据库健康检查
+  await new Promise(resolve => setTimeout(resolve, 100))
+  if (Math.random() > 0.8) {
+    throw new Error('Database connection failed')
+  }
+  return { connected: true, latency: 10 }
+})
+
+healthSystem.register('cache', async () => {
+  // 模拟缓存健康检查
+  await new Promise(resolve => setTimeout(resolve, 50))
+  return { connected: true, memory: '45%' }
+})
+
+healthSystem.register('api', async () => {
+  // 模拟 API 健康检查
+  await new Promise(resolve => setTimeout(resolve, 20))
+  return { status: 'ok', uptime: 3600 }
+})
+
+// 启动健康检查
+healthSystem.start()
+
+// 手动执行检查
+async function testHealthCheck() {
+  const results = await healthSystem.checkAll()
+  console.log('Health check results:', results)
+}
+
+testHealthCheck()
+```
+
+### 自愈机制
+
+```js
+// 自愈系统
+class SelfHealingSystem {
+  constructor(config) {
+    this.strategies = new Map()
+    this.history = []
+  }
+
+  // 注册自愈策略
+  register(name, strategy) {
+    this.strategies.set(name, strategy)
+  }
+
+  // 执行自愈
+  async heal(fault) {
+    console.log(`[SelfHealing] Attempting to heal: ${fault.type}`)
+    
+    const strategy = this.strategies.get(fault.type)
+    if (!strategy) {
+      console.log(`[SelfHealing] No strategy found for ${fault.type}`)
+      return { success: false, reason: 'No strategy' }
+    }
+
+    try {
+      const result = await strategy.execute(fault)
+      this.recordHistory(fault, result)
+      return { success: true, result }
+    } catch (error) {
+      this.recordHistory(fault, { success: false, error: error.message })
+      return { success: false, error: error.message }
+    }
+  }
+
+  // 记录历史
+  recordHistory(fault, result) {
+    this.history.push({
+      fault,
+      result,
+      timestamp: Date.now()
+    })
+    
+    // 只保留最近 100 条记录
+    if (this.history.length > 100) {
+      this.history.shift()
+    }
+  }
+
+  // 获取历史记录
+  getHistory() {
+    return this.history
+  }
+}
+
+// 自愈策略
+class RestartStrategy {
+  async execute(fault) {
+    console.log(`[RestartStrategy] Restarting service: ${fault.service}`)
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    return { action: 'restarted', service: fault.service }
+  }
+}
+
+class ScaleUpStrategy {
+  async execute(fault) {
+    console.log(`[ScaleUpStrategy] Scaling up: ${fault.service}`)
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    return { action: 'scaled', service: fault.service, instances: fault.instances + 1 }
+  }
+}
+
+class ClearCacheStrategy {
+  async execute(fault) {
+    console.log(`[ClearCacheStrategy] Clearing cache: ${fault.cache}`)
+    await new Promise(resolve => setTimeout(resolve, 500))
+    return { action: 'cleared', cache: fault.cache }
+  }
+}
+
+// 使用示例
+const healingSystem = new SelfHealingSystem()
+
+// 注册自愈策略
+healingSystem.register('service_crash', new RestartStrategy())
+healingSystem.register('high_load', new ScaleUpStrategy())
+healingSystem.register('cache_full', new ClearCacheStrategy())
+
+// 模拟故障
+async function testSelfHealing() {
+  const faults = [
+    { type: 'service_crash', service: 'api-server' },
+    { type: 'high_load', service: 'worker', instances: 3 },
+    { type: 'cache_full', cache: 'redis' }
+  ]
+
+  for (const fault of faults) {
+    const result = await healingSystem.heal(fault)
+    console.log('Healing result:', result)
+  }
+
+  console.log('\nHealing history:')
+  console.log(healingSystem.getHistory())
+}
+
+testSelfHealing()
+```
+
+## 🎯 优雅降级策略
+
+### 降级策略实现
+
+```js
+// 降级系统
+class DegradationSystem {
+  constructor(config) {
+    this.strategies = new Map()
+    this.currentLevel = 'normal'  // normal | degraded | minimal
+    this.metrics = {
+      errors: 0,
+      requests: 0,
+      lastReset: Date.now()
+    }
+  }
+
+  // 注册降级策略
+  register(feature, strategy) {
+    this.strategies.set(feature, strategy)
+  }
+
+  // 执行功能（自动降级）
+  async execute(feature, fn) {
+    this.metrics.requests++
+    
+    try {
+      const result = await fn()
+      return { success: true, data: result }
+    } catch (error) {
+      this.metrics.errors++
+      console.log(`[Degradation] Error in ${feature}:`, error.message)
+      
+      // 检查是否需要降级
+      this.checkDegradationLevel()
+      
+      // 执行降级策略
+      const strategy = this.strategies.get(feature)
+      if (strategy) {
+        const fallback = strategy.getFallback(this.currentLevel)
+        if (fallback) {
+          console.log(`[Degradation] Using fallback for ${feature}`)
+          return { success: true, data: fallback(), degraded: true }
+        }
+      }
+      
+      throw error
+    }
+  }
+
+  // 检查降级级别
+  checkDegradationLevel() {
+    const errorRate = this.metrics.errors / this.metrics.requests
+    const timeSinceReset = Date.now() - this.metrics.lastReset
+    
+    // 每分钟重置一次
+    if (timeSinceReset > 60000) {
+      this.metrics.errors = 0
+      this.metrics.requests = 0
+      this.metrics.lastReset = Date.now()
+    }
+    
+    // 根据错误率调整降级级别
+    if (errorRate > 0.5) {
+      this.currentLevel = 'minimal'
+    } else if (errorRate > 0.2) {
+      this.currentLevel = 'degraded'
+    } else {
+      this.currentLevel = 'normal'
+    }
+    
+    console.log(`[Degradation] Current level: ${this.currentLevel}, error rate: ${errorRate.toFixed(2)}`)
+  }
+
+  // 手动设置降级级别
+  setLevel(level) {
+    this.currentLevel = level
+    console.log(`[Degradation] Level set to: ${level}`)
+  }
+
+  // 获取当前状态
+  getStatus() {
+    return {
+      level: this.currentLevel,
+      metrics: this.metrics,
+      errorRate: this.metrics.requests > 0 ? this.metrics.errors / this.metrics.requests : 0
+    }
+  }
+}
+
+// 降级策略
+class FeatureStrategy {
+  constructor(fallbacks) {
+    this.fallbacks = fallbacks
+  }
+
+  getFallback(level) {
+    return this.fallbacks[level]
+  }
+}
+
+// 使用示例
+const degradationSystem = new DegradationSystem()
+
+// 注册降级策略
+degradationSystem.register('recommendation', new FeatureStrategy({
+  normal: null,
+  degraded: () => ({ items: [], message: 'Recommendations temporarily unavailable' }),
+  minimal: () => ({ items: [], message: 'Service maintenance' })
+}))
+
+degradationSystem.register('comments', new FeatureStrategy({
+  normal: null,
+  degraded: () => ({ comments: [], message: 'Comments loading slowly' }),
+  minimal: () => ({ comments: [], message: 'Comments disabled' })
+}))
+
+// 模拟功能执行
+async function testDegradation() {
+  // 正常执行
+  const result1 = await degradationSystem.execute('recommendation', async () => {
+    return { items: ['item1', 'item2', 'item3'] }
+  })
+  console.log('Result 1:', result1)
+
+  // 模拟错误
+  const result2 = await degradationSystem.execute('recommendation', async () => {
+    throw new Error('Service unavailable')
+  })
+  console.log('Result 2:', result2)
+
+  // 查看状态
+  console.log('\nStatus:', degradationSystem.getStatus())
+
+  // 手动降级
+  degradationSystem.setLevel('minimal')
+
+  // 再次执行
+  const result3 = await degradationSystem.execute('comments', async () => {
+    throw new Error('Service unavailable')
+  })
+  console.log('Result 3:', result3)
+}
+
+testDegradation()
+```
+
+## 🎯 混沌工程
+
+### 混沌实验
+
+```js
+// 混沌工程系统
+class ChaosEngineering {
+  constructor(config) {
+    this.experiments = new Map()
+    this.running = false
+    this.metrics = {
+      total: 0,
+      passed: 0,
+      failed: 0
+    }
+  }
+
+  // 注册混沌实验
+  register(name, experiment) {
+    this.experiments.set(name, experiment)
+  }
+
+  // 执行混沌实验
+  async run(name) {
+    const experiment = this.experiments.get(name)
+    if (!experiment) {
+      throw new Error(`Experiment ${name} not found`)
+    }
+
+    console.log(`[Chaos] Starting experiment: ${name}`)
+    this.metrics.total++
+
+    try {
+      // 1. 建立稳态
+      const baseline = await experiment.establishBaseline()
+      console.log(`[Chaos] Baseline established:`, baseline)
+
+      // 2. 引入故障
+      console.log(`[Chaos] Injecting fault...`)
+      await experiment.injectFault()
+
+      // 3. 观察系统行为
+      await new Promise(resolve => setTimeout(resolve, experiment.duration))
+
+      // 4. 验证稳态
+      const afterFault = await experiment.measureState()
+      const passed = experiment.validateSteadyState(baseline, afterFault)
+
+      if (passed) {
+        this.metrics.passed++
+        console.log(`[Chaos] Experiment passed: ${name}`)
+      } else {
+        this.metrics.failed++
+        console.log(`[Chaos] Experiment failed: ${name}`)
+        console.log(`[Chaos] Baseline:`, baseline)
+        console.log(`[Chaos] After fault:`, afterFault)
+      }
+
+      return { name, passed, baseline, afterFault }
+    } catch (error) {
+      this.metrics.failed++
+      console.error(`[Chaos] Experiment error: ${name}`, error)
+      return { name, passed: false, error: error.message }
+    } finally {
+      // 5. 恢复系统
+      await experiment.recover()
+      console.log(`[Chaos] System recovered`)
+    }
+  }
+
+  // 获取指标
+  getMetrics() {
+    return this.metrics
+  }
+}
+
+// 混沌实验
+class NetworkLatencyExperiment {
+  constructor(config) {
+    this.service = config.service
+    this.latency = config.latency || 5000
+    this.duration = config.duration || 10000
+    this.originalLatency = 0
+  }
+
+  async establishBaseline() {
+    // 测量正常延迟
+    const start = Date.now()
+    await this.service.ping()
+    this.originalLatency = Date.now() - start
+    return { latency: this.originalLatency }
+  }
+
+  async injectFault() {
+    // 注入网络延迟
+    this.service.setLatency(this.latency)
+    console.log(`[Chaos] Injected ${this.latency}ms latency`)
+  }
+
+  async measureState() {
+    // 测量故障后状态
+    const start = Date.now()
+    await this.service.ping()
+    const currentLatency = Date.now() - start
+    return { latency: currentLatency }
+  }
+
+  validateSteadyState(baseline, afterFault) {
+    // 验证系统是否仍能正常工作
+    // 即使延迟增加，系统仍应能响应
+    return afterFault.latency < this.latency * 2
+  }
+
+  async recover() {
+    // 恢复正常延迟
+    this.service.setLatency(this.originalLatency)
+  }
+}
+
+// 模拟服务
+class MockService {
+  constructor() {
+    this.latency = 0
+  }
+
+  async ping() {
+    await new Promise(resolve => setTimeout(resolve, this.latency))
+    return { status: 'ok' }
+  }
+
+  setLatency(ms) {
+    this.latency = ms
+  }
+}
+
+// 使用示例
+const chaos = new ChaosEngineering()
+
+const service = new MockService()
+
+// 注册混沌实验
+chaos.register('network_latency', new NetworkLatencyExperiment({
+  service: service,
+  latency: 5000,
+  duration: 5000
+}))
+
+// 执行实验
+async function testChaosEngineering() {
+  const result = await chaos.run('network_latency')
+  console.log('Experiment result:', result)
+
+  console.log('\nChaos metrics:', chaos.getMetrics())
+}
+
+testChaosEngineering()
+```
+
+### 故障演练
+
+```js
+// 故障演练系统
+class GameDay {
+  constructor(config) {
+    this.scenarios = new Map()
+    this.participants = []
+    this.timeline = []
+  }
+
+  // 注册演练场景
+  register(name, scenario) {
+    this.scenarios.set(name, scenario)
+  }
+
+  // 添加参与者
+  addParticipant(participant) {
+    this.participants.push(participant)
+  }
+
+  // 执行演练
+  async run(name) {
+    const scenario = this.scenarios.get(name)
+    if (!scenario) {
+      throw new Error(`Scenario ${name} not found`)
+    }
+
+    console.log(`[GameDay] Starting scenario: ${name}`)
+    console.log(`[GameDay] Participants:`, this.participants.map(p => p.name))
+
+    const startTime = Date.now()
+    let completed = false
+    let recoveryTime = null
+
+    try {
+      // 1. 通知参与者
+      this.notifyParticipants(`GameDay ${name} starting`)
+
+      // 2. 执行故障注入
+      this.recordEvent('fault_injected', { scenario: name })
+      await scenario.injectFault()
+
+      // 3. 等待参与者响应
+      await this.waitForResponse(scenario.timeout)
+
+      // 4. 验证恢复
+      const recovered = await scenario.verifyRecovery()
+      if (recovered) {
+        completed = true
+        recoveryTime = Date.now() - startTime
+        this.recordEvent('recovery_verified', { time: recoveryTime })
+      }
+
+    } catch (error) {
+      this.recordEvent('error', { message: error.message })
+    } finally {
+      // 5. 清理
+      await scenario.cleanup()
+      this.notifyParticipants(`GameDay ${name} completed`)
+    }
+
+    return {
+      scenario: name,
+      completed,
+      recoveryTime,
+      timeline: this.timeline
+    }
+  }
+
+  notifyParticipants(message) {
+    console.log(`[GameDay] Notifying participants: ${message}`)
+    this.participants.forEach(p => p.notify(message))
+  }
+
+  async waitForResponse(timeout) {
+    await new Promise(resolve => setTimeout(resolve, timeout))
+  }
+
+  recordEvent(type, data) {
+    this.timeline.push({
+      type,
+      data,
+      timestamp: Date.now()
+    })
+  }
+
+  getTimeline() {
+    return this.timeline
+  }
+}
+
+// 演练场景
+class DatabaseFailureScenario {
+  constructor(config) {
+    this.database = config.database
+    this.timeout = config.timeout || 30000
+  }
+
+  async injectFault() {
+    console.log('[GameDay] Injecting database failure...')
+    this.database.fail()
+  }
+
+  async verifyRecovery() {
+    console.log('[GameDay] Verifying database recovery...')
+    const recovered = await this.database.isHealthy()
+    return recovered
+  }
+
+  async cleanup() {
+    console.log('[GameDay] Cleaning up...')
+    this.database.recover()
+  }
+}
+
+// 模拟参与者
+class Participant {
+  constructor(name) {
+    this.name = name
+  }
+
+  notify(message) {
+    console.log(`[Participant ${this.name}] Received: ${message}`)
+  }
+}
+
+// 模拟数据库
+class MockDatabase {
+  constructor() {
+    this.failed = false
+  }
+
+  fail() {
+    this.failed = true
+  }
+
+  recover() {
+    this.failed = false
+  }
+
+  async isHealthy() {
+    return !this.failed
+  }
+}
+
+// 使用示例
+const gameDay = new GameDay()
+
+const database = new MockDatabase()
+
+// 注册演练场景
+gameDay.register('database_failure', new DatabaseFailureScenario({
+  database: database,
+  timeout: 20000
+}))
+
+// 添加参与者
+gameDay.addParticipant(new Participant('ops-team'))
+gameDay.addParticipant(new Participant('dev-team'))
+
+// 执行演练
+async function testGameDay() {
+  const result = await gameDay.run('database_failure')
+  console.log('GameDay result:', result)
+
+  console.log('\nTimeline:')
+  gameDay.getTimeline().forEach(event => {
+    console.log(`- ${event.type}:`, event.data)
+  })
+}
+
+testGameDay()
+```
+
+## 📝 实际应用示例
+
+### 综合故障治理系统
+
+```js
+// 综合故障治理系统
+class ComprehensiveFaultManagement {
+  constructor(config) {
+    this.healthCheck = new HealthCheckSystem(config.healthCheck)
+    this.selfHealing = new SelfHealingSystem()
+    this.degradation = new DegradationSystem(config.degradation)
+    this.chaos = new ChaosEngineering()
+  }
+
+  // 初始化
+  async initialize() {
+    // 注册健康检查
+    this.healthCheck.register('service', async () => {
+      return { status: 'ok' }
+    })
+
+    // 注册自愈策略
+    this.selfHealing.register('restart', new RestartStrategy())
+
+    // 注册降级策略
+    this.degradation.register('feature', new FeatureStrategy({
+      normal: null,
+      degraded: () => ({ message: 'Degraded mode' }),
+      minimal: () => ({ message: 'Minimal mode' })
+    }))
+
+    // 启动健康检查
+    this.healthCheck.start()
+  }
+
+  // 处理故障
+  async handleFault(fault) {
+    console.log(`[FaultManagement] Handling fault: ${fault.type}`)
+
+    // 1. 执行自愈
+    const healResult = await this.selfHealing.heal(fault)
+    
+    if (healResult.success) {
+      return { status: 'healed', result: healResult.result }
+    }
+
+    // 2. 执行降级
+    if (fault.feature) {
+      const degradeResult = await this.degradation.execute(
+        fault.feature,
+        async () => { throw new Error(fault.error) }
+      )
+      
+      if (degradeResult.success) {
+        return { status: 'degraded', data: degradeResult.data }
+      }
+    }
+
+    // 3. 无法恢复
+    return { status: 'failed', error: fault.error }
+  }
+
+  // 获取系统状态
+  getStatus() {
+    return {
+      health: 'running',
+      degradation: this.degradation.getStatus(),
+      healing: this.selfHealing.getHistory()
+    }
+  }
+
+  // 执行混沌实验
+  async runExperiment(name) {
+    return await this.chaos.run(name)
+  }
+}
+
+// 使用示例
+async function testComprehensiveFaultManagement() {
+  const system = new ComprehensiveFaultManagement({
+    healthCheck: { interval: 10000 },
+    degradation: {}
+  })
+
+  await system.initialize()
+
+  console.log('--- 处理故障 ---')
+  const fault1 = {
+    type: 'restart',
+    service: 'api-server'
+  }
+  const result1 = await system.handleFault(fault1)
+  console.log('Fault 1 result:', result1)
+
+  console.log('\n--- 处理需要降级的故障 ---')
+  const fault2 = {
+    type: 'feature_error',
+    feature: 'recommendation',
+    error: 'Service unavailable'
+  }
+  const result2 = await system.handleFault(fault2)
+  console.log('Fault 2 result:', result2)
+
+  console.log('\n--- 系统状态 ---')
+  console.log('System status:', system.getStatus())
+}
+
+testComprehensiveFaultManagement()
+```
+
+## 🔗 相关概念
+
+- **健康检查**：定期检查系统组件状态
+- **自愈机制**：自动检测并修复故障
+- **优雅降级**：在故障时提供降级服务
+- **混沌工程**：主动注入故障验证系统韧性
+- **故障演练**：模拟真实故障场景进行演练
+- **熔断器**：防止级联故障的保护机制
+- **限流**：保护系统免受过载影响
+- **监控告警**：及时发现和响应故障
+
+## 📚 学习检查点
+
+- [ ] 能否设计一个健康检查系统？
+- [ ] 能否实现自愈机制？
+- [ ] 能否设计优雅降级策略？
+- [ ] 能否制定并执行故障演练计划？
+
+## 🚀 下一步
+
+→ [6.2.4 弹性设计](/architect/06-system-design/02-high-availability/04-elastic-design)

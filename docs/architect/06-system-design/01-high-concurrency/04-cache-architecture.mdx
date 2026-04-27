@@ -3,15 +3,1014 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解多级缓存架构的设计，包括本地缓存（Caffeine、Guava Cache）、分布式缓存（Redis）和 CDN 缓存策略。
+缓存是提升系统性能的最有效手段之一。本节将深入讲解多级缓存架构设计，包括本地缓存、分布式缓存和 CDN 缓存策略。
 
-## 🎯 学习目标
+## 🎯 多级缓存架构
 
-- 掌握多级缓存架构的设计原则
-- 理解本地缓存框架的选型和配置
-- 掌握 Redis 分布式缓存的架构设计
-- 能够设计 CDN 缓存策略
+### 缓存层级设计
 
-> 🚧 详细内容正在编写中...
+多级缓存通过在不同层级设置缓存，最大化命中率，减少后端压力。
+
+```js
+// 多级缓存架构
+class MultiLevelCache {
+  constructor(config) {
+    // L1: 浏览器缓存
+    this.browserCache = new BrowserCache()
+    
+    // L2: CDN 缓存
+    this.cdnCache = new CDNCache(config.cdn)
+    
+    // L3: 本地缓存（应用层）
+    this.localCache = new LocalCache(config.local)
+    
+    // L4: 分布式缓存（Redis）
+    this.redisCache = new RedisCache(config.redis)
+    
+    // L5: 数据库
+    this.database = new Database(config.database)
+  }
+
+  // 获取数据（逐级查找）
+  async get(key) {
+    // L1: 浏览器缓存
+    const browserResult = this.browserCache.get(key)
+    if (browserResult) {
+      console.log(`[L1-Browser] Cache hit: ${key}`)
+      return browserResult
+    }
+
+    // L2: CDN 缓存
+    const cdnResult = await this.cdnCache.get(key)
+    if (cdnResult) {
+      console.log(`[L2-CDN] Cache hit: ${key}`)
+      this.browserCache.set(key, cdnResult)
+      return cdnResult
+    }
+
+    // L3: 本地缓存
+    const localResult = this.localCache.get(key)
+    if (localResult) {
+      console.log(`[L3-Local] Cache hit: ${key}`)
+      this.cdnCache.set(key, localResult)
+      this.browserCache.set(key, localResult)
+      return localResult
+    }
+
+    // L4: 分布式缓存
+    const redisResult = await this.redisCache.get(key)
+    if (redisResult) {
+      console.log(`[L4-Redis] Cache hit: ${key}`)
+      this.localCache.set(key, redisResult)
+      this.cdnCache.set(key, redisResult)
+      this.browserCache.set(key, redisResult)
+      return redisResult
+    }
+
+    // L5: 数据库
+    console.log(`[L5-Database] Cache miss: ${key}`)
+    const dbResult = await this.database.get(key)
+    
+    // 回填所有缓存
+    await this.setAllLevels(key, dbResult)
+    
+    return dbResult
+  }
+
+  // 设置所有层级的缓存
+  async setAllLevels(key, value) {
+    this.browserCache.set(key, value)
+    await this.cdnCache.set(key, value)
+    this.localCache.set(key, value)
+    await this.redisCache.set(key, value)
+  }
+
+  // 失效所有层级的缓存
+  async invalidateAllLevels(key) {
+    this.browserCache.delete(key)
+    await this.cdnCache.delete(key)
+    this.localCache.delete(key)
+    await this.redisCache.delete(key)
+  }
+}
+
+// 浏览器缓存（模拟）
+class BrowserCache {
+  constructor() {
+    this.cache = new Map()
+  }
+
+  get(key) {
+    return this.cache.get(key)
+  }
+
+  set(key, value) {
+    this.cache.set(key, value)
+  }
+
+  delete(key) {
+    this.cache.delete(key)
+  }
+}
+
+// CDN 缓存（模拟）
+class CDNCache {
+  constructor(config) {
+    this.cache = new Map()
+    this.ttl = config.ttl || 3600
+  }
+
+  async get(key) {
+    const item = this.cache.get(key)
+    if (item && Date.now() < item.expireTime) {
+      return item.value
+    }
+    return null
+  }
+
+  async set(key, value) {
+    this.cache.set(key, {
+      value,
+      expireTime: Date.now() + this.ttl * 1000
+    })
+  }
+
+  async delete(key) {
+    this.cache.delete(key)
+  }
+}
+
+// 本地缓存（模拟 Caffeine）
+class LocalCache {
+  constructor(config) {
+    this.cache = new Map()
+    this.maxSize = config.maxSize || 1000
+    this.ttl = config.ttl || 300
+    this.accessOrder = new Map()  // 用于 LRU 淘汰
+  }
+
+  get(key) {
+    const item = this.cache.get(key)
+    if (item && Date.now() < item.expireTime) {
+      // 更新访问顺序
+      this.accessOrder.delete(key)
+      this.accessOrder.set(key, Date.now())
+      return item.value
+    }
+    return null
+  }
+
+  set(key, value) {
+    // 检查是否需要淘汰
+    if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
+      this.evictLRU()
+    }
+
+    this.cache.set(key, {
+      value,
+      expireTime: Date.now() + this.ttl * 1000
+    })
+    this.accessOrder.set(key, Date.now())
+  }
+
+  delete(key) {
+    this.cache.delete(key)
+    this.accessOrder.delete(key)
+  }
+
+  evictLRU() {
+    // 找到最久未使用的 key
+    let lruKey = null
+    let oldestTime = Infinity
+    
+    for (const [key, time] of this.accessOrder) {
+      if (time < oldestTime) {
+        oldestTime = time
+        lruKey = key
+      }
+    }
+    
+    if (lruKey) {
+      this.cache.delete(lruKey)
+      this.accessOrder.delete(lruKey)
+    }
+  }
+}
+
+// Redis 缓存（模拟）
+class RedisCache {
+  constructor(config) {
+    this.cache = new Map()
+    this.ttl = config.ttl || 1800
+  }
+
+  async get(key) {
+    const item = this.cache.get(key)
+    if (item && Date.now() < item.expireTime) {
+      return item.value
+    }
+    return null
+  }
+
+  async set(key, value) {
+    this.cache.set(key, {
+      value,
+      expireTime: Date.now() + this.ttl * 1000
+    })
+  }
+
+  async delete(key) {
+    this.cache.delete(key)
+  }
+}
+
+// 数据库（模拟）
+class Database {
+  constructor(config) {
+    this.data = new Map()
+    // 模拟一些初始数据
+    this.data.set('user:1', { id: 1, name: 'Alice', email: 'alice@example.com' })
+    this.data.set('user:2', { id: 2, name: 'Bob', email: 'bob@example.com' })
+  }
+
+  async get(key) {
+    // 模拟数据库查询延迟
+    await new Promise(resolve => setTimeout(resolve, 50))
+    return this.data.get(key) || null
+  }
+}
+
+// 使用示例
+async function testMultiLevelCache() {
+  const cache = new MultiLevelCache({
+    cdn: { ttl: 3600 },
+    local: { maxSize: 100, ttl: 300 },
+    redis: { ttl: 1800 },
+    database: {}
+  })
+
+  console.log('--- 第一次请求（缓存未命中）---')
+  const result1 = await cache.get('user:1')
+  console.log('Result:', result1)
+
+  console.log('\n--- 第二次请求（本地缓存命中）---')
+  const result2 = await cache.get('user:1')
+  console.log('Result:', result2)
+
+  console.log('\n--- 清除缓存后请求 ---')
+  await cache.invalidateAllLevels('user:1')
+  const result3 = await cache.get('user:1')
+  console.log('Result:', result3)
+}
+
+testMultiLevelCache()
+```
+
+## 🎯 本地缓存
+
+### Caffeine 缓存特性
+
+Caffeine 是高性能的 Java 本地缓存库，提供智能淘汰策略。
+
+```js
+// Caffeine 风格的本地缓存实现
+class CaffeineLikeCache {
+  constructor(options = {}) {
+    this.cache = new Map()
+    this.maximumSize = options.maximumSize || 10000
+    this.expireAfterWrite = options.expireAfterWrite || 600000  // 10分钟
+    this.expireAfterAccess = options.expireAfterAccess || 300000  // 5分钟
+    this.recordStats = options.recordStats || false
+    
+    // 统计信息
+    this.stats = {
+      hitCount: 0,
+      missCount: 0,
+      loadSuccessCount: 0,
+      loadFailureCount: 0
+    }
+    
+    // 访问顺序（用于 LRU）
+    this.accessOrder = new Map()
+  }
+
+  // 获取缓存
+  get(key, loader = null) {
+    const item = this.cache.get(key)
+    
+    if (item) {
+      // 检查是否过期
+      const now = Date.now()
+      if (now < item.expireAfterWrite && now < item.expireAfterAccess) {
+        // 更新访问时间和顺序
+        item.expireAfterAccess = now + this.expireAfterAccess
+        this.accessOrder.set(key, now)
+        
+        if (this.recordStats) {
+          this.stats.hitCount++
+        }
+        
+        return item.value
+      } else {
+        // 过期，删除
+        this.cache.delete(key)
+        this.accessOrder.delete(key)
+      }
+    }
+    
+    if (this.recordStats) {
+      this.stats.missCount++
+    }
+    
+    // 使用 loader 加载
+    if (loader) {
+      try {
+        const value = loader(key)
+        this.put(key, value)
+        
+        if (this.recordStats) {
+          this.stats.loadSuccessCount++
+        }
+        
+        return value
+      } catch (error) {
+        if (this.recordStats) {
+          this.stats.loadFailureCount++
+        }
+        throw error
+      }
+    }
+    
+    return null
+  }
+
+  // 设置缓存
+  put(key, value) {
+    // 检查容量限制
+    if (this.cache.size >= this.maximumSize && !this.cache.has(key)) {
+      this.evict()
+    }
+    
+    const now = Date.now()
+    this.cache.set(key, {
+      value,
+      expireAfterWrite: now + this.expireAfterWrite,
+      expireAfterAccess: now + this.expireAfterAccess
+    })
+    this.accessOrder.set(key, now)
+  }
+
+  // 删除缓存
+  invalidate(key) {
+    this.cache.delete(key)
+    this.accessOrder.delete(key)
+  }
+
+  // 清空所有缓存
+  invalidateAll() {
+    this.cache.clear()
+    this.accessOrder.clear()
+  }
+
+  // 淘汰策略（基于 LRU 和大小）
+  evict() {
+    // 使用 LRU 淘汰最久未访问的条目
+    let lruKey = null
+    let oldestTime = Infinity
+    
+    for (const [key, time] of this.accessOrder) {
+      if (time < oldestTime) {
+        oldestTime = time
+        lruKey = key
+      }
+    }
+    
+    if (lruKey) {
+      this.cache.delete(lruKey)
+      this.accessOrder.delete(lruKey)
+    }
+  }
+
+  // 获取统计信息
+  stats() {
+    const totalRequests = this.stats.hitCount + this.stats.missCount
+    return {
+      ...this.stats,
+      hitRate: totalRequests > 0 ? this.stats.hitCount / totalRequests : 0,
+      size: this.cache.size
+    }
+  }
+}
+
+// 使用示例
+const cache = new CaffeineLikeCache({
+  maximumSize: 100,
+  expireAfterWrite: 60000,
+  expireAfterAccess: 30000,
+  recordStats: true
+})
+
+// 设置缓存
+cache.put('user:1', { id: 1, name: 'Alice' })
+cache.put('user:2', { id: 2, name: 'Bob' })
+
+// 获取缓存
+console.log('Get user:1:', cache.get('user:1'))
+console.log('Get user:2:', cache.get('user:2'))
+
+// 使用 loader
+const user3 = cache.get('user:3', (key) => {
+  return { id: 3, name: 'Charlie' }
+})
+console.log('Get user:3 with loader:', user3)
+
+// 查看统计信息
+console.log('Cache stats:', cache.stats())
+```
+
+## 🎯 分布式缓存
+
+### Redis 缓存模式
+
+```js
+// Redis 缓存模式
+class RedisCachePattern {
+  constructor(redisClient) {
+    this.redis = redisClient
+  }
+
+  // Cache-Aside 模式（旁路缓存）
+  async cacheAside(key, loader, ttl = 3600) {
+    // 1. 先查缓存
+    const cached = await this.redis.get(key)
+    if (cached) {
+      console.log(`[Cache-Aside] Cache hit: ${key}`)
+      return JSON.parse(cached)
+    }
+
+    // 2. 缓存未命中，加锁防止缓存击穿
+    const lockKey = `lock:${key}`
+    const lockValue = Date.now().toString()
+    const lockAcquired = await this.acquireLock(lockKey, lockValue, 10)
+
+    if (lockAcquired) {
+      try {
+        // 双重检查
+        const doubleCheck = await this.redis.get(key)
+        if (doubleCheck) {
+          return JSON.parse(doubleCheck)
+        }
+
+        // 3. 从数据库加载
+        console.log(`[Cache-Aside] Loading from database: ${key}`)
+        const value = await loader(key)
+
+        // 4. 写入缓存
+        await this.redis.setex(key, ttl, JSON.stringify(value))
+        
+        return value
+      } finally {
+        await this.releaseLock(lockKey, lockValue)
+      }
+    } else {
+      // 未获取到锁，等待并重试
+      await new Promise(resolve => setTimeout(resolve, 100))
+      return this.cacheAside(key, loader, ttl)
+    }
+  }
+
+  // Write-Through 模式（写穿透）
+  async writeThrough(key, value, ttl = 3600) {
+    // 1. 同时更新缓存和数据库
+    await Promise.all([
+      this.redis.setex(key, ttl, JSON.stringify(value)),
+      this.updateDatabase(key, value)
+    ])
+    console.log(`[Write-Through] Updated cache and database: ${key}`)
+  }
+
+  // Write-Behind 模式（写回）
+  async writeBehind(key, value, ttl = 3600) {
+    // 1. 先更新缓存
+    await this.redis.setex(key, ttl, JSON.stringify(value))
+    
+    // 2. 异步更新数据库
+    setImmediate(async () => {
+      try {
+        await this.updateDatabase(key, value)
+        console.log(`[Write-Behind] Database updated: ${key}`)
+      } catch (error) {
+        console.error(`[Write-Behind] Database update failed: ${key}`, error)
+      }
+    })
+  }
+
+  // 分布式锁
+  async acquireLock(key, value, expireTime = 10) {
+    const result = await this.redis.set(key, value, 'NX', 'EX', expireTime)
+    return result === 'OK'
+  }
+
+  async releaseLock(key, value) {
+    const script = `
+      if redis.call("GET", KEYS[1]) == ARGV[1] then
+        return redis.call("DEL", KEYS[1])
+      else
+        return 0
+      end
+    `
+    await this.redis.eval(script, 1, key, value)
+  }
+
+  // 模拟数据库更新
+  async updateDatabase(key, value) {
+    // 实际项目中这里会调用数据库操作
+    console.log(`[Database] Updating: ${key}`)
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
+// 模拟 Redis 客户端
+class MockRedisClient {
+  constructor() {
+    this.data = new Map()
+    this.locks = new Map()
+  }
+
+  async get(key) {
+    return this.data.get(key)
+  }
+
+  async setex(key, seconds, value) {
+    const expireTime = Date.now() + seconds * 1000
+    this.data.set(key, { value, expireTime })
+  }
+
+  async set(key, value, mode, expireType, expireTime) {
+    if (mode === 'NX' && this.data.has(key)) {
+      return null
+    }
+    
+    if (expireType === 'EX') {
+      const expireDate = Date.now() + expireTime * 1000
+      this.data.set(key, { value, expireTime: expireDate })
+    } else {
+      this.data.set(key, { value, expireTime: null })
+    }
+    
+    return 'OK'
+  }
+
+  async del(key) {
+    this.data.delete(key)
+  }
+
+  async eval(script, numKeys, ...args) {
+    const key = args[0]
+    const value = args[1]
+    
+    if (script.includes('GET')) {
+      const item = this.data.get(key)
+      return item?.value
+    } else if (script.includes('DEL')) {
+      if (this.data.get(key)?.value === value) {
+        this.data.delete(key)
+        return 1
+      }
+      return 0
+    }
+  }
+}
+
+// 使用示例
+async function testRedisCachePattern() {
+  const redis = new MockRedisClient()
+  const cache = new RedisCachePattern(redis)
+
+  console.log('--- Cache-Aside 模式 ---')
+  const user1 = await cache.cacheAside('user:1', async (key) => {
+    return { id: 1, name: 'Alice', email: 'alice@example.com' }
+  })
+  console.log('User 1:', user1)
+
+  // 再次获取（从缓存）
+  const user1Again = await cache.cacheAside('user:1', async (key) => {
+    return { id: 1, name: 'Alice Modified' }
+  })
+  console.log('User 1 again:', user1Again)
+
+  console.log('\n--- Write-Through 模式 ---')
+  await cache.writeThrough('user:2', { id: 2, name: 'Bob' })
+
+  console.log('\n--- Write-Behind 模式 ---')
+  await cache.writeBehind('user:3', { id: 3, name: 'Charlie' })
+  console.log('Write-Behind: Cache updated, database updating asynchronously')
+}
+
+testRedisCachePattern()
+```
+
+## 🎯 缓存失效策略
+
+### 缓存失效模式
+
+```js
+// 缓存失效策略
+class CacheInvalidationStrategy {
+  constructor(cache) {
+    this.cache = cache
+  }
+
+  // TTL 失效（时间过期）
+  async ttlInvalidation(key, ttl) {
+    // 缓存自动过期，无需手动处理
+    console.log(`[TTL] Cache will expire in ${ttl}s: ${key}`)
+  }
+
+  // 主动失效（数据更新时）
+  async activeInvalidation(key) {
+    await this.cache.delete(key)
+    console.log(`[Active] Cache invalidated: ${key}`)
+  }
+
+  // 版本号失效
+  async versionInvalidation(key, version) {
+    const versionKey = `${key}:version`
+    await this.cache.set(versionKey, version)
+    console.log(`[Version] Cache version updated: ${key} v${version}`)
+  }
+
+  // 标签失效（批量失效）
+  async tagInvalidation(key, tags) {
+    const tagKey = `tags:${key}`
+    await this.cache.set(tagKey, tags)
+    console.log(`[Tag] Cache tags updated: ${key}`, tags)
+  }
+
+  // 失效指定标签的所有缓存
+  async invalidateByTag(tag) {
+    // 遍历所有缓存，查找匹配的标签
+    const allKeys = await this.cache.keys('tags:*')
+    for (const tagKey of allKeys) {
+      const tags = await this.cache.get(tagKey)
+      if (tags && tags.includes(tag)) {
+        const key = tagKey.replace('tags:', '')
+        await this.cache.delete(key)
+        await this.cache.delete(tagKey)
+        console.log(`[Tag] Invalidated cache by tag: ${key}`)
+      }
+    }
+  }
+
+  // 缓存预热
+  async cacheWarmup(keys, loader) {
+    console.log('[Warmup] Starting cache warmup...')
+    
+    for (const key of keys) {
+      try {
+        const value = await loader(key)
+        await this.cache.set(key, value)
+        console.log(`[Warmup] Warmed: ${key}`)
+      } catch (error) {
+        console.error(`[Warmup] Failed to warm: ${key}`, error)
+      }
+    }
+    
+    console.log('[Warmup] Cache warmup completed')
+  }
+}
+
+// 使用示例
+async function testCacheInvalidation() {
+  const cache = new Map()
+  const strategy = new CacheInvalidationStrategy(cache)
+
+  // 模拟缓存操作
+  cache.set = (key, value) => cache.set(key, value)
+  cache.get = (key) => cache.get(key)
+  cache.delete = (key) => cache.delete(key)
+  cache.keys = (pattern) => Array.from(cache.keys()).filter(k => k.startsWith(pattern.replace('*', '')))
+
+  // TTL 失效
+  await strategy.ttlInvalidation('user:1', 3600)
+
+  // 主动失效
+  cache.set('user:2', { id: 2, name: 'Bob' })
+  await strategy.activeInvalidation('user:2')
+
+  // 版本号失效
+  await strategy.versionInvalidation('product:1', 2)
+
+  // 标签失效
+  await strategy.tagInvalidation('product:1', ['products', 'featured'])
+  await strategy.tagInvalidation('product:2', ['products'])
+  
+  // 失效指定标签
+  await strategy.invalidateByTag('featured')
+
+  // 缓存预热
+  const keys = ['user:1', 'user:2', 'user:3']
+  await strategy.cacheWarmup(keys, async (key) => {
+    return { id: parseInt(key.split(':')[1]), name: `User ${key.split(':')[1]}` }
+  })
+}
+
+testCacheInvalidation()
+```
+
+## 🎯 CDN 缓存策略
+
+### CDN 缓存配置
+
+```js
+// CDN 缓存策略
+class CDNCacheStrategy {
+  constructor() {
+    this.rules = []
+  }
+
+  // 添加缓存规则
+  addRule(pattern, options) {
+    this.rules.push({
+      pattern: new RegExp(pattern),
+      options
+    })
+  }
+
+  // 获取缓存策略
+  getStrategy(url) {
+    for (const rule of this.rules) {
+      if (rule.pattern.test(url)) {
+        return rule.options
+      }
+    }
+    return this.getDefaultStrategy()
+  }
+
+  // 默认策略
+  getDefaultStrategy() {
+    return {
+      cacheControl: 'public, max-age=3600',
+      edgeCacheTTL: 3600,
+      browserCacheTTL: 3600,
+      ignoreQueryString: false,
+      compress: true
+    }
+  }
+
+  // 生成缓存头
+  generateCacheHeaders(url) {
+    const strategy = this.getStrategy(url)
+    return {
+      'Cache-Control': strategy.cacheControl,
+      'CDN-Cache-Control': `max-age=${strategy.edgeCacheTTL}`,
+      'Edge-Cache-Tag': this.generateCacheTag(url),
+      'Surrogate-Key': this.generateSurrogateKey(url)
+    }
+  }
+
+  // 生成缓存标签
+  generateCacheTag(url) {
+    const path = new URL(url).pathname
+    return path.split('/').filter(Boolean).join('-')
+  }
+
+  // 生成代理键
+  generateSurrogateKey(url) {
+    const urlObj = new URL(url)
+    return `${urlObj.hostname}${urlObj.pathname}`
+  }
+
+  // 主动失效 CDN 缓存
+  async invalidateCDN(purgeType, targets) {
+    console.log(`[CDN] Purging ${purgeType}:`, targets)
+    
+    // 实际项目中这里会调用 CDN 提供商的 API
+    // 例如：Cloudflare、AWS CloudFront、阿里云 CDN 等
+    
+    if (purgeType === 'url') {
+      console.log('[CDN] Purging URLs:', targets)
+    } else if (purgeType === 'tag') {
+      console.log('[CDN] Purging by tags:', targets)
+    } else if (purgeType === 'all') {
+      console.log('[CDN] Purging all cache')
+    }
+  }
+}
+
+// 使用示例
+const cdn = new CDNCacheStrategy()
+
+// 添加缓存规则
+cdn.addRule('^/static/.*\\.(css|js|png|jpg|jpeg|gif|svg)
+, {
+  cacheControl: 'public, max-age=31536000, immutable',
+  edgeCacheTTL: 31536000,
+  browserCacheTTL: 31536000,
+  ignoreQueryString: true,
+  compress: true
+})
+
+cdn.addRule('^/api/.*', {
+  cacheControl: 'public, max-age=300, s-maxage=600',
+  edgeCacheTTL: 600,
+  browserCacheTTL: 300,
+  ignoreQueryString: false,
+  compress: true
+})
+
+cdn.addRule('^/html/.*', {
+  cacheControl: 'public, max-age=60, s-maxage=300',
+  edgeCacheTTL: 300,
+  browserCacheTTL: 60,
+  ignoreQueryString: false,
+  compress: true
+})
+
+// 获取缓存策略
+const url1 = 'https://example.com/static/app.js'
+const strategy1 = cdn.getStrategy(url1)
+console.log(`Strategy for ${url1}:`, strategy1)
+
+const url2 = 'https://example.com/api/users'
+const strategy2 = cdn.getStrategy(url2)
+console.log(`Strategy for ${url2}:`, strategy2)
+
+// 生成缓存头
+const headers = cdn.generateCacheHeaders(url1)
+console.log('Cache headers:', headers)
+
+// 失效 CDN 缓存
+cdn.invalidateCDN('url', ['https://example.com/static/app.js'])
+cdn.invalidateCDN('tag', ['static-app'])
+```
+
+## 📝 实际应用示例
+
+### 综合缓存系统
+
+```js
+// 综合缓存系统
+class ComprehensiveCacheSystem {
+  constructor(config) {
+    this.localCache = new CaffeineLikeCache({
+      maximumSize: config.local.maxSize || 1000,
+      expireAfterWrite: config.local.expireAfterWrite || 300000,
+      expireAfterAccess: config.local.expireAfterAccess || 60000,
+      recordStats: true
+    })
+    
+    this.redisCache = new RedisCachePattern(config.redis)
+    this.cdnStrategy = new CDNCacheStrategy()
+    
+    this.setupCDNRules()
+  }
+
+  // 设置 CDN 规则
+  setupCDNRules() {
+    this.cdnStrategy.addRule('^/static/.*
+, {
+      cacheControl: 'public, max-age=31536000, immutable',
+      edgeCacheTTL: 31536000,
+      browserCacheTTL: 31536000
+    })
+    
+    this.cdnStrategy.addRule('^/api/.*
+, {
+      cacheControl: 'public, max-age=300',
+      edgeCacheTTL: 600,
+      browserCacheTTL: 300
+    })
+  }
+
+  // 获取数据（多级缓存）
+  async get(key, loader) {
+    // L1: 本地缓存
+    const localResult = this.localCache.get(key)
+    if (localResult) {
+      return localResult
+    }
+
+    // L2: Redis 缓存
+    const redisResult = await this.redisCache.cacheAside(key, loader)
+    
+    // 回填本地缓存
+    this.localCache.put(key, redisResult)
+    
+    return redisResult
+  }
+
+  // 设置数据
+  async set(key, value, ttl = 3600) {
+    this.localCache.put(key, value)
+    await this.redisCache.redis.setex(key, ttl, JSON.stringify(value))
+  }
+
+  // 失效缓存
+  async invalidate(key) {
+    this.localCache.invalidate(key)
+    await this.redisCache.redis.del(key)
+  }
+
+  // 批量预热
+  async warmup(keys, loader) {
+    console.log('[System] Starting cache warmup...')
+    
+    const batchSize = 10
+    for (let i = 0; i < keys.length; i += batchSize) {
+      const batch = keys.slice(i, i + batchSize)
+      await Promise.all(
+        batch.map(key => this.get(key, loader))
+      )
+    }
+    
+    console.log('[System] Cache warmup completed')
+  }
+
+  // 获取统计信息
+  getStats() {
+    return {
+      local: this.localCache.stats(),
+      redis: {
+        // 实际项目中这里会从 Redis 获取统计信息
+        hits: 0,
+        misses: 0
+      }
+    }
+  }
+
+  // 生成 CDN 缓存头
+  generateCDNHeaders(url) {
+    return this.cdnStrategy.generateCacheHeaders(url)
+  }
+}
+
+// 使用示例
+async function testComprehensiveCacheSystem() {
+  const system = new ComprehensiveCacheSystem({
+    local: {
+      maxSize: 100,
+      expireAfterWrite: 300000,
+      expireAfterAccess: 60000
+    },
+    redis: {
+      // Redis 配置
+    }
+  })
+
+  // 模拟数据加载器
+  const loader = async (key) => {
+    await new Promise(resolve => setTimeout(resolve, 50))
+    return { id: parseInt(key.split(':')[1]), name: `User ${key.split(':')[1]}` }
+  }
+
+  // 获取数据
+  console.log('--- First access ---')
+  const user1 = await system.get('user:1', loader)
+  console.log('User 1:', user1)
+
+  console.log('\n--- Second access (from cache) ---')
+  const user1Again = await system.get('user:1', loader)
+  console.log('User 1 again:', user1Again)
+
+  // 批量预热
+  console.log('\n--- Warmup ---')
+  await system.warmup(['user:2', 'user:3', 'user:4'], loader)
+
+  // 查看统计信息
+  console.log('\n--- Stats ---')
+  console.log('Cache stats:', system.getStats())
+
+  // 生成 CDN 缓存头
+  console.log('\n--- CDN Headers ---')
+  const headers = system.generateCDNHeaders('https://example.com/static/app.js')
+  console.log('CDN headers:', headers)
+}
+
+testComprehensiveCacheSystem()
+```
+
+## 🔗 相关概念
+
+- **多级缓存**：在不同层级设置缓存，最大化命中率
+- **本地缓存**：应用进程内的缓存，访问速度最快
+- **分布式缓存**：跨节点的共享缓存，如 Redis
+- **CDN 缓存**：内容分发网络缓存，加速静态资源访问
+- **缓存失效**：TTL、主动失效、版本号、标签失效等策略
+- **缓存预热**：系统启动时预加载热点数据
+- **缓存穿透**：查询不存在的数据，绕过缓存直接访问数据库
+- **缓存击穿**：热点数据过期，大量请求同时访问数据库
+- **缓存雪崩**：大量缓存同时失效，导致数据库压力骤增
+
+## 📚 学习检查点
+
+- [ ] 能否设计一个合理的多级缓存架构？
+- [ ] 能否对比 Cache-Aside、Write-Through、Write-Behind 三种缓存模式？
+- [ ] 能否设计缓存失效策略，防止缓存穿透、击穿、雪崩？
+- [ ] 能否配置 CDN 缓存策略并实现缓存失效？
+
+## 🚀 下一步
+
+→ [6.2 高可用系统设计](/architect/06-system-design/02-high-availability/01-high-availability-overview)

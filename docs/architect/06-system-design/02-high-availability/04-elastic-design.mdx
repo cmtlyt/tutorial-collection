@@ -3,15 +3,836 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解系统的弹性设计，包括自动扩缩容（HPA/VPA）、弹性伸缩策略和资源预估与容量规划。
+弹性设计使系统能够根据负载自动调整资源，在保证性能的同时优化成本。本节将深入讲解自动扩缩容（HPA/VPA）、弹性伸缩策略和资源预估与容量规划。
 
-## 🎯 学习目标
+## 🎯 水平自动扩缩容（HPA）
 
-- 掌握 Kubernetes HPA 和 VPA 的配置与使用
-- 理解弹性伸缩策略的设计原则
-- 能够进行系统资源预估和容量规划
-- 了解弹性设计在成本控制中的作用
+### HPA 基础实现
 
-> 🚧 详细内容正在编写中...
+```js
+// 水平 Pod 自动扩缩容（HPA）模拟
+class HorizontalPodAutoscaler {
+  constructor(config) {
+    this.minReplicas = config.minReplicas || 1
+    this.maxReplicas = config.maxReplicas || 10
+    this.targetCPUUtilization = config.targetCPUUtilization || 50
+    this.targetMemoryUtilization = config.targetMemoryUtilization || 70
+    this.scaleUpCooldown = config.scaleUpCooldown || 60  // 秒
+    this.scaleDownCooldown = config.scaleDownCooldown || 300  // 秒
+    
+    this.currentReplicas = config.initialReplicas || this.minReplicas
+    this.lastScaleTime = 0
+    this.metrics = []
+  }
+
+  // 计算期望副本数
+  calculateDesiredReplicas(currentMetrics) {
+    let desiredReplicas = this.currentReplicas
+    
+    // 基于 CPU 使用率计算
+    if (currentMetrics.cpuUtilization) {
+      const cpuRatio = currentMetrics.cpuUtilization / this.targetCPUUtilization
+      desiredReplicas = Math.ceil(this.currentReplicas * cpuRatio)
+    }
+    
+    // 基于内存使用率计算
+    if (currentMetrics.memoryUtilization) {
+      const memoryRatio = currentMetrics.memoryUtilization / this.targetMemoryUtilization
+      const memoryReplicas = Math.ceil(this.currentReplicas * memoryRatio)
+      desiredReplicas = Math.max(desiredReplicas, memoryReplicas)
+    }
+    
+    // 应用最小和最大副本数限制
+    desiredReplicas = Math.max(this.minReplicas, Math.min(this.maxReplicas, desiredReplicas))
+    
+    return desiredReplicas
+  }
+
+  // 执行扩缩容
+  async scale(currentMetrics) {
+    const now = Date.now()
+    const timeSinceLastScale = (now - this.lastScaleTime) / 1000
+    
+    // 记录指标
+    this.metrics.push({
+      ...currentMetrics,
+      replicas: this.currentReplicas,
+      timestamp: now
+    })
+    
+    // 只保留最近 100 条记录
+    if (this.metrics.length > 100) {
+      this.metrics.shift()
+    }
+    
+    const desiredReplicas = this.calculateDesiredReplicas(currentMetrics)
+    
+    // 检查是否需要扩容
+    if (desiredReplicas > this.currentReplicas) {
+      if (timeSinceLastScale >= this.scaleUpCooldown) {
+        console.log(`[HPA] Scaling up: ${this.currentReplicas} -> ${desiredReplicas}`)
+        this.currentReplicas = desiredReplicas
+        this.lastScaleTime = now
+        return { action: 'scale_up', from: this.currentReplicas, to: desiredReplicas }
+      } else {
+        console.log(`[HPA] Scale up cooldown: ${timeSinceLastScale}s < ${this.scaleUpCooldown}s`)
+      }
+    }
+    
+    // 检查是否需要缩容
+    if (desiredReplicas < this.currentReplicas) {
+      if (timeSinceLastScale >= this.scaleDownCooldown) {
+        console.log(`[HPA] Scaling down: ${this.currentReplicas} -> ${desiredReplicas}`)
+        this.currentReplicas = desiredReplicas
+        this.lastScaleTime = now
+        return { action: 'scale_down', from: this.currentReplicas, to: desiredReplicas }
+      } else {
+        console.log(`[HPA] Scale down cooldown: ${timeSinceLastScale}s < ${this.scaleDownCooldown}s`)
+      }
+    }
+    
+    return { action: 'no_change', replicas: this.currentReplicas }
+  }
+
+  // 获取当前状态
+  getStatus() {
+    return {
+      currentReplicas: this.currentReplicas,
+      minReplicas: this.minReplicas,
+      maxReplicas: this.maxReplicas,
+      targetCPU: this.targetCPUUtilization,
+      targetMemory: this.targetMemoryUtilization
+    }
+  }
+
+  // 获取指标历史
+  getMetrics() {
+    return this.metrics
+  }
+}
+
+// 使用示例
+const hpa = new HorizontalPodAutoscaler({
+  minReplicas: 2,
+  maxReplicas: 10,
+  targetCPUUtilization: 50,
+  targetMemoryUtilization: 70,
+  initialReplicas: 3
+})
+
+// 模拟负载变化
+async function testHPA() {
+  const loadScenarios = [
+    { cpuUtilization: 30, memoryUtilization: 40 },
+    { cpuUtilization: 60, memoryUtilization: 50 },
+    { cpuUtilization: 80, memoryUtilization: 65 },
+    { cpuUtilization: 90, memoryUtilization: 75 },
+    { cpuUtilization: 40, memoryUtilization: 45 },
+    { cpuUtilization: 25, memoryUtilization: 35 }
+  ]
+
+  for (const metrics of loadScenarios) {
+    console.log(`\n--- Current load: CPU ${metrics.cpuUtilization}%, Memory ${metrics.memoryUtilization}% ---`)
+    const result = await hpa.scale(metrics)
+    console.log('Scale result:', result)
+    console.log('Current status:', hpa.getStatus())
+    
+    // 等待一段时间
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+}
+
+testHPA()
+```
+
+### 自定义指标扩缩容
+
+```js
+// 基于自定义指标的扩缩容
+class CustomMetricAutoscaler {
+  constructor(config) {
+    this.minReplicas = config.minReplicas || 1
+    this.maxReplicas = config.maxReplicas || 10
+    this.metrics = config.metrics || []  // [{ name, targetValue, type }]
+    this.currentReplicas = config.initialReplicas || this.minReplicas
+  }
+
+  // 添加自定义指标
+  addMetric(name, targetValue, type = 'average') {
+    this.metrics.push({ name, targetValue, type })
+  }
+
+  // 计算期望副本数
+  calculateDesiredReplicas(currentMetricValues) {
+    let desiredReplicas = this.currentReplicas
+    
+    for (const metric of this.metrics) {
+      const currentValue = currentMetricValues[metric.name]
+      if (currentValue !== undefined) {
+        const ratio = currentValue / metric.targetValue
+        const metricReplicas = Math.ceil(this.currentReplicas * ratio)
+        desiredReplicas = Math.max(desiredReplicas, metricReplicas)
+      }
+    }
+    
+    return Math.max(this.minReplicas, Math.min(this.maxReplicas, desiredReplicas))
+  }
+
+  // 执行扩缩容
+  async scale(currentMetricValues) {
+    const desiredReplicas = this.calculateDesiredReplicas(currentMetricValues)
+    
+    if (desiredReplicas !== this.currentReplicas) {
+      console.log(`[CustomHPA] Scaling: ${this.currentReplicas} -> ${desiredReplicas}`)
+      this.currentReplicas = desiredReplicas
+      return { action: 'scaled', to: desiredReplicas }
+    }
+    
+    return { action: 'no_change', replicas: this.currentReplicas }
+  }
+}
+
+// 使用示例
+const customHPA = new CustomMetricAutoscaler({
+  minReplicas: 2,
+  maxReplicas: 10,
+  initialReplicas: 3
+})
+
+// 添加自定义指标
+customHPA.addMetric('requests_per_second', 1000)
+customHPA.addMetric('queue_length', 100)
+
+// 模拟指标变化
+async function testCustomHPA() {
+  const metricValues = [
+    { requests_per_second: 500, queue_length: 50 },
+    { requests_per_second: 1500, queue_length: 120 },
+    { requests_per_second: 2000, queue_length: 150 },
+    { requests_per_second: 800, queue_length: 60 }
+  ]
+
+  for (const values of metricValues) {
+    console.log(`\n--- Metrics: ${JSON.stringify(values)} ---`)
+    const result = await customHPA.scale(values)
+    console.log('Scale result:', result)
+  }
+}
+
+testCustomHPA()
+```
+
+## 🎯 垂直自动扩缩容（VPA）
+
+### VPA 基础实现
+
+```js
+// 垂直 Pod 自动扩缩容（VPA）模拟
+class VerticalPodAutoscaler {
+  constructor(config) {
+    this.updateMode = config.updateMode || 'auto'  // auto | off | recreate
+    this.minCPU = config.minCPU || '100m'
+    this.maxCPU = config.maxCPU || '2000m'
+    this.minMemory = config.minMemory || '128Mi'
+    this.maxMemory = config.maxMemory || '4Gi'
+    this.resourcePolicies = config.resourcePolicies || []
+    
+    this.currentResources = {
+      cpu: config.initialCPU || '500m',
+      memory: config.initialMemory || '512Mi'
+    }
+    
+    this.recommendations = []
+  }
+
+  // 计算资源推荐值
+  calculateRecommendation(historicalMetrics) {
+    const cpuRecommendation = this.calculateCPURecommendation(historicalMetrics)
+    const memoryRecommendation = this.calculateMemoryRecommendation(historicalMetrics)
+    
+    const recommendation = {
+      cpu: cpuRecommendation,
+      memory: memoryRecommendation,
+      timestamp: Date.now()
+    }
+    
+    this.recommendations.push(recommendation)
+    
+    // 只保留最近 10 条推荐
+    if (this.recommendations.length > 10) {
+      this.recommendations.shift()
+    }
+    
+    return recommendation
+  }
+
+  // 计算 CPU 推荐
+  calculateCPURecommendation(metrics) {
+    const avgCPU = this.average(metrics.cpuUsage)
+    const maxCPU = Math.max(...metrics.cpuUsage)
+    
+    // 使用最大值的 90% 作为推荐值，留出 10% 缓冲
+    const recommended = maxCPU * 0.9
+    
+    return this.clampCPU(recommended)
+  }
+
+  // 计算内存推荐
+  calculateMemoryRecommendation(metrics) {
+    const maxMemory = Math.max(...metrics.memoryUsage)
+    
+    // 使用最大值的 110% 作为推荐值，留出 10% 缓冲
+    const recommended = maxMemory * 1.1
+    
+    return this.clampMemory(recommended)
+  }
+
+  // 应用推荐值
+  async applyRecommendation() {
+    if (this.recommendations.length === 0) {
+      return { action: 'no_recommendation' }
+    }
+    
+    const latestRecommendation = this.recommendations[this.recommendations.length - 1]
+    
+    if (this.updateMode === 'off') {
+      return { action: 'update_mode_off', recommendation: latestRecommendation }
+    }
+    
+    const oldResources = { ...this.currentResources }
+    this.currentResources = {
+      cpu: latestRecommendation.cpu,
+      memory: latestRecommendation.memory
+    }
+    
+    console.log(`[VPA] Applied recommendation:`, this.currentResources)
+    
+    return {
+      action: 'updated',
+      oldResources,
+      newResources: this.currentResources
+    }
+  }
+
+  // CPU 值限制
+  clampCPU(value) {
+    const min = this.parseCPU(this.minCPU)
+    const max = this.parseCPU(this.maxCPU)
+    const clamped = Math.max(min, Math.min(max, value))
+    return this.formatCPU(clamped)
+  }
+
+  // 内存值限制
+  clampMemory(value) {
+    const min = this.parseMemory(this.minMemory)
+    const max = this.parseMemory(this.maxMemory)
+    const clamped = Math.max(min, Math.min(max, value))
+    return this.formatMemory(clamped)
+  }
+
+  // 解析 CPU 值
+  parseCPU(value) {
+    if (typeof value === 'string') {
+      if (value.endsWith('m')) {
+        return parseInt(value) / 1000
+      }
+      return parseFloat(value)
+    }
+    return value
+  }
+
+  // 格式化 CPU 值
+  formatCPU(value) {
+    if (value < 1) {
+      return `${Math.round(value * 1000)}m`
+    }
+    return `${Math.round(value * 100) / 100}`
+  }
+
+  // 解析内存值
+  parseMemory(value) {
+    if (typeof value === 'string') {
+      const units = { 'Ki': 1024, 'Mi': 1024 * 1024, 'Gi': 1024 * 1024 * 1024 }
+      for (const [unit, factor] of Object.entries(units)) {
+        if (value.endsWith(unit)) {
+          return parseInt(value) * factor
+        }
+      }
+      return parseInt(value)
+    }
+    return value
+  }
+
+  // 格式化内存值
+  formatMemory(value) {
+    const units = ['Gi', 'Mi', 'Ki']
+    const factors = [1024 * 1024 * 1024, 1024 * 1024, 1024]
+    
+    for (let i = 0; i < units.length; i++) {
+      if (value >= factors[i]) {
+        return `${Math.round(value / factors[i] * 100) / 100}${units[i]}`
+      }
+    }
+    return `${value}B`
+  }
+
+  // 计算平均值
+  average(values) {
+    return values.reduce((sum, val) => sum + val, 0) / values.length
+  }
+
+  // 获取当前状态
+  getStatus() {
+    return {
+      currentResources: this.currentResources,
+      updateMode: this.updateMode,
+      recommendations: this.recommendations
+    }
+  }
+}
+
+// 使用示例
+const vpa = new VerticalPodAutoscaler({
+  updateMode: 'auto',
+  minCPU: '100m',
+  maxCPU: '2000m',
+  minMemory: '128Mi',
+  maxMemory: '4Gi',
+  initialCPU: '500m',
+  initialMemory: '512Mi'
+})
+
+// 模拟历史指标
+async function testVPA() {
+  const historicalMetrics = [
+    { cpuUsage: [300, 400, 350, 450, 400], memoryUsage: [400, 450, 420, 500, 480] },
+    { cpuUsage: [500, 600, 550, 700, 650], memoryUsage: [600, 700, 650, 800, 750] },
+    { cpuUsage: [800, 900, 850, 1000, 950], memoryUsage: [900, 1000, 950, 1100, 1050] }
+  ]
+
+  for (const metrics of historicalMetrics) {
+    console.log(`\n--- Historical metrics: CPU avg ${vpa.average(metrics.cpuUsage)}, Memory avg ${vpa.average(metrics.memoryUsage)} ---`)
+    
+    const recommendation = vpa.calculateRecommendation(metrics)
+    console.log('Recommendation:', recommendation)
+    
+    const result = await vpa.applyRecommendation()
+    console.log('Apply result:', result)
+    console.log('Current status:', vpa.getStatus())
+  }
+}
+
+testVPA()
+```
+
+## 🎯 弹性伸缩策略
+
+### 预测性扩缩容
+
+```js
+// 预测性自动扩缩容
+class PredictiveAutoscaler {
+  constructor(config) {
+    this.hpa = new HorizontalPodAutoscaler(config.hpa)
+    this.predictionWindow = config.predictionWindow || 3600  // 预测窗口（秒）
+    this.predictionAccuracy = config.predictionAccuracy || 0.8
+    this.metricsHistory = []
+  }
+
+  // 记录指标
+  recordMetrics(metrics) {
+    this.metricsHistory.push({
+      ...metrics,
+      timestamp: Date.now()
+    })
+    
+    // 只保留最近 24 小时的数据
+    const cutoff = Date.now() - 24 * 3600 * 1000
+    this.metricsHistory = this.metricsHistory.filter(m => m.timestamp > cutoff)
+  }
+
+  // 预测未来负载
+  predictLoad(secondsAhead) {
+    if (this.metricsHistory.length < 10) {
+      return null
+    }
+    
+    // 使用简单的移动平均预测
+    const recentMetrics = this.metricsHistory.slice(-10)
+    const avgCPU = this.average(recentMetrics.map(m => m.cpuUtilization))
+    const avgMemory = this.average(recentMetrics.map(m => m.memoryUtilization))
+    
+    // 考虑趋势
+    const trend = this.calculateTrend(recentMetrics)
+    
+    return {
+      cpuUtilization: Math.max(0, Math.min(100, avgCPU + trend.cpuTrend * secondsAhead / 60)),
+      memoryUtilization: Math.max(0, Math.min(100, avgMemory + trend.memoryTrend * secondsAhead / 60))
+    }
+  }
+
+  // 计算趋势
+  calculateTrend(metrics) {
+    const cpuValues = metrics.map(m => m.cpuUtilization)
+    const memoryValues = metrics.map(m => m.memoryUtilization)
+    
+    const cpuTrend = (cpuValues[cpuValues.length - 1] - cpuValues[0]) / cpuValues.length
+    const memoryTrend = (memoryValues[memoryValues.length - 1] - memoryValues[0]) / memoryValues.length
+    
+    return { cpuTrend, memoryTrend }
+  }
+
+  // 执行预测性扩缩容
+  async scale(currentMetrics) {
+    // 记录当前指标
+    this.recordMetrics(currentMetrics)
+    
+    // 预测未来负载
+    const predictedLoad = this.predictLoad(this.predictionWindow)
+    
+    if (predictedLoad) {
+      console.log(`[PredictiveHPA] Predicted load: CPU ${predictedLoad.cpuUtilization.toFixed(1)}%, Memory ${predictedLoad.memoryUtilization.toFixed(1)}%`)
+      
+      // 基于预测值进行扩缩容
+      const scaleResult = await this.hpa.scale(predictedLoad)
+      return { ...scaleResult, predicted: true, predictedLoad }
+    }
+    
+    // 无法预测，使用当前指标
+    const scaleResult = await this.hpa.scale(currentMetrics)
+    return { ...scaleResult, predicted: false }
+  }
+
+  average(values) {
+    return values.reduce((sum, val) => sum + val, 0) / values.length
+  }
+}
+
+// 使用示例
+const predictiveHPA = new PredictiveAutoscaler({
+  hpa: {
+    minReplicas: 2,
+    maxReplicas: 10,
+    targetCPUUtilization: 50,
+    targetMemoryUtilization: 70,
+    initialReplicas: 3
+  },
+  predictionWindow: 1800
+})
+
+// 模拟负载变化
+async function testPredictiveHPA() {
+  const loadScenarios = [
+    { cpuUtilization: 30, memoryUtilization: 40 },
+    { cpuUtilization: 45, memoryUtilization: 50 },
+    { cpuUtilization: 60, memoryUtilization: 55 },
+    { cpuUtilization: 75, memoryUtilization: 65 },
+    { cpuUtilization: 55, memoryUtilization: 50 }
+  ]
+
+  for (const metrics of loadScenarios) {
+    console.log(`\n--- Current load: CPU ${metrics.cpuUtilization}%, Memory ${metrics.memoryUtilization}% ---`)
+    const result = await predictiveHPA.scale(metrics)
+    console.log('Scale result:', result)
+    
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+}
+
+testPredictiveHPA()
+```
+
+## 🎯 资源预估与容量规划
+
+### 容量规划工具
+
+```js
+// 容量规划工具
+class CapacityPlanner {
+  constructor(config) {
+    this.services = new Map()
+    this.growthRate = config.growthRate || 0.1  // 月增长率
+    this.safetyMargin = config.safetyMargin || 0.2  // 安全边际
+  }
+
+  // 添加服务
+  addService(name, config) {
+    this.services.set(name, {
+      name,
+      currentRequests: config.currentRequests || 0,
+      avgResponseTime: config.avgResponseTime || 100,
+      cpuPerRequest: config.cpuPerRequest || 0.001,
+      memoryPerRequest: config.memoryPerRequest || 0.01,
+      maxRequestsPerInstance: config.maxRequestsPerInstance || 1000
+    })
+  }
+
+  // 计算资源需求
+  calculateResourceDemand(serviceName, monthsAhead = 0) {
+    const service = this.services.get(serviceName)
+    if (!service) {
+      throw new Error(`Service ${serviceName} not found`)
+    }
+    
+    // 预测未来请求数
+    const predictedRequests = this.predictRequests(service.currentRequests, monthsAhead)
+    
+    // 计算所需实例数
+    const requiredInstances = Math.ceil(predictedRequests / service.maxRequestsPerInstance)
+    
+    // 计算总资源需求
+    const totalCPU = requiredInstances * service.maxRequestsPerInstance * service.cpuPerRequest
+    const totalMemory = requiredInstances * service.maxRequestsPerInstance * service.memoryPerRequest
+    
+    // 应用安全边际
+    const safeInstances = Math.ceil(requiredInstances * (1 + this.safetyMargin))
+    
+    return {
+      serviceName,
+      monthsAhead,
+      currentRequests: service.currentRequests,
+      predictedRequests,
+      requiredInstances,
+      safeInstances,
+      totalCPU: totalCPU.toFixed(3),
+      totalMemory: totalMemory.toFixed(2)
+    }
+  }
+
+  // 预测请求数
+  predictRequests(currentRequests, monthsAhead) {
+    return currentRequests * Math.pow(1 + this.growthRate, monthsAhead)
+  }
+
+  // 生成容量规划报告
+  generateReport(monthsAhead = 12) {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      growthRate: this.growthRate,
+      safetyMargin: this.safetyMargin,
+      services: []
+    }
+    
+    for (const serviceName of this.services.keys()) {
+      const serviceReport = {
+        name: serviceName,
+        projections: []
+      }
+      
+      for (let month = 0; month <= monthsAhead; month++) {
+        const demand = this.calculateResourceDemand(serviceName, month)
+        serviceReport.projections.push(demand)
+      }
+      
+      report.services.push(serviceReport)
+    }
+    
+    return report
+  }
+
+  // 成本估算
+  estimateCost(serviceName, monthsAhead, costPerCPU, costPerMemory) {
+    const demand = this.calculateResourceDemand(serviceName, monthsAhead)
+    
+    const monthlyCost = 
+      parseFloat(demand.totalCPU) * costPerCPU +
+      parseFloat(demand.totalMemory) * costPerMemory
+    
+    return {
+      serviceName,
+      monthsAhead,
+      monthlyCost: monthlyCost.toFixed(2),
+      totalCost: (monthlyCost * 12).toFixed(2)
+    }
+  }
+}
+
+// 使用示例
+const planner = new CapacityPlanner({
+  growthRate: 0.15,  // 15% 月增长
+  safetyMargin: 0.25  // 25% 安全边际
+})
+
+// 添加服务
+planner.addService('api-service', {
+  currentRequests: 10000,
+  avgResponseTime: 50,
+  cpuPerRequest: 0.0005,
+  memoryPerRequest: 0.005,
+  maxRequestsPerInstance: 2000
+})
+
+planner.addService('worker-service', {
+  currentRequests: 5000,
+  avgResponseTime: 200,
+  cpuPerRequest: 0.002,
+  memoryPerRequest: 0.02,
+  maxRequestsPerInstance: 500
+})
+
+// 生成容量规划报告
+const report = planner.generateReport(12)
+console.log('Capacity Planning Report:')
+console.log(JSON.stringify(report, null, 2))
+
+// 成本估算
+const cost = planner.estimateCost('api-service', 6, 0.05, 0.01)
+console.log('\nCost Estimation:')
+console.log(JSON.stringify(cost, null, 2))
+```
+
+## 📝 实际应用示例
+
+### 综合弹性系统
+
+```js
+// 综合弹性系统
+class ComprehensiveElasticSystem {
+  constructor(config) {
+    this.hpa = new HorizontalPodAutoscaler(config.hpa)
+    this.vpa = new VerticalPodAutoscaler(config.vpa)
+    this.predictiveHPA = new PredictiveAutoscaler(config.predictive)
+    this.capacityPlanner = new CapacityPlanner(config.capacity)
+  }
+
+  // 初始化
+  async initialize() {
+    console.log('[ElasticSystem] Initializing...')
+    // 初始化各个组件
+  }
+
+  // 处理负载变化
+  async handleLoadChange(currentMetrics) {
+    console.log('[ElasticSystem] Handling load change...')
+    
+    // 1. 使用预测性 HPA
+    const hpaResult = await this.predictiveHPA.scale(currentMetrics)
+    
+    // 2. 如果 HPA 无法满足，考虑 VPA
+    if (hpaResult.action === 'no_change' && this.shouldUseVPA(currentMetrics)) {
+      const vpaResult = await this.vpa.applyRecommendation()
+      console.log('[ElasticSystem] VPA result:', vpaResult)
+    }
+    
+    return {
+      hpa: hpaResult,
+      timestamp: Date.now()
+    }
+  }
+
+  // 判断是否应该使用 VPA
+  shouldUseVPA(metrics) {
+    // 如果资源利用率长期处于低位或高位，考虑使用 VPA
+    return metrics.cpuUtilization < 20 || metrics.cpuUtilization > 90
+  }
+
+  // 获取系统状态
+  getStatus() {
+    return {
+      hpa: this.hpa.getStatus(),
+      vpa: this.vpa.getStatus(),
+      predictiveHPA: {
+        currentReplicas: this.predictiveHPA.hpa.currentReplicas,
+        metricsHistoryLength: this.predictiveHPA.metricsHistory.length
+      }
+    }
+  }
+
+  // 生成容量规划报告
+  generateCapacityReport(monthsAhead = 12) {
+    return this.capacityPlanner.generateReport(monthsAhead)
+  }
+}
+
+// 使用示例
+async function testComprehensiveElasticSystem() {
+  const system = new ComprehensiveElasticSystem({
+    hpa: {
+      minReplicas: 2,
+      maxReplicas: 10,
+      targetCPUUtilization: 50,
+      targetMemoryUtilization: 70,
+      initialReplicas: 3
+    },
+    vpa: {
+      updateMode: 'auto',
+      minCPU: '100m',
+      maxCPU: '2000m',
+      minMemory: '128Mi',
+      maxMemory: '4Gi'
+    },
+    predictive: {
+      hpa: {
+        minReplicas: 2,
+        maxReplicas: 10,
+        targetCPUUtilization: 50,
+        targetMemoryUtilization: 70,
+        initialReplicas: 3
+      },
+      predictionWindow: 1800
+    },
+    capacity: {
+      growthRate: 0.1,
+      safetyMargin: 0.2
+    }
+  })
+
+  await system.initialize()
+
+  // 添加服务到容量规划
+  system.capacityPlanner.addService('main-service', {
+    currentRequests: 10000,
+    avgResponseTime: 100,
+    cpuPerRequest: 0.001,
+    memoryPerRequest: 0.01,
+    maxRequestsPerInstance: 1000
+  })
+
+  // 模拟负载变化
+  const loadScenarios = [
+    { cpuUtilization: 30, memoryUtilization: 40 },
+    { cpuUtilization: 55, memoryUtilization: 60 },
+    { cpuUtilization: 80, memoryUtilization: 75 }
+  ]
+
+  for (const metrics of loadScenarios) {
+    console.log(`\n--- Load: CPU ${metrics.cpuUtilization}%, Memory ${metrics.memoryUtilization}% ---`)
+    const result = await system.handleLoadChange(metrics)
+    console.log('Result:', result)
+    console.log('Status:', system.getStatus())
+    
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+
+  // 生成容量规划报告
+  console.log('\n--- Capacity Planning Report ---')
+  const report = system.generateCapacityReport(6)
+  console.log(JSON.stringify(report, null, 2))
+}
+
+testComprehensiveElasticSystem()
+```
+
+## 🔗 相关概念
+
+- **HPA（Horizontal Pod Autoscaler）**：水平 Pod 自动扩缩容
+- **VPA（Vertical Pod Autoscaler）**：垂直 Pod 自动扩缩容
+- **预测性扩缩容**：基于历史数据预测未来负载
+- **容量规划**：预测未来资源需求
+- **资源限制**：设置最小和最大资源限制
+- **扩缩容策略**：基于 CPU、内存、自定义指标等
+- **冷却时间**：防止频繁扩缩容
+- **成本优化**：在保证性能的前提下优化成本
+
+## 📚 学习检查点
+
+- [ ] 能否配置和使用 HPA？
+- [ ] 能否配置和使用 VPA？
+- [ ] 能否设计预测性扩缩容策略？
+- [ ] 能否进行容量规划和成本估算？
+
+## 🚀 下一步
+
+→ [6.3 经典系统设计案例](/architect/06-system-design/03-classic-system-design/01-classic-system-design-overview)

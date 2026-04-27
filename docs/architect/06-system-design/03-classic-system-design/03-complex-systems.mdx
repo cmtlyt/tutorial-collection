@@ -3,15 +3,1267 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-通过搜索引擎、推荐系统、社交网络 Feed 流、电商交易系统和支付系统等案例，讲解复杂业务系统的架构设计。
+复杂系统涉及多个子系统和复杂的业务逻辑。本节将通过搜索引擎、推荐系统、社交网络 Feed 流、电商交易系统和支付系统等案例，讲解复杂业务系统的架构设计。
 
-## 🎯 学习目标
+## 🎯 搜索引擎架构
 
-- 理解搜索引擎的倒排索引和架构设计
-- 掌握推荐系统的召回-排序架构
-- 理解社交网络 Feed 流的推拉模式
-- 了解电商交易和支付系统的核心架构
+### 倒排索引
 
-> 🚧 详细内容正在编写中...
+倒排索引是搜索引擎的核心数据结构，将词映射到包含该词的文档。
+
+```js
+// 倒排索引实现
+class InvertedIndex {
+  constructor() {
+    this.index = new Map()  // term -> { docId: [positions] }
+    this.documents = new Map()  // docId -> document
+    this.documentCount = 0
+  }
+
+  // 添加文档
+  addDocument(docId, text) {
+    const tokens = this.tokenize(text)
+    const termPositions = new Map()
+
+    tokens.forEach((token, position) => {
+      if (!termPositions.has(token)) {
+        termPositions.set(token, [])
+      }
+      termPositions.get(token).push(position)
+    })
+
+    // 构建倒排索引
+    for (const [token, positions] of termPositions) {
+      if (!this.index.has(token)) {
+        this.index.set(token, new Map())
+      }
+      this.index.get(token).set(docId, positions)
+    }
+
+    this.documents.set(docId, { text, tokens })
+    this.documentCount++
+  }
+
+  // 分词
+  tokenize(text) {
+    return text
+      .toLowerCase()
+      .replace(/[^\w\s]/g, '')
+      .split(/\s+/)
+      .filter(token => token.length > 0)
+  }
+
+  // 搜索
+  search(query) {
+    const queryTokens = this.tokenize(query)
+    
+    if (queryTokens.length === 0) {
+      return []
+    }
+
+    // 获取每个词的文档集合
+    const docSets = queryTokens.map(token => {
+      const postings = this.index.get(token)
+      return postings ? new Set(postings.keys()) : new Set()
+    })
+
+    // 求交集（AND 查询）
+    const resultDocs = this.intersect(docSets)
+
+    // 计算相关性分数
+    const results = Array.from(resultDocs).map(docId => {
+      const score = this.calculateScore(docId, queryTokens)
+      return {
+        docId,
+        score,
+        document: this.documents.get(docId)
+      }
+    })
+
+    // 按分数排序
+    return results.sort((a, b) => b.score - a.score)
+  }
+
+  // 求交集
+  intersect(sets) {
+    if (sets.length === 0) return new Set()
+    
+    let result = sets[0]
+    for (let i = 1; i < sets.length; i++) {
+      result = new Set([...result].filter(x => sets[i].has(x)))
+    }
+    return result
+  }
+
+  // 计算相关性分数（BM25 简化版）
+  calculateScore(docId, queryTokens) {
+    const document = this.documents.get(docId)
+    if (!document) return 0
+
+    let score = 0
+    const docLength = document.tokens.length
+    const avgDocLength = this.getAverageDocLength()
+    const k1 = 1.2
+    const b = 0.75
+
+    for (const token of queryTokens) {
+      const postings = this.index.get(token)
+      if (!postings || !postings.has(docId)) continue
+
+      const tf = postings.get(docId).length  // 词频
+      const df = postings.size  // 文档频率
+      const idf = Math.log((this.documentCount - df + 0.5) / (df + 0.5) + 1)
+
+      const numerator = tf * (k1 + 1)
+      const denominator = tf + k1 * (1 - b + b * (docLength / avgDocLength))
+      
+      score += idf * (numerator / denominator)
+    }
+
+    return score
+  }
+
+  // 获取平均文档长度
+  getAverageDocLength() {
+    let totalLength = 0
+    for (const doc of this.documents.values()) {
+      totalLength += doc.tokens.length
+    }
+    return this.documentCount > 0 ? totalLength / this.documentCount : 0
+  }
+}
+
+// 使用示例
+const index = new InvertedIndex()
+
+// 添加文档
+index.addDocument(1, 'The quick brown fox jumps over the lazy dog')
+index.addDocument(2, 'A fast brown dog runs quickly')
+index.addDocument(3, 'The lazy cat sleeps all day')
+index.addDocument(4, 'Quick brown foxes are fast animals')
+
+// 搜索
+console.log('--- 搜索 "quick fox" ---')
+const results1 = index.search('quick fox')
+console.log('Results:', results1)
+
+console.log('\n--- 搜索 "brown dog" ---')
+const results2 = index.search('brown dog')
+console.log('Results:', results2)
+
+console.log('\n--- 搜索 "lazy" ---')
+const results3 = index.search('lazy')
+console.log('Results:', results3)
+```
+
+### 搜索引擎架构
+
+```js
+// 搜索引擎系统
+class SearchEngine {
+  constructor(config) {
+    this.index = new InvertedIndex()
+    this.cache = new Map()
+    this.queryHistory = []
+    this.maxHistorySize = 1000
+  }
+
+  // 索引文档
+  indexDocument(docId, text) {
+    this.index.addDocument(docId, text)
+    // 清除相关缓存
+    this.cache.clear()
+  }
+
+  // 搜索
+  async search(query) {
+    // 检查缓存
+    const cached = this.cache.get(query)
+    if (cached) {
+      return cached
+    }
+
+    // 执行搜索
+    const results = this.index.search(query)
+
+    // 记录查询历史
+    this.recordQuery(query)
+
+    // 缓存结果
+    this.cache.set(query, results)
+
+    return results
+  }
+
+  // 记录查询历史
+  recordQuery(query) {
+    this.queryHistory.push({
+      query,
+      timestamp: Date.now()
+    })
+
+    // 只保留最近的历史记录
+    if (this.queryHistory.length > this.maxHistorySize) {
+      this.queryHistory.shift()
+    }
+  }
+
+  // 获取热门查询
+  getPopularQueries(limit = 10) {
+    const queryCount = new Map()
+    
+    for (const item of this.queryHistory) {
+      const count = queryCount.get(item.query) || 0
+      queryCount.set(item.query, count + 1)
+    }
+
+    return Array.from(queryCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([query, count]) => ({ query, count }))
+  }
+
+  // 自动补全
+  autocomplete(prefix, limit = 5) {
+    const uniqueQueries = [...new Set(this.queryHistory.map(item => item.query))]
+    
+    return uniqueQueries
+      .filter(query => query.toLowerCase().startsWith(prefix.toLowerCase()))
+      .slice(0, limit)
+  }
+}
+
+// 使用示例
+const engine = new SearchEngine()
+
+// 索引文档
+engine.indexDocument(1, 'JavaScript is a programming language')
+engine.indexDocument(2, 'Python is a popular programming language')
+engine.indexDocument(3, 'Java is used for enterprise applications')
+engine.indexDocument(4, 'TypeScript is a typed superset of JavaScript')
+engine.indexDocument(5, 'Node.js is a JavaScript runtime')
+
+// 搜索
+async function testSearchEngine() {
+  console.log('--- 搜索 "JavaScript" ---')
+  const results1 = await engine.search('JavaScript')
+  console.log('Results:', results1)
+
+  console.log('\n--- 搜索 "programming language" ---')
+  const results2 = await engine.search('programming language')
+  console.log('Results:', results2)
+
+  // 获取热门查询
+  console.log('\n--- 热门查询 ---')
+  const popular = engine.getPopularQueries(5)
+  console.log('Popular queries:', popular)
+
+  // 自动补全
+  console.log('\n--- 自动补全 "Java" ---')
+  const suggestions = engine.autocomplete('Java', 3)
+  console.log('Suggestions:', suggestions)
+}
+
+testSearchEngine()
+```
+
+## 🎯 推荐系统架构
+
+### 召回-排序架构
+
+推荐系统通常分为召回和排序两个阶段。
+
+```js
+// 推荐系统
+class RecommendationSystem {
+  constructor(config) {
+    this.userProfiles = new Map()
+    this.itemProfiles = new Map()
+    this.userItemInteractions = new Map()
+    this.itemFeatures = new Map()
+  }
+
+  // 用户画像
+  buildUserProfile(userId, features) {
+    this.userProfiles.set(userId, features)
+  }
+
+  // 物品画像
+  buildItemProfile(itemId, features) {
+    this.itemProfiles.set(itemId, features)
+    this.itemFeatures.set(itemId, features)
+  }
+
+  // 记录用户行为
+  recordInteraction(userId, itemId, interactionType, rating = null) {
+    if (!this.userItemInteractions.has(userId)) {
+      this.userItemInteractions.set(userId, new Map())
+    }
+    
+    const interactions = this.userItemInteractions.get(userId)
+    if (!interactions.has(itemId)) {
+      interactions.set(itemId, [])
+    }
+    
+    interactions.get(itemId).push({
+      type: interactionType,
+      rating,
+      timestamp: Date.now()
+    })
+  }
+
+  // 召回阶段
+  recall(userId, topK = 100) {
+    const userProfile = this.userProfiles.get(userId)
+    if (!userProfile) {
+      return []
+    }
+
+    const candidates = []
+
+    // 基于内容的召回
+    const contentBased = this.contentBasedRecall(userProfile)
+    candidates.push(...contentBased)
+
+    // 基于协同过滤的召回
+    const collaborativeFiltering = this.collaborativeFilteringRecall(userId)
+    candidates.push(...collaborativeFiltering)
+
+    // 去重
+    const uniqueCandidates = new Map()
+    for (const item of candidates) {
+      uniqueCandidates.set(item.itemId, item)
+    }
+
+    // 返回 topK
+    return Array.from(uniqueCandidates.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK)
+  }
+
+  // 基于内容的召回
+  contentBasedRecall(userProfile) {
+    const candidates = []
+    
+    for (const [itemId, itemFeatures] of this.itemFeatures) {
+      const score = this.calculateSimilarity(userProfile, itemFeatures)
+      candidates.push({
+        itemId,
+        score,
+        method: 'content_based'
+      })
+    }
+    
+    return candidates
+  }
+
+  // 协同过滤召回
+  collaborativeFilteringRecall(userId) {
+    const candidates = []
+    const userInteractions = this.userItemInteractions.get(userId)
+    
+    if (!userInteractions) {
+      return candidates
+    }
+
+    // 找到相似用户
+    const similarUsers = this.findSimilarUsers(userId)
+    
+    // 推荐相似用户喜欢的物品
+    const recommendedItems = new Map()
+    
+    for (const similarUserId of similarUsers) {
+      const similarUserInteractions = this.userItemInteractions.get(similarUserId)
+      
+      for (const [itemId, interactions] of similarUserInteractions) {
+        if (!userInteractions.has(itemId)) {
+          const score = this.calculateCollaborativeScore(interactions)
+          const existingScore = recommendedItems.get(itemId) || 0
+          recommendedItems.set(itemId, existingScore + score)
+        }
+      }
+    }
+    
+    for (const [itemId, score] of recommendedItems) {
+      candidates.push({
+        itemId,
+        score,
+        method: 'collaborative_filtering'
+      })
+    }
+    
+    return candidates
+  }
+
+  // 找到相似用户
+  findSimilarUsers(userId, topK = 10) {
+    const targetInteractions = this.userItemInteractions.get(userId)
+    if (!targetInteractions) return []
+
+    const similarities = []
+
+    for (const [otherUserId, otherInteractions] of this.userItemInteractions) {
+      if (otherUserId === userId) continue
+
+      const similarity = this.calculateUserSimilarity(
+        targetInteractions,
+        otherInteractions
+      )
+      
+      similarities.push({ userId: otherUserId, similarity })
+    }
+
+    return similarities
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, topK)
+      .map(item => item.userId)
+  }
+
+  // 计算用户相似度
+  calculateUserSimilarity(interactions1, interactions2) {
+    const items1 = new Set(interactions1.keys())
+    const items2 = new Set(interactions2.keys())
+    
+    // 计算共同物品
+    const commonItems = [...items1].filter(item => items2.has(item))
+    
+    if (commonItems.length === 0) return 0
+
+    // 计算余弦相似度
+    let dotProduct = 0
+    let norm1 = 0
+    let norm2 = 0
+
+    for (const item of commonItems) {
+      const rating1 = this.getAverageRating(interactions1.get(item))
+      const rating2 = this.getAverageRating(interactions2.get(item))
+      
+      dotProduct += rating1 * rating2
+      norm1 += rating1 * rating1
+      norm2 += rating2 * rating2
+    }
+
+    if (norm1 === 0 || norm2 === 0) return 0
+
+    return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2))
+  }
+
+  // 计算平均评分
+  getAverageRating(interactions) {
+    const ratings = interactions
+      .filter(i => i.rating !== null)
+      .map(i => i.rating)
+    
+    if (ratings.length === 0) return 0
+    
+    return ratings.reduce((sum, r) => sum + r, 0) / ratings.length
+  }
+
+  // 计算协同过滤分数
+  calculateCollaborativeScore(interactions) {
+    const avgRating = this.getAverageRating(interactions)
+    const recentBonus = this.calculateRecentBonus(interactions)
+    
+    return avgRating * 0.7 + recentBonus * 0.3
+  }
+
+  // 计算最近性加成
+  calculateRecentBonus(interactions) {
+    const now = Date.now()
+    const recentInteractions = interactions.filter(
+      i => now - i.timestamp < 7 * 24 * 3600 * 1000  // 7天内
+    )
+    
+    return recentInteractions.length / interactions.length
+  }
+
+  // 计算相似度
+  calculateSimilarity(profile1, profile2) {
+    let similarity = 0
+    let count = 0
+
+    for (const [key, value1] of Object.entries(profile1)) {
+      if (profile2.hasOwnProperty(key)) {
+        const value2 = profile2[key]
+        if (typeof value1 === 'number' && typeof value2 === 'number') {
+          similarity += 1 - Math.abs(value1 - value2)
+          count++
+        } else if (value1 === value2) {
+          similarity += 1
+          count++
+        }
+      }
+    }
+
+    return count > 0 ? similarity / count : 0
+  }
+
+  // 排序阶段
+  rank(userId, candidates, topK = 10) {
+    const userProfile = this.userProfiles.get(userId)
+    
+    // 为每个候选物品计算最终分数
+    const scoredCandidates = candidates.map(candidate => {
+      const itemProfile = this.itemProfiles.get(candidate.itemId)
+      const interactionScore = this.calculateInteractionScore(userId, candidate.itemId)
+      const profileScore = this.calculateSimilarity(userProfile, itemProfile)
+      
+      return {
+        ...candidate,
+        finalScore: candidate.score * 0.6 + interactionScore * 0.3 + profileScore * 0.1
+      }
+    })
+
+    // 按最终分数排序
+    return scoredCandidates
+      .sort((a, b) => b.finalScore - a.finalScore)
+      .slice(0, topK)
+  }
+
+  // 计算交互分数
+  calculateInteractionScore(userId, itemId) {
+    const interactions = this.userItemInteractions.get(userId)
+    if (!interactions || !interactions.has(itemId)) return 0
+
+    const itemInteractions = interactions.get(itemId)
+    const avgRating = this.getAverageRating(itemInteractions)
+    const recentBonus = this.calculateRecentBonus(itemInteractions)
+
+    return avgRating * 0.8 + recentBonus * 0.2
+  }
+
+  // 完整推荐流程
+  recommend(userId, topK = 10) {
+    // 召回
+    const candidates = this.recall(userId, 100)
+    
+    // 排序
+    const ranked = this.rank(userId, candidates, topK)
+    
+    return ranked
+  }
+}
+
+// 使用示例
+const recommender = new RecommendationSystem()
+
+// 构建用户画像
+recommender.buildUserProfile('user1', {
+  age: 25,
+  gender: 'male',
+  interests: ['technology', 'music', 'sports'],
+  location: 'beijing'
+})
+
+recommender.buildUserProfile('user2', {
+  age: 30,
+  gender: 'female',
+  interests: ['fashion', 'food', 'travel'],
+  location: 'shanghai'
+})
+
+// 构建物品画像
+recommender.buildItemProfile('item1', {
+  category: 'electronics',
+  tags: ['technology', 'gadgets'],
+  price: 1000
+})
+
+recommender.buildItemProfile('item2', {
+  category: 'clothing',
+  tags: ['fashion', 'style'],
+  price: 200
+})
+
+recommender.buildItemProfile('item3', {
+  category: 'sports',
+  tags: ['fitness', 'outdoor'],
+  price: 500
+})
+
+// 记录用户行为
+recommender.recordInteraction('user1', 'item1', 'view', 4)
+recommender.recordInteraction('user1', 'item3', 'purchase', 5)
+recommender.recordInteraction('user2', 'item2', 'view', 3)
+recommender.recordInteraction('user2', 'item1', 'view', 2)
+
+// 推荐
+console.log('--- 用户 user1 的推荐 ---')
+const recommendations1 = recommender.recommend('user1', 5)
+console.log('Recommendations:', recommendations1)
+
+console.log('\n--- 用户 user2 的推荐 ---')
+const recommendations2 = recommender.recommend('user2', 5)
+console.log('Recommendations:', recommendations2)
+```
+
+## 🎯 社交网络 Feed 流
+
+### 推拉模式
+
+Feed 流系统通常结合推模式和拉模式。
+
+```js
+// Feed 流系统
+class FeedSystem {
+  constructor(config) {
+    this.posts = new Map()
+    this.userFollows = new Map()  // userId -> Set(followingIds)
+    this.userFeed = new Map()  // userId -> [postIds]
+    this.usePushModel = config.usePushModel || false
+  }
+
+  // 用户关注
+  follow(userId, followId) {
+    if (!this.userFollows.has(userId)) {
+      this.userFollows.set(userId, new Set())
+    }
+    this.userFollows.get(userId).add(followId)
+  }
+
+  // 用户取消关注
+  unfollow(userId, followId) {
+    const follows = this.userFollows.get(userId)
+    if (follows) {
+      follows.delete(followId)
+    }
+  }
+
+  // 发布帖子
+  async publishPost(userId, content) {
+    const post = {
+      id: this.generatePostId(),
+      userId,
+      content,
+      timestamp: Date.now()
+    }
+    
+    this.posts.set(post.id, post)
+
+    if (this.usePushModel) {
+      // 推模式：将帖子推送到所有粉丝的 Feed
+      await this.pushToFollowers(post)
+    }
+
+    return post
+  }
+
+  // 推送到粉丝
+  async pushToFollowers(post) {
+    for (const [userId, follows] of this.userFollows) {
+      if (follows.has(post.userId)) {
+        if (!this.userFeed.has(userId)) {
+          this.userFeed.set(userId, [])
+        }
+        this.userFeed.get(userId).push(post.id)
+      }
+    }
+  }
+
+  // 获取 Feed
+  async getFeed(userId, limit = 20) {
+    if (this.usePushModel) {
+      // 推模式：直接从用户的 Feed 获取
+      return this.getPushFeed(userId, limit)
+    } else {
+      // 拉模式：从关注的人的帖子中拉取
+      return this.getPullFeed(userId, limit)
+    }
+  }
+
+  // 推模式获取 Feed
+  getPushFeed(userId, limit) {
+    const feed = this.userFeed.get(userId) || []
+    const posts = feed
+      .slice(-limit)
+      .reverse()
+      .map(postId => this.posts.get(postId))
+    
+    return posts.filter(post => post !== undefined)
+  }
+
+  // 拉模式获取 Feed
+  getPullFeed(userId, limit) {
+    const follows = this.userFollows.get(userId)
+    if (!follows || follows.size === 0) {
+      return []
+    }
+
+    // 收集所有关注的人的帖子
+    const allPosts = []
+    for (const followId of follows) {
+      for (const post of this.posts.values()) {
+        if (post.userId === followId) {
+          allPosts.push(post)
+        }
+      }
+    }
+
+    // 按时间排序并返回最新的
+    return allPosts
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, limit)
+  }
+
+  // 混合模式（推 + 拉）
+  async getHybridFeed(userId, limit = 20) {
+    const pushFeed = this.getPushFeed(userId, limit / 2)
+    const pullFeed = this.getPullFeed(userId, limit / 2)
+    
+    // 合并并去重
+    const combined = new Map()
+    for (const post of [...pushFeed, ...pullFeed]) {
+      combined.set(post.id, post)
+    }
+    
+    // 按时间排序
+    return Array.from(combined.values())
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, limit)
+  }
+
+  generatePostId() {
+    return `post_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  }
+}
+
+// 使用示例
+const feedSystem = new FeedSystem({ usePushModel: true })
+
+// 用户关注关系
+feedSystem.follow('user1', 'user2')
+feedSystem.follow('user1', 'user3')
+feedSystem.follow('user2', 'user3')
+feedSystem.follow('user4', 'user1')
+
+// 发布帖子
+async function testFeedSystem() {
+  console.log('--- 发布帖子 ---')
+  await feedSystem.publishPost('user2', 'Hello from user2!')
+  await feedSystem.publishPost('user3', 'Hello from user3!')
+  await feedSystem.publishPost('user1', 'Hello from user1!')
+  await feedSystem.publishPost('user3', 'Another post from user3!')
+
+  // 获取 Feed
+  console.log('\n--- user1 的 Feed ---')
+  const feed1 = await feedSystem.getFeed('user1', 10)
+  console.log('Feed:', feed1.map(p => `${p.userId}: ${p.content}`))
+
+  console.log('\n--- user4 的 Feed ---')
+  const feed2 = await feedSystem.getFeed('user4', 10)
+  console.log('Feed:', feed2.map(p => `${p.userId}: ${p.content}`))
+
+  // 测试混合模式
+  console.log('\n--- 混合模式 ---')
+  const hybridFeed = await feedSystem.getHybridFeed('user1', 10)
+  console.log('Hybrid feed:', hybridFeed.map(p => `${p.userId}: ${p.content}`))
+}
+
+testFeedSystem()
+```
+
+## 🎯 电商交易系统
+
+### 订单系统
+
+```js
+// 电商交易系统
+class EcommerceSystem {
+  constructor(config) {
+    this.products = new Map()
+    this.users = new Map()
+    this.orders = new Map()
+    this.inventory = new Map()
+    this.orderQueue = new MessageQueue()
+  }
+
+  // 添加商品
+  addProduct(product) {
+    this.products.set(product.id, product)
+    this.inventory.set(product.id, product.stock)
+  }
+
+  // 注册用户
+  registerUser(user) {
+    this.users.set(user.id, user)
+  }
+
+  // 创建订单
+  async createOrder(userId, items) {
+    // 1. 检查用户
+    const user = this.users.get(userId)
+    if (!user) {
+      throw new Error('User not found')
+    }
+
+    // 2. 检查库存
+    for (const item of items) {
+      const stock = this.inventory.get(item.productId)
+      if (!stock || stock < item.quantity) {
+        throw new Error(`Insufficient stock for product ${item.productId}`)
+      }
+    }
+
+    // 3. 计算总价
+    let totalAmount = 0
+    for (const item of items) {
+      const product = this.products.get(item.productId)
+      totalAmount += product.price * item.quantity
+    }
+
+    // 4. 创建订单
+    const order = {
+      id: this.generateOrderId(),
+      userId,
+      items,
+      totalAmount,
+      status: 'pending',
+      createdAt: Date.now()
+    }
+
+    // 5. 扣减库存
+    for (const item of items) {
+      const currentStock = this.inventory.get(item.productId)
+      this.inventory.set(item.productId, currentStock - item.quantity)
+    }
+
+    // 6. 保存订单
+    this.orders.set(order.id, order)
+
+    // 7. 发送到队列处理
+    await this.orderQueue.send({
+      type: 'order_created',
+      orderId: order.id
+    })
+
+    return order
+  }
+
+  // 处理订单
+  async processOrder(message) {
+    const order = this.orders.get(message.orderId)
+    if (!order) {
+      throw new Error('Order not found')
+    }
+
+    try {
+      // 更新订单状态
+      order.status = 'processing'
+      this.orders.set(order.id, order)
+
+      // 模拟支付处理
+      await this.processPayment(order)
+
+      // 模拟发货处理
+      await this.processShipping(order)
+
+      // 订单完成
+      order.status = 'completed'
+      this.orders.set(order.id, order)
+
+      console.log(`[Ecommerce] Order ${order.id} completed`)
+    } catch (error) {
+      // 订单失败，回滚库存
+      await this.rollbackOrder(order)
+      console.error(`[Ecommerce] Order ${order.id} failed:`, error.message)
+    }
+  }
+
+  // 处理支付
+  async processPayment(order) {
+    // 模拟支付处理
+    await new Promise(resolve => setTimeout(resolve, 100))
+    console.log(`[Ecommerce] Payment processed for order ${order.id}`)
+  }
+
+  // 处理发货
+  async processShipping(order) {
+    // 模拟发货处理
+    await new Promise(resolve => setTimeout(resolve, 100))
+    console.log(`[Ecommerce] Shipping processed for order ${order.id}`)
+  }
+
+  // 回滚订单
+  async rollbackOrder(order) {
+    order.status = 'failed'
+    this.orders.set(order.id, order)
+
+    // 恢复库存
+    for (const item of order.items) {
+      const currentStock = this.inventory.get(item.productId)
+      this.inventory.set(item.productId, currentStock + item.quantity)
+    }
+  }
+
+  // 查询订单
+  getOrder(orderId) {
+    return this.orders.get(orderId)
+  }
+
+  // 查询用户订单
+  getUserOrders(userId) {
+    return Array.from(this.orders.values())
+      .filter(order => order.userId === userId)
+      .sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  generateOrderId() {
+    return `order_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  }
+}
+
+// 消息队列（模拟）
+class MessageQueue {
+  constructor() {
+    this.queue = []
+    this.consumers = []
+  }
+
+  async send(message) {
+    this.queue.push(message)
+  }
+
+  async consume() {
+    return this.queue.shift()
+  }
+
+  registerConsumer(consumer) {
+    this.consumers.push(consumer)
+  }
+
+  async startConsuming() {
+    setInterval(async () => {
+      const message = await this.consume()
+      if (message) {
+        for (const consumer of this.consumers) {
+          await consumer(message)
+        }
+      }
+    }, 100)
+  }
+}
+
+// 使用示例
+async function testEcommerceSystem() {
+  const ecommerce = new EcommerceSystem()
+
+  // 注册用户
+  ecommerce.registerUser({ id: 'user1', name: 'Alice' })
+  ecommerce.registerUser({ id: 'user2', name: 'Bob' })
+
+  // 添加商品
+  ecommerce.addProduct({ id: 'product1', name: 'Laptop', price: 1000, stock: 10 })
+  ecommerce.addProduct({ id: 'product2', name: 'Phone', price: 500, stock: 20 })
+  ecommerce.addProduct({ id: 'product3', name: 'Tablet', price: 300, stock: 15 })
+
+  // 注册订单处理器
+  ecommerce.orderQueue.registerConsumer(async (message) => {
+    if (message.type === 'order_created') {
+      await ecommerce.processOrder(message)
+    }
+  })
+
+  // 启动消费
+  ecommerce.orderQueue.startConsuming()
+
+  // 创建订单
+  console.log('--- 创建订单 ---')
+  const order1 = await ecommerce.createOrder('user1', [
+    { productId: 'product1', quantity: 1 },
+    { productId: 'product2', quantity: 2 }
+  ])
+  console.log('Order created:', order1)
+
+  const order2 = await ecommerce.createOrder('user2', [
+    { productId: 'product3', quantity: 3 }
+  ])
+  console.log('Order created:', order2)
+
+  // 等待订单处理完成
+  await new Promise(resolve => setTimeout(resolve, 1000))
+
+  // 查询订单
+  console.log('\n--- 查询订单 ---')
+  console.log('Order 1:', ecommerce.getOrder(order1.id))
+  console.log('Order 2:', ecommerce.getOrder(order2.id))
+
+  // 查询用户订单
+  console.log('\n--- 用户订单 ---')
+  console.log('User1 orders:', ecommerce.getUserOrders('user1'))
+}
+
+testEcommerceSystem()
+```
+
+## 🎯 支付系统
+
+### 支付流程
+
+```js
+// 支付系统
+class PaymentSystem {
+  constructor(config) {
+    this.accounts = new Map()
+    this.transactions = new Map()
+    this.paymentGateways = new Map()
+  }
+
+  // 注册账户
+  registerAccount(account) {
+    this.accounts.set(account.id, account)
+  }
+
+  // 注册支付网关
+  registerPaymentGateway(name, gateway) {
+    this.paymentGateways.set(name, gateway)
+  }
+
+  // 创建支付
+  async createPayment(paymentRequest) {
+    // 1. 验证账户
+    const account = this.accounts.get(paymentRequest.accountId)
+    if (!account) {
+      throw new Error('Account not found')
+    }
+
+    // 2. 验证余额
+    if (account.balance < paymentRequest.amount) {
+      throw new Error('Insufficient balance')
+    }
+
+    // 3. 创建交易记录
+    const transaction = {
+      id: this.generateTransactionId(),
+      accountId: paymentRequest.accountId,
+      amount: paymentRequest.amount,
+      currency: paymentRequest.currency || 'USD',
+      status: 'pending',
+      gateway: paymentRequest.gateway,
+      createdAt: Date.now()
+    }
+
+    this.transactions.set(transaction.id, transaction)
+
+    // 4. 调用支付网关
+    try {
+      const gateway = this.paymentGateways.get(paymentRequest.gateway)
+      if (!gateway) {
+        throw new Error('Payment gateway not found')
+      }
+
+      const gatewayResult = await gateway.process(paymentRequest)
+
+      if (gatewayResult.success) {
+        // 支付成功
+        transaction.status = 'completed'
+        transaction.gatewayTransactionId = gatewayResult.transactionId
+        
+        // 扣减余额
+        account.balance -= paymentRequest.amount
+        this.accounts.set(account.id, account)
+      } else {
+        // 支付失败
+        transaction.status = 'failed'
+        transaction.errorMessage = gatewayResult.errorMessage
+      }
+    } catch (error) {
+      transaction.status = 'failed'
+      transaction.errorMessage = error.message
+    }
+
+    this.transactions.set(transaction.id, transaction)
+
+    return transaction
+  }
+
+  // 查询交易
+  getTransaction(transactionId) {
+    return this.transactions.get(transactionId)
+  }
+
+  // 查询账户交易
+  getAccountTransactions(accountId) {
+    return Array.from(this.transactions.values())
+      .filter(t => t.accountId === accountId)
+      .sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  // 查询账户余额
+  getBalance(accountId) {
+    const account = this.accounts.get(accountId)
+    return account ? account.balance : 0
+  }
+
+  generateTransactionId() {
+    return `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  }
+}
+
+// 支付网关（模拟）
+class MockPaymentGateway {
+  constructor(name) {
+    this.name = name
+  }
+
+  async process(paymentRequest) {
+    // 模拟支付处理
+    await new Promise(resolve => setTimeout(resolve, 200))
+
+    // 模拟 90% 成功率
+    if (Math.random() < 0.9) {
+      return {
+        success: true,
+        transactionId: `gw_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      }
+    } else {
+      return {
+        success: false,
+        errorMessage: 'Payment declined by gateway'
+      }
+    }
+  }
+}
+
+// 使用示例
+async function testPaymentSystem() {
+  const paymentSystem = new PaymentSystem()
+
+  // 注册账户
+  paymentSystem.registerAccount({
+    id: 'account1',
+    userId: 'user1',
+    balance: 10000,
+    currency: 'USD'
+  })
+
+  paymentSystem.registerAccount({
+    id: 'account2',
+    userId: 'user2',
+    balance: 5000,
+    currency: 'USD'
+  })
+
+  // 注册支付网关
+  paymentSystem.registerPaymentGateway('stripe', new MockPaymentGateway('Stripe'))
+  paymentSystem.registerPaymentGateway('paypal', new MockPaymentGateway('PayPal'))
+
+  // 创建支付
+  console.log('--- 创建支付 ---')
+  const payment1 = await paymentSystem.createPayment({
+    accountId: 'account1',
+    amount: 100,
+    currency: 'USD',
+    gateway: 'stripe'
+  })
+  console.log('Payment 1:', payment1)
+
+  const payment2 = await paymentSystem.createPayment({
+    accountId: 'account1',
+    amount: 200,
+    currency: 'USD',
+    gateway: 'paypal'
+  })
+  console.log('Payment 2:', payment2)
+
+  // 查询余额
+  console.log('\n--- 账户余额 ---')
+  console.log('Account1 balance:', paymentSystem.getBalance('account1'))
+
+  // 查询交易
+  console.log('\n--- 账户交易 ---')
+  console.log('Account1 transactions:', paymentSystem.getAccountTransactions('account1'))
+}
+
+testPaymentSystem()
+```
+
+## 📝 实际应用示例
+
+### 综合复杂系统
+
+```js
+// 综合复杂系统
+class ComplexSystem {
+  constructor(config) {
+    this.searchEngine = new SearchEngine()
+    this.recommender = new RecommendationSystem()
+    this.feedSystem = new FeedSystem(config.feed)
+    this.ecommerce = new EcommerceSystem()
+    this.paymentSystem = new PaymentSystem()
+  }
+
+  // 搜索功能
+  async search(query) {
+    return await this.searchEngine.search(query)
+  }
+
+  // 推荐功能
+  recommend(userId, topK = 10) {
+    return this.recommender.recommend(userId, topK)
+  }
+
+  // Feed 流功能
+  async getFeed(userId, limit = 20) {
+    return await this.feedSystem.getFeed(userId, limit)
+  }
+
+  // 电商功能
+  async createOrder(userId, items) {
+    return await this.ecommerce.createOrder(userId, items)
+  }
+
+  // 支付功能
+  async createPayment(paymentRequest) {
+    return await this.paymentSystem.createPayment(paymentRequest)
+  }
+}
+
+// 使用示例
+async function testComplexSystem() {
+  const system = new ComplexSystem({
+    feed: { usePushModel: true }
+  })
+
+  console.log('--- 综合系统测试 ---')
+  
+  // 搜索
+  const searchResults = await system.search('JavaScript')
+  console.log('Search results:', searchResults.length)
+
+  // 推荐
+  const recommendations = system.recommend('user1', 5)
+  console.log('Recommendations:', recommendations.length)
+
+  // Feed 流
+  const feed = await system.getFeed('user1', 10)
+  console.log('Feed:', feed.length)
+
+  console.log('所有功能正常运行')
+}
+
+testComplexSystem()
+```
+
+## 🔗 相关概念
+
+- **搜索引擎**：基于倒排索引的全文检索系统
+- **推荐系统**：召回-排序架构，提供个性化推荐
+- **Feed 流**：推拉模式，社交网络的核心功能
+- **电商系统**：订单管理、库存管理、支付集成
+- **支付系统**：多支付网关集成、交易管理
+- **倒排索引**：搜索引擎的核心数据结构
+- **协同过滤**：基于用户行为的推荐算法
+- **推拉模式**：Feed 流的两种实现方式
+
+## 📚 学习检查点
+
+- [ ] 能否设计一个搜索引擎？
+- [ ] 能否设计一个推荐系统？
+- [ ] 能否设计一个 Feed 流系统？
+- [ ] 能否设计一个电商和支付系统？
+
+## 🚀 下一步
+
+→ [6.3.4 大数据系统设计](/architect/06-system-design/03-classic-system-design/04-big-data-systems)

@@ -3,15 +3,1453 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解大数据相关系统的架构设计，包括实时计算平台、日志收集系统、数据同步平台和指标分析系统。
+大数据系统处理海量数据的采集、存储、计算和分析。本节将深入讲解实时计算平台、日志收集系统、数据同步平台和指标分析系统的架构设计。
 
-## 🎯 学习目标
+## 🎯 实时计算平台
 
-- 理解实时计算平台的架构（Flink、Spark Streaming）
-- 掌握大规模日志收集系统的设计
-- 了解数据同步平台的架构和挑战
-- 能够设计端到端的指标分析系统
+### 流处理架构
 
-> 🚧 详细内容正在编写中...
+实时计算平台处理持续产生的数据流，支持低延迟的实时分析。
+
+```js
+// 实时计算平台
+class StreamProcessingPlatform {
+  constructor(config) {
+    this.sources = new Map()
+    this.processors = new Map()
+    this.sinks = new Map()
+    this.topologies = new Map()
+  }
+
+  // 注册数据源
+  registerSource(name, source) {
+    this.sources.set(name, source)
+  }
+
+  // 注册处理器
+  registerProcessor(name, processor) {
+    this.processors.set(name, processor)
+  }
+
+  // 注册数据汇
+  registerSink(name, sink) {
+    this.sinks.set(name, sink)
+  }
+
+  // 创建拓扑
+  createTopology(name, config) {
+    const topology = {
+      name,
+      sources: config.sources || [],
+      processors: config.processors || [],
+      sinks: config.sinks || [],
+      running: false
+    }
+    this.topologies.set(name, topology)
+    return topology
+  }
+
+  // 启动拓扑
+  async startTopology(name) {
+    const topology = this.topologies.get(name)
+    if (!topology) {
+      throw new Error(`Topology ${name} not found`)
+    }
+
+    console.log(`[StreamPlatform] Starting topology: ${name}`)
+    topology.running = true
+
+    // 启动数据源
+    for (const sourceName of topology.sources) {
+      const source = this.sources.get(sourceName)
+      if (source) {
+        await source.start()
+      }
+    }
+
+    // 启动处理器
+    for (const processorConfig of topology.processors) {
+      const processor = this.processors.get(processorConfig.name)
+      if (processor) {
+        await processor.start(processorConfig)
+      }
+    }
+
+    console.log(`[StreamPlatform] Topology ${name} started`)
+  }
+
+  // 停止拓扑
+  async stopTopology(name) {
+    const topology = this.topologies.get(name)
+    if (!topology) {
+      throw new Error(`Topology ${name} not found`)
+    }
+
+    console.log(`[StreamPlatform] Stopping topology: ${name}`)
+    topology.running = false
+
+    // 停止处理器
+    for (const processorConfig of topology.processors) {
+      const processor = this.processors.get(processorConfig.name)
+      if (processor) {
+        await processor.stop()
+      }
+    }
+
+    // 停止数据源
+    for (const sourceName of topology.sources) {
+      const source = this.sources.get(sourceName)
+      if (source) {
+        await source.stop()
+      }
+    }
+
+    console.log(`[StreamPlatform] Topology ${name} stopped`)
+  }
+}
+
+// 数据源（模拟 Kafka）
+class KafkaSource {
+  constructor(config) {
+    this.topic = config.topic
+    this.consumerGroup = config.consumerGroup || 'default'
+    this.running = false
+    this.consumers = []
+    this.messages = []
+  }
+
+  async start() {
+    this.running = true
+    console.log(`[KafkaSource] Started consuming from topic: ${this.topic}`)
+  }
+
+  async stop() {
+    this.running = false
+    console.log(`[KafkaSource] Stopped consuming from topic: ${this.topic}`)
+  }
+
+  // 模拟消费消息
+  async poll() {
+    if (!this.running) return []
+
+    // 模拟从 Kafka 拉取消息
+    const messages = this.messages.splice(0, 10)
+    return messages
+  }
+
+  // 模拟生产消息
+  produce(message) {
+    this.messages.push({
+      ...message,
+      timestamp: Date.now()
+    })
+  }
+
+  registerConsumer(consumer) {
+    this.consumers.push(consumer)
+  }
+}
+
+// 流处理器
+class StreamProcessor {
+  constructor(config) {
+    this.name = config.name
+    this.running = false
+    this.windowSize = config.windowSize || 5000  // 窗口大小（毫秒）
+    this.slidingInterval = config.slidingInterval || 1000  // 滑动间隔（毫秒）
+    this.state = new Map()
+  }
+
+  async start(config) {
+    this.running = true
+    this.source = config.source
+    this.sink = config.sink
+    console.log(`[StreamProcessor] Started: ${this.name}`)
+  }
+
+  async stop() {
+    this.running = false
+    console.log(`[StreamProcessor] Stopped: ${this.name}`)
+  }
+
+  // 处理消息
+  async process(message) {
+    // 应用业务逻辑
+    const result = this.applyLogic(message)
+    
+    // 更新状态
+    this.updateState(message, result)
+    
+    return result
+  }
+
+  // 应用业务逻辑
+  applyLogic(message) {
+    // 窗口聚合
+    const windowKey = this.getWindowKey(message.timestamp)
+    
+    if (!this.state.has(windowKey)) {
+      this.state.set(windowKey, {
+        count: 0,
+        sum: 0,
+        messages: []
+      })
+    }
+    
+    const window = this.state.get(windowKey)
+    window.count++
+    window.sum += message.value || 1
+    window.messages.push(message)
+    
+    return {
+      windowKey,
+      count: window.count,
+      sum: window.sum,
+      average: window.sum / window.count
+    }
+  }
+
+  // 获取窗口键
+  getWindowKey(timestamp) {
+    return Math.floor(timestamp / this.windowSize)
+  }
+
+  // 更新状态
+  updateState(message, result) {
+    // 清理过期窗口
+    const currentWindow = this.getWindowKey(Date.now())
+    
+    for (const [windowKey] of this.state) {
+      if (currentWindow - windowKey > 10) {
+        this.state.delete(windowKey)
+      }
+    }
+  }
+
+  // 获取聚合结果
+  getAggregations() {
+    const results = []
+    
+    for (const [windowKey, data] of this.state) {
+      results.push({
+        windowKey,
+        count: data.count,
+        sum: data.sum,
+        average: data.sum / data.count
+      })
+    }
+    
+    return results
+  }
+}
+
+// 数据汇（模拟数据库）
+class DatabaseSink {
+  constructor(config) {
+    this.table = config.table
+    this.data = []
+  }
+
+  // 写入数据
+  async write(record) {
+    this.data.push({
+      ...record,
+      timestamp: Date.now()
+    })
+    console.log(`[DatabaseSink] Written to ${this.table}:`, record)
+  }
+
+  // 批量写入
+  async batchWrite(records) {
+    for (const record of records) {
+      await this.write(record)
+    }
+  }
+
+  // 查询数据
+  query(filter = {}) {
+    return this.data.filter(record => {
+      return Object.keys(filter).every(key => record[key] === filter[key])
+    })
+  }
+}
+
+// 使用示例
+async function testStreamProcessingPlatform() {
+  const platform = new StreamProcessingPlatform()
+
+  // 注册组件
+  const kafkaSource = new KafkaSource({ topic: 'events' })
+  const processor = new StreamProcessor({ name: 'aggregator' })
+  const dbSink = new DatabaseSink({ table: 'aggregations' })
+
+  platform.registerSource('kafka', kafkaSource)
+  platform.registerProcessor('aggregator', processor)
+  platform.registerSink('database', dbSink)
+
+  // 创建拓扑
+  platform.createTopology('event-pipeline', {
+    sources: ['kafka'],
+    processors: [
+      {
+        name: 'aggregator',
+        source: 'kafka',
+        sink: 'database'
+      }
+    ],
+    sinks: ['database']
+  })
+
+  // 启动拓扑
+  await platform.startTopology('event-pipeline')
+
+  // 模拟数据流
+  console.log('\n--- 模拟数据流 ---')
+  for (let i = 0; i < 20; i++) {
+    const message = {
+      id: i,
+      value: Math.floor(Math.random() * 100),
+      timestamp: Date.now()
+    }
+    kafkaSource.produce(message)
+
+    // 处理消息
+    const result = await processor.process(message)
+    await dbSink.write(result)
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+
+  // 查看聚合结果
+  console.log('\n--- 聚合结果 ---')
+  const aggregations = processor.getAggregations()
+  console.log('Aggregations:', aggregations)
+
+  // 停止拓扑
+  await platform.stopTopology('event-pipeline')
+}
+
+testStreamProcessingPlatform()
+```
+
+## 🎯 日志收集系统
+
+### ELK 架构
+
+ELK（Elasticsearch、Logstash、Kibana）是常用的日志收集和分析架构。
+
+```js
+// 日志收集系统
+class LogCollectionSystem {
+  constructor(config) {
+    this.collectors = new Map()
+    this.aggregators = new Map()
+    this.storages = new Map()
+    this.pipelines = new Map()
+  }
+
+  // 注册日志收集器
+  registerCollector(name, collector) {
+    this.collectors.set(name, collector)
+  }
+
+  // 注册日志聚合器
+  registerAggregator(name, aggregator) {
+    this.aggregators.set(name, aggregator)
+  }
+
+  // 注册日志存储
+  registerStorage(name, storage) {
+    this.storages.set(name, storage)
+  }
+
+  // 创建日志管道
+  createPipeline(name, config) {
+    const pipeline = {
+      name,
+      collectors: config.collectors || [],
+      aggregators: config.aggregators || [],
+      storage: config.storage,
+      filters: config.filters || [],
+      running: false
+    }
+    this.pipelines.set(name, pipeline)
+    return pipeline
+  }
+
+  // 启动管道
+  async startPipeline(name) {
+    const pipeline = this.pipelines.get(name)
+    if (!pipeline) {
+      throw new Error(`Pipeline ${name} not found`)
+    }
+
+    console.log(`[LogSystem] Starting pipeline: ${name}`)
+    pipeline.running = true
+
+    // 启动收集器
+    for (const collectorName of pipeline.collectors) {
+      const collector = this.collectors.get(collectorName)
+      if (collector) {
+        await collector.start()
+      }
+    }
+
+    // 启动聚合器
+    for (const aggregatorConfig of pipeline.aggregators) {
+      const aggregator = this.aggregators.get(aggregatorConfig.name)
+      if (aggregator) {
+        await aggregator.start(aggregatorConfig)
+      }
+    }
+
+    console.log(`[LogSystem] Pipeline ${name} started`)
+  }
+
+  // 停止管道
+  async stopPipeline(name) {
+    const pipeline = this.pipelines.get(name)
+    if (!pipeline) {
+      throw new Error(`Pipeline ${name} not found`)
+    }
+
+    console.log(`[LogSystem] Stopping pipeline: ${name}`)
+    pipeline.running = false
+
+    // 停止聚合器
+    for (const aggregatorConfig of pipeline.aggregators) {
+      const aggregator = this.aggregators.get(aggregatorConfig.name)
+      if (aggregator) {
+        await aggregator.stop()
+      }
+    }
+
+    // 停止收集器
+    for (const collectorName of pipeline.collectors) {
+      const collector = this.collectors.get(collectorName)
+      if (collector) {
+        await collector.stop()
+      }
+    }
+
+    console.log(`[LogSystem] Pipeline ${name} stopped`)
+  }
+
+  // 搜索日志
+  async searchLogs(query) {
+    const results = []
+
+    for (const storage of this.storages.values()) {
+      const storageResults = await storage.search(query)
+      results.push(...storageResults)
+    }
+
+    return results
+  }
+}
+
+// 日志收集器（模拟 Filebeat）
+class LogCollector {
+  constructor(config) {
+    this.name = config.name
+    this.path = config.path
+    this.running = false
+    this.buffer = []
+  }
+
+  async start() {
+    this.running = true
+    console.log(`[LogCollector] Started: ${this.name}`)
+  }
+
+  async stop() {
+    this.running = false
+    console.log(`[LogCollector] Stopped: ${this.name}`)
+  }
+
+  // 收集日志
+  collect(log) {
+    if (!this.running) return
+
+    this.buffer.push({
+      ...log,
+      timestamp: Date.now(),
+      source: this.name
+    })
+  }
+
+  // 获取缓冲区
+  getBuffer() {
+    return this.buffer.splice(0)
+  }
+}
+
+// 日志聚合器（模拟 Logstash）
+class LogAggregator {
+  constructor(config) {
+    this.name = config.name
+    this.running = false
+    this.filters = config.filters || []
+  }
+
+  async start(config) {
+    this.running = true
+    this.source = config.source
+    this.storage = config.storage
+    console.log(`[LogAggregator] Started: ${this.name}`)
+  }
+
+  async stop() {
+    this.running = false
+    console.log(`[LogAggregator] Stopped: ${this.name}`)
+  }
+
+  // 聚合日志
+  async aggregate(logs) {
+    const processedLogs = []
+
+    for (const log of logs) {
+      // 应用过滤器
+      let processedLog = log
+
+      for (const filter of this.filters) {
+        processedLog = filter.apply(processedLog)
+      }
+
+      processedLogs.push(processedLog)
+    }
+
+    return processedLogs
+  }
+
+  // 处理日志
+  async process() {
+    if (!this.running) return
+
+    // 从收集器获取日志
+    const collector = this.source
+    const logs = collector.getBuffer()
+
+    if (logs.length > 0) {
+      // 聚合日志
+      const processedLogs = await this.aggregate(logs)
+
+      // 存储日志
+      if (this.storage) {
+        await this.storage.index(processedLogs)
+      }
+    }
+  }
+}
+
+// 日志存储（模拟 Elasticsearch）
+class LogStorage {
+  constructor(config) {
+    this.index = config.index
+    this.documents = new Map()
+  }
+
+  // 索引日志
+  async index(logs) {
+    for (const log of logs) {
+      const id = this.generateId()
+      this.documents.set(id, {
+        ...log,
+        _id: id,
+        _index: this.index
+      })
+    }
+    console.log(`[LogStorage] Indexed ${logs.length} logs to ${this.index}`)
+  }
+
+  // 搜索日志
+  async search(query) {
+    const results = []
+
+    for (const doc of this.documents.values()) {
+      if (this.matchesQuery(doc, query)) {
+        results.push(doc)
+      }
+    }
+
+    return results
+  }
+
+  // 匹配查询
+  matchesQuery(doc, query) {
+    return Object.keys(query).every(key => {
+      const value = query[key]
+      const docValue = doc[key]
+
+      if (typeof value === 'string' && typeof docValue === 'string') {
+        return docValue.toLowerCase().includes(value.toLowerCase())
+      }
+
+      return docValue === value
+    })
+  }
+
+  generateId() {
+    return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  }
+}
+
+// 日志过滤器
+class LogFilter {
+  constructor(type, config) {
+    this.type = type
+    this.config = config
+  }
+
+  apply(log) {
+    switch (this.type) {
+      case 'grok':
+        return this.applyGrok(log)
+      case 'date':
+        return this.applyDate(log)
+      case 'mutate':
+        return this.applyMutate(log)
+      default:
+        return log
+    }
+  }
+
+  applyGrok(log) {
+    // 简化的 Grok 解析
+    const pattern = this.config.pattern
+    const match = log.message.match(pattern)
+    
+    if (match) {
+      return {
+        ...log,
+        ...match.groups
+      }
+    }
+    
+    return log
+  }
+
+  applyDate(log) {
+    const field = this.config.field
+    const format = this.config.format || 'timestamp'
+    
+    if (log[field]) {
+      return {
+        ...log,
+        [`${field}_parsed`]: new Date(log[field]).toISOString()
+      }
+    }
+    
+    return log
+  }
+
+  applyMutate(log) {
+    const result = { ...log }
+    
+    // 添加字段
+    if (this.config.add) {
+      Object.assign(result, this.config.add)
+    }
+    
+    // 删除字段
+    if (this.config.remove) {
+      for (const field of this.config.remove) {
+        delete result[field]
+      }
+    }
+    
+    // 重命名字段
+    if (this.config.rename) {
+      for (const [oldName, newName] of Object.entries(this.config.rename)) {
+        result[newName] = result[oldName]
+        delete result[oldName]
+      }
+    }
+    
+    return result
+  }
+}
+
+// 使用示例
+async function testLogCollectionSystem() {
+  const logSystem = new LogCollectionSystem()
+
+  // 注册组件
+  const collector = new LogCollector({ name: 'app-logs', path: '/var/log/app' })
+  const aggregator = new LogAggregator({
+    name: 'main-aggregator',
+    filters: [
+      new LogFilter('grok', {
+        pattern: /^(?P<level>\w+)\s+(?P<message>.*)$/
+      }),
+      new LogFilter('mutate', {
+        add: { environment: 'production' }
+      })
+    ]
+  })
+  const storage = new LogStorage({ index: 'logs-*' })
+
+  logSystem.registerCollector('app-logs', collector)
+  logSystem.registerAggregator('main-aggregator', aggregator)
+  logSystem.registerStorage('elasticsearch', storage)
+
+  // 创建管道
+  logSystem.createPipeline('log-pipeline', {
+    collectors: ['app-logs'],
+    aggregators: [
+      {
+        name: 'main-aggregator',
+        source: collector,
+        storage: storage
+      }
+    ],
+    storage: 'elasticsearch'
+  })
+
+  // 启动管道
+  await logSystem.startPipeline('log-pipeline')
+
+  // 模拟日志收集
+  console.log('\n--- 模拟日志收集 ---')
+  const logMessages = [
+    'INFO Application started',
+    'ERROR Database connection failed',
+    'WARN High memory usage detected',
+    'INFO Request processed successfully',
+    'ERROR Timeout occurred'
+  ]
+
+  for (const message of logMessages) {
+    collector.collect({ message })
+    await aggregator.process()
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+
+  // 搜索日志
+  console.log('\n--- 搜索日志 ---')
+  const errorLogs = await logSystem.searchLogs({ level: 'ERROR' })
+  console.log('Error logs:', errorLogs.length)
+  errorLogs.forEach(log => console.log(' -', log.message))
+
+  const allLogs = await logSystem.searchLogs({})
+  console.log(`\nTotal logs: ${allLogs.length}`)
+
+  // 停止管道
+  await logSystem.stopPipeline('log-pipeline')
+}
+
+testLogCollectionSystem()
+```
+
+## 🎯 数据同步平台
+
+### CDC 数据同步
+
+CDC（Change Data Capture）实时捕获数据库变更并同步到目标系统。
+
+```js
+// 数据同步平台
+class DataSyncPlatform {
+  constructor(config) {
+    this.sources = new Map()
+    this.destinations = new Map()
+    this.tasks = new Map()
+  }
+
+  // 注册数据源
+  registerSource(name, source) {
+    this.sources.set(name, source)
+  }
+
+  // 注册目标系统
+  registerDestination(name, destination) {
+    this.destinations.set(name, destination)
+  }
+
+  // 创建同步任务
+  createTask(name, config) {
+    const task = {
+      name,
+      source: config.source,
+      destination: config.destination,
+      tables: config.tables || [],
+      mode: config.mode || 'full',  // full | incremental | cdc
+      running: false,
+      statistics: {
+        recordsProcessed: 0,
+        errors: 0,
+        lastSyncTime: null
+      }
+    }
+    this.tasks.set(name, task)
+    return task
+  }
+
+  // 启动任务
+  async startTask(name) {
+    const task = this.tasks.get(name)
+    if (!task) {
+      throw new Error(`Task ${name} not found`)
+    }
+
+    console.log(`[DataSync] Starting task: ${name}`)
+    task.running = true
+
+    const source = this.sources.get(task.source)
+    const destination = this.destinations.get(task.destination)
+
+    if (task.mode === 'cdc') {
+      await this.startCDC(task, source, destination)
+    } else {
+      await this.startBatchSync(task, source, destination)
+    }
+
+    console.log(`[DataSync] Task ${name} started`)
+  }
+
+  // 启动 CDC 同步
+  async startCDC(task, source, destination) {
+    // 订阅数据源变更
+    source.subscribe(async (change) => {
+      if (!task.running) return
+
+      try {
+        // 同步变更到目标
+        await destination.applyChange(change)
+        task.statistics.recordsProcessed++
+        task.statistics.lastSyncTime = Date.now()
+      } catch (error) {
+        task.statistics.errors++
+        console.error(`[DataSync] Error processing change:`, error.message)
+      }
+    })
+  }
+
+  // 启动批量同步
+  async startBatchSync(task, source, destination) {
+    for (const table of task.tables) {
+      console.log(`[DataSync] Syncing table: ${table}`)
+      
+      // 从源读取数据
+      const data = await source.readTable(table)
+      
+      // 写入目标
+      await destination.writeTable(table, data)
+      
+      task.statistics.recordsProcessed += data.length
+      task.statistics.lastSyncTime = Date.now()
+    }
+  }
+
+  // 停止任务
+  async stopTask(name) {
+    const task = this.tasks.get(name)
+    if (!task) {
+      throw new Error(`Task ${name} not found`)
+    }
+
+    console.log(`[DataSync] Stopping task: ${name}`)
+    task.running = false
+
+    const source = this.sources.get(task.source)
+    if (source && source.unsubscribe) {
+      source.unsubscribe()
+    }
+
+    console.log(`[DataSync] Task ${name} stopped`)
+  }
+
+  // 获取任务统计
+  getTaskStatistics(name) {
+    const task = this.tasks.get(name)
+    if (!task) {
+      throw new Error(`Task ${name} not found`)
+    }
+    return task.statistics
+  }
+}
+
+// 数据源（模拟 MySQL）
+class MySQLSource {
+  constructor(config) {
+    this.host = config.host
+    this.database = config.database
+    this.tables = new Map()
+    this.subscribers = []
+    this.binlogPosition = 0
+  }
+
+  // 读取表数据
+  async readTable(tableName) {
+    const table = this.tables.get(tableName)
+    if (!table) {
+      throw new Error(`Table ${tableName} not found`)
+    }
+    return table.data
+  }
+
+  // 订阅变更
+  subscribe(callback) {
+    this.subscribers.push(callback)
+  }
+
+  // 取消订阅
+  unsubscribe() {
+    this.subscribers = []
+  }
+
+  // 模拟数据变更
+  emitChange(change) {
+    this.binlogPosition++
+    for (const subscriber of this.subscribers) {
+      subscriber({
+        ...change,
+        binlogPosition: this.binlogPosition
+      })
+    }
+  }
+
+  // 初始化表数据
+  initializeTable(tableName, data) {
+    this.tables.set(tableName, { data })
+  }
+}
+
+// 目标系统（模拟 Kafka）
+class KafkaDestination {
+  constructor(config) {
+    this.topic = config.topic
+    this.producer = new Map()
+  }
+
+  // 应用变更
+  async applyChange(change) {
+    const key = `${change.table}_${change.id}`
+    this.producer.set(key, {
+      topic: this.topic,
+      key,
+      value: JSON.stringify(change),
+      timestamp: Date.now()
+    })
+    console.log(`[KafkaDestination] Produced to ${this.topic}:`, change.operation, change.table, change.id)
+  }
+
+  // 写入表
+  async writeTable(tableName, data) {
+    console.log(`[KafkaDestination] Writing ${data.length} records from ${tableName}`)
+    
+    for (const record of data) {
+      await this.applyChange({
+        operation: 'insert',
+        table: tableName,
+        data: record,
+        id: record.id
+      })
+    }
+  }
+}
+
+// 使用示例
+async function testDataSyncPlatform() {
+  const syncPlatform = new DataSyncPlatform()
+
+  // 注册数据源和目标
+  const mysqlSource = new MySQLSource({
+    host: 'localhost',
+    database: 'app_db'
+  })
+  const kafkaDestination = new KafkaDestination({ topic: 'cdc-events' })
+
+  syncPlatform.registerSource('mysql', mysqlSource)
+  syncPlatform.registerDestination('kafka', kafkaDestination)
+
+  // 初始化源数据
+  mysqlSource.initializeTable('users', [
+    { id: 1, name: 'Alice', email: 'alice@example.com' },
+    { id: 2, name: 'Bob', email: 'bob@example.com' }
+  ])
+
+  // 创建 CDC 任务
+  syncPlatform.createTask('mysql-to-kafka', {
+    source: 'mysql',
+    destination: 'kafka',
+    tables: ['users'],
+    mode: 'cdc'
+  })
+
+  // 启动任务
+  await syncPlatform.startTask('mysql-to-kafka')
+
+  // 模拟数据变更
+  console.log('\n--- 模拟数据变更 ---')
+  mysqlSource.emitChange({
+    operation: 'insert',
+    table: 'users',
+    data: { id: 3, name: 'Charlie', email: 'charlie@example.com' }
+  })
+
+  mysqlSource.emitChange({
+    operation: 'update',
+    table: 'users',
+    data: { id: 1, name: 'Alice Updated', email: 'alice.updated@example.com' }
+  })
+
+  mysqlSource.emitChange({
+    operation: 'delete',
+    table: 'users',
+    data: { id: 2 }
+  })
+
+  await new Promise(resolve => setTimeout(resolve, 1000))
+
+  // 查看任务统计
+  console.log('\n--- 任务统计 ---')
+  const stats = syncPlatform.getTaskStatistics('mysql-to-kafka')
+  console.log('Statistics:', stats)
+
+  // 停止任务
+  await syncPlatform.stopTask('mysql-to-kafka')
+}
+
+testDataSyncPlatform()
+```
+
+## 🎯 指标分析系统
+
+### Prometheus + Grafana
+
+指标分析系统收集、存储和可视化系统指标。
+
+```js
+// 指标分析系统
+class MetricsAnalysisSystem {
+  constructor(config) {
+    this.collectors = new Map()
+    this.storage = new MetricsStorage()
+    this.alerts = new Map()
+    this.dashboard = new MetricsDashboard()
+  }
+
+  // 注册指标收集器
+  registerCollector(name, collector) {
+    this.collectors.set(name, collector)
+  }
+
+  // 注册告警规则
+  registerAlert(name, rule) {
+    this.alerts.set(name, rule)
+  }
+
+  // 收集指标
+  async collectMetrics() {
+    const allMetrics = []
+
+    for (const [name, collector] of this.collectors) {
+      const metrics = await collector.collect()
+      
+      for (const metric of metrics) {
+        allMetrics.push({
+          ...metric,
+          source: name
+        })
+      }
+    }
+
+    // 存储指标
+    await this.storage.write(allMetrics)
+
+    // 检查告警
+    await this.checkAlerts(allMetrics)
+
+    return allMetrics
+  }
+
+  // 检查告警
+  async checkAlerts(metrics) {
+    for (const [name, rule] of this.alerts) {
+      const matchedMetrics = metrics.filter(metric => {
+        return rule.query(metric)
+      })
+
+      if (matchedMetrics.length > 0) {
+        await rule.trigger(matchedMetrics)
+      }
+    }
+  }
+
+  // 查询指标
+  async queryMetrics(query) {
+    return await this.storage.query(query)
+  }
+
+  // 更新仪表板
+  async updateDashboard() {
+    const metrics = await this.queryMetrics({})
+    this.dashboard.update(metrics)
+  }
+}
+
+// 指标存储（模拟 Prometheus）
+class MetricsStorage {
+  constructor() {
+    this.timeseries = new Map()
+  }
+
+  // 写入指标
+  async write(metrics) {
+    const timestamp = Date.now()
+
+    for (const metric of metrics) {
+      const key = this.getMetricKey(metric)
+      
+      if (!this.timeseries.has(key)) {
+        this.timeseries.set(key, {
+          name: metric.name,
+          labels: metric.labels || {},
+          samples: []
+        })
+      }
+
+      const timeseries = this.timeseries.get(key)
+      timeseries.samples.push({
+        value: metric.value,
+        timestamp
+      })
+
+      // 只保留最近 1000 个样本
+      if (timeseries.samples.length > 1000) {
+        timeseries.samples.shift()
+      }
+    }
+  }
+
+  // 查询指标
+  async query(query) {
+    const results = []
+
+    for (const [key, timeseries] of this.timeseries) {
+      if (this.matchesQuery(timeseries, query)) {
+        results.push({
+          metric: {
+            name: timeseries.name,
+            labels: timeseries.labels
+          },
+          values: timeseries.samples
+        })
+      }
+    }
+
+    return results
+  }
+
+  // 获取指标键
+  getMetricKey(metric) {
+    const labels = metric.labels || {}
+    const labelString = Object.entries(labels)
+      .sort()
+      .map(([k, v]) => `${k}="${v}"`)
+      .join(',')
+    
+    return `${metric.name}{${labelString}}`
+  }
+
+  // 匹配查询
+  matchesQuery(timeseries, query) {
+    if (query.name && timeseries.name !== query.name) {
+      return false
+    }
+
+    if (query.labels) {
+      for (const [key, value] of Object.entries(query.labels)) {
+        if (timeseries.labels[key] !== value) {
+          return false
+        }
+      }
+    }
+
+    return true
+  }
+}
+
+// 指标收集器
+class MetricsCollector {
+  constructor(config) {
+    this.name = config.name
+    this.scrapeInterval = config.scrapeInterval || 10000
+    this.targets = config.targets || []
+  }
+
+  // 收集指标
+  async collect() {
+    const metrics = []
+
+    for (const target of this.targets) {
+      const targetMetrics = await this.scrapeTarget(target)
+      metrics.push(...targetMetrics)
+    }
+
+    return metrics
+  }
+
+  // 抓取目标
+  async scrapeTarget(target) {
+    // 模拟 HTTP 请求抓取指标
+    const metrics = []
+
+    // CPU 使用率
+    metrics.push({
+      name: 'cpu_usage',
+      labels: {
+        instance: target.instance,
+        job: target.job
+      },
+      value: Math.random() * 100
+    })
+
+    // 内存使用率
+    metrics.push({
+      name: 'memory_usage',
+      labels: {
+        instance: target.instance,
+        job: target.job
+      },
+      value: Math.random() * 100
+    })
+
+    // 请求速率
+    metrics.push({
+      name: 'request_rate',
+      labels: {
+        instance: target.instance,
+        job: target.job,
+        endpoint: target.endpoint
+      },
+      value: Math.random() * 1000
+    })
+
+    return metrics
+  }
+}
+
+// 指标仪表板（模拟 Grafana）
+class MetricsDashboard {
+  constructor() {
+    this.panels = []
+  }
+
+  // 添加面板
+  addPanel(panel) {
+    this.panels.push(panel)
+  }
+
+  // 更新仪表板
+  update(metrics) {
+    console.log('[Dashboard] Updating panels...')
+    
+    for (const panel of this.panels) {
+      const panelMetrics = this.filterMetrics(metrics, panel.query)
+      console.log(`[Dashboard] Panel "${panel.title}":`, panelMetrics.length, 'metrics')
+    }
+  }
+
+  // 过滤指标
+  filterMetrics(metrics, query) {
+    return metrics.filter(metric => {
+      if (query.name && metric.metric.name !== query.name) {
+        return false
+      }
+      return true
+    })
+  }
+}
+
+// 告警规则
+class AlertRule {
+  constructor(config) {
+    this.name = config.name
+    this.query = config.query
+    this.threshold = config.threshold
+    this.duration = config.duration || 60000
+    this.handler = config.handler
+  }
+
+  // 触发告警
+  async trigger(metrics) {
+    console.log(`[Alert] ${this.name} triggered by ${metrics.length} metrics`)
+    
+    if (this.handler) {
+      await this.handler(metrics)
+    }
+  }
+}
+
+// 使用示例
+async function testMetricsAnalysisSystem() {
+  const metricsSystem = new MetricsAnalysisSystem()
+
+  // 注册收集器
+  const collector = new MetricsCollector({
+    name: 'app-collector',
+    targets: [
+      { instance: 'app-1', job: 'app', endpoint: '/metrics' },
+      { instance: 'app-2', job: 'app', endpoint: '/metrics' }
+    ]
+  })
+
+  metricsSystem.registerCollector('app', collector)
+
+  // 注册告警
+  const highCpuAlert = new AlertRule({
+    name: 'HighCPU',
+    query: (metric) => {
+      return metric.name === 'cpu_usage' && metric.value > 80
+    },
+    threshold: 80,
+    handler: async (metrics) => {
+      console.log('[AlertHandler] High CPU usage detected!', metrics)
+    }
+  })
+
+  metricsSystem.registerAlert('high-cpu', highCpuAlert)
+
+  // 添加仪表板面板
+  metricsSystem.dashboard.addPanel({
+    title: 'CPU Usage',
+    query: { name: 'cpu_usage' }
+  })
+
+  metricsSystem.dashboard.addPanel({
+    title: 'Memory Usage',
+    query: { name: 'memory_usage' }
+  })
+
+  // 收集指标
+  console.log('--- 收集指标 ---')
+  const metrics = await metricsSystem.collectMetrics()
+  console.log(`Collected ${metrics.length} metrics`)
+
+  // 查询指标
+  console.log('\n--- 查询 CPU 使用率 ---')
+  const cpuMetrics = await metricsSystem.queryMetrics({ name: 'cpu_usage' })
+  console.log('CPU metrics:', cpuMetrics.length)
+
+  // 更新仪表板
+  console.log('\n--- 更新仪表板 ---')
+  await metricsSystem.updateDashboard()
+
+  // 持续收集
+  console.log('\n--- 持续收集指标 ---')
+  for (let i = 0; i < 5; i++) {
+    await metricsSystem.collectMetrics()
+    await metricsSystem.updateDashboard()
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+}
+
+testMetricsAnalysisSystem()
+```
+
+## 📝 实际应用示例
+
+### 综合大数据系统
+
+```js
+// 综合大数据系统
+class BigDataSystem {
+  constructor(config) {
+    this.streamPlatform = new StreamProcessingPlatform(config.stream)
+    this.logSystem = new LogCollectionSystem(config.log)
+    this.syncPlatform = new DataSyncPlatform(config.sync)
+    this.metricsSystem = new MetricsAnalysisSystem(config.metrics)
+  }
+
+  // 实时处理
+  async processStream(topologyName) {
+    return await this.streamPlatform.topologies.get(topologyName)
+  }
+
+  // 收集日志
+  async collectLogs(pipelineName) {
+    return await this.logSystem.pipelines.get(pipelineName)
+  }
+
+  // 同步数据
+  async syncData(taskName) {
+    return await this.syncPlatform.tasks.get(taskName)
+  }
+
+  // 分析指标
+  async analyzeMetrics() {
+    return await this.metricsSystem.collectMetrics()
+  }
+}
+
+// 使用示例
+async function testBigDataSystem() {
+  const system = new BigDataSystem({
+    stream: {},
+    log: {},
+    sync: {},
+    metrics: {}
+  })
+
+  console.log('--- 综合大数据系统测试 ---')
+  
+  // 实时处理
+  const streamTopology = system.streamPlatform.createTopology('test-topology', {
+    sources: [],
+    processors: [],
+    sinks: []
+  })
+  console.log('Stream topology:', streamTopology.name)
+
+  // 日志收集
+  const logPipeline = system.logSystem.createPipeline('test-pipeline', {
+    collectors: [],
+    aggregators: [],
+    storage: null
+  })
+  console.log('Log pipeline:', logPipeline.name)
+
+  // 数据同步
+  const syncTask = system.syncPlatform.createTask('test-task', {
+    source: 'test',
+    destination: 'test',
+    tables: [],
+    mode: 'full'
+  })
+  console.log('Sync task:', syncTask.name)
+
+  // 指标分析
+  const metrics = await system.analyzeMetrics()
+  console.log('Metrics collected:', metrics.length)
+
+  console.log('所有功能正常运行')
+}
+
+testBigDataSystem()
+```
+
+## 🔗 相关概念
+
+- **实时计算**：流处理架构，支持低延迟实时分析
+- **日志收集**：ELK/EFK 架构，集中化日志管理
+- **数据同步**：CDC 技术，实时捕获数据变更
+- **指标分析**：Prometheus + Grafana，监控和可视化
+- **流处理**：Flink、Spark Streaming 等流处理框架
+- **消息队列**：Kafka、Pulsar 等消息中间件
+- **时序数据库**：存储时间序列指标数据
+- **可观测性**：指标、日志、追踪三大支柱
+
+## 📚 学习检查点
+
+- [ ] 能否设计一个实时计算平台？
+- [ ] 能否设计一个日志收集系统？
+- [ ] 能否设计一个数据同步平台？
+- [ ] 能否设计一个指标分析系统？
+
+## 🚀 下一步
+
+→ [第七阶段：安全架构](/architect/07-security-architecture/01-application-security/01-application-security-overview)

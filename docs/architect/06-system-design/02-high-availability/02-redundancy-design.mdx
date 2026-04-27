@@ -3,15 +3,863 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解高可用系统的冗余设计，包括无状态服务设计、数据多副本策略、跨机房容灾和异地多活方案。
+冗余设计是高可用系统的基础，通过备份和复制确保系统在部分组件故障时仍能正常运行。本节将深入讲解无状态服务设计、数据多副本策略、跨机房容灾和异地多活方案。
 
-## 🎯 学习目标
+## 🎯 无状态服务设计
 
-- 掌握无状态服务的设计原则
-- 理解数据多副本的一致性保障
-- 掌握跨机房容灾的架构设计
-- 能够设计异地多活方案
+### 无状态服务原则
 
-> 🚧 详细内容正在编写中...
+无状态服务不保存客户端上下文，可以随意水平扩展。
+
+```js
+// 无状态服务示例
+class StatelessService {
+  constructor(config) {
+    this.config = config
+    this.externalStore = new ExternalStore(config.store)
+  }
+
+  // 处理请求（不依赖本地状态）
+  async handleRequest(request) {
+    // 1. 从外部存储获取必要的状态
+    const session = await this.externalStore.getSession(request.sessionId)
+    
+    // 2. 处理业务逻辑
+    const result = await this.processBusinessLogic(request, session)
+    
+    // 3. 将状态保存到外部存储
+    await this.externalStore.updateSession(request.sessionId, session)
+    
+    return result
+  }
+
+  async processBusinessLogic(request, session) {
+    // 业务逻辑处理
+    return {
+      requestId: request.id,
+      userId: session.userId,
+      data: request.data,
+      timestamp: Date.now()
+    }
+  }
+}
+
+// 外部状态存储（如 Redis、数据库）
+class ExternalStore {
+  constructor(config) {
+    this.storage = new Map()
+    this.ttl = config.ttl || 3600
+  }
+
+  async getSession(sessionId) {
+    const item = this.storage.get(sessionId)
+    if (item && Date.now() < item.expireTime) {
+      return item.data
+    }
+    return null
+  }
+
+  async updateSession(sessionId, data) {
+    this.storage.set(sessionId, {
+      data,
+      expireTime: Date.now() + this.ttl * 1000
+    })
+  }
+}
+
+// 使用示例
+const service = new StatelessService({
+  store: { ttl: 1800 }
+})
+
+// 多个实例可以处理相同的请求
+async function testStatelessService() {
+  const request = {
+    id: 'req-001',
+    sessionId: 'session-123',
+    userId: 'user-001',
+    data: { action: 'create' }
+  }
+
+  // 任何实例都可以处理请求
+  const result1 = await service.handleRequest(request)
+  console.log('Instance 1 result:', result1)
+
+  const result2 = await service.handleRequest(request)
+  console.log('Instance 2 result:', result2)
+}
+
+testStatelessService()
+```
+
+### 有状态到无状态的转换
+
+```js
+// 有状态服务（反例）
+class StatefulService {
+  constructor() {
+    this.sessions = new Map()  // 本地存储会话状态
+  }
+
+  handleRequest(request) {
+    const session = this.sessions.get(request.sessionId) || {}
+    session.lastAccess = Date.now()
+    this.sessions.set(request.sessionId, session)
+    return { ...session }
+  }
+}
+
+// 无状态服务改造
+class StatelessServiceRefactored {
+  constructor(store) {
+    this.store = store
+  }
+
+  async handleRequest(request) {
+    // 从外部存储获取状态
+    const session = await this.store.getSession(request.sessionId) || {}
+    session.lastAccess = Date.now()
+    
+    // 保存到外部存储
+    await this.store.saveSession(request.sessionId, session)
+    
+    return { ...session }
+  }
+}
+
+// 使用示例
+const store = new ExternalStore({ ttl: 1800 })
+const statelessService = new StatelessServiceRefactored(store)
+
+statelessService.handleRequest({
+  sessionId: 'session-123',
+  data: { action: 'update' }
+}).then(result => console.log('Result:', result))
+```
+
+## 🎯 数据多副本策略
+
+### 主从复制
+
+```js
+// 主从复制实现
+class MasterSlaveReplication {
+  constructor(config) {
+    this.master = new DataNode(config.master)
+    this.slaves = config.slaves.map(cfg => new DataNode(cfg))
+    this.replicationMode = config.replicationMode || 'async'  // async | sync
+  }
+
+  // 写操作（写入主节点）
+  async write(key, value) {
+    // 1. 写入主节点
+    await this.master.set(key, value)
+    
+    // 2. 复制到从节点
+    if (this.replicationMode === 'sync') {
+      // 同步复制：等待所有从节点确认
+      await Promise.all(
+        this.slaves.map(slave => slave.set(key, value))
+      )
+    } else {
+      // 异步复制：不等待从节点确认
+      this.slaves.forEach(slave => {
+        setImmediate(() => slave.set(key, value))
+      })
+    }
+    
+    return { status: 'success', replicationMode: this.replicationMode }
+  }
+
+  // 读操作（从从节点读取）
+  async read(key) {
+    // 随机选择一个从节点读取
+    const slave = this.slaves[Math.floor(Math.random() * this.slaves.length)]
+    return await slave.get(key)
+  }
+
+  // 强制从主节点读取（保证一致性）
+  async readFromMaster(key) {
+    return await this.master.get(key)
+  }
+}
+
+// 数据节点
+class DataNode {
+  constructor(config) {
+    this.id = config.id
+    this.data = new Map()
+    this.delay = config.delay || 0  // 模拟网络延迟
+  }
+
+  async set(key, value) {
+    await new Promise(resolve => setTimeout(resolve, this.delay))
+    this.data.set(key, value)
+    console.log(`[${this.id}] Set: ${key} = ${JSON.stringify(value)}`)
+  }
+
+  async get(key) {
+    await new Promise(resolve => setTimeout(resolve, this.delay))
+    return this.data.get(key)
+  }
+}
+
+// 使用示例
+async function testMasterSlaveReplication() {
+  const replication = new MasterSlaveReplication({
+    master: { id: 'master', delay: 10 },
+    slaves: [
+      { id: 'slave-1', delay: 20 },
+      { id: 'slave-2', delay: 30 }
+    ],
+    replicationMode: 'async'
+  })
+
+  console.log('--- 写入数据 ---')
+  await replication.write('user:1', { id: 1, name: 'Alice' })
+
+  console.log('\n--- 读取数据（从从节点）---')
+  const user1 = await replication.read('user:1')
+  console.log('Read result:', user1)
+
+  console.log('\n--- 读取数据（从主节点）---')
+  const user2 = await replication.readFromMaster('user:1')
+  console.log('Read result:', user2)
+}
+
+testMasterSlaveReplication()
+```
+
+### 多主复制
+
+```js
+// 多主复制实现
+class MultiMasterReplication {
+  constructor(config) {
+    this.masters = config.masters.map(cfg => new DataNode(cfg))
+    this.conflictResolver = config.conflictResolver || this.defaultConflictResolver
+  }
+
+  // 写操作（写入任意主节点）
+  async write(key, value, masterId) {
+    const master = this.masters.find(m => m.id === masterId)
+    if (!master) {
+      throw new Error(`Master ${masterId} not found`)
+    }
+
+    // 写入指定主节点
+    await master.set(key, value)
+
+    // 复制到其他主节点
+    const otherMasters = this.masters.filter(m => m.id !== masterId)
+    await Promise.all(
+      otherMasters.map(m => this.replicateWithConflictResolution(m, key, value))
+    )
+
+    return { status: 'success', masterId }
+  }
+
+  // 带冲突解决的复制
+  async replicateWithConflictResolution(master, key, newValue) {
+    const existingValue = await master.get(key)
+    
+    if (existingValue) {
+      // 检测冲突
+      if (this.hasConflict(existingValue, newValue)) {
+        // 使用冲突解决策略
+        const resolvedValue = this.conflictResolver(existingValue, newValue)
+        await master.set(key, resolvedValue)
+        console.log(`[Conflict Resolved] ${key}: ${JSON.stringify(resolvedValue)}`)
+        return
+      }
+    }
+    
+    await master.set(key, newValue)
+  }
+
+  // 冲突检测
+  hasConflict(existing, newValue) {
+    return existing.version !== newValue.version
+  }
+
+  // 默认冲突解决策略（最后写入胜出）
+  defaultConflictResolver(existing, newValue) {
+    return newValue.version > existing.version ? newValue : existing
+  }
+
+  // 读操作（从任意主节点读取）
+  async read(key, masterId) {
+    const master = this.masters.find(m => m.id === masterId)
+    if (!master) {
+      throw new Error(`Master ${masterId} not found`)
+    }
+    return await master.get(key)
+  }
+}
+
+// 使用示例
+async function testMultiMasterReplication() {
+  const replication = new MultiMasterReplication({
+    masters: [
+      { id: 'master-1', delay: 10 },
+      { id: 'master-2', delay: 20 }
+    ]
+  })
+
+  console.log('--- 写入主节点 1 ---')
+  await replication.write('user:1', { id: 1, name: 'Alice', version: 1 }, 'master-1')
+
+  console.log('\n--- 写入主节点 2（冲突）---')
+  await replication.write('user:1', { id: 1, name: 'Alice Updated', version: 2 }, 'master-2')
+
+  console.log('\n--- 从主节点 1 读取 ---')
+  const user1 = await replication.read('user:1', 'master-1')
+  console.log('Read from master-1:', user1)
+
+  console.log('\n--- 从主节点 2 读取 ---')
+  const user2 = await replication.read('user:1', 'master-2')
+  console.log('Read from master-2:', user2)
+}
+
+testMultiMasterReplication()
+```
+
+## 🎯 跨机房容灾
+
+### 主备容灾架构
+
+```js
+// 主备容灾架构
+class PrimaryStandbyDR {
+  constructor(config) {
+    this.primary = new DataCenter(config.primary)
+    this.standby = new DataCenter(config.standby)
+    this.replicationMode = config.replicationMode || 'async'
+    this.failoverEnabled = config.failoverEnabled || false
+  }
+
+  // 写入主数据中心
+  async write(key, value) {
+    // 写入主数据中心
+    await this.primary.set(key, value)
+    
+    // 复制到备数据中心
+    if (this.replicationMode === 'sync') {
+      await this.standby.set(key, value)
+    } else {
+      setImmediate(() => this.standby.set(key, value))
+    }
+    
+    return { status: 'success', datacenter: 'primary' }
+  }
+
+  // 从主数据中心读取
+  async read(key) {
+    return await this.primary.get(key)
+  }
+
+  // 故障转移
+  async failover() {
+    if (!this.failoverEnabled) {
+      throw new Error('Failover is not enabled')
+    }
+
+    console.log('[Failover] Starting failover to standby...')
+    
+    // 1. 停止主数据中心
+    await this.primary.stop()
+    
+    // 2. 将备数据中心提升为主
+    const temp = this.primary
+    this.primary = this.standby
+    this.standby = temp
+    
+    // 3. 启动新的主数据中心
+    await this.primary.start()
+    
+    console.log('[Failover] Failover completed')
+    return { status: 'success', newPrimary: this.primary.id }
+  }
+
+  // 故障恢复
+  async failback() {
+    console.log('[Failback] Starting failback...')
+    
+    // 1. 将原主数据中心恢复为备
+    await this.standby.start()
+    
+    // 2. 同步数据
+    await this.syncData()
+    
+    // 3. 切换回原主数据中心
+    const temp = this.primary
+    this.primary = this.standby
+    this.standby = temp
+    
+    console.log('[Failback] Failback completed')
+    return { status: 'success', newPrimary: this.primary.id }
+  }
+
+  // 数据同步
+  async syncData() {
+    console.log('[Sync] Syncing data from primary to standby...')
+    // 实际实现中这里会进行数据同步
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    console.log('[Sync] Data sync completed')
+  }
+}
+
+// 数据中心
+class DataCenter {
+  constructor(config) {
+    this.id = config.id
+    this.data = new Map()
+    this.running = true
+  }
+
+  async set(key, value) {
+    if (!this.running) {
+      throw new Error(`DataCenter ${this.id} is not running`)
+    }
+    this.data.set(key, value)
+    console.log(`[${this.id}] Set: ${key}`)
+  }
+
+  async get(key) {
+    if (!this.running) {
+      throw new Error(`DataCenter ${this.id} is not running`)
+    }
+    return this.data.get(key)
+  }
+
+  async stop() {
+    this.running = false
+    console.log(`[${this.id}] Stopped`)
+  }
+
+  async start() {
+    this.running = true
+    console.log(`[${this.id}] Started`)
+  }
+}
+
+// 使用示例
+async function testPrimaryStandbyDR() {
+  const dr = new PrimaryStandbyDR({
+    primary: { id: 'dc-primary' },
+    standby: { id: 'dc-standby' },
+    replicationMode: 'async',
+    failoverEnabled: true
+  })
+
+  console.log('--- 正常写入 ---')
+  await dr.write('user:1', { id: 1, name: 'Alice' })
+
+  console.log('\n--- 故障转移 ---')
+  await dr.failover()
+
+  console.log('\n--- 故障转移后写入 ---')
+  await dr.write('user:2', { id: 2, name: 'Bob' })
+
+  console.log('\n--- 故障恢复 ---')
+  await dr.failback()
+}
+
+testPrimaryStandbyDR()
+```
+
+## 🎯 异地多活
+
+### 双活架构
+
+```js
+// 双活架构
+class ActiveActiveDR {
+  constructor(config) {
+    this.datacenters = config.datacenters.map(cfg => new DataCenter(cfg))
+    this.consistencyMode = config.consistencyMode || 'eventual'  // strong | eventual
+    this.router = new TrafficRouter(this.datacenters)
+  }
+
+  // 写入（写入本地数据中心）
+  async write(key, value, localDcId) {
+    const localDc = this.datacenters.find(dc => dc.id === localDcId)
+    if (!localDc) {
+      throw new Error(`DataCenter ${localDcId} not found`)
+    }
+
+    // 写入本地数据中心
+    await localDc.set(key, value)
+
+    // 复制到其他数据中心
+    if (this.consistencyMode === 'strong') {
+      // 强一致性：同步复制
+      await Promise.all(
+        this.datacenters
+          .filter(dc => dc.id !== localDcId)
+          .map(dc => dc.set(key, value))
+      )
+    } else {
+      // 最终一致性：异步复制
+      this.datacenters
+        .filter(dc => dc.id !== localDcId)
+        .forEach(dc => {
+          setImmediate(() => dc.set(key, value))
+        })
+    }
+
+    return { status: 'success', datacenter: localDcId }
+  }
+
+  // 读取（从最近的数据中心读取）
+  async read(key, clientId) {
+    const nearestDc = this.router.route(clientId)
+    return await nearestDc.get(key)
+  }
+
+  // 获取所有数据中心的状态
+  getStatus() {
+    return this.datacenters.map(dc => ({
+      id: dc.id,
+      running: dc.running,
+      dataSize: dc.data.size
+    }))
+  }
+}
+
+// 流量路由器
+class TrafficRouter {
+  constructor(datacenters) {
+    this.datacenters = datacenters
+    this.clientMapping = new Map()
+  }
+
+  // 路由客户端到最近的数据中心
+  route(clientId) {
+    // 检查是否已有映射
+    if (this.clientMapping.has(clientId)) {
+      const dcId = this.clientMapping.get(clientId)
+      const dc = this.datacenters.find(d => d.id === dcId)
+      if (dc && dc.running) {
+        return dc
+      }
+    }
+
+    // 选择一个运行中的数据中心
+    const runningDc = this.datacenters.find(dc => dc.running)
+    if (runningDc) {
+      this.clientMapping.set(clientId, runningDc.id)
+      return runningDc
+    }
+
+    throw new Error('No available datacenter')
+  }
+
+  // 清除客户端映射
+  clearMapping(clientId) {
+    this.clientMapping.delete(clientId)
+  }
+}
+
+// 使用示例
+async function testActiveActiveDR() {
+  const dr = new ActiveActiveDR({
+    datacenters: [
+      { id: 'dc-beijing' },
+      { id: 'dc-shanghai' }
+    ],
+    consistencyMode: 'eventual'
+  })
+
+  console.log('--- 客户端 1 写入北京数据中心 ---')
+  await dr.write('user:1', { id: 1, name: 'Alice' }, 'dc-beijing')
+
+  console.log('\n--- 客户端 2 写入上海数据中心 ---')
+  await dr.write('user:2', { id: 2, name: 'Bob' }, 'dc-shanghai')
+
+  console.log('\n--- 客户端 1 读取（路由到北京）---')
+  const user1 = await dr.read('user:1', 'client-1')
+  console.log('Read result:', user1)
+
+  console.log('\n--- 客户端 2 读取（路由到上海）---')
+  const user2 = await dr.read('user:2', 'client-2')
+  console.log('Read result:', user2)
+
+  console.log('\n--- 数据中心状态 ---')
+  console.log('Status:', dr.getStatus())
+}
+
+testActiveActiveDR()
+```
+
+### 单元化架构
+
+```js
+// 单元化架构
+class UnitBasedArchitecture {
+  constructor(config) {
+    this.units = config.units.map(cfg => new Unit(cfg))
+    this.router = new UnitRouter(this.units)
+  }
+
+  // 写入（路由到指定单元）
+  async write(userId, key, value) {
+    const unit = this.router.route(userId)
+    return await unit.write(key, value)
+  }
+
+  // 读取（路由到指定单元）
+  async read(userId, key) {
+    const unit = this.router.route(userId)
+    return await unit.read(key)
+  }
+
+  // 跨单元写入
+  async crossUnitWrite(userId, targetUnitId, key, value) {
+    const targetUnit = this.units.find(u => u.id === targetUnitId)
+    if (!targetUnit) {
+      throw new Error(`Unit ${targetUnitId} not found`)
+    }
+    return await targetUnit.write(key, value)
+  }
+}
+
+// 单元
+class Unit {
+  constructor(config) {
+    this.id = config.id
+    this.data = new Map()
+    this.userRange = config.userRange  // [min, max]
+  }
+
+  write(key, value) {
+    this.data.set(key, value)
+    console.log(`[${this.id}] Write: ${key}`)
+    return { status: 'success', unit: this.id }
+  }
+
+  read(key) {
+    return this.data.get(key)
+  }
+
+  contains(userId) {
+    const [min, max] = this.userRange
+    return userId >= min && userId < max
+  }
+}
+
+// 单元路由器
+class UnitRouter {
+  constructor(units) {
+    this.units = units
+  }
+
+  route(userId) {
+    const unit = this.units.find(u => u.contains(userId))
+    if (!unit) {
+      throw new Error(`No unit found for user ${userId}`)
+    }
+    return unit
+  }
+}
+
+// 使用示例
+async function testUnitBasedArchitecture() {
+  const architecture = new UnitBasedArchitecture({
+    units: [
+      { id: 'unit-1', userRange: [0, 1000] },
+      { id: 'unit-2', userRange: [1000, 2000] },
+      { id: 'unit-3', userRange: [2000, 3000] }
+    ]
+  })
+
+  console.log('--- 用户 500 写入（路由到 unit-1）---')
+  await architecture.write(500, 'user:500', { id: 500, name: 'Alice' })
+
+  console.log('\n--- 用户 1500 写入（路由到 unit-2）---')
+  await architecture.write(1500, 'user:1500', { id: 1500, name: 'Bob' })
+
+  console.log('\n--- 用户 500 读取 ---')
+  const user1 = await architecture.read(500, 'user:500')
+  console.log('Read result:', user1)
+
+  console.log('\n--- 用户 1500 读取 ---')
+  const user2 = await architecture.read(1500, 'user:1500')
+  console.log('Read result:', user2)
+}
+
+testUnitBasedArchitecture()
+```
+
+## 📝 实际应用示例
+
+### 综合冗余系统
+
+```js
+// 综合冗余系统
+class ComprehensiveRedundancySystem {
+  constructor(config) {
+    // 无状态服务集群
+    this.serviceCluster = new ServiceCluster(config.service)
+    
+    // 主从数据库
+    this.database = new MasterSlaveReplication(config.database)
+    
+    // 多级缓存
+    this.cache = new MultiLevelCache(config.cache)
+    
+    // 跨机房容灾
+    this.dr = new ActiveActiveDR(config.disasterRecovery)
+  }
+
+  // 处理请求
+  async handleRequest(request) {
+    try {
+      // 1. 检查缓存
+      const cached = await this.cache.get(request.key)
+      if (cached) {
+        return { status: 'success', source: 'cache', data: cached }
+      }
+
+      // 2. 从数据库读取
+      const data = await this.database.read(request.key)
+      
+      // 3. 写入缓存
+      await this.cache.set(request.key, data)
+      
+      return { status: 'success', source: 'database', data }
+    } catch (error) {
+      console.error('Request failed:', error)
+      
+      // 尝试从容灾系统恢复
+      const drData = await this.dr.read(request.key, request.clientId)
+      if (drData) {
+        return { status: 'success', source: 'dr', data: drData }
+      }
+      
+      throw error
+    }
+  }
+
+  // 写入数据
+  async writeData(key, value) {
+    // 1. 写入数据库（主节点）
+    await this.database.write(key, value)
+    
+    // 2. 失效缓存
+    await this.cache.invalidate(key)
+    
+    // 3. 复制到容灾系统
+    await this.dr.write(key, value, this.dr.datacenters[0].id)
+    
+    return { status: 'success' }
+  }
+
+  // 健康检查
+  async healthCheck() {
+    const results = {
+      service: await this.serviceCluster.healthCheck(),
+      database: {
+        master: this.database.master.running,
+        slaves: this.database.slaves.map(s => s.running)
+      },
+      cache: this.cache.localCache.cache.size > 0,
+      disasterRecovery: this.dr.getStatus()
+    }
+    
+    return results
+  }
+}
+
+// 服务集群
+class ServiceCluster {
+  constructor(config) {
+    this.instances = config.instances.map((cfg, idx) => ({
+      id: `service-${idx}`,
+      ...cfg,
+      healthy: true
+    }))
+  }
+
+  async healthCheck() {
+    const results = []
+    for (const instance of this.instances) {
+      results.push({
+        id: instance.id,
+        healthy: instance.healthy
+      })
+    }
+    return results
+  }
+}
+
+// 使用示例
+async function testComprehensiveRedundancySystem() {
+  const system = new ComprehensiveRedundancySystem({
+    service: {
+      instances: [
+        { host: 'localhost', port: 3000 },
+        { host: 'localhost', port: 3001 }
+      ]
+    },
+    database: {
+      master: { id: 'db-master' },
+      slaves: [
+        { id: 'db-slave-1' },
+        { id: 'db-slave-2' }
+      ]
+    },
+    cache: {
+      local: { maxSize: 100 },
+      redis: { ttl: 1800 }
+    },
+    disasterRecovery: {
+      datacenters: [
+        { id: 'dc-primary' },
+        { id: 'dc-standby' }
+      ]
+    }
+  })
+
+  console.log('--- 处理请求 ---')
+  const result = await system.handleRequest({
+    key: 'user:1',
+    clientId: 'client-1'
+  })
+  console.log('Result:', result)
+
+  console.log('\n--- 写入数据 ---')
+  await system.writeData('user:1', { id: 1, name: 'Alice' })
+
+  console.log('\n--- 健康检查 ---')
+  const health = await system.healthCheck()
+  console.log('Health status:', JSON.stringify(health, null, 2))
+}
+
+testComprehensiveRedundancySystem()
+```
+
+## 🔗 相关概念
+
+- **无状态服务**：不保存客户端上下文，易于水平扩展
+- **主从复制**：主节点处理写操作，从节点处理读操作
+- **多主复制**：多个主节点都可以处理写操作
+- **跨机房容灾**：在不同机房部署备份，应对机房级别故障
+- **异地多活**：多个机房同时提供服务，提升可用性和性能
+- **单元化架构**：按用户维度划分单元，减少跨单元调用
+- **数据一致性**：强一致性 vs 最终一致性
+- **故障转移**：主备切换，自动或手动
+- **故障恢复**：故障恢复后切回原主节点
+
+## 📚 学习检查点
+
+- [ ] 能否设计一个无状态服务？
+- [ ] 能否对比主从复制和多主复制的差异？
+- [ ] 能否设计跨机房容灾方案？
+- [ ] 能否设计异地多活架构？
+
+## 🚀 下一步
+
+→ [6.2.3 故障治理](/architect/06-system-design/02-high-availability/03-fault-management)

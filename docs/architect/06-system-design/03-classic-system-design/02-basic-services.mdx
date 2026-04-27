@@ -3,15 +3,1061 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-通过短链接服务、分布式 ID 生成器、秒杀系统和即时通讯系统等经典案例，讲解基础服务的系统设计方法。
+基础服务是构建复杂系统的基石。本节将通过短链接服务、分布式 ID 生成器、秒杀系统和即时通讯系统等经典案例，讲解基础服务的系统设计方法。
 
-## 🎯 学习目标
+## 🎯 短链接服务
 
-- 能够设计一个短链接服务（URL Shortener）
-- 掌握分布式 ID 生成器的多种方案（雪花算法等）
-- 理解秒杀系统的架构设计要点
-- 了解即时通讯系统的核心架构
+### 系统架构
 
-> 🚧 详细内容正在编写中...
+短链接服务将长 URL 转换为短链接，用户访问短链接时重定向到原始 URL。
+
+```js
+// 短链接服务
+class URLShortener {
+  constructor(config) {
+    this.storage = config.storage || new Map()
+    this.base62 = new Base62Encoder()
+    this.hashAlgorithm = config.hashAlgorithm || 'md5'
+    this.shortUrlLength = config.shortUrlLength || 7
+    this.baseUrl = config.baseUrl || 'https://short.ly/'
+  }
+
+  // 生成短链接
+  async shorten(longUrl) {
+    // 1. 检查是否已存在
+    const existing = await this.findExisting(longUrl)
+    if (existing) {
+      return existing
+    }
+
+    // 2. 生成唯一 ID
+    const id = await this.generateId()
+
+    // 3. 编码为短字符串
+    const shortCode = this.base62.encode(id)
+
+    // 4. 存储映射关系
+    const shortUrl = this.baseUrl + shortCode
+    await this.store(shortCode, longUrl)
+
+    return {
+      longUrl,
+      shortUrl,
+      shortCode,
+      createdAt: new Date().toISOString()
+    }
+  }
+
+  // 生成唯一 ID
+  async generateId() {
+    // 使用数据库自增 ID 或分布式 ID 生成器
+    const currentId = await this.getNextId()
+    return currentId
+  }
+
+  // 获取下一个 ID
+  async getNextId() {
+    // 模拟数据库自增 ID
+    const currentMaxId = this.storage.get('_max_id') || 0
+    const nextId = currentMaxId + 1
+    this.storage.set('_max_id', nextId)
+    return nextId
+  }
+
+  // 查找已存在的短链接
+  async findExisting(longUrl) {
+    for (const [shortCode, data] of this.storage.entries()) {
+      if (shortCode !== '_max_id' && data.longUrl === longUrl) {
+        return {
+          longUrl: data.longUrl,
+          shortUrl: this.baseUrl + shortCode,
+          shortCode,
+          createdAt: data.createdAt
+        }
+      }
+    }
+    return null
+  }
+
+  // 存储映射关系
+  async store(shortCode, longUrl) {
+    this.storage.set(shortCode, {
+      longUrl,
+      createdAt: new Date().toISOString()
+    })
+  }
+
+  // 解析短链接
+  async resolve(shortCode) {
+    const data = this.storage.get(shortCode)
+    if (!data) {
+      throw new Error('Short URL not found')
+    }
+    return data.longUrl
+  }
+}
+
+// Base62 编码器
+class Base62Encoder {
+  constructor() {
+    this.alphabet = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  }
+
+  encode(number) {
+    if (number === 0) return '0'
+    
+    let encoded = ''
+    while (number > 0) {
+      encoded = this.alphabet[number % 62] + encoded
+      number = Math.floor(number / 62)
+    }
+    
+    return encoded
+  }
+
+  decode(string) {
+    let decoded = 0
+    for (let i = 0; i < string.length; i++) {
+      const char = string[i]
+      const value = this.alphabet.indexOf(char)
+      decoded = decoded * 62 + value
+    }
+    return decoded
+  }
+}
+
+// 使用示例
+const shortener = new URLShortener({
+  baseUrl: 'https://short.ly/',
+  shortUrlLength: 7
+})
+
+// 生成短链接
+async function testURLShortener() {
+  const longUrl = 'https://example.com/very/long/path/to/some/resource'
+  const result = await shortener.shorten(longUrl)
+  console.log('Shorten result:', result)
+
+  // 解析短链接
+  const resolved = await shortener.resolve(result.shortCode)
+  console.log('Resolved URL:', resolved)
+
+  // 再次生成相同的长链接（应该返回相同的短链接）
+  const result2 = await shortener.shorten(longUrl)
+  console.log('Second shorten result:', result2)
+}
+
+testURLShortener()
+```
+
+### 分布式短链接服务
+
+```js
+// 分布式短链接服务
+class DistributedURLShortener {
+  constructor(config) {
+    this.idGenerator = config.idGenerator || new SnowflakeIDGenerator()
+    this.cache = config.cache || new Map()
+    this.database = config.database || new Map()
+    this.baseUrl = config.baseUrl || 'https://short.ly/'
+  }
+
+  // 生成短链接
+  async shorten(longUrl) {
+    // 1. 检查缓存
+    const cached = this.cache.get(longUrl)
+    if (cached) {
+      return cached
+    }
+
+    // 2. 检查数据库
+    const existing = await this.findInDatabase(longUrl)
+    if (existing) {
+      this.cache.set(longUrl, existing)
+      return existing
+    }
+
+    // 3. 生成分布式 ID
+    const id = this.idGenerator.generate()
+
+    // 4. 编码为短字符串
+    const shortCode = this.encodeId(id)
+
+    // 5. 存储到数据库
+    const shortUrl = this.baseUrl + shortCode
+    const record = {
+      id,
+      longUrl,
+      shortCode,
+      shortUrl,
+      createdAt: Date.now()
+    }
+    await this.saveToDatabase(record)
+
+    // 6. 更新缓存
+    this.cache.set(longUrl, record)
+    this.cache.set(shortCode, longUrl)
+
+    return record
+  }
+
+  // 编码 ID
+  encodeId(id) {
+    const base62 = new Base62Encoder()
+    return base62.encode(id)
+  }
+
+  // 解析短链接
+  async resolve(shortCode) {
+    // 1. 检查缓存
+    const cached = this.cache.get(shortCode)
+    if (cached) {
+      return cached
+    }
+
+    // 2. 查询数据库
+    const record = await this.findInDatabaseByShortCode(shortCode)
+    if (!record) {
+      throw new Error('Short URL not found')
+    }
+
+    // 3. 更新缓存
+    this.cache.set(shortCode, record.longUrl)
+
+    return record.longUrl
+  }
+
+  async findInDatabase(longUrl) {
+    // 模拟数据库查询
+    for (const record of this.database.values()) {
+      if (record.longUrl === longUrl) {
+        return record
+      }
+    }
+    return null
+  }
+
+  async findInDatabaseByShortCode(shortCode) {
+    // 模拟数据库查询
+    for (const record of this.database.values()) {
+      if (record.shortCode === shortCode) {
+        return record
+      }
+    }
+    return null
+  }
+
+  async saveToDatabase(record) {
+    this.database.set(record.id, record)
+  }
+}
+
+// 雪花 ID 生成器
+class SnowflakeIDGenerator {
+  constructor(workerId = 1, datacenterId = 1) {
+    this.workerId = workerId
+    this.datacenterId = datacenterId
+    this.sequence = 0
+    this.lastTimestamp = -1
+
+    // 各部分位数
+    this.workerIdBits = 5
+    this.datacenterIdBits = 5
+    this.sequenceBits = 12
+
+    // 最大值
+    this.maxWorkerId = -1 ^ (-1 << this.workerIdBits)
+    this.maxDatacenterId = -1 ^ (-1 << this.datacenterIdBits)
+    this.maxSequence = -1 ^ (-1 << this.sequenceBits)
+
+    // 位移
+    this.workerIdShift = this.sequenceBits
+    this.datacenterIdShift = this.sequenceBits + this.workerIdBits
+    this.timestampShift = this.sequenceBits + this.workerIdBits + this.datacenterIdBits
+  }
+
+  generate() {
+    let timestamp = Date.now()
+
+    if (timestamp < this.lastTimestamp) {
+      throw new Error('Clock moved backwards')
+    }
+
+    if (timestamp === this.lastTimestamp) {
+      this.sequence = (this.sequence + 1) & this.maxSequence
+      if (this.sequence === 0) {
+        timestamp = this.waitNextMillis(this.lastTimestamp)
+      }
+    } else {
+      this.sequence = 0
+    }
+
+    this.lastTimestamp = timestamp
+
+    return (
+      (timestamp << this.timestampShift) |
+      (this.datacenterId << this.datacenterIdShift) |
+      (this.workerId << this.workerIdShift) |
+      this.sequence
+    )
+  }
+
+  waitNextMillis(lastTimestamp) {
+    let timestamp = Date.now()
+    while (timestamp <= lastTimestamp) {
+      timestamp = Date.now()
+    }
+    return timestamp
+  }
+}
+
+// 使用示例
+const distributedShortener = new DistributedURLShortener({
+  baseUrl: 'https://short.ly/',
+  idGenerator: new SnowflakeIDGenerator(1, 1)
+})
+
+async function testDistributedURLShortener() {
+  const longUrl = 'https://example.com/very/long/path/to/some/resource'
+  const result = await distributedShortener.shorten(longUrl)
+  console.log('Distributed shorten result:', result)
+
+  const resolved = await distributedShortener.resolve(result.shortCode)
+  console.log('Resolved URL:', resolved)
+}
+
+testDistributedURLShortener()
+```
+
+## 🎯 分布式 ID 生成器
+
+### 雪花算法实现
+
+```js
+// 完整的雪花算法实现
+class Snowflake {
+  constructor(options = {}) {
+    this.workerId = options.workerId || 1
+    this.datacenterId = options.datacenterId || 1
+    this.sequence = 0
+    this.lastTimestamp = -1
+
+    // 时间戳起始点（2020-01-01）
+    this.epoch = 1577836800000
+
+    // 各部分位数
+    this.timestampBits = 41
+    this.workerIdBits = 5
+    this.datacenterIdBits = 5
+    this.sequenceBits = 12
+
+    // 最大值
+    this.maxWorkerId = (1 << this.workerIdBits) - 1
+    this.maxDatacenterId = (1 << this.datacenterIdBits) - 1
+    this.maxSequence = (1 << this.sequenceBits) - 1
+
+    // 位移
+    this.workerIdShift = this.sequenceBits
+    this.datacenterIdShift = this.sequenceBits + this.workerIdBits
+    this.timestampShift = this.sequenceBits + this.workerIdBits + this.datacenterIdBits
+
+    // 验证参数
+    if (this.workerId > this.maxWorkerId || this.workerId < 0) {
+      throw new Error(`workerId must be between 0 and ${this.maxWorkerId}`)
+    }
+    if (this.datacenterId > this.maxDatacenterId || this.datacenterId < 0) {
+      throw new Error(`datacenterId must be between 0 and ${this.maxDatacenterId}`)
+    }
+  }
+
+  // 生成 ID
+  nextId() {
+    let timestamp = this.getCurrentTimestamp()
+
+    // 时钟回拨检测
+    if (timestamp < this.lastTimestamp) {
+      const offset = this.lastTimestamp - timestamp
+      if (offset <= 5) {
+        // 小幅度回拨，等待
+        timestamp = this.waitNextMillis(this.lastTimestamp)
+      } else {
+        throw new Error(`Clock moved backwards. Refusing to generate ID for ${offset} milliseconds`)
+      }
+    }
+
+    // 同一毫秒内
+    if (timestamp === this.lastTimestamp) {
+      this.sequence = (this.sequence + 1) & this.maxSequence
+      if (this.sequence === 0) {
+        // 序列号溢出，等待下一毫秒
+        timestamp = this.waitNextMillis(this.lastTimestamp)
+      }
+    } else {
+      // 新的毫秒，重置序列号
+      this.sequence = 0
+    }
+
+    this.lastTimestamp = timestamp
+
+    // 组装 ID
+    return (
+      ((timestamp - this.epoch) << this.timestampShift) |
+      (this.datacenterId << this.datacenterIdShift) |
+      (this.workerId << this.workerIdShift) |
+      this.sequence
+    )
+  }
+
+  // 获取当前时间戳
+  getCurrentTimestamp() {
+    return Date.now()
+  }
+
+  // 等待下一毫秒
+  waitNextMillis(lastTimestamp) {
+    let timestamp = this.getCurrentTimestamp()
+    while (timestamp <= lastTimestamp) {
+      timestamp = this.getCurrentTimestamp()
+    }
+    return timestamp
+  }
+
+  // 解析 ID
+  parseId(id) {
+    const timestamp = (id >> this.timestampShift) + this.epoch
+    const datacenterId = (id >> this.datacenterIdShift) & this.maxDatacenterId
+    const workerId = (id >> this.workerIdShift) & this.maxWorkerId
+    const sequence = id & this.maxSequence
+
+    return {
+      timestamp: new Date(timestamp),
+      datacenterId,
+      workerId,
+      sequence
+    }
+  }
+}
+
+// 使用示例
+const snowflake = new Snowflake({
+  workerId: 1,
+  datacenterId: 1
+})
+
+// 生成 ID
+console.log('Generated IDs:')
+for (let i = 0; i < 10; i++) {
+  const id = snowflake.nextId()
+  console.log(`ID ${i + 1}:`, id)
+  console.log('Parsed:', snowflake.parseId(id))
+}
+```
+
+### UUID 生成器
+
+```js
+// UUID v4 生成器
+class UUIDGenerator {
+  // 生成 UUID v4
+  static generate() {
+    const bytes = new Uint8Array(16)
+    
+    // 生成随机字节
+    for (let i = 0; i < 16; i++) {
+      bytes[i] = Math.floor(Math.random() * 256)
+    }
+    
+    // 设置版本和变体
+    bytes[6] = (bytes[6] & 0x0f) | 0x40  // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80  // variant 1
+    
+    // 转换为字符串
+    const hex = Array.from(bytes)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('')
+    
+    return [
+      hex.substr(0, 8),
+      hex.substr(8, 4),
+      hex.substr(12, 4),
+      hex.substr(16, 4),
+      hex.substr(20, 12)
+    ].join('-')
+  }
+
+  // 生成批量 UUID
+  static generateBatch(count) {
+    const uuids = []
+    for (let i = 0; i < count; i++) {
+      uuids.push(this.generate())
+    }
+    return uuids
+  }
+}
+
+// 使用示例
+console.log('Generated UUIDs:')
+for (let i = 0; i < 5; i++) {
+  console.log(UUIDGenerator.generate())
+}
+
+console.log('\nBatch UUIDs:')
+console.log(UUIDGenerator.generateBatch(3))
+```
+
+## 🎯 秒杀系统
+
+### 系统架构
+
+秒杀系统需要处理极高并发，同时保证数据一致性。
+
+```js
+// 秒杀系统
+class SeckillSystem {
+  constructor(config) {
+    this.redis = config.redis || new Map()
+    this.database = config.database || new Map()
+    this.messageQueue = config.messageQueue || new MessageQueue()
+    this.rateLimiter = config.rateLimiter || new RateLimiter()
+  }
+
+  // 预热库存
+  async warmupStock(productId, stock) {
+    const key = `stock:${productId}`
+    this.redis.set(key, stock)
+    console.log(`[Seckill] Warmed up stock for product ${productId}: ${stock}`)
+  }
+
+  // 秒杀下单
+  async seckill(userId, productId) {
+    // 1. 限流
+    const allowed = await this.rateLimiter.allow(userId)
+    if (!allowed) {
+      throw new Error('Rate limit exceeded')
+    }
+
+    // 2. 检查库存（Redis）
+    const stockKey = `stock:${productId}`
+    const stock = parseInt(this.redis.get(stockKey) || 0)
+
+    if (stock <= 0) {
+      throw new Error('Out of stock')
+    }
+
+    // 3. 扣减库存（Redis 原子操作）
+    const newStock = parseInt(this.redis.get(stockKey)) - 1
+    this.redis.set(stockKey, newStock)
+
+    if (newStock < 0) {
+      throw new Error('Out of stock')
+    }
+
+    // 4. 发送消息到队列（异步处理）
+    await this.messageQueue.send({
+      type: 'seckill_order',
+      userId,
+      productId,
+      timestamp: Date.now()
+    })
+
+    return {
+      success: true,
+      message: 'Order created successfully'
+    }
+  }
+
+  // 处理订单（异步）
+  async processOrder(message) {
+    const { userId, productId } = message
+
+    // 1. 创建订单记录
+    const order = {
+      id: this.generateOrderId(),
+      userId,
+      productId,
+      status: 'pending',
+      createdAt: Date.now()
+    }
+
+    // 2. 保存到数据库
+    this.database.set(order.id, order)
+
+    // 3. 更新订单状态
+    order.status = 'completed'
+    this.database.set(order.id, order)
+
+    console.log(`[Seckill] Order processed: ${order.id}`)
+    return order
+  }
+
+  // 查询订单
+  async getOrder(orderId) {
+    return this.database.get(orderId)
+  }
+
+  // 查询库存
+  async getStock(productId) {
+    const stockKey = `stock:${productId}`
+    return parseInt(this.redis.get(stockKey) || 0)
+  }
+
+  generateOrderId() {
+    return `order_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  }
+}
+
+// 限流器
+class RateLimiter {
+  constructor() {
+    this.requests = new Map()
+    this.limit = 10  // 每分钟 10 次请求
+    this.window = 60000  // 1 分钟
+  }
+
+  async allow(userId) {
+    const now = Date.now()
+    const userRequests = this.requests.get(userId) || []
+
+    // 清理过期请求
+    const validRequests = userRequests.filter(
+      timestamp => now - timestamp < this.window
+    )
+
+    if (validRequests.length >= this.limit) {
+      return false
+    }
+
+    validRequests.push(now)
+    this.requests.set(userId, validRequests)
+    return true
+  }
+}
+
+// 消息队列（模拟）
+class MessageQueue {
+  constructor() {
+    this.queue = []
+    this.consumers = []
+  }
+
+  async send(message) {
+    this.queue.push(message)
+    console.log(`[Queue] Message sent:`, message.type)
+  }
+
+  async consume() {
+    return this.queue.shift()
+  }
+
+  registerConsumer(consumer) {
+    this.consumers.push(consumer)
+  }
+
+  async startConsuming() {
+    setInterval(async () => {
+      const message = await this.consume()
+      if (message) {
+        for (const consumer of this.consumers) {
+          await consumer(message)
+        }
+      }
+    }, 100)
+  }
+}
+
+// 使用示例
+async function testSeckillSystem() {
+  const seckill = new SeckillSystem({
+    redis: new Map(),
+    database: new Map(),
+    messageQueue: new MessageQueue(),
+    rateLimiter: new RateLimiter()
+  })
+
+  // 预热库存
+  await seckill.warmupStock('product_001', 100)
+
+  // 注册订单处理器
+  seckill.messageQueue.registerConsumer(async (message) => {
+    if (message.type === 'seckill_order') {
+      await seckill.processOrder(message)
+    }
+  })
+
+  // 启动消费
+  seckill.messageQueue.startConsuming()
+
+  // 模拟秒杀
+  console.log('\n--- 开始秒杀 ---')
+  for (let i = 1; i <= 150; i++) {
+    const userId = `user_${i}`
+    try {
+      const result = await seckill.seckill(userId, 'product_001')
+      console.log(`User ${userId}: ${result.message}`)
+    } catch (error) {
+      console.log(`User ${userId}: ${error.message}`)
+    }
+  }
+
+  // 等待订单处理完成
+  await new Promise(resolve => setTimeout(resolve, 2000))
+
+  // 查询库存
+  const stock = await seckill.getStock('product_001')
+  console.log(`\nRemaining stock: ${stock}`)
+}
+
+testSeckillSystem()
+```
+
+## 🎯 即时通讯系统
+
+### WebSocket 通讯
+
+```js
+// 即时通讯系统
+class ChatSystem {
+  constructor(config) {
+    this.rooms = new Map()
+    this.users = new Map()
+    this.messageHistory = new Map()
+  }
+
+  // 用户连接
+  connect(userId, socket) {
+    this.users.set(userId, {
+      id: userId,
+      socket,
+      rooms: new Set(),
+      connectedAt: Date.now()
+    })
+    console.log(`[Chat] User ${userId} connected`)
+  }
+
+  // 用户断开
+  disconnect(userId) {
+    const user = this.users.get(userId)
+    if (user) {
+      // 退出所有房间
+      for (const roomId of user.rooms) {
+        this.leaveRoom(userId, roomId)
+      }
+      this.users.delete(userId)
+      console.log(`[Chat] User ${userId} disconnected`)
+    }
+  }
+
+  // 加入房间
+  joinRoom(userId, roomId) {
+    const user = this.users.get(userId)
+    if (!user) {
+      throw new Error('User not found')
+    }
+
+    // 创建房间（如果不存在）
+    if (!this.rooms.has(roomId)) {
+      this.rooms.set(roomId, {
+        id: roomId,
+        users: new Set(),
+        createdAt: Date.now()
+      })
+      this.messageHistory.set(roomId, [])
+    }
+
+    const room = this.rooms.get(roomId)
+    room.users.add(userId)
+    user.rooms.add(roomId)
+
+    // 广播用户加入
+    this.broadcastToRoom(roomId, {
+      type: 'user_joined',
+      userId,
+      timestamp: Date.now()
+    })
+
+    console.log(`[Chat] User ${userId} joined room ${roomId}`)
+  }
+
+  // 离开房间
+  leaveRoom(userId, roomId) {
+    const user = this.users.get(userId)
+    const room = this.rooms.get(roomId)
+
+    if (user && room) {
+      room.users.delete(userId)
+      user.rooms.delete(roomId)
+
+      // 广播用户离开
+      this.broadcastToRoom(roomId, {
+        type: 'user_left',
+        userId,
+        timestamp: Date.now()
+      })
+
+      // 如果房间为空，删除房间
+      if (room.users.size === 0) {
+        this.rooms.delete(roomId)
+        this.messageHistory.delete(roomId)
+      }
+
+      console.log(`[Chat] User ${userId} left room ${roomId}`)
+    }
+  }
+
+  // 发送消息
+  sendMessage(userId, roomId, content) {
+    const user = this.users.get(userId)
+    const room = this.rooms.get(roomId)
+
+    if (!user) {
+      throw new Error('User not found')
+    }
+    if (!room) {
+      throw new Error('Room not found')
+    }
+
+    const message = {
+      id: this.generateMessageId(),
+      type: 'message',
+      userId,
+      roomId,
+      content,
+      timestamp: Date.now()
+    }
+
+    // 保存消息历史
+    const history = this.messageHistory.get(roomId) || []
+    history.push(message)
+    this.messageHistory.set(roomId, history)
+
+    // 广播消息
+    this.broadcastToRoom(roomId, message)
+
+    return message
+  }
+
+  // 广播消息到房间
+  broadcastToRoom(roomId, message) {
+    const room = this.rooms.get(roomId)
+    if (!room) return
+
+    for (const userId of room.users) {
+      const user = this.users.get(userId)
+      if (user && user.socket) {
+        user.socket.send(JSON.stringify(message))
+      }
+    }
+  }
+
+  // 获取消息历史
+  getMessageHistory(roomId, limit = 50) {
+    const history = this.messageHistory.get(roomId) || []
+    return history.slice(-limit)
+  }
+
+  // 获取房间信息
+  getRoomInfo(roomId) {
+    const room = this.rooms.get(roomId)
+    if (!room) {
+      throw new Error('Room not found')
+    }
+
+    return {
+      id: roomId,
+      userCount: room.users.size,
+      users: Array.from(room.users)
+    }
+  }
+
+  generateMessageId() {
+    return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  }
+}
+
+// 模拟 WebSocket
+class MockWebSocket {
+  constructor(userId) {
+    this.userId = userId
+    this.messages = []
+  }
+
+  send(message) {
+    this.messages.push(JSON.parse(message))
+    console.log(`[Socket ${this.userId}] Received:`, JSON.parse(message))
+  }
+}
+
+// 使用示例
+async function testChatSystem() {
+  const chat = new ChatSystem()
+
+  // 创建用户连接
+  const socket1 = new MockWebSocket('user1')
+  const socket2 = new MockWebSocket('user2')
+  const socket3 = new MockWebSocket('user3')
+
+  chat.connect('user1', socket1)
+  chat.connect('user2', socket2)
+  chat.connect('user3', socket3)
+
+  // 加入房间
+  chat.joinRoom('user1', 'room1')
+  chat.joinRoom('user2', 'room1')
+  chat.joinRoom('user3', 'room1')
+
+  // 发送消息
+  console.log('\n--- 发送消息 ---')
+  chat.sendMessage('user1', 'room1', 'Hello everyone!')
+  chat.sendMessage('user2', 'room1', 'Hi there!')
+  chat.sendMessage('user3', 'room1', 'Nice to meet you!')
+
+  // 查看消息历史
+  console.log('\n--- 消息历史 ---')
+  const history = chat.getMessageHistory('room1')
+  console.log('Message history:', history)
+
+  // 查看房间信息
+  console.log('\n--- 房间信息 ---')
+  const roomInfo = chat.getRoomInfo('room1')
+  console.log('Room info:', roomInfo)
+
+  // 用户离开
+  console.log('\n--- 用户离开 ---')
+  chat.leaveRoom('user3', 'room1')
+  const roomInfo2 = chat.getRoomInfo('room1')
+  console.log('Room info after user3 left:', roomInfo2)
+}
+
+testChatSystem()
+```
+
+## 📝 实际应用示例
+
+### 综合基础服务系统
+
+```js
+// 综合基础服务系统
+class BasicServices {
+  constructor(config) {
+    this.urlShortener = new DistributedURLShortener(config.urlShortener)
+    this.idGenerator = new Snowflake(config.idGenerator)
+    this.seckill = new SeckillSystem(config.seckill)
+    this.chat = new ChatSystem()
+  }
+
+  // 短链接服务
+  async shortenUrl(longUrl) {
+    return await this.urlShortener.shorten(longUrl)
+  }
+
+  async resolveUrl(shortCode) {
+    return await this.urlShortener.resolve(shortCode)
+  }
+
+  // ID 生成
+  generateId() {
+    return this.idGenerator.nextId()
+  }
+
+  // 秒杀服务
+  async seckillProduct(userId, productId) {
+    return await this.seckill.seckill(userId, productId)
+  }
+
+  async getSeckillStock(productId) {
+    return await this.seckill.getStock(productId)
+  }
+
+  // 聊天服务
+  connectChat(userId, socket) {
+    this.chat.connect(userId, socket)
+  }
+
+  disconnectChat(userId) {
+    this.chat.disconnect(userId)
+  }
+
+  joinChatRoom(userId, roomId) {
+    this.chat.joinRoom(userId, roomId)
+  }
+
+  sendChatMessage(userId, roomId, content) {
+    return this.chat.sendMessage(userId, roomId, content)
+  }
+}
+
+// 使用示例
+async function testBasicServices() {
+  const services = new BasicServices({
+    urlShortener: {
+      baseUrl: 'https://short.ly/',
+      idGenerator: new SnowflakeIDGenerator(1, 1)
+    },
+    idGenerator: {
+      workerId: 1,
+      datacenterId: 1
+    },
+    seckill: {
+      redis: new Map(),
+      database: new Map(),
+      messageQueue: new MessageQueue(),
+      rateLimiter: new RateLimiter()
+    }
+  })
+
+  // 测试短链接服务
+  console.log('--- 短链接服务 ---')
+  const shortUrl = await services.shortenUrl('https://example.com/very/long/url')
+  console.log('Short URL:', shortUrl)
+
+  // 测试 ID 生成
+  console.log('\n--- ID 生成 ---')
+  const id1 = services.generateId()
+  const id2 = services.generateId()
+  console.log('Generated IDs:', id1, id2)
+
+  // 测试秒杀服务
+  console.log('\n--- 秒杀服务 ---')
+  await services.seckill.warmupStock('product_001', 10)
+  const seckillResult = await services.seckillProduct('user1', 'product_001')
+  console.log('Seckill result:', seckillResult)
+  const stock = await services.getSeckillStock('product_001')
+  console.log('Remaining stock:', stock)
+
+  // 测试聊天服务
+  console.log('\n--- 聊天服务 ---')
+  const socket1 = new MockWebSocket('user1')
+  const socket2 = new MockWebSocket('user2')
+  services.connectChat('user1', socket1)
+  services.connectChat('user2', socket2)
+  services.joinChatRoom('user1', 'room1')
+  services.joinChatRoom('user2', 'room1')
+  services.sendChatMessage('user1', 'room1', 'Hello!')
+}
+
+testBasicServices()
+```
+
+## 🔗 相关概念
+
+- **短链接服务**：将长 URL 转换为短链接，支持重定向
+- **分布式 ID**：在分布式环境下生成唯一 ID
+- **雪花算法**：基于时间戳、机器 ID 和序列号的分布式 ID 生成算法
+- **秒杀系统**：处理极高并发的限时抢购系统
+- **即时通讯**：基于 WebSocket 的实时消息传递系统
+- **限流**：控制请求频率，防止系统过载
+- **消息队列**：异步处理，解耦系统组件
+- **WebSocket**：全双工通讯协议，支持实时推送
+
+## 📚 学习检查点
+
+- [ ] 能否设计一个短链接服务？
+- [ ] 能否实现雪花算法生成分布式 ID？
+- [ ] 能否设计一个秒杀系统？
+- [ ] 能否实现一个即时通讯系统？
+
+## 🚀 下一步
+
+→ [6.3.3 复杂系统设计](/architect/06-system-design/03-classic-system-design/03-complex-systems)

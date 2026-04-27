@@ -3,15 +3,662 @@
 > **版本**：v1.0
 > **最后更新**：2026-04-24
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解高并发场景下的流量控制技术，包括令牌桶/漏桶算法、分布式限流、流量整形和峰值应对方案。
+流量控制是保护系统免受突发流量冲击的关键技术。本节将深入讲解令牌桶/漏桶算法、分布式限流、流量整形和峰值应对方案。
 
-## 🎯 学习目标
+## 🎯 令牌桶算法
 
-- 掌握令牌桶和漏桶算法的原理与实现
-- 理解分布式限流的实现方案
-- 掌握流量整形的策略设计
-- 能够设计完整的峰值流量应对方案
+### 令牌桶原理
 
-> 🚧 详细内容正在编写中...
+令牌桶算法以固定速率向桶中添加令牌，请求到来时从桶中获取令牌，获取成功则通过，否则拒绝。
+
+```js
+// 令牌桶实现
+class TokenBucket {
+  constructor(capacity, refillRate) {
+    this.capacity = capacity          // 桶容量（最大令牌数）
+    this.tokens = capacity            // 当前令牌数
+    this.refillRate = refillRate      // 令牌补充速率（令牌/秒）
+    this.lastRefillTime = Date.now()  // 上次补充时间
+  }
+
+  // 尝试获取令牌
+  tryConsume(tokens = 1) {
+    this.refill()
+    
+    if (this.tokens >= tokens) {
+      this.tokens -= tokens
+      return true
+    }
+    
+    return false
+  }
+
+  // 补充令牌
+  refill() {
+    const now = Date.now()
+    const elapsed = (now - this.lastRefillTime) / 1000  // 转换为秒
+    
+    if (elapsed > 0) {
+      const tokensToAdd = Math.min(
+        elapsed * this.refillRate,
+        this.capacity - this.tokens
+      )
+      
+      this.tokens += tokensToAdd
+      this.lastRefillTime = now
+    }
+  }
+
+  // 获取当前令牌数
+  getAvailableTokens() {
+    this.refill()
+    return this.tokens
+  }
+}
+
+// 使用示例
+const bucket = new TokenBucket(10, 2)  // 容量10，每秒补充2个令牌
+
+// 模拟请求
+for (let i = 0; i < 20; i++) {
+  const allowed = bucket.tryConsume(1)
+  console.log(`Request ${i}: ${allowed ? 'ALLOWED' : 'REJECTED'}, tokens: ${bucket.getAvailableTokens()}`)
+  
+  // 每100ms一个请求
+  if (i < 19) {
+    const wait = new Promise(resolve => setTimeout(resolve, 100))
+    await wait
+  }
+}
+```
+
+### 令牌桶限流器
+
+```js
+// 令牌桶限流器
+class RateLimiter {
+  constructor(options) {
+    this.bucket = new TokenBucket(
+      options.capacity,
+      options.refillRate
+    )
+    this.waitingQueue = []
+  }
+
+  // 请求限流（阻塞式）
+  async acquire(tokens = 1, timeout = 5000) {
+    const startTime = Date.now()
+    
+    while (Date.now() - startTime < timeout) {
+      if (this.bucket.tryConsume(tokens)) {
+        return true
+      }
+      
+      // 等待一小段时间后重试
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    
+    return false
+  }
+
+  // 请求限流（非阻塞式）
+  tryAcquire(tokens = 1) {
+    return this.bucket.tryConsume(tokens)
+  }
+}
+
+// 使用示例
+async function testRateLimiter() {
+  const limiter = new RateLimiter({
+    capacity: 5,
+    refillRate: 1  // 每秒补充1个令牌
+  })
+
+  console.log('--- 非阻塞式限流 ---')
+  for (let i = 0; i < 10; i++) {
+    const allowed = limiter.tryAcquire(1)
+    console.log(`Request ${i}: ${allowed ? 'ALLOWED' : 'REJECTED'}`)
+  }
+
+  console.log('\n--- 阻塞式限流 ---')
+  for (let i = 0; i < 10; i++) {
+    const allowed = await limiter.acquire(1, 3000)
+    console.log(`Request ${i}: ${allowed ? 'ALLOWED' : 'TIMEOUT'}`)
+  }
+}
+
+testRateLimiter()
+```
+
+## 🎯 漏桶算法
+
+### 漏桶原理
+
+漏桶算法以固定速率处理请求，请求先进入桶中，桶满则拒绝，确保输出速率恒定。
+
+```js
+// 漏桶实现
+class LeakyBucket {
+  constructor(capacity, leakRate) {
+    this.capacity = capacity        // 桶容量
+    this.queue = []                 // 请求队列
+    this.leakRate = leakRate        // 泄漏速率（请求/秒）
+    this.lastLeakTime = Date.now()  // 上次泄漏时间
+    this.leaking = false            // 是否正在泄漏
+  }
+
+  // 添加请求到桶中
+  add(request) {
+    if (this.queue.length >= this.capacity) {
+      return false  // 桶满，拒绝
+    }
+    
+    this.queue.push(request)
+    this.startLeaking()
+    return true
+  }
+
+  // 开始泄漏
+  startLeaking() {
+    if (!this.leaking) {
+      this.leaking = true
+      this.leak()
+    }
+  }
+
+  // 泄漏处理
+  async leak() {
+    while (this.queue.length > 0) {
+      const now = Date.now()
+      const elapsed = (now - this.lastLeakTime) / 1000
+      
+      if (elapsed >= 1 / this.leakRate) {
+        // 处理请求
+        const request = this.queue.shift()
+        this.processRequest(request)
+        this.lastLeakTime = now
+      } else {
+        // 等待下一个处理时间
+        const waitTime = (1 / this.leakRate - elapsed) * 1000
+        await new Promise(resolve => setTimeout(resolve, waitTime))
+      }
+    }
+    
+    this.leaking = false
+  }
+
+  // 处理请求
+  processRequest(request) {
+    console.log(`Processing request: ${request.id}`)
+  }
+}
+
+// 使用示例
+async function testLeakyBucket() {
+  const bucket = new LeakyBucket(5, 2)  // 容量5，每秒处理2个请求
+
+  // 模拟突发流量
+  for (let i = 0; i < 10; i++) {
+    const allowed = bucket.add({ id: i })
+    console.log(`Request ${i}: ${allowed ? 'QUEUED' : 'REJECTED'}, queue size: ${bucket.queue.length}`)
+  }
+
+  // 等待处理完成
+  await new Promise(resolve => setTimeout(resolve, 5000))
+}
+
+testLeakyBucket()
+```
+
+## 🎯 滑动窗口算法
+
+### 固定窗口 vs 滑动窗口
+
+```js
+// 固定窗口计数器
+class FixedWindowCounter {
+  constructor(windowSize, maxRequests) {
+    this.windowSize = windowSize      // 窗口大小（毫秒）
+    this.maxRequests = maxRequests    // 最大请求数
+    this.currentCount = 0             // 当前计数
+    this.windowStart = Date.now()     // 窗口开始时间
+  }
+
+  allowRequest() {
+    const now = Date.now()
+    
+    // 检查是否需要重置窗口
+    if (now - this.windowStart >= this.windowSize) {
+      this.currentCount = 0
+      this.windowStart = now
+    }
+    
+    // 检查是否超过限制
+    if (this.currentCount < this.maxRequests) {
+      this.currentCount++
+      return true
+    }
+    
+    return false
+  }
+}
+
+// 滑动窗口计数器
+class SlidingWindowCounter {
+  constructor(windowSize, maxRequests) {
+    this.windowSize = windowSize      // 窗口大小（毫秒）
+    this.maxRequests = maxRequests    // 最大请求数
+    this.requests = []                // 请求时间戳列表
+  }
+
+  allowRequest() {
+    const now = Date.now()
+    
+    // 移除窗口外的请求
+    this.requests = this.requests.filter(
+      timestamp => now - timestamp < this.windowSize
+    )
+    
+    // 检查是否超过限制
+    if (this.requests.length < this.maxRequests) {
+      this.requests.push(now)
+      return true
+    }
+    
+    return false
+  }
+
+  // 获取当前窗口内的请求数
+  getCurrentCount() {
+    const now = Date.now()
+    return this.requests.filter(
+      timestamp => now - timestamp < this.windowSize
+    ).length
+  }
+}
+
+// 使用示例
+async function compareAlgorithms() {
+  const fixed = new FixedWindowCounter(1000, 5)
+  const sliding = new SlidingWindowCounter(1000, 5)
+
+  console.log('--- 固定窗口算法 ---')
+  for (let i = 0; i < 15; i++) {
+    const allowed = fixed.allowRequest()
+    console.log(`Request ${i}: ${allowed ? 'ALLOWED' : 'REJECTED'}`)
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+
+  console.log('\n--- 滑动窗口算法 ---')
+  for (let i = 0; i < 15; i++) {
+    const allowed = sliding.allowRequest()
+    console.log(`Request ${i}: ${allowed ? 'ALLOWED' : 'REJECTED'}, count: ${sliding.getCurrentCount()}`)
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+}
+
+compareAlgorithms()
+```
+
+## 🎯 分布式限流
+
+### Redis 分布式限流
+
+```js
+// Redis 分布式限流器（模拟）
+class RedisRateLimiter {
+  constructor(redis, key, maxRequests, windowSize) {
+    this.redis = redis
+    this.key = key
+    this.maxRequests = maxRequests
+    this.windowSize = windowSize
+  }
+
+  // 使用 Lua 脚本保证原子性
+  async allowRequest() {
+    const luaScript = `
+      local key = KEYS[1]
+      local now = tonumber(ARGV[1])
+      local windowSize = tonumber(ARGV[2])
+      local maxRequests = tonumber(ARGV[3])
+      
+      -- 移除窗口外的请求
+      redis.call('ZREMRANGEBYSCORE', key, '-inf', now - windowSize)
+      
+      -- 获取当前请求数
+      local current = redis.call('ZCARD', key)
+      
+      if current < maxRequests then
+        -- 添加当前请求
+        redis.call('ZADD', key, now, now)
+        -- 设置过期时间
+        redis.call('EXPIRE', key, math.ceil(windowSize / 1000))
+        return 1
+      else
+        return 0
+      end
+    `
+
+    const now = Date.now()
+    const result = await this.redis.eval(
+      luaScript,
+      1,
+      this.key,
+      now,
+      this.windowSize,
+      this.maxRequests
+    )
+
+    return result === 1
+  }
+}
+
+// 模拟 Redis 客户端
+class MockRedis {
+  constructor() {
+    this.data = new Map()
+  }
+
+  async eval(script, numKeys, key, ...args) {
+    // 简化实现：直接在内存中执行
+    if (script.includes('ZREMRANGEBYSCORE')) {
+      const now = args[0]
+      const windowSize = args[1]
+      const sortedSet = this.data.get(key) || []
+      const filtered = sortedSet.filter(item => item.score >= now - windowSize)
+      this.data.set(key, filtered)
+    } else if (script.includes('ZCARD')) {
+      const sortedSet = this.data.get(key) || []
+      return sortedSet.length
+    } else if (script.includes('ZADD')) {
+      const now = args[2]
+      const sortedSet = this.data.get(key) || []
+      sortedSet.push({ score: now, value: now })
+      this.data.set(key, sortedSet)
+    } else if (script.includes('EXPIRE')) {
+      // 模拟过期时间设置
+    }
+    
+    // 返回允许/拒绝
+    const sortedSet = this.data.get(key) || []
+    const maxRequests = args[3]
+    return sortedSet.length < maxRequests ? 1 : 0
+  }
+}
+
+// 使用示例
+async function testDistributedRateLimiter() {
+  const redis = new MockRedis()
+  const limiter = new RedisRateLimiter(
+    redis,
+    'rate_limit:user:123',
+    10,
+    1000
+  )
+
+  console.log('--- 分布式限流 ---')
+  for (let i = 0; i < 15; i++) {
+    const allowed = await limiter.allowRequest()
+    console.log(`Request ${i}: ${allowed ? 'ALLOWED' : 'REJECTED'}`)
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+}
+
+testDistributedRateLimiter()
+```
+
+## 🎯 流量整形
+
+### 流量整形策略
+
+```js
+// 流量整形器
+class TrafficShaper {
+  constructor(config) {
+    this.burstLimiter = new TokenBucket(
+      config.burstCapacity,
+      config.burstRefillRate
+    )
+    this.sustainedLimiter = new TokenBucket(
+      config.sustainedCapacity,
+      config.sustainedRefillRate
+    )
+    this.priorityQueue = new PriorityQueue()
+  }
+
+  // 请求整形
+  async shapeRequest(request, priority = 0) {
+    // 先检查突发限流
+    if (!this.burstLimiter.tryConsume(1)) {
+      // 检查持续限流
+      if (!this.sustainedLimiter.tryConsume(1)) {
+        // 加入优先级队列等待
+        return this.priorityQueue.enqueue(request, priority)
+      }
+    }
+
+    return request
+  }
+
+  // 处理队列中的请求
+  processQueue() {
+    while (!this.priorityQueue.isEmpty()) {
+      if (this.burstLimiter.tryConsume(1)) {
+        const request = this.priorityQueue.dequeue()
+        this.processRequest(request)
+      } else {
+        break
+      }
+    }
+  }
+
+  processRequest(request) {
+    console.log(`Processing shaped request: ${request.id}`)
+  }
+}
+
+// 优先级队列
+class PriorityQueue {
+  constructor() {
+    this.items = []
+  }
+
+  enqueue(item, priority) {
+    this.items.push({ item, priority })
+    this.items.sort((a, b) => b.priority - a.priority)
+  }
+
+  dequeue() {
+    return this.items.shift()?.item
+  }
+
+  isEmpty() {
+    return this.items.length === 0
+  }
+}
+
+// 使用示例
+async function testTrafficShaper() {
+  const shaper = new TrafficShaper({
+    burstCapacity: 5,
+    burstRefillRate: 2,
+    sustainedCapacity: 10,
+    sustainedRefillRate: 1
+  })
+
+  // 模拟不同优先级的请求
+  const requests = [
+    { id: 1, priority: 1 },
+    { id: 2, priority: 3 },
+    { id: 3, priority: 2 },
+    { id: 4, priority: 1 },
+    { id: 5, priority: 3 }
+  ]
+
+  for (const req of requests) {
+    const result = await shaper.shapeRequest(req, req.priority)
+    if (result === req) {
+      console.log(`Request ${req.id}: Processed immediately`)
+    } else {
+      console.log(`Request ${req.id}: Queued (priority ${req.priority})`)
+    }
+  }
+
+  // 处理队列
+  shaper.processQueue()
+}
+
+testTrafficShaper()
+```
+
+## 📝 实际应用示例
+
+### 综合流量控制系统
+
+```js
+// 综合流量控制系统
+class TrafficControlSystem {
+  constructor(config) {
+    this.tokenBucket = new TokenBucket(
+      config.tokenBucket.capacity,
+      config.tokenBucket.refillRate
+    )
+    this.leakyBucket = new LeakyBucket(
+      config.leakyBucket.capacity,
+      config.leakyBucket.leakRate
+    )
+    this.slidingWindow = new SlidingWindowCounter(
+      config.slidingWindow.windowSize,
+      config.slidingWindow.maxRequests
+    )
+    this.circuitBreaker = new CircuitBreaker(
+      config.circuitBreaker.threshold,
+      config.circuitBreaker.timeout
+    )
+  }
+
+  // 处理请求
+  async handleRequest(request) {
+    // 1. 令牌桶限流（突发流量控制）
+    if (!this.tokenBucket.tryConsume(1)) {
+      return { status: 'rejected', reason: 'token_bucket_limit' }
+    }
+
+    // 2. 滑动窗口限流（精确限流）
+    if (!this.slidingWindow.allowRequest()) {
+      return { status: 'rejected', reason: 'sliding_window_limit' }
+    }
+
+    // 3. 熔断器检查
+    if (!this.circuitBreaker.allowRequest()) {
+      return { status: 'rejected', reason: 'circuit_breaker_open' }
+    }
+
+    // 4. 漏桶流量整形
+    if (!this.leakyBucket.add(request)) {
+      return { status: 'rejected', reason: 'leaky_bucket_full' }
+    }
+
+    return { status: 'accepted' }
+  }
+
+  // 记录成功
+  recordSuccess() {
+    this.circuitBreaker.recordSuccess()
+  }
+
+  // 记录失败
+  recordFailure() {
+    this.circuitBreaker.recordFailure()
+  }
+}
+
+// 熔断器
+class CircuitBreaker {
+  constructor(threshold, timeout) {
+    this.threshold = threshold    // 失败阈值
+    this.timeout = timeout        // 熔断超时时间（毫秒）
+    this.failureCount = 0         // 失败计数
+    this.state = 'CLOSED'         // 状态：CLOSED, OPEN, HALF_OPEN
+    this.lastFailureTime = null   // 上次失败时间
+  }
+
+  allowRequest() {
+    if (this.state === 'OPEN') {
+      if (Date.now() - this.lastFailureTime >= this.timeout) {
+        this.state = 'HALF_OPEN'
+        return true
+      }
+      return false
+    }
+    return true
+  }
+
+  recordSuccess() {
+    this.failureCount = 0
+    if (this.state === 'HALF_OPEN') {
+      this.state = 'CLOSED'
+    }
+  }
+
+  recordFailure() {
+    this.failureCount++
+    this.lastFailureTime = Date.now()
+    
+    if (this.failureCount >= this.threshold) {
+      this.state = 'OPEN'
+    }
+  }
+}
+
+// 使用示例
+async function testTrafficControlSystem() {
+  const system = new TrafficControlSystem({
+    tokenBucket: { capacity: 10, refillRate: 2 },
+    leakyBucket: { capacity: 20, leakRate: 5 },
+    slidingWindow: { windowSize: 1000, maxRequests: 15 },
+    circuitBreaker: { threshold: 5, timeout: 10000 }
+  })
+
+  // 模拟请求
+  for (let i = 0; i < 30; i++) {
+    const result = await system.handleRequest({ id: i })
+    console.log(`Request ${i}: ${result.status} - ${result.reason || 'OK'}`)
+    
+    // 模拟成功/失败
+    if (result.status === 'accepted') {
+      if (Math.random() > 0.7) {
+        system.recordFailure()
+      } else {
+        system.recordSuccess()
+      }
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+}
+
+testTrafficControlSystem()
+```
+
+## 🔗 相关概念
+
+- **令牌桶**：允许突发流量，适合 API 限流场景
+- **漏桶**：平滑输出流量，适合流量整形场景
+- **滑动窗口**：精确限流，避免临界问题
+- **分布式限流**：在分布式环境下实现统一限流
+- **熔断器**：防止级联故障的保护机制
+- **流量整形**：平滑流量输出，避免突发冲击
+
+## 📚 学习检查点
+
+- [ ] 能否实现令牌桶和漏桶算法？
+- [ ] 能否对比固定窗口和滑动窗口的差异？
+- [ ] 能否设计基于 Redis 的分布式限流方案？
+- [ ] 能否设计一个综合的流量控制系统？
+
+## 🚀 下一步
+
+→ [6.1.4 缓存架构](/architect/06-system-design/01-high-concurrency/04-cache-architecture)
