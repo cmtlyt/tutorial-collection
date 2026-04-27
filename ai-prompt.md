@@ -21,3 +21,9 @@
 ```text
 #ts-learning-roadmap.mdx docs/typescript/07-cutting-edge-features 目录下已经创建了章节文章模板, 补全第7阶段文章内容
 ```
+
+### 理论基础补全
+
+```text
+docs/architect/02-architecture-fundamentals 补充更多的理论知识, 而不是全部都是实现
+```
