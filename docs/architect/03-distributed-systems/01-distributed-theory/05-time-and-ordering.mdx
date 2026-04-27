@@ -1,0 +1,627 @@
+# 分布式时间与顺序
+
+> **版本**：v1.0
+> **最后更新**：2026-04-27
+
+## 📖 概述
+
+在单机系统中，我们可以依赖本地时钟和操作系统的调度来确定事件的先后顺序。但在分布式系统中，**不存在全局统一时钟**，每台机器的物理时钟都有漂移，无法简单地通过时间戳来判断事件的因果关系。这一根本性挑战催生了逻辑时钟、向量时钟等重要理论工具，它们是理解分布式一致性、共识算法和冲突检测的基石。
+
+本文聚焦于**理论推导与概念理解**，帮助你建立对分布式时间问题的系统性认知。
+
+## 🎯 学习目标
+
+- 理解为什么分布式系统无法依赖物理时钟
+- 掌握 Happens-Before 关系的形式化定义与推理
+- 深入理解 Lamport 逻辑时钟的原理、保证与局限
+- 理解向量时钟如何精确捕捉因果关系
+- 了解混合逻辑时钟（HLC）对工程实践的意义
+
+## ⏰ 物理时钟的困境
+
+### 为什么不能依赖物理时钟？
+
+分布式系统中的每台机器都有自己的石英振荡器驱动的本地时钟。这些时钟存在以下根本问题：
+
+| 问题 | 原因 | 量级 |
+|------|------|------|
+| **时钟漂移（Clock Drift）** | 石英振荡器频率因温度、电压等因素产生偏差 | 10⁻⁶ ~ 10⁻⁵ 秒/秒 |
+| **时钟偏移（Clock Skew）** | 不同机器之间时钟读数的差异 | 毫秒 ~ 秒级 |
+| **时钟跳变（Clock Jump）** | NTP 同步导致时钟突然前跳或后跳 | 可达数秒 |
+| **闰秒** | UTC 标准偶尔插入或删除一秒 | 1 秒 |
+
+### 时钟漂移的数学模型
+
+假设机器 \(i\) 的本地时钟为 \(C_i(t)\)，理想时钟为 \(t\)（真实物理时间），则：
+
+```
+时钟漂移率（drift rate）:  ρ_i = |dC_i(t)/dt - 1|
+
+如果 ρ_i ≤ ρ（最大漂移率），则在时间段 Δt 内：
+  两台机器的最大时钟偏差 ≤ 2ρ · Δt
+
+例：ρ = 10⁻⁶（典型石英钟），Δt = 1天(86400秒)
+  → 最大偏差 ≈ 2 × 10⁻⁶ × 86400 ≈ 0.17 秒
+```
+
+这意味着即使两台机器在某一时刻完美同步，一天后它们的时钟差就可能达到 170 毫秒——这对于需要毫秒级精度的分布式操作来说是不可接受的。
+
+### NTP 同步的局限
+
+NTP（Network Time Protocol）是最常用的时钟同步协议，但它无法提供精确的全局时钟：
+
+| 环境 | NTP 精度 |
+|------|---------|
+| 局域网 | 0.1 ~ 1 ms |
+| 广域网 | 1 ~ 50 ms |
+| 跨大陆 | 10 ~ 100 ms |
+
+NTP 的核心问题不在于精度不够高，而在于**它的精度不确定**——你无法知道当前时刻两台机器的时钟差到底是多少。
+
+### Google TrueTime：一个工程例外
+
+Google 的 Spanner 数据库使用 TrueTime API，通过 GPS 和原子钟组合，提供了一个带置信区间的时间 API：
+
+```
+TrueTime.now() 返回 [earliest, latest]
+
+含义：真实时间一定在 [earliest, latest] 区间内
+典型误差：1 ~ 7 ms
+
+Spanner 的策略：如果要确保事务 T1 在 T2 之前，
+  就等待 T1 的 latest 过去后再提交 T2（"commit wait"）
+  → 代价：每个写事务额外等待约 7ms
+```
+
+TrueTime 证明了物理时钟在特殊硬件支持下可以用于排序，但这种方案成本极高，不具备普遍性。这正是为什么我们需要**逻辑时钟**。
+
+## 🔗 Happens-Before 关系
+
+### Lamport 的核心洞察
+
+Leslie Lamport 在 1978 年发表的论文《Time, Clocks, and the Ordering of Events in a Distributed System》中提出了一个深刻的观察：
+
+> **我们不需要知道事件发生的绝对时间，只需要知道事件之间的相对顺序。**
+
+如果两个事件之间没有因果关系，那么它们的顺序就是无关紧要的——我们称它们为**并发事件**。
+
+### 形式化定义
+
+**Happens-Before 关系**（记作 →）定义如下：
+
+**规则 1（进程内顺序）**：如果事件 \(a\) 和 \(b\) 属于同一个进程，且 \(a\) 在 \(b\) 之前执行，则 \(a → b\)。
+
+**规则 2（消息传递）**：如果事件 \(a\) 是某条消息的发送事件，\(b\) 是该消息的接收事件，则 \(a → b\)。
+
+**规则 3（传递性）**：如果 \(a → b\) 且 \(b → c\)，则 \(a → c\)。
+
+**并发**：如果 \(a \nrightarrow b\) 且 \(b \nrightarrow a\)，则 \(a\) 和 \(b\) 是并发的，记作 \(a \| b\)。
+
+### 时空图（Space-Time Diagram）
+
+时空图是理解 Happens-Before 关系最直观的工具：
+
+```
+进程 P1      进程 P2      进程 P3
+   |            |            |
+   a            |            |
+   |            |            |
+   |---msg1---->b            |
+   |            |            |
+   c            |            |
+   |            |---msg2---->d
+   |            |            |
+   |            e            |
+   |            |            |
+   |<---msg3----|            |
+   f            |            |
+
+因果关系（Happens-Before）:
+  a → b  (消息传递: msg1)
+  b → d  (消息传递: msg2)
+  a → d  (传递性: a → b → d)
+  a → c  (进程内顺序)
+  b → e  (进程内顺序)
+  e → f  (消息传递: msg3)
+
+并发关系:
+  c ‖ d  (无因果链)
+  c ‖ e  (无因果链)
+  a ‖ e  (无直接因果，a → b → e 成立，所以实际上 a → e)
+
+更正:
+  a → e  (a → b, b → e，传递性)
+  c ‖ d  (c 和 d 之间无因果链)
+```
+
+### 为什么 Happens-Before 是偏序？
+
+Happens-Before 关系是一个**严格偏序**（strict partial order），因为：
+
+1. **反自反性**：\(a \nrightarrow a\)（事件不能 happen-before 自己）
+2. **反对称性**：如果 \(a → b\)，则 \(b \nrightarrow a\)
+3. **传递性**：如果 \(a → b\) 且 \(b → c\)，则 \(a → c\)
+
+关键在于它**不是全序**——存在无法比较的元素对（并发事件）。这意味着任何试图给分布式事件赋予全序的方案，都必须引入额外的"打破平局"机制。
+
+## 🕐 Lamport 逻辑时钟
+
+### 算法
+
+Lamport 时钟为每个事件分配一个逻辑时间戳 \(L(e)\)，算法如下：
+
+```
+每个进程维护一个计数器 C，初始值为 0
+
+规则 1：进程内事件
+  每发生一个事件，C = C + 1
+  该事件的时间戳 L(e) = C
+
+规则 2：发送消息
+  C = C + 1
+  消息携带时间戳 L(send) = C
+
+规则 3：接收消息
+  C = max(C, 消息时间戳) + 1
+  接收事件的时间戳 L(recv) = C
+```
+
+### 时钟条件（Clock Condition）
+
+Lamport 时钟保证：
+
+```
+如果 a → b，则 L(a) < L(b)
+
+即：因果关系 蕴含 时间戳的大小关系
+```
+
+这是一个**单向蕴含**。反过来**不成立**：
+
+```
+L(a) < L(b) 不能推出 a → b
+
+反例：两个并发事件 c ‖ d 可能恰好 L(c) < L(d)
+      但 c 和 d 之间没有因果关系
+```
+
+### 示例推导
+
+```
+进程 P1 (C=0)    进程 P2 (C=0)    进程 P3 (C=0)
+
+a: C=1            |                 |
+L(a)=1            |                 |
+  |               |                 |
+  |---msg(1)----->|                 |
+  |            b: C=max(0,1)+1=2    |
+  |            L(b)=2               |
+  |               |                 |
+c: C=2            |                 |
+L(c)=2            |                 |
+  |               |---msg(2)------->|
+  |               |              d: C=max(0,2)+1=3
+  |               |              L(d)=3
+  |               |                 |
+  |            e: C=3               |
+  |            L(e)=3               |
+
+观察:
+  L(c) = 2, L(d) = 3, 所以 L(c) < L(d)
+  但 c ‖ d（它们是并发的）！
+  → 证明了"L(a) < L(b)" 不能推出 "a → b"
+```
+
+### Lamport 时钟的局限
+
+| 能做 | 不能做 |
+|------|--------|
+| 判断"如果 \(L(a) \geq L(b)\)，则 \(a\) 不可能 happen-before \(b\)" | 判断两个事件是否并发 |
+| 为事件提供与因果关系一致的全序 | 精确捕捉因果关系 |
+| 实现简单，开销极低（一个整数） | 区分"因果相关"和"碰巧时间戳不同" |
+
+### 全序扩展
+
+Lamport 时钟可以通过附加进程 ID 来产生**全序**：
+
+```
+定义全序 ≺：
+  (L(a), pid_a) ≺ (L(b), pid_b) 当且仅当
+    L(a) < L(b)，或
+    L(a) = L(b) 且 pid_a < pid_b
+
+这个全序与所有因果关系一致，
+但并发事件之间的排序是人为的（由 pid 决定）
+```
+
+这种全序在分布式互斥（Lamport 互斥算法）、全序广播等场景中非常有用。
+
+## 📐 向量时钟
+
+### 动机
+
+Lamport 时钟的根本缺陷在于它**丢失了信息**——它把多维的因果关系压缩成了一维的整数。向量时钟通过为每个进程维护一个向量来解决这个问题。
+
+### 算法
+
+假设系统有 \(N\) 个进程，每个进程 \(P_i\) 维护一个向量 \(V_i[0..N-1]\)：
+
+```
+初始化：V_i = [0, 0, ..., 0]
+
+规则 1：进程 P_i 执行本地事件
+  V_i[i] = V_i[i] + 1
+
+规则 2：进程 P_i 发送消息
+  V_i[i] = V_i[i] + 1
+  消息携带 V_i 的副本
+
+规则 3：进程 P_i 接收来自 P_j 的消息（附带向量 V_msg）
+  V_i[k] = max(V_i[k], V_msg[k])  对所有 k
+  V_i[i] = V_i[i] + 1
+```
+
+### 比较规则
+
+```
+V_a ≤ V_b  当且仅当  V_a[k] ≤ V_b[k]  对所有 k
+V_a < V_b  当且仅当  V_a ≤ V_b 且 V_a ≠ V_b
+
+因果关系判定:
+  a → b   当且仅当  V(a) < V(b)
+  a ‖ b   当且仅当  V(a) ≮ V(b) 且 V(b) ≮ V(a)
+           即：存在 i 使得 V(a)[i] > V(b)[i]
+           同时存在 j 使得 V(a)[j] < V(b)[j]
+```
+
+### 示例推导
+
+```
+进程 P0           进程 P1           进程 P2
+V0=[0,0,0]       V1=[0,0,0]       V2=[0,0,0]
+
+a: V0=[1,0,0]       |                |
+   |                 |                |
+   |---msg[1,0,0]--->|                |
+   |              b: V1=max([0,0,0],[1,0,0])=[1,0,0]
+   |                 V1[1]+=1 → V1=[1,1,0]
+   |                 |                |
+c: V0=[2,0,0]       |                |
+   |                 |---msg[1,1,0]-->|
+   |                 |             d: V2=max([0,0,0],[1,1,0])=[1,1,0]
+   |                 |                V2[2]+=1 → V2=[1,1,1]
+
+比较 c 和 d:
+  V(c) = [2,0,0]
+  V(d) = [1,1,1]
+
+  V(c)[0]=2 > V(d)[0]=1  → c 不 ≤ d
+  V(c)[1]=0 < V(d)[1]=1  → d 不 ≤ c
+  → c ‖ d（并发！）✅
+
+比较 a 和 d:
+  V(a) = [1,0,0]
+  V(d) = [1,1,1]
+
+  V(a)[k] ≤ V(d)[k] 对所有 k ✅
+  V(a) ≠ V(d) ✅
+  → a → d（因果相关）✅
+```
+
+### 向量时钟 vs Lamport 时钟
+
+| 维度 | Lamport 时钟 | 向量时钟 |
+|------|-------------|---------|
+| **数据结构** | 一个整数 | 长度为 N 的向量 |
+| **空间开销** | O(1) | O(N) |
+| **因果判定** | 单向（必要条件） | 双向（充要条件） |
+| **并发检测** | ❌ 不可能 | ✅ 可以 |
+| **全序能力** | ✅ 可扩展为全序 | ❌ 偏序，不能直接全序 |
+| **适用场景** | 全序广播、互斥算法 | 冲突检测、因果一致性 |
+| **可扩展性** | 优秀 | 受限于进程数 N |
+
+### 向量时钟的空间问题
+
+当系统中有成千上万个进程时，向量时钟的空间开销变得不可接受。工程实践中的解决方案包括：
+
+| 方案 | 原理 | 代价 |
+|------|------|------|
+| **向量裁剪** | 只保留最近活跃的进程分量 | 可能丢失因果信息 |
+| **Dotted Version Vectors** | 使用（节点, 计数器）对代替完整向量 | 适用于 KV 存储，但不通用 |
+| **间隔树时钟（ITC）** | 动态分裂/合并 ID 空间 | 实现复杂 |
+| **Plausible Clocks** | 固定大小的近似向量时钟 | 可能误判因果关系 |
+
+## 🔄 混合逻辑时钟（HLC）
+
+### 动机
+
+实际工程中，我们既需要逻辑时钟的因果性保证，又需要物理时钟的直觉意义（"这个事件大约发生在什么时候"）。混合逻辑时钟（Hybrid Logical Clock）将两者结合。
+
+### 算法
+
+HLC 时间戳是一个二元组 \((l, c)\)：
+
+- \(l\)：物理时间的近似值（取物理时钟和已知最大值的 max）
+- \(c\)：在同一 \(l\) 值下的逻辑计数器
+
+```
+HLC 规则：
+
+本地事件或发送事件:
+  l' = max(l, pt)     // pt 是当前物理时钟
+  如果 l' = l:
+    c' = c + 1         // 物理时钟没前进，逻辑计数器递增
+  否则:
+    c' = 0             // 物理时钟前进了，重置计数器
+  l = l', c = c'
+
+接收消息（消息携带 (l_m, c_m)):
+  l' = max(l, l_m, pt)
+  如果 l' = l = l_m:
+    c' = max(c, c_m) + 1
+  如果 l' = l:
+    c' = c + 1
+  如果 l' = l_m:
+    c' = c_m + 1
+  否则:
+    c' = 0
+  l = l', c = c'
+```
+
+### HLC 的关键性质
+
+| 性质 | 说明 |
+|------|------|
+| **因果一致** | 满足 Clock Condition：如果 \(a → b\)，则 \(HLC(a) < HLC(b)\) |
+| **接近物理时间** | \(l\) 值不会偏离物理时钟太远（偏差有界） |
+| **固定大小** | 不像向量时钟那样随进程数增长 |
+| **NTP 友好** | NTP 校正不会破坏因果序 |
+
+### 工程应用
+
+| 系统 | 使用方式 |
+|------|---------|
+| **CockroachDB** | 使用 HLC 实现 MVCC 事务的时间戳分配 |
+| **MongoDB** | Cluster Time 机制基于类似的混合时钟思想 |
+| **TiKV** | 使用 TSO（Timestamp Oracle）+ HLC 思想 |
+
+## 📊 全序广播与因果广播
+
+### 概念区分
+
+时间与顺序的理论直接支撑了分布式广播原语的设计：
+
+| 广播类型 | 保证 | 实现基础 |
+|---------|------|---------|
+| **FIFO 广播** | 来自同一发送者的消息按发送顺序交付 | 序列号 |
+| **因果广播** | 有因果关系的消息按因果顺序交付 | 向量时钟 |
+| **全序广播** | 所有节点以相同的全局顺序交付所有消息 | Lamport 时钟 + 共识 |
+| **FIFO 全序广播** | 全序 + FIFO | Raft / ZAB |
+
+### 关系层级
+
+```
+全序广播（Total Order Broadcast）
+    ↓ 蕴含
+因果广播（Causal Broadcast）
+    ↓ 蕴含
+FIFO 广播（FIFO Broadcast）
+    ↓ 蕴含
+可靠广播（Reliable Broadcast）
+```
+
+全序广播与共识（Consensus）在理论上是**等价的**——能解决一个就能解决另一个。这就是为什么 Raft、Paxos 等共识算法的核心产出就是一个全序的日志。
+
+### 因果广播的代码示例
+
+```js
+// ========== 因果广播：基于向量时钟的消息排序 ==========
+
+class CausalBroadcastNode {
+  constructor(nodeId, totalNodes) {
+    this.nodeId = nodeId;
+    this.totalNodes = totalNodes;
+    this.vectorClock = new Array(totalNodes).fill(0);
+    this.deliveryBuffer = []; // 等待因果依赖满足的消息
+    this.deliveredLog = [];   // 已交付的消息
+  }
+
+  // 发送广播消息
+  broadcast(content) {
+    this.vectorClock[this.nodeId]++;
+    const message = {
+      sender: this.nodeId,
+      content,
+      timestamp: [...this.vectorClock],
+    };
+    console.log(`[节点${this.nodeId}] 广播: "${content}" 时钟: [${this.vectorClock}]`);
+    return message;
+  }
+
+  // 接收消息：检查因果依赖是否满足
+  receive(message) {
+    // 检查是否可以立即交付
+    if (this.canDeliver(message)) {
+      this.deliver(message);
+      // 交付后检查缓冲区中是否有消息的依赖现在满足了
+      this.checkBuffer();
+    } else {
+      // 因果依赖未满足，放入缓冲区等待
+      this.deliveryBuffer.push(message);
+      console.log(`[节点${this.nodeId}] 缓冲: "${message.content}" (等待因果依赖)`);
+    }
+  }
+
+  // 因果交付条件
+  canDeliver(message) {
+    const senderId = message.sender;
+    const messageTimestamp = message.timestamp;
+
+    // 条件 1: 发送者的时钟分量必须恰好比本地多 1
+    if (messageTimestamp[senderId] !== this.vectorClock[senderId] + 1) {
+      return false;
+    }
+
+    // 条件 2: 其他所有进程的时钟分量 ≤ 本地值
+    for (let i = 0; i < this.totalNodes; i++) {
+      if (i === senderId) continue;
+      if (messageTimestamp[i] > this.vectorClock[i]) {
+        return false; // 还有未交付的因果前驱消息
+      }
+    }
+
+    return true;
+  }
+
+  deliver(message) {
+    // 更新向量时钟
+    for (let i = 0; i < this.totalNodes; i++) {
+      this.vectorClock[i] = Math.max(this.vectorClock[i], message.timestamp[i]);
+    }
+    this.deliveredLog.push(message);
+    console.log(`[节点${this.nodeId}] 交付: "${message.content}" 时钟: [${this.vectorClock}]`);
+  }
+
+  checkBuffer() {
+    let delivered = true;
+    while (delivered) {
+      delivered = false;
+      for (let i = this.deliveryBuffer.length - 1; i >= 0; i--) {
+        if (this.canDeliver(this.deliveryBuffer[i])) {
+          const message = this.deliveryBuffer.splice(i, 1)[0];
+          this.deliver(message);
+          delivered = true;
+        }
+      }
+    }
+  }
+}
+
+// ========== 演示：因果广播保证因果顺序 ==========
+
+const nodeCount = 3;
+const nodes = Array.from({ length: nodeCount }, (_, i) => new CausalBroadcastNode(i, nodeCount));
+
+// 节点 0 发帖
+const postMessage = nodes[0].broadcast('今天天气真好');
+
+// 节点 1 收到帖子后评论（有因果关系）
+nodes[1].receive(postMessage);
+const commentMessage = nodes[1].broadcast('确实不错！');
+
+// 关键场景：节点 2 先收到评论，后收到帖子
+// 因果广播保证：评论不会在帖子之前被交付
+console.log('\n--- 节点 2：消息乱序到达 ---');
+nodes[2].receive(commentMessage); // 先到的评论 → 进入缓冲区
+nodes[2].receive(postMessage);     // 后到的帖子 → 交付帖子，然后交付评论
+
+console.log('\n--- 交付顺序 ---');
+console.log(`节点 2 的交付顺序: ${nodes[2].deliveredLog.map(m => `"${m.content}"`).join(' → ')}`);
+// 输出: "今天天气真好" → "确实不错！" （因果顺序正确）
+```
+
+## 🧠 理论意义与实践映射
+
+### 时间理论对分布式系统设计的指导
+
+| 理论概念 | 实践中的体现 |
+|---------|------------|
+| **Happens-Before 偏序** | 解释了为什么全序需要共识算法的参与 |
+| **Lamport 时钟全序扩展** | Raft 的日志索引 = (term, index)，是 Lamport 思想的体现 |
+| **向量时钟的并发检测** | DynamoDB / Riak 使用向量时钟检测写冲突 |
+| **HLC 的物理+逻辑混合** | CockroachDB 的事务时间戳分配 |
+| **全序广播 ≡ 共识** | Raft 日志 = 全序广播 = 状态机复制的基石 |
+| **因果广播** | MongoDB 的因果一致性会话 |
+
+### 选择哪种时钟？
+
+```js
+function chooseClockMechanism(requirements) {
+  const { needCausalDetection, processCount, needPhysicalTime, storageConstraint } = requirements;
+
+  if (!needCausalDetection && storageConstraint === 'minimal') {
+    return {
+      clock: 'Lamport 逻辑时钟',
+      reason: '只需因果一致的全序，一个整数即可',
+      examples: '全序广播、分布式互斥',
+    };
+  }
+
+  if (needCausalDetection && processCount <= 50) {
+    return {
+      clock: '向量时钟',
+      reason: '需要精确检测并发，进程数可控',
+      examples: 'Riak、DynamoDB 冲突检测',
+    };
+  }
+
+  if (needCausalDetection && processCount > 50) {
+    return {
+      clock: 'Dotted Version Vectors / 间隔树时钟',
+      reason: '进程数太多，标准向量时钟空间不可接受',
+      examples: '大规模 KV 存储',
+    };
+  }
+
+  if (needPhysicalTime) {
+    return {
+      clock: '混合逻辑时钟（HLC）',
+      reason: '既需要因果保证，又需要物理时间的直觉意义',
+      examples: 'CockroachDB、MongoDB Cluster Time',
+    };
+  }
+
+  return {
+    clock: 'Lamport 逻辑时钟',
+    reason: '默认选择，简单高效',
+    examples: '大多数分布式系统的基础设施',
+  };
+}
+
+console.log(chooseClockMechanism({
+  needCausalDetection: false, processCount: 5, needPhysicalTime: false, storageConstraint: 'minimal',
+}));
+
+console.log(chooseClockMechanism({
+  needCausalDetection: true, processCount: 10, needPhysicalTime: false, storageConstraint: 'normal',
+}));
+
+console.log(chooseClockMechanism({
+  needCausalDetection: true, processCount: 1000, needPhysicalTime: false, storageConstraint: 'normal',
+}));
+
+console.log(chooseClockMechanism({
+  needCausalDetection: true, processCount: 20, needPhysicalTime: true, storageConstraint: 'normal',
+}));
+```
+
+## 📚 经典论文索引
+
+| 论文 | 作者 | 年份 | 贡献 |
+|------|------|------|------|
+| Time, Clocks, and the Ordering of Events | Lamport | 1978 | Happens-Before 关系、逻辑时钟 |
+| Virtual Time and Global States | Mattern / Fidge | 1988 | 向量时钟（独立提出） |
+| Logical Physical Clocks and Consistent Snapshots | Kulkarni et al. | 2014 | 混合逻辑时钟（HLC） |
+| Interval Tree Clocks | Almeida et al. | 2008 | 间隔树时钟 |
+| Dotted Version Vectors | Preguiça et al. | 2012 | 优化的向量时钟变体 |
+
+## 🔗 相关概念
+
+- **[一致性模型](/architect/03-distributed-systems/01-distributed-theory/03-consistency-models)**：因果一致性直接依赖向量时钟
+- **[共识算法](/architect/03-distributed-systems/01-distributed-theory/04-consensus-algorithms)**：全序广播与共识等价
+- **[核心定理](/architect/03-distributed-systems/01-distributed-theory/02-core-theorems)**：FLP 定理与异步系统中的时间模型相关
+- **[分布式事务](/architect/03-distributed-systems/03-distributed-data/02-distributed-transactions)**：事务的序列化依赖时间戳排序
+
+## ✅ 学习检查点
+
+- [ ] 能够解释为什么物理时钟不能作为分布式事件排序的可靠依据
+- [ ] 能够在时空图上标注 Happens-Before 关系和并发关系
+- [ ] 能够手动推导 Lamport 时钟的时间戳分配过程
+- [ ] 理解 Lamport 时钟"单向蕴含"的局限性
+- [ ] 能够用向量时钟判断两个事件是因果相关还是并发
+- [ ] 理解 HLC 如何结合物理时间和逻辑时间的优势
+- [ ] 理解全序广播与共识的等价性
+
+## 🚀 下一步
+
+→ [分布式通信](/architect/03-distributed-systems/02-distributed-communication/01-distributed-communication-overview)

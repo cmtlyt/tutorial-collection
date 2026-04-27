@@ -1,0 +1,1007 @@
+# 数据分区理论
+
+> **版本**：v1.0
+> **最后更新**：2026-04-27
+
+## 📖 概述
+
+当单台机器无法承载所有数据时，我们需要将数据**分区（Partitioning）**到多台机器上。数据分区是分布式存储和数据库的基石，但它带来了一系列深刻的理论挑战：如何分区才能均匀？跨分区操作的代价是什么？分区数据如何保证一致性？
+
+本文聚焦于数据分区的**理论基础**——分区策略的数学性质、数据局部性原理、跨分区操作的固有代价、以及分区再平衡的理论框架，帮助你在设计分片方案时做出有理论支撑的决策。
+
+## 🎯 学习目标
+
+- 理解数据分区的根本动机与核心权衡
+- 掌握不同分区策略的数学性质与适用场景
+- 深入理解数据局部性原理及其对分区设计的指导
+- 理解跨分区操作的固有代价及其理论边界
+- 掌握分区再平衡的理论框架与策略选择
+
+## 🧱 为什么需要分区？
+
+### 扩展的两种路径
+
+| 路径 | 定义 | 极限 |
+|------|------|------|
+| **垂直扩展（Scale Up）** | 升级单机硬件（更多 CPU、内存、更快的磁盘） | 物理极限 + 成本指数增长 |
+| **水平扩展（Scale Out）** | 增加更多机器，将数据和负载分散 | 理论上无极限（但复杂度增加） |
+
+数据分区是水平扩展的基础手段。它解决三个核心问题：
+
+```
+1. 数据量问题：单机磁盘/内存放不下所有数据
+   → 将数据分散到多台机器的存储上
+
+2. 吞吐量问题：单机 CPU/IO 无法处理所有请求
+   → 将请求分散到多台机器并行处理
+
+3. 可用性问题：单机故障导致全部数据不可用
+   → 分区 + 副本，部分故障不影响整体
+```
+
+### 分区的核心权衡
+
+分区不是免费的午餐。它引入了以下根本性权衡：
+
+| 获得 | 失去 |
+|------|------|
+| 水平扩展能力 | 跨分区操作的效率 |
+| 并行处理能力 | 全局事务的简单性 |
+| 局部故障隔离 | 全局一致性的保证 |
+| 独立优化每个分区 | 分区键选择的灵活性 |
+
+## 📐 分区策略的理论分析
+
+### 理想分区的数学定义
+
+一个理想的分区函数 \(P: K \rightarrow \{1, 2, ..., n\}\) 应满足：
+
+```
+1. 均匀性（Uniformity）:
+   对任意分区 i, j: |S_i| ≈ |S_j|
+   其中 S_i 是分区 i 中的数据集合
+   
+   理想情况：|S_i| = |K| / n（完美均匀）
+
+2. 确定性（Determinism）:
+   对同一个 key，P(key) 总是返回同一个分区
+
+3. 最小迁移（Minimal Movement）:
+   当 n 变为 n+1 时，需要迁移的数据量应最小化
+   理想情况：只迁移 |K| / (n+1) 的数据
+
+4. 局部性保持（Locality Preservation）:
+   "相关"的 key 应尽可能在同一分区
+   （与均匀性存在固有矛盾）
+```
+
+### 范围分区（Range Partitioning）
+
+**原理**：按 key 的范围将数据分配到不同分区。
+
+```
+分区方案示例（按用户 ID 范围）：
+  分区 1: user_id ∈ [0, 10000)
+  分区 2: user_id ∈ [10000, 20000)
+  分区 3: user_id ∈ [20000, 30000)
+
+优势：
+  ✅ 范围查询高效（同一范围的数据在同一分区）
+  ✅ 支持有序扫描
+  ✅ 分区边界直观可理解
+
+劣势：
+  ❌ 容易产生热点（如按时间分区时，最新分区承受所有写入）
+  ❌ 需要维护分区边界映射表
+  ❌ 均匀性难以保证（数据分布通常不均匀）
+```
+
+**热点问题的数学分析**：
+
+```
+假设请求按 Zipf 分布到达（现实中很常见）：
+  第 k 热门的 key 被访问的概率 ∝ 1/k^s（s ≈ 1）
+
+如果所有热门 key 恰好在同一个范围内：
+  最热的分区可能承受总流量的 80% 以上（帕累托法则）
+  
+这就是为什么"按时间范围分区"经常出问题：
+  最新的时间范围总是最热的
+```
+
+### 哈希分区（Hash Partitioning）
+
+**原理**：用哈希函数将 key 映射到分区。
+
+```
+P(key) = hash(key) mod n
+
+优势：
+  ✅ 数据分布均匀（好的哈希函数保证）
+  ✅ 无需维护分区映射表
+  ✅ 避免热点（除非存在真正的热点 key）
+
+劣势：
+  ❌ 范围查询效率极低（相邻 key 被打散到不同分区）
+  ❌ 扩缩容代价大（n 变化时大量数据需要重新分配）
+```
+
+**扩缩容的迁移代价**：
+
+```
+当分区数从 n 变为 n+1 时：
+
+  哈希取模方案：
+    key 的新分区 = hash(key) mod (n+1)
+    大约 n/(n+1) 的 key 会改变分区归属
+    → 几乎所有数据都要迁移！
+
+  例：从 3 个分区扩展到 4 个
+    约 75% 的数据需要迁移
+
+这就是一致性哈希被发明的动机
+```
+
+### 一致性哈希（Consistent Hashing）
+
+**原理**：将 key 和节点都映射到同一个哈希环上，key 归属于顺时针方向遇到的第一个节点。
+
+```
+哈希环（0 ~ 2³²-1）:
+
+         Node A
+        /      \
+       /        \
+    Key1     Node B
+      |         |
+      |         |
+    Key2     Key3
+       \       /
+        \     /
+        Node C
+
+Key1 → 顺时针 → Node A
+Key2 → 顺时针 → Node C
+Key3 → 顺时针 → Node C
+```
+
+**扩容时的迁移量**：
+
+```
+添加新节点 D 时：
+
+         Node A
+        /      \
+       /        \
+    Key1    Node D ← 新节点
+      |      /  |
+      |     /   |
+    Key2   /  Node B
+       \  /     |
+        \/      |
+        Node C  Key3
+
+只有 Node D 和它逆时针方向的前一个节点之间的 key 需要迁移
+理论迁移量：|K| / (n+1)
+
+例：从 3 个节点扩展到 4 个
+    只需迁移约 25% 的数据（对比哈希取模的 75%）
+```
+
+**虚拟节点解决均匀性**：
+
+```
+问题：3 个物理节点在环上的位置可能不均匀
+  → 某些节点负责的弧段远大于其他节点
+
+解决：每个物理节点映射多个虚拟节点到环上
+  物理节点 A → 虚拟节点 A₁, A₂, ..., A₁₅₀
+  物理节点 B → 虚拟节点 B₁, B₂, ..., B₁₅₀
+
+数学分析：
+  n 个虚拟节点在环上的间距服从指数分布
+  随着虚拟节点数增加，标准差下降：
+    标准差/均值 ≈ 1/√(虚拟节点数)
+    
+  150 个虚拟节点/物理节点 → 标准差约 8%
+  → 足够均匀用于大多数生产场景
+```
+
+### 分区策略对比
+
+| 维度 | 范围分区 | 哈希取模 | 一致性哈希 |
+|------|---------|---------|-----------|
+| **均匀性** | 差（依赖数据分布） | 好 | 好（需虚拟节点） |
+| **范围查询** | ✅ 高效 | ❌ 低效 | ❌ 低效 |
+| **扩缩容迁移** | 中（移动范围边界） | 差（约 n/(n+1)） | 好（约 1/(n+1)） |
+| **热点避免** | ❌ 容易出热点 | ✅ 较好 | ✅ 较好 |
+| **实现复杂度** | 低 | 最低 | 中 |
+| **典型系统** | HBase、CockroachDB | 简单缓存分片 | Cassandra、DynamoDB |
+
+### 代码示例：分区策略的均匀性与迁移代价分析
+
+```js
+// ========== 分区策略的数学性质分析 ==========
+
+function simpleHash(key) {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+// 分析数据分布的均匀性
+function analyzeUniformity(distribution, totalKeys) {
+  const partitions = Object.keys(distribution).length;
+  const expectedPerPartition = totalKeys / partitions;
+  const values = Object.values(distribution);
+
+  const maxLoad = Math.max(...values);
+  const minLoad = Math.min(...values);
+  const mean = values.reduce((s, v) => s + v, 0) / values.length;
+  const variance = values.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / values.length;
+  const stdDev = Math.sqrt(variance);
+  const coefficientOfVariation = (stdDev / mean * 100).toFixed(1);
+
+  return {
+    expected: expectedPerPartition,
+    max: maxLoad,
+    min: minLoad,
+    imbalanceRatio: (maxLoad / minLoad).toFixed(2),
+    coefficientOfVariation: `${coefficientOfVariation}%`,
+  };
+}
+
+// 分析扩容时的迁移代价
+function analyzeMigrationCost(keys, oldPartitions, newPartitions, partitionFunc) {
+  const oldMapping = {};
+  const newMapping = {};
+
+  for (const key of keys) {
+    oldMapping[key] = partitionFunc(key, oldPartitions);
+    newMapping[key] = partitionFunc(key, newPartitions);
+  }
+
+  let migratedCount = 0;
+  for (const key of keys) {
+    if (oldMapping[key] !== newMapping[key]) {
+      migratedCount++;
+    }
+  }
+
+  return {
+    totalKeys: keys.length,
+    migratedKeys: migratedCount,
+    migrationRate: `${(migratedCount / keys.length * 100).toFixed(1)}%`,
+    idealRate: `${(100 / newPartitions).toFixed(1)}%`,
+  };
+}
+
+// 测试用的 key 集合
+const testKeys = Array.from({ length: 100000 }, (_, i) => `user:${i}`);
+
+// ========== 1. 哈希取模的均匀性 ==========
+console.log('=== 哈希取模分区 ===\n');
+
+const hashModDistribution = {};
+const partitionCount = 5;
+for (let i = 0; i < partitionCount; i++) hashModDistribution[i] = 0;
+for (const key of testKeys) {
+  const partition = simpleHash(key) % partitionCount;
+  hashModDistribution[partition]++;
+}
+console.log('数据分布:', hashModDistribution);
+console.log('均匀性分析:', analyzeUniformity(hashModDistribution, testKeys.length));
+
+// 哈希取模的扩容迁移代价
+console.log('\n扩容迁移代价（5→6 分区）:',
+  analyzeMigrationCost(testKeys, 5, 6, (key, n) => simpleHash(key) % n),
+);
+console.log('扩容迁移代价（5→7 分区）:',
+  analyzeMigrationCost(testKeys, 5, 7, (key, n) => simpleHash(key) % n),
+);
+
+// ========== 2. 一致性哈希的均匀性 ==========
+console.log('\n=== 一致性哈希分区 ===\n');
+
+class ConsistentHashAnalyzer {
+  constructor(virtualNodesPerPhysical) {
+    this.ring = [];
+    this.nodeMap = new Map(); // ringPosition → physicalNode
+    this.virtualNodesPerPhysical = virtualNodesPerPhysical;
+  }
+
+  addNode(physicalNode) {
+    for (let i = 0; i < this.virtualNodesPerPhysical; i++) {
+      const virtualKey = `${physicalNode}#v${i}`;
+      const position = simpleHash(virtualKey);
+      this.ring.push(position);
+      this.nodeMap.set(position, physicalNode);
+    }
+    this.ring.sort((a, b) => a - b);
+  }
+
+  getNode(key) {
+    const hash = simpleHash(key);
+    for (const position of this.ring) {
+      if (position >= hash) {
+        return this.nodeMap.get(position);
+      }
+    }
+    return this.nodeMap.get(this.ring[0]); // 绕回
+  }
+
+  analyzeDistribution(keys) {
+    const distribution = {};
+    for (const key of keys) {
+      const node = this.getNode(key);
+      distribution[node] = (distribution[node] || 0) + 1;
+    }
+    return distribution;
+  }
+}
+
+// 不同虚拟节点数的均匀性对比
+for (const virtualNodes of [1, 10, 50, 150, 500]) {
+  const ch = new ConsistentHashAnalyzer(virtualNodes);
+  ch.addNode('node-A');
+  ch.addNode('node-B');
+  ch.addNode('node-C');
+  ch.addNode('node-D');
+  ch.addNode('node-E');
+
+  const distribution = ch.analyzeDistribution(testKeys);
+  const uniformity = analyzeUniformity(distribution, testKeys.length);
+  console.log(`虚拟节点=${String(virtualNodes).padEnd(3)} | 不均衡比=${uniformity.imbalanceRatio} | 变异系数=${uniformity.coefficientOfVariation}`);
+}
+
+// 一致性哈希的扩容迁移代价
+console.log('\n--- 一致性哈希扩容迁移代价 ---');
+const chBefore = new ConsistentHashAnalyzer(150);
+['A', 'B', 'C', 'D', 'E'].forEach(n => chBefore.addNode(`node-${n}`));
+
+const chAfter = new ConsistentHashAnalyzer(150);
+['A', 'B', 'C', 'D', 'E', 'F'].forEach(n => chAfter.addNode(`node-${n}`));
+
+let migrated = 0;
+for (const key of testKeys) {
+  if (chBefore.getNode(key) !== chAfter.getNode(key)) migrated++;
+}
+console.log(`5→6 节点: 迁移 ${migrated}/${testKeys.length} (${(migrated / testKeys.length * 100).toFixed(1)}%)，理想值: ${(100 / 6).toFixed(1)}%`);
+```
+
+## 🎯 数据局部性原理
+
+### 什么是数据局部性？
+
+数据局部性（Data Locality）指的是**相关数据在物理上靠近存储**的特性。在分布式系统中，局部性决定了操作是否需要跨分区通信。
+
+```
+局部性好（同一分区内）：
+  单机读写 → 延迟低、吞吐高、事务简单
+
+局部性差（跨分区）：
+  网络通信 → 延迟高、吞吐低、需要分布式事务
+```
+
+### 局部性的层次
+
+| 层次 | 含义 | 延迟量级 |
+|------|------|---------|
+| **CPU 缓存** | 数据在同一 CPU 缓存行 | ~1 ns |
+| **内存** | 数据在同一台机器的内存中 | ~100 ns |
+| **本地磁盘** | 数据在同一台机器的磁盘上 | ~10 μs (SSD) |
+| **同机架** | 数据在同一机架的不同机器上 | ~0.5 ms |
+| **同数据中心** | 数据在同一数据中心的不同机架 | ~1 ms |
+| **跨数据中心** | 数据在不同数据中心 | ~10-100 ms |
+
+跨越每一个层次，延迟都增长 1-2 个数量级。这就是为什么**分区键的选择如此重要**——它决定了相关数据是在同一个分区（同一台机器）还是分散在多台机器上。
+
+### 分区键选择与局部性的矛盾
+
+在实际业务中，不同的查询模式需要不同的局部性：
+
+```
+电商场景的矛盾：
+
+查询 1：查看用户的所有订单
+  → 希望按 user_id 分区（同一用户的订单在一起）
+
+查询 2：查看某商品的所有订单
+  → 希望按 product_id 分区（同一商品的订单在一起）
+
+查询 3：查看某天的所有订单
+  → 希望按 order_date 分区（同一天的订单在一起）
+
+不可能同时满足所有查询的局部性！
+这是一个根本性矛盾。
+```
+
+### 应对局部性矛盾的策略
+
+| 策略 | 原理 | 适用场景 |
+|------|------|---------|
+| **选择最频繁的查询模式** | 按主查询模式的 key 分区 | 有明确的主查询路径 |
+| **复合分区键** | 使用 (partition_key, sort_key) | DynamoDB、Cassandra |
+| **二级索引** | 在非分区维度上建索引 | 偶尔的跨分区查询 |
+| **数据冗余** | 按不同维度存储多份 | 查询性能 > 存储成本 |
+| **物化视图** | 预计算跨分区聚合 | 固定的聚合查询 |
+
+### 复合分区键的设计
+
+```
+DynamoDB 的 (Partition Key, Sort Key) 模型：
+
+表：Orders
+  Partition Key: user_id
+  Sort Key: order_date
+
+物理分布：
+  分区 1 (user_id=001):
+    | user_id | order_date | product | amount |
+    |   001   | 2026-01-15 |  键盘   |   599  |
+    |   001   | 2026-02-20 |  鼠标   |   299  |
+    |   001   | 2026-03-01 |  显示器 |  2999  |
+
+  分区 2 (user_id=002):
+    | user_id | order_date | product | amount |
+    |   002   | 2026-01-20 |  耳机   |   899  |
+    |   002   | 2026-03-15 |  摄像头 |   499  |
+
+支持的高效查询：
+  ✅ 查用户 001 的所有订单：单分区扫描
+  ✅ 查用户 001 在 2026-02 之后的订单：分区内范围查询
+  ❌ 查所有用户在 2026-01 的订单：需要扫描所有分区（Scatter-Gather）
+```
+
+## ⚖️ 跨分区操作的代价
+
+### 跨分区查询（Scatter-Gather）
+
+当查询涉及多个分区时，需要**分散请求、收集结果**：
+
+```
+客户端
+  │
+  │ 查询：SELECT * FROM orders WHERE date = '2026-03-01'
+  │
+  ├──→ 分区 1 ──→ 返回 3 条结果
+  ├──→ 分区 2 ──→ 返回 1 条结果
+  ├──→ 分区 3 ──→ 返回 5 条结果
+  └──→ 分区 4 ──→ 返回 0 条结果
+  │
+  │ 合并结果：9 条
+  ↓
+
+延迟 = max(分区1延迟, 分区2延迟, ..., 分区N延迟) + 合并时间
+     ≈ 最慢分区的延迟（"木桶效应"）
+```
+
+**延迟的数学分析**：
+
+```
+假设每个分区的查询延迟独立同分布，均值 μ，标准差 σ
+
+N 个分区的 Scatter-Gather 延迟 ≈ 最大值的期望
+  E[max] ≈ μ + σ × √(2 × ln(N))
+
+例：μ=5ms, σ=2ms, N=100 分区
+  E[max] ≈ 5 + 2 × √(2 × ln(100))
+         ≈ 5 + 2 × 3.03
+         ≈ 11.06ms
+
+即使每个分区平均只需 5ms，
+100 个分区的 Scatter-Gather 平均需要 11ms
+（因为总是被最慢的分区拖累）
+```
+
+### 跨分区事务的代价
+
+跨分区事务需要分布式事务协议（如 2PC），代价远高于单分区事务：
+
+| 维度 | 单分区事务 | 跨分区事务（2PC） |
+|------|-----------|-----------------|
+| **延迟** | 单次 IO | 至少 2 轮网络通信 + 多次 IO |
+| **吞吐** | 高（无协调开销） | 低（锁定时间长） |
+| **可用性** | 分区内可用即可 | 所有参与分区都必须可用 |
+| **复杂度** | 本地事务 | 需要事务协调者 |
+| **故障恢复** | 简单（WAL 回放） | 复杂（需处理不确定状态） |
+
+**定量对比**：
+
+```
+单分区事务延迟 ≈ 1-2ms
+跨 2 分区事务（2PC）：
+  Prepare: 1 RTT × 2 分区 ≈ 0.5ms
+  Commit:  1 RTT × 2 分区 ≈ 0.5ms
+  持久化日志: 2 次 fsync ≈ 2ms
+  总计 ≈ 3-5ms（2-5 倍的延迟）
+
+跨 10 分区事务（2PC）：
+  延迟由最慢的分区决定 + 协调开销
+  总计 ≈ 10-20ms（5-10 倍的延迟）
+  且任一分区故障导致事务阻塞
+```
+
+### 代码示例：跨分区查询的延迟模型
+
+```js
+// ========== 跨分区操作的延迟分析 ==========
+
+class PartitionLatencyModel {
+  constructor(meanLatencyMs, stdDevMs) {
+    this.meanLatency = meanLatencyMs;
+    this.stdDev = stdDevMs;
+  }
+
+  // 模拟单个分区的查询延迟（正态分布近似）
+  simulatePartitionLatency() {
+    // Box-Muller 变换生成正态分布随机数
+    const u1 = Math.random();
+    const u2 = Math.random();
+    const zScore = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    return Math.max(0.1, this.meanLatency + zScore * this.stdDev);
+  }
+
+  // Scatter-Gather 模型：延迟 = max(所有分区的延迟)
+  simulateScatterGather(partitionCount) {
+    let maxLatency = 0;
+    const latencies = [];
+
+    for (let i = 0; i < partitionCount; i++) {
+      const latency = this.simulatePartitionLatency();
+      latencies.push(latency);
+      maxLatency = Math.max(maxLatency, latency);
+    }
+
+    return {
+      totalLatency: parseFloat(maxLatency.toFixed(2)),
+      avgPartitionLatency: parseFloat((latencies.reduce((s, l) => s + l, 0) / latencies.length).toFixed(2)),
+      slowestPartition: parseFloat(maxLatency.toFixed(2)),
+      partitionCount,
+    };
+  }
+
+  // 理论预测：E[max] ≈ μ + σ × √(2 × ln(N))
+  theoreticalMaxLatency(partitionCount) {
+    if (partitionCount <= 1) return this.meanLatency;
+    return this.meanLatency + this.stdDev * Math.sqrt(2 * Math.log(partitionCount));
+  }
+
+  // 2PC 跨分区事务延迟模型
+  simulate2pcTransaction(participantCount, networkRttMs) {
+    // Phase 1: Coordinator → All Participants (Prepare)
+    const prepareLatencies = [];
+    for (let i = 0; i < participantCount; i++) {
+      prepareLatencies.push(this.simulatePartitionLatency() + networkRttMs);
+    }
+    const preparePhase = Math.max(...prepareLatencies);
+
+    // Phase 2: Coordinator → All Participants (Commit)
+    const commitLatencies = [];
+    for (let i = 0; i < participantCount; i++) {
+      commitLatencies.push(networkRttMs + 1); // commit 较轻量
+    }
+    const commitPhase = Math.max(...commitLatencies);
+
+    // 加上日志持久化
+    const logFlush = 2; // 2ms for fsync
+
+    return {
+      preparePhaseMs: parseFloat(preparePhase.toFixed(2)),
+      commitPhaseMs: parseFloat(commitPhase.toFixed(2)),
+      logFlushMs: logFlush,
+      totalMs: parseFloat((preparePhase + commitPhase + logFlush).toFixed(2)),
+      participantCount,
+    };
+  }
+}
+
+// 分析不同分区数下的 Scatter-Gather 延迟
+const model = new PartitionLatencyModel(5, 2); // 均值 5ms，标准差 2ms
+
+console.log('=== Scatter-Gather 延迟分析 ===\n');
+console.log('分区数 | 理论预测(ms) | 模拟平均(ms) | 单分区平均(ms)');
+console.log('-------|-------------|-------------|-------------');
+
+for (const partitionCount of [1, 5, 10, 20, 50, 100]) {
+  const theoretical = model.theoreticalMaxLatency(partitionCount);
+
+  // 模拟 100 次取平均
+  let totalSimulated = 0;
+  for (let trial = 0; trial < 100; trial++) {
+    totalSimulated += model.simulateScatterGather(partitionCount).totalLatency;
+  }
+  const simulatedAvg = totalSimulated / 100;
+
+  console.log(
+    `  ${String(partitionCount).padEnd(4)} |` +
+    `    ${theoretical.toFixed(2).padStart(7)} |` +
+    `    ${simulatedAvg.toFixed(2).padStart(7)} |` +
+    `       ${model.meanLatency.toFixed(2)}`,
+  );
+}
+
+// 2PC 事务延迟
+console.log('\n=== 跨分区事务（2PC）延迟 ===\n');
+for (const participants of [2, 3, 5, 10]) {
+  const result = model.simulate2pcTransaction(participants, 0.5);
+  console.log(`${participants} 个分区: 总延迟 ${result.totalMs}ms (prepare=${result.preparePhaseMs}ms, commit=${result.commitPhaseMs}ms)`);
+}
+```
+
+## 🔄 分区再平衡理论
+
+### 为什么需要再平衡？
+
+分区再平衡（Rebalancing）是指在分区数量或节点拓扑变化时，重新分配数据的过程。触发条件包括：
+
+```
+1. 节点扩容：加入新节点，需要分走部分数据
+2. 节点缩容：移除节点，需要转移其数据
+3. 节点故障：故障节点的数据需要迁移到健康节点
+4. 数据倾斜：某些分区数据量或访问量远超其他分区
+```
+
+### 再平衡的三大约束
+
+```
+在再平衡过程中，系统必须同时满足：
+
+1. 可用性约束：
+   再平衡期间系统必须继续提供读写服务
+   → 不能"停服迁移"
+
+2. 一致性约束：
+   每个 key 在任何时刻都有明确的归属分区
+   → 迁移中的数据不能"两头都没有"或"两头都有但不一致"
+
+3. 最小化迁移：
+   只移动必要的数据，不做无谓的搬迁
+   → 理想迁移量 = (总数据 / 新分区数)
+```
+
+### 再平衡策略
+
+| 策略 | 原理 | 迁移量 | 复杂度 | 典型系统 |
+|------|------|--------|--------|---------|
+| **固定分区数** | 预分配远多于节点的分区数，迁移整个分区 | 最优 | 低 | Elasticsearch、Riak |
+| **动态分裂/合并** | 分区过大时分裂，过小时合并 | 较优 | 高 | HBase、TiKV |
+| **一致性哈希** | 哈希环上添加/移除节点 | 较优 | 中 | Cassandra、DynamoDB |
+| **按比例分区** | 节点加入时从最大分区分裂 | 中等 | 中 | Cassandra（后期版本） |
+
+### 固定分区数策略的数学分析
+
+```
+策略：系统创建时就分配 P 个分区（P >> N，N 为节点数）
+
+初始状态（N=3 节点，P=12 分区）：
+  节点 A: 分区 0, 1, 2, 3     （4 个分区）
+  节点 B: 分区 4, 5, 6, 7     （4 个分区）
+  节点 C: 分区 8, 9, 10, 11   （4 个分区）
+
+扩容到 N=4：
+  节点 A: 分区 0, 1, 2         （3 个分区）
+  节点 B: 分区 4, 5, 6         （3 个分区）
+  节点 C: 分区 8, 9, 10        （3 个分区）
+  节点 D: 分区 3, 7, 11        （3 个分区）← 从每个节点各接收 1 个
+  
+  迁移量：3 个分区（总数据的 25%）
+  理想值：总数据的 1/4 = 25% ✅
+
+P 的选择：
+  P 太小 → 分区粒度粗，不够灵活
+  P 太大 → 分区元数据开销大，小分区管理复杂
+  经验法则：P = 10 × 最大预期节点数
+```
+
+### 代码示例：再平衡策略对比
+
+```js
+// ========== 分区再平衡策略对比 ==========
+
+class FixedPartitionRebalancer {
+  constructor(totalPartitions) {
+    this.totalPartitions = totalPartitions;
+    this.assignment = new Map(); // partitionId → nodeId
+    this.nodePartitions = new Map(); // nodeId → Set<partitionId>
+  }
+
+  // 初始分配：均匀分配分区到节点
+  initialAssignment(nodes) {
+    for (const node of nodes) {
+      this.nodePartitions.set(node, new Set());
+    }
+
+    for (let partitionId = 0; partitionId < this.totalPartitions; partitionId++) {
+      const targetNode = nodes[partitionId % nodes.length];
+      this.assignment.set(partitionId, targetNode);
+      this.nodePartitions.get(targetNode).add(partitionId);
+    }
+  }
+
+  // 添加节点：从负载最重的节点迁移分区
+  addNode(newNode) {
+    this.nodePartitions.set(newNode, new Set());
+    const nodeCount = this.nodePartitions.size;
+    const targetPerNode = Math.floor(this.totalPartitions / nodeCount);
+    const migrations = [];
+
+    // 从分区最多的节点迁移到新节点
+    while (this.nodePartitions.get(newNode).size < targetPerNode) {
+      // 找分区最多的节点
+      let maxNode = null;
+      let maxCount = 0;
+      for (const [node, partitions] of this.nodePartitions) {
+        if (node === newNode) continue;
+        if (partitions.size > maxCount) {
+          maxCount = partitions.size;
+          maxNode = node;
+        }
+      }
+
+      if (!maxNode || maxCount <= targetPerNode) break;
+
+      // 从 maxNode 迁移一个分区到 newNode
+      const partitionToMove = this.nodePartitions.get(maxNode).values().next().value;
+      this.nodePartitions.get(maxNode).delete(partitionToMove);
+      this.nodePartitions.get(newNode).add(partitionToMove);
+      this.assignment.set(partitionToMove, newNode);
+      migrations.push({ partition: partitionToMove, from: maxNode, to: newNode });
+    }
+
+    return migrations;
+  }
+
+  // 移除节点：将其分区分配给其他节点
+  removeNode(removedNode) {
+    const partitionsToMove = [...(this.nodePartitions.get(removedNode) || [])];
+    this.nodePartitions.delete(removedNode);
+    const migrations = [];
+
+    for (const partitionId of partitionsToMove) {
+      // 分配给当前分区最少的节点
+      let minNode = null;
+      let minCount = Infinity;
+      for (const [node, partitions] of this.nodePartitions) {
+        if (partitions.size < minCount) {
+          minCount = partitions.size;
+          minNode = node;
+        }
+      }
+
+      this.nodePartitions.get(minNode).add(partitionId);
+      this.assignment.set(partitionId, minNode);
+      migrations.push({ partition: partitionId, from: removedNode, to: minNode });
+    }
+
+    return migrations;
+  }
+
+  getDistribution() {
+    const result = {};
+    for (const [node, partitions] of this.nodePartitions) {
+      result[node] = partitions.size;
+    }
+    return result;
+  }
+}
+
+// ========== 演示 ==========
+console.log('=== 固定分区数再平衡 ===\n');
+
+const rebalancer = new FixedPartitionRebalancer(24); // 24 个分区
+
+// 初始 3 个节点
+rebalancer.initialAssignment(['node-A', 'node-B', 'node-C']);
+console.log('初始分布:', rebalancer.getDistribution());
+
+// 扩容到 4 个节点
+console.log('\n--- 扩容：添加 node-D ---');
+const expandMigrations = rebalancer.addNode('node-D');
+console.log(`迁移次数: ${expandMigrations.length}`);
+console.log('迁移详情:', expandMigrations.map(m => `分区${m.partition}: ${m.from}→${m.to}`).join(', '));
+console.log('新分布:', rebalancer.getDistribution());
+
+// 扩容到 5 个节点
+console.log('\n--- 扩容：添加 node-E ---');
+const expand2 = rebalancer.addNode('node-E');
+console.log(`迁移次数: ${expand2.length}`);
+console.log('新分布:', rebalancer.getDistribution());
+
+// 缩容：移除 node-B
+console.log('\n--- 缩容：移除 node-B ---');
+const shrinkMigrations = rebalancer.removeNode('node-B');
+console.log(`迁移次数: ${shrinkMigrations.length}`);
+console.log('新分布:', rebalancer.getDistribution());
+
+// ========== 理想迁移量 vs 实际迁移量 ==========
+console.log('\n=== 迁移效率分析 ===\n');
+
+function analyzeRebalancingEfficiency(totalPartitions, initialNodes, finalNodes) {
+  const rb = new FixedPartitionRebalancer(totalPartitions);
+  rb.initialAssignment(initialNodes.map(i => `node-${i}`));
+
+  const addedNodes = finalNodes.filter(n => !initialNodes.includes(n));
+  let totalMigrations = 0;
+
+  for (const node of addedNodes) {
+    const migrations = rb.addNode(`node-${node}`);
+    totalMigrations += migrations.length;
+  }
+
+  const idealMigrations = Math.round(totalPartitions * addedNodes.length / finalNodes.length);
+
+  return {
+    totalPartitions,
+    nodeChange: `${initialNodes.length} → ${finalNodes.length}`,
+    actualMigrations: totalMigrations,
+    idealMigrations,
+    efficiency: `${(idealMigrations / Math.max(totalMigrations, 1) * 100).toFixed(0)}%`,
+  };
+}
+
+console.log(analyzeRebalancingEfficiency(24, [1, 2, 3], [1, 2, 3, 4]));
+console.log(analyzeRebalancingEfficiency(100, [1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 6, 7]));
+console.log(analyzeRebalancingEfficiency(256, [1, 2, 3], [1, 2, 3, 4, 5, 6]));
+```
+
+## 📊 分区与 CAP 的关系
+
+### 分区时的一致性选择
+
+当网络分区发生时，每个分区内的数据副本可能出现不一致。此时必须在一致性和可用性之间做选择：
+
+```
+正常情况（无分区）：
+  所有节点可通信，可同时保证一致性和可用性
+
+分区发生时（CAP 的 P）：
+  [分区 A: 节点 1, 2]    [分区 B: 节点 3, 4, 5]
+
+  选择 CP（一致性优先）：
+    分区 A 的节点拒绝写入（它们不是多数派）
+    只有分区 B 可以写入
+    → 保证数据一致，但分区 A 不可用
+
+  选择 AP（可用性优先）：
+    两个分区都继续接受写入
+    分区恢复后需要合并冲突
+    → 保证可用，但数据可能不一致
+```
+
+### 分区设计中的一致性级别
+
+| 策略 | 分区时行为 | 适用场景 |
+|------|-----------|---------|
+| **写入多数派** | 只有多数副本确认才成功 | 金融数据（CP） |
+| **写入任一副本** | 任何副本确认即成功 | 社交动态（AP） |
+| **可调一致性** | R + W > N（读写副本数之和 > 总副本数） | 灵活场景（Cassandra） |
+| **读修复** | 读取时发现不一致，异步修复 | 最终一致性场景 |
+
+### Quorum 机制的数学
+
+```
+N = 副本总数
+W = 写入确认数
+R = 读取确认数
+
+强一致性条件：R + W > N
+
+直觉：如果写入 W 个副本，读取 R 个副本，
+      且 R + W > N，
+      则读取的 R 个副本中至少有 1 个包含最新写入。
+
+常见配置：
+  N=3, W=2, R=2 → R+W=4 > 3 ✅ 强一致
+  N=3, W=1, R=3 → R+W=4 > 3 ✅ 强一致（写快读慢）
+  N=3, W=3, R=1 → R+W=4 > 3 ✅ 强一致（写慢读快）
+  N=3, W=1, R=1 → R+W=2 ≤ 3 ❌ 最终一致
+
+容错能力（在满足 R+W>N 的前提下）：
+  可容忍的故障副本数 = N - max(R, W)
+  
+  例：N=5, W=3, R=3
+    可容忍 5-3=2 个副本故障
+```
+
+## 🧠 分区设计的决策框架
+
+```js
+function designPartitionStrategy(requirements) {
+  const {
+    dataSize,           // 'small' | 'medium' | 'large' | 'massive'
+    queryPattern,       // 'point' | 'range' | 'mixed'
+    writePattern,       // 'uniform' | 'time-series' | 'hot-spot'
+    growthRate,         // 'stable' | 'linear' | 'exponential'
+    consistencyNeed,    // 'strong' | 'eventual'
+  } = requirements;
+
+  const decision = { strategy: '', partitionKey: '', rebalancing: '', notes: [] };
+
+  // 分区策略选择
+  if (queryPattern === 'range') {
+    decision.strategy = '范围分区';
+    decision.notes.push('范围查询高效，但注意热点问题');
+    if (writePattern === 'time-series') {
+      decision.notes.push('⚠️ 时序数据写入热点：考虑在 key 前加盐（salt）或使用复合键');
+    }
+  } else if (queryPattern === 'point') {
+    decision.strategy = '一致性哈希';
+    decision.notes.push('点查高效，数据均匀，扩缩容友好');
+  } else {
+    decision.strategy = '复合分区（哈希 + 范围）';
+    decision.notes.push('哈希分区键 + 范围排序键，兼顾均匀性和范围查询');
+  }
+
+  // 再平衡策略
+  if (growthRate === 'exponential') {
+    decision.rebalancing = '动态分裂/合并';
+    decision.notes.push('数据增长快，需要自动分裂分区');
+  } else if (growthRate === 'linear') {
+    decision.rebalancing = '固定分区数（预分配）';
+    decision.notes.push('预分配足够多的分区（10×最大节点数）');
+  } else {
+    decision.rebalancing = '固定分区数';
+    decision.notes.push('数据量稳定，固定分区最简单');
+  }
+
+  // 一致性配置
+  if (consistencyNeed === 'strong') {
+    decision.notes.push('使用 Quorum 读写（R+W>N），或单 Leader 复制');
+  } else {
+    decision.notes.push('可使用 R=1, W=1 提升性能，接受最终一致性');
+  }
+
+  return decision;
+}
+
+console.log('=== 分区策略决策 ===\n');
+
+console.log('电商订单系统:', designPartitionStrategy({
+  dataSize: 'large', queryPattern: 'mixed', writePattern: 'uniform',
+  growthRate: 'linear', consistencyNeed: 'strong',
+}));
+
+console.log('\n时序监控数据:', designPartitionStrategy({
+  dataSize: 'massive', queryPattern: 'range', writePattern: 'time-series',
+  growthRate: 'exponential', consistencyNeed: 'eventual',
+}));
+
+console.log('\n用户会话缓存:', designPartitionStrategy({
+  dataSize: 'medium', queryPattern: 'point', writePattern: 'uniform',
+  growthRate: 'stable', consistencyNeed: 'eventual',
+}));
+```
+
+## 📚 经典论文索引
+
+| 论文 | 作者 | 年份 | 贡献 |
+|------|------|------|------|
+| Consistent Hashing and Random Trees | Karger et al. | 1997 | 一致性哈希 |
+| Dynamo: Amazon's Highly Available Key-value Store | DeCandia et al. | 2007 | 一致性哈希 + 向量时钟 + Quorum |
+| Bigtable: A Distributed Storage System | Chang et al. | 2006 | 范围分区 + LSM-Tree |
+| Spanner: Google's Globally-Distributed Database | Corbett et al. | 2012 | 范围分区 + TrueTime |
+
+## 🔗 相关概念
+
+- **[分布式存储](/architect/03-distributed-systems/03-distributed-data/03-distributed-storage)**：分区策略的具体实现（一致性哈希代码、数据复制）
+- **[分布式事务](/architect/03-distributed-systems/03-distributed-data/02-distributed-transactions)**：跨分区事务的实现方案
+- **[核心定理](/architect/03-distributed-systems/01-distributed-theory/02-core-theorems)**：CAP 定理中的分区容忍性
+- **[一致性模型](/architect/03-distributed-systems/01-distributed-theory/03-consistency-models)**：分区的 Quorum 机制与一致性级别
+- **[分布式缓存](/architect/03-distributed-systems/03-distributed-data/04-distributed-cache)**：缓存分片使用一致性哈希
+
+## ✅ 学习检查点
+
+- [ ] 能够解释理想分区函数的四个性质（均匀性、确定性、最小迁移、局部性）
+- [ ] 能够对比范围分区、哈希取模、一致性哈希的优劣
+- [ ] 理解虚拟节点如何解决一致性哈希的均匀性问题
+- [ ] 能够解释 Scatter-Gather 查询的延迟为什么随分区数增加而增长
+- [ ] 理解跨分区事务比单分区事务代价高的根本原因
+- [ ] 能够根据查询模式和数据特征选择合适的分区策略
+- [ ] 理解 Quorum 机制 R + W > N 的数学含义
+
+## 🚀 下一步
+
+→ [分布式可靠性](/architect/03-distributed-systems/04-distributed-reliability/01-distributed-reliability-overview)

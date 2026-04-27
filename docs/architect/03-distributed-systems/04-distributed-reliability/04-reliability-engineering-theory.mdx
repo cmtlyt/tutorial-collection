@@ -1,0 +1,1120 @@
+# 可靠性工程理论
+
+> **版本**：v1.0
+> **最后更新**：2026-04-27
+
+## 📖 概述
+
+前面的章节讲解了具体的容错设计模式（熔断、限流、降级）和高可用架构方案（主备、多活、故障转移），它们都是"怎么做"的层面。本文则聚焦于更本质的理论问题：**如何度量可靠性？如何建模故障？如何用数学方法推导系统的可用性？** 以及近年来兴起的**混沌工程**背后的理论思想。
+
+掌握这些理论，你才能从"凭经验堆砌容错手段"提升到"用数学指导可靠性设计"的层次。
+
+## 🎯 学习目标
+
+- 深入理解 SLA / SLO / SLI 的定义与关系
+- 掌握可用性的数学模型（串联、并联、冗余）
+- 理解 MTBF / MTTR / MTTF 等关键可靠性指标
+- 了解故障模型与分类的理论框架
+- 理解混沌工程的理论基础与原则
+- 掌握错误预算（Error Budget）的管理思想
+
+## 📏 SLA / SLO / SLI
+
+### 三者的关系
+
+```
+SLI（Service Level Indicator，服务等级指标）
+  ↓ "我们度量什么"
+  ↓ 例：请求延迟的 P99 = 200ms
+  
+SLO（Service Level Objective，服务等级目标）
+  ↓ "我们的目标是什么"
+  ↓ 例：99.9% 的请求延迟 < 200ms
+  
+SLA（Service Level Agreement，服务等级协议）
+  ↓ "违反目标的后果是什么"
+  ↓ 例：如果月可用性 < 99.9%，赔偿客户 10% 费用
+```
+
+### SLI：选择正确的度量指标
+
+SLI 的选择直接影响你对系统"健康"的判断。常见的 SLI 分类：
+
+| 类别 | SLI 示例 | 好的度量 | 坏的度量 |
+|------|---------|---------|---------|
+| **可用性** | 成功请求比例 | 用户感知到的成功率 | 服务器进程是否存活 |
+| **延迟** | 请求处理时间 | P50 / P99 / P999 | 平均值（被异常值掩盖） |
+| **吞吐量** | 成功处理的请求数/秒 | 实际完成的有效请求 | 仅看 QPS（含失败请求） |
+| **正确性** | 返回正确结果的比例 | 端到端的正确性验证 | 仅看 HTTP 200 |
+| **新鲜度** | 数据的更新延迟 | 用户看到的数据时效 | 数据库复制延迟 |
+
+### 为什么平均值是一个糟糕的 SLI？
+
+```
+场景：1000 个请求的延迟分布
+
+  950 个请求：2ms
+   45 个请求：10ms
+    4 个请求：500ms
+    1 个请求：5000ms（5 秒！）
+
+  平均值 = (950×2 + 45×10 + 4×500 + 1×5000) / 1000
+         = (1900 + 450 + 2000 + 5000) / 1000
+         = 9.35ms
+
+  "平均延迟 9.35ms"听起来很好，但：
+    - 0.5% 的用户等了 500ms 以上
+    - 0.1% 的用户等了 5 秒
+    - 平均值完全掩盖了这些异常
+
+  百分位数更有意义：
+    P50 = 2ms（一半用户的体验）
+    P95 = 10ms（95%用户的体验）
+    P99 = 500ms（99%用户的体验）
+    P999 = 5000ms（99.9%用户的体验，即最差的千分之一）
+```
+
+### SLO：设定合理的目标
+
+SLO 的核心问题是：**目标设多高？**
+
+```
+100% 可靠性是不可能的（也不经济的）。
+
+可靠性的边际成本曲线：
+
+  成本 ↑
+       │                     ╱
+       │                   ╱
+       │                 ╱
+       │              ╱╱
+       │           ╱╱
+       │        ╱╱
+       │    ╱╱╱
+       │ ╱╱
+       ╱───────────────────────→ 可靠性
+      99%  99.9%  99.99%  99.999%
+
+  从 99% → 99.9%：成本增加 ~2 倍
+  从 99.9% → 99.99%：成本增加 ~10 倍
+  从 99.99% → 99.999%：成本增加 ~100 倍
+```
+
+**SLO 设定原则**：
+
+| 原则 | 说明 |
+|------|------|
+| **略低于能力上限** | 如果系统能做到 99.99%，SLO 设为 99.95% |
+| **不高于依赖方** | 如果核心依赖只有 99.9%，你的 SLO 不应高于 99.9% |
+| **与用户期望对齐** | 内部工具可以 99.5%，支付系统需要 99.99% |
+| **可度量、可行动** | SLO 必须能准确度量，且违反时有明确的行动方案 |
+
+### SLA：违约的后果
+
+SLA 通常包含以下要素：
+
+```
+AWS EC2 的 SLA 示例（简化版）：
+
+  月度正常运行时间百分比     服务积分百分比
+  ─────────────────────────────────────
+  < 99.99% 但 ≥ 99.0%        10%
+  < 99.0%  但 ≥ 95.0%        30%
+  < 95.0%                     100%
+
+含义：
+  如果某月可用性为 98.5%，客户可获得该月费用 30% 的服务积分
+```
+
+### 代码示例：SLO 合规性计算
+
+```js
+// ========== SLO 合规性计算与监控 ==========
+
+class SloTracker {
+  constructor(sloConfig) {
+    this.sloConfig = sloConfig;
+    this.measurements = [];
+  }
+
+  // 记录一次请求
+  recordRequest(latencyMs, success) {
+    this.measurements.push({
+      timestamp: Date.now(),
+      latencyMs,
+      success,
+    });
+  }
+
+  // 计算当前 SLO 合规性
+  calculateCompliance(windowMs) {
+    const now = Date.now();
+    const windowStart = now - windowMs;
+    const windowMeasurements = this.measurements.filter(m => m.timestamp >= windowStart);
+
+    if (windowMeasurements.length === 0) {
+      return { error: '窗口内无数据' };
+    }
+
+    const totalRequests = windowMeasurements.length;
+
+    // 可用性 SLI
+    const successfulRequests = windowMeasurements.filter(m => m.success).length;
+    const availabilitySli = (successfulRequests / totalRequests) * 100;
+
+    // 延迟 SLI（P99）
+    const latencies = windowMeasurements.map(m => m.latencyMs).sort((a, b) => a - b);
+    const p50Index = Math.floor(latencies.length * 0.5);
+    const p99Index = Math.floor(latencies.length * 0.99);
+    const p50Latency = latencies[p50Index];
+    const p99Latency = latencies[p99Index];
+
+    // 合规性判断
+    const availabilityCompliant = availabilitySli >= this.sloConfig.availabilityTarget;
+    const latencyCompliant = p99Latency <= this.sloConfig.latencyP99Target;
+
+    return {
+      window: `${windowMs / 1000}s`,
+      totalRequests,
+      availability: {
+        sli: `${availabilitySli.toFixed(3)}%`,
+        slo: `${this.sloConfig.availabilityTarget}%`,
+        compliant: availabilityCompliant,
+      },
+      latency: {
+        p50: `${p50Latency}ms`,
+        p99: `${p99Latency}ms`,
+        slo: `P99 < ${this.sloConfig.latencyP99Target}ms`,
+        compliant: latencyCompliant,
+      },
+      overallCompliant: availabilityCompliant && latencyCompliant,
+    };
+  }
+
+  // 计算错误预算
+  calculateErrorBudget(windowMs) {
+    const compliance = this.calculateCompliance(windowMs);
+    if (compliance.error) return compliance;
+
+    const availabilityValue = parseFloat(compliance.availability.sli);
+    const target = this.sloConfig.availabilityTarget;
+
+    // 错误预算 = 100% - SLO 目标
+    const totalBudgetPercent = 100 - target;
+    // 已消耗的预算 = 100% - 实际值
+    const consumedPercent = 100 - availabilityValue;
+    // 剩余预算
+    const remainingPercent = totalBudgetPercent - consumedPercent;
+    const budgetConsumedRatio = (consumedPercent / totalBudgetPercent) * 100;
+
+    const totalRequests = compliance.totalRequests;
+    const totalBudgetRequests = Math.floor(totalRequests * (totalBudgetPercent / 100));
+    const consumedBudgetRequests = totalRequests - Math.floor(totalRequests * (availabilityValue / 100));
+
+    return {
+      errorBudget: {
+        totalPercent: `${totalBudgetPercent.toFixed(3)}%`,
+        consumedPercent: `${consumedPercent.toFixed(3)}%`,
+        remainingPercent: `${remainingPercent.toFixed(3)}%`,
+        consumedRatio: `${budgetConsumedRatio.toFixed(1)}%`,
+        totalRequestBudget: totalBudgetRequests,
+        consumedRequestBudget: consumedBudgetRequests,
+        remainingRequestBudget: totalBudgetRequests - consumedBudgetRequests,
+      },
+      action: remainingPercent <= 0
+        ? '🔴 错误预算已耗尽！冻结发布，优先修复可靠性'
+        : budgetConsumedRatio > 80
+          ? '🟡 错误预算消耗超过 80%，谨慎发布'
+          : '🟢 错误预算充裕，可正常迭代',
+    };
+  }
+}
+
+// 演示
+const tracker = new SloTracker({
+  availabilityTarget: 99.9,  // 99.9% 可用性
+  latencyP99Target: 200,     // P99 延迟 < 200ms
+});
+
+// 模拟 10000 个请求
+for (let i = 0; i < 10000; i++) {
+  const success = Math.random() > 0.0005; // 0.05% 的失败率
+  const baseLatency = 5 + Math.random() * 10;
+  // 偶尔出现高延迟
+  const latency = Math.random() > 0.005 ? baseLatency : baseLatency + Math.random() * 500;
+  tracker.recordRequest(latency, success);
+}
+
+console.log('=== SLO 合规性 ===');
+console.log(tracker.calculateCompliance(Infinity));
+
+console.log('\n=== 错误预算 ===');
+console.log(tracker.calculateErrorBudget(Infinity));
+```
+
+## 📊 可用性的数学模型
+
+### 可用性定义
+
+系统可用性（Availability）定义为：
+
+```
+A = Uptime / (Uptime + Downtime)
+  = MTTF / (MTTF + MTTR)
+
+其中：
+  MTTF（Mean Time To Failure）：平均无故障时间
+  MTTR（Mean Time To Repair）：平均修复时间
+  MTBF（Mean Time Between Failures）= MTTF + MTTR
+```
+
+### 可用性等级
+
+| 等级 | 可用性 | 年停机时间 | 月停机时间 | 适用场景 |
+|------|--------|----------|----------|---------|
+| 2 个 9 | 99% | 3.65 天 | 7.3 小时 | 开发/测试环境 |
+| 3 个 9 | 99.9% | 8.77 小时 | 43.8 分钟 | 普通业务系统 |
+| 4 个 9 | 99.99% | 52.6 分钟 | 4.38 分钟 | 核心业务系统 |
+| 5 个 9 | 99.999% | 5.26 分钟 | 26.3 秒 | 金融/支付系统 |
+| 6 个 9 | 99.9999% | 31.5 秒 | 2.63 秒 | 电信核心网 |
+
+### 串联系统的可用性
+
+当多个组件**串联**（任一故障即系统故障）时：
+
+```
+系统可用性 = A₁ × A₂ × ... × Aₙ
+
+例：一个请求路径经过 5 个组件：
+  API 网关:    99.99%
+  认证服务:    99.99%
+  业务服务:    99.99%
+  数据库:      99.99%
+  缓存:        99.99%
+
+  系统可用性 = 0.9999⁵ = 0.9995 = 99.95%
+
+  每个组件都有 4 个 9，但串联后只有 3.3 个 9！
+  年停机时间从 52.6 分钟飙升到 4.38 小时
+```
+
+**关键洞察**：串联系统的可用性由**最薄弱的环节**决定，且组件越多，整体可用性越低。
+
+### 并联系统的可用性
+
+当多个组件**并联**（全部故障才系统故障）时：
+
+```
+系统不可用性 = (1-A₁) × (1-A₂) × ... × (1-Aₙ)
+系统可用性 = 1 - ∏(1-Aᵢ)
+
+例：两个相同的服务实例（各 99.9%）并联：
+  不可用性 = (1-0.999) × (1-0.999) = 0.001² = 0.000001
+  可用性 = 1 - 0.000001 = 99.9999%（6 个 9！）
+
+三个实例并联：
+  不可用性 = 0.001³ = 10⁻⁹
+  可用性 = 99.9999999%（9 个 9）
+```
+
+**关键洞察**：冗余（并联）是提升可用性的最有效手段。每增加一个冗余实例，可用性的"9"的个数近似翻倍。
+
+### 混合系统的可用性计算
+
+实际系统通常是串联和并联的组合：
+
+```
+                ┌─── Service A₁ ───┐
+  API Gateway ──┤                   ├── Database Cluster
+                └─── Service A₂ ───┘     ├── Primary
+                                          └── Standby
+
+计算步骤：
+  1. 先算并联部分：
+     Service A 并联: 1 - (1-0.999)² = 0.999999
+     Database 并联:  1 - (1-0.999)² = 0.999999
+
+  2. 再算串联：
+     整体 = 0.9999 × 0.999999 × 0.999999
+          = 0.999898 ≈ 99.99%
+```
+
+### 代码示例：可用性模型计算器
+
+```js
+// ========== 可用性数学模型计算器 ==========
+
+class AvailabilityCalculator {
+  // 串联系统可用性
+  static serial(...availabilities) {
+    return availabilities.reduce((product, availability) => product * availability, 1);
+  }
+
+  // 并联系统可用性
+  static parallel(...availabilities) {
+    const unavailability = availabilities.reduce(
+      (product, availability) => product * (1 - availability), 1,
+    );
+    return 1 - unavailability;
+  }
+
+  // 可用性百分比转年停机时间
+  static toDowntime(availability) {
+    const secondsPerYear = 365.25 * 24 * 60 * 60;
+    const downtimeSeconds = secondsPerYear * (1 - availability);
+
+    if (downtimeSeconds >= 86400) return `${(downtimeSeconds / 86400).toFixed(2)} 天`;
+    if (downtimeSeconds >= 3600) return `${(downtimeSeconds / 3600).toFixed(2)} 小时`;
+    if (downtimeSeconds >= 60) return `${(downtimeSeconds / 60).toFixed(2)} 分钟`;
+    return `${downtimeSeconds.toFixed(2)} 秒`;
+  }
+
+  // 可用性转 "几个9"
+  static toNines(availability) {
+    if (availability >= 1) return '∞';
+    return (-Math.log10(1 - availability)).toFixed(2);
+  }
+
+  // MTBF 和 MTTR 转可用性
+  static fromMtbfMttr(mtbfHours, mttrHours) {
+    return mtbfHours / (mtbfHours + mttrHours);
+  }
+
+  // 分析完整架构的可用性
+  static analyzeArchitecture(architecture) {
+    console.log(`\n=== ${architecture.name} 可用性分析 ===\n`);
+
+    const result = AvailabilityCalculator.evaluateComponent(architecture.topology);
+
+    console.log(`\n整体可用性: ${(result * 100).toFixed(6)}%`);
+    console.log(`几个9: ${AvailabilityCalculator.toNines(result)}`);
+    console.log(`年停机时间: ${AvailabilityCalculator.toDowntime(result)}`);
+
+    return result;
+  }
+
+  // 递归评估组件拓扑
+  static evaluateComponent(component) {
+    if (typeof component === 'number') {
+      return component;
+    }
+
+    if (component.type === 'serial') {
+      const childAvailabilities = component.children.map(child =>
+        AvailabilityCalculator.evaluateComponent(child),
+      );
+      const result = AvailabilityCalculator.serial(...childAvailabilities);
+      console.log(
+        `  串联 [${component.name || ''}]: ` +
+        `${childAvailabilities.map(a => `${(a * 100).toFixed(4)}%`).join(' × ')} = ${(result * 100).toFixed(6)}%`,
+      );
+      return result;
+    }
+
+    if (component.type === 'parallel') {
+      const childAvailabilities = component.children.map(child =>
+        AvailabilityCalculator.evaluateComponent(child),
+      );
+      const result = AvailabilityCalculator.parallel(...childAvailabilities);
+      console.log(
+        `  并联 [${component.name || ''}]: ` +
+        `${childAvailabilities.map(a => `${(a * 100).toFixed(4)}%`).join(' | ')} = ${(result * 100).toFixed(6)}%`,
+      );
+      return result;
+    }
+
+    return component.availability || 0.999;
+  }
+}
+
+// ========== 场景 1：简单串联 ==========
+console.log('=== 场景 1：5 个组件串联（无冗余）===');
+const simpleSerial = AvailabilityCalculator.serial(0.9999, 0.9999, 0.9999, 0.9999, 0.9999);
+console.log(`可用性: ${(simpleSerial * 100).toFixed(4)}% (${AvailabilityCalculator.toNines(simpleSerial)} 个 9)`);
+console.log(`年停机时间: ${AvailabilityCalculator.toDowntime(simpleSerial)}`);
+
+// ========== 场景 2：并联冗余 ==========
+console.log('\n=== 场景 2：双实例并联 ===');
+const parallelPair = AvailabilityCalculator.parallel(0.999, 0.999);
+console.log(`单实例: 99.9% → 双实例并联: ${(parallelPair * 100).toFixed(6)}%`);
+console.log(`从 ${AvailabilityCalculator.toNines(0.999)} 个 9 提升到 ${AvailabilityCalculator.toNines(parallelPair)} 个 9`);
+
+// ========== 场景 3：真实架构分析 ==========
+AvailabilityCalculator.analyzeArchitecture({
+  name: '电商核心链路',
+  topology: {
+    type: 'serial',
+    name: '请求链路',
+    children: [
+      {
+        type: 'parallel', name: 'API 网关',
+        children: [0.9999, 0.9999],
+      },
+      {
+        type: 'parallel', name: '业务服务',
+        children: [0.999, 0.999, 0.999],
+      },
+      {
+        type: 'parallel', name: '数据库',
+        children: [0.999, 0.999],
+      },
+      {
+        type: 'parallel', name: '缓存',
+        children: [0.999, 0.999],
+      },
+    ],
+  },
+});
+
+// ========== 场景 4：MTBF/MTTR 分析 ==========
+console.log('\n=== MTBF/MTTR 分析 ===\n');
+const scenarios = [
+  { name: '硬件服务器', mtbf: 8760, mttr: 4 },
+  { name: '云虚拟机', mtbf: 2160, mttr: 0.1 },
+  { name: 'Kubernetes Pod', mtbf: 720, mttr: 0.017 },
+];
+
+for (const scenario of scenarios) {
+  const availability = AvailabilityCalculator.fromMtbfMttr(scenario.mtbf, scenario.mttr);
+  console.log(
+    `${scenario.name.padEnd(15)} | MTBF=${String(scenario.mtbf).padStart(5)}h | MTTR=${String(scenario.mttr).padStart(5)}h | ` +
+    `可用性=${(availability * 100).toFixed(4)}% | ${AvailabilityCalculator.toNines(availability)} 个 9`,
+  );
+}
+```
+
+## 🔧 可靠性指标体系
+
+### MTBF / MTTF / MTTR / MTTD
+
+```
+时间线：
+  ──正常运行──│──故障──│──正常运行──│──故障──│──正常运行──
+              ↑       ↑           ↑       ↑
+           发生故障  修复完成   发生故障  修复完成
+
+  MTTF（Mean Time To Failure）= 平均无故障运行时间
+    从上次修复到下次故障的平均时间
+
+  MTTR（Mean Time To Repair）= 平均修复时间
+    从故障发生到修复完成的平均时间
+    
+  MTBF（Mean Time Between Failures）= 平均故障间隔时间
+    MTBF = MTTF + MTTR
+
+  MTTD（Mean Time To Detect）= 平均故障发现时间
+    从故障发生到被检测到的平均时间
+    MTTD 是 MTTR 的一部分
+```
+
+### MTTR 的分解
+
+MTTR 可以进一步分解为多个子阶段，每个阶段都有优化空间：
+
+```
+MTTR = MTTD + MTTI + MTTM + MTTV
+
+  MTTD（Detect）：发现故障
+    优化：监控告警、异常检测、日志分析
+    目标：< 5 分钟
+
+  MTTI（Investigate）：定位根因
+    优化：链路追踪、日志聚合、故障定位平台
+    目标：< 15 分钟
+
+  MTTM（Mitigate）：缓解/修复
+    优化：自动化回滚、故障自愈、预案演练
+    目标：< 10 分钟
+
+  MTTV（Verify）：验证恢复
+    优化：自动化健康检查、灰度验证
+    目标：< 5 分钟
+
+整体 MTTR 目标：< 30 分钟
+```
+
+### 代码示例：可靠性指标计算
+
+```js
+// ========== 可靠性指标计算器 ==========
+
+class ReliabilityMetrics {
+  constructor() {
+    this.incidents = []; // { startTime, detectTime, diagnosedTime, mitigatedTime, verifiedTime }
+    this.uptimeRecords = []; // { start, end }
+  }
+
+  recordIncident(incident) {
+    this.incidents.push(incident);
+  }
+
+  recordUptime(start, end) {
+    this.uptimeRecords.push({ start, end });
+  }
+
+  // 计算所有可靠性指标
+  calculateMetrics() {
+    if (this.incidents.length === 0) {
+      return { message: '没有故障记录' };
+    }
+
+    // MTTR 及其子组件
+    const mttrValues = this.incidents.map(incident => {
+      const mttd = incident.detectTime - incident.startTime;
+      const mtti = incident.diagnosedTime - incident.detectTime;
+      const mttm = incident.mitigatedTime - incident.diagnosedTime;
+      const mttv = incident.verifiedTime - incident.mitigatedTime;
+      const totalMttr = incident.verifiedTime - incident.startTime;
+      return { mttd, mtti, mttm, mttv, totalMttr };
+    });
+
+    const avgMttd = mttrValues.reduce((s, v) => s + v.mttd, 0) / mttrValues.length;
+    const avgMtti = mttrValues.reduce((s, v) => s + v.mtti, 0) / mttrValues.length;
+    const avgMttm = mttrValues.reduce((s, v) => s + v.mttm, 0) / mttrValues.length;
+    const avgMttv = mttrValues.reduce((s, v) => s + v.mttv, 0) / mttrValues.length;
+    const avgMttr = mttrValues.reduce((s, v) => s + v.totalMttr, 0) / mttrValues.length;
+
+    // MTBF
+    let totalUptime = 0;
+    for (const record of this.uptimeRecords) {
+      totalUptime += record.end - record.start;
+    }
+    const mtbf = this.incidents.length > 0 ? totalUptime / this.incidents.length : Infinity;
+
+    // MTTF = MTBF - MTTR
+    const mttf = mtbf - avgMttr;
+
+    // 可用性
+    const availability = mttf / (mttf + avgMttr);
+
+    return {
+      incidentCount: this.incidents.length,
+      mtbf: { value: mtbf, formatted: this.formatDuration(mtbf) },
+      mttf: { value: mttf, formatted: this.formatDuration(mttf) },
+      mttr: {
+        total: { value: avgMttr, formatted: this.formatDuration(avgMttr) },
+        detect: { value: avgMttd, formatted: this.formatDuration(avgMttd) },
+        investigate: { value: avgMtti, formatted: this.formatDuration(avgMtti) },
+        mitigate: { value: avgMttm, formatted: this.formatDuration(avgMttm) },
+        verify: { value: avgMttv, formatted: this.formatDuration(avgMttv) },
+      },
+      availability: `${(availability * 100).toFixed(4)}%`,
+      mttrBreakdown: this.formatMttrBreakdown(avgMttd, avgMtti, avgMttm, avgMttv),
+    };
+  }
+
+  formatDuration(minutes) {
+    if (minutes >= 1440) return `${(minutes / 1440).toFixed(1)} 天`;
+    if (minutes >= 60) return `${(minutes / 60).toFixed(1)} 小时`;
+    return `${minutes.toFixed(1)} 分钟`;
+  }
+
+  formatMttrBreakdown(detect, investigate, mitigate, verify) {
+    const total = detect + investigate + mitigate + verify;
+    const bar = (value, label) => {
+      const width = Math.round((value / total) * 30);
+      return `${label.padEnd(8)} ${'█'.repeat(width)} ${((value / total) * 100).toFixed(0)}% (${value.toFixed(1)} min)`;
+    };
+
+    return [
+      bar(detect, 'MTTD'),
+      bar(investigate, 'MTTI'),
+      bar(mitigate, 'MTTM'),
+      bar(verify, 'MTTV'),
+    ].join('\n');
+  }
+}
+
+// 演示
+const metrics = new ReliabilityMetrics();
+
+// 记录正常运行时间（单位：分钟）
+metrics.recordUptime(0, 10080);      // 第 1 周正常
+metrics.recordUptime(10110, 20160);  // 第 2 周正常（故障修复后）
+metrics.recordUptime(20190, 30240);  // 第 3 周正常
+metrics.recordUptime(30270, 43200);  // 第 4 周到月末
+
+// 记录故障事件（单位：分钟，从各阶段的起点开始）
+metrics.recordIncident({
+  startTime: 10080,    // 故障发生
+  detectTime: 10085,   // 5 分钟后发现
+  diagnosedTime: 10095, // 再过 10 分钟定位
+  mitigatedTime: 10105, // 再过 10 分钟修复
+  verifiedTime: 10110,  // 再过 5 分钟验证
+});
+
+metrics.recordIncident({
+  startTime: 20160,
+  detectTime: 20163,
+  diagnosedTime: 20170,
+  mitigatedTime: 20185,
+  verifiedTime: 20190,
+});
+
+metrics.recordIncident({
+  startTime: 30240,
+  detectTime: 30242,
+  diagnosedTime: 30250,
+  mitigatedTime: 30265,
+  verifiedTime: 30270,
+});
+
+console.log('=== 可靠性指标 ===\n');
+const result = metrics.calculateMetrics();
+console.log(`故障次数: ${result.incidentCount}`);
+console.log(`MTBF: ${result.mtbf.formatted}`);
+console.log(`MTTF: ${result.mttf.formatted}`);
+console.log(`MTTR: ${result.mttr.total.formatted}`);
+console.log(`可用性: ${result.availability}`);
+console.log(`\nMTTR 分解:`);
+console.log(result.mttrBreakdown);
+```
+
+## 🎯 错误预算（Error Budget）
+
+### 理论基础
+
+错误预算是 Google SRE 提出的核心概念：
+
+```
+错误预算 = 100% - SLO 目标
+
+例：SLO = 99.9%
+  错误预算 = 0.1%
+  月度：43200 分钟 × 0.1% = 43.2 分钟的允许停机时间
+  或：100万请求 × 0.1% = 1000 个允许失败的请求
+```
+
+### 错误预算的决策框架
+
+```
+错误预算充裕（消耗 < 50%）：
+  → 可以加速迭代、发布新功能、做实验
+  → "我们有余量承担风险"
+
+错误预算紧张（消耗 50% ~ 100%）：
+  → 减缓发布节奏，加强变更审查
+  → "需要谨慎行事"
+
+错误预算耗尽（消耗 ≥ 100%）：
+  → 冻结所有非可靠性相关的发布
+  → 全力投入可靠性改进
+  → "先还债，再做新功能"
+
+这建立了一个产品团队和 SRE 团队之间的
+量化协商机制——不是"稳定性 vs 功能"的主观争论，
+而是"预算还剩多少"的客观讨论。
+```
+
+### 错误预算与发布决策
+
+| 预算剩余 | 发布频率 | 变更风险容忍度 | 重点 |
+|---------|---------|-------------|------|
+| **> 50%** | 正常或加速 | 可接受较高风险 | 功能迭代 |
+| **25% ~ 50%** | 正常 | 中等 | 平衡功能与稳定性 |
+| **10% ~ 25%** | 减缓 | 只接受低风险变更 | 稳定性优先 |
+| **< 10%** | 冻结 | 仅允许修复变更 | 全力恢复可靠性 |
+| **已耗尽** | 完全冻结 | 禁止任何非修复变更 | 偿还可靠性债务 |
+
+## 🌪️ 混沌工程理论
+
+### 什么是混沌工程？
+
+混沌工程（Chaos Engineering）是**通过主动注入故障来验证系统韧性**的工程实践。它的核心思想是：
+
+> 与其等待故障在生产环境中自然发生并造成灾难，不如在可控条件下主动引发故障，验证系统的容错能力。
+
+### 混沌工程的五大原则
+
+| 原则 | 含义 | 实践指导 |
+|------|------|---------|
+| **1. 建立稳态假说** | 定义系统"正常"的行为基线 | 用 SLI 定义什么是"系统正常" |
+| **2. 真实世界事件** | 注入真实可能发生的故障 | 网络延迟、节点崩溃、磁盘满等 |
+| **3. 在生产环境运行** | 在真实生产流量下实验 | 测试环境的结果可能不可靠 |
+| **4. 自动化持续运行** | 不是一次性的，而是持续的 | CI/CD 中集成混沌实验 |
+| **5. 最小化爆炸半径** | 控制故障影响范围 | 从小流量开始，有熔断机制 |
+
+### 混沌实验的设计框架
+
+```
+混沌实验模板：
+
+假说（Hypothesis）：
+  "在注入 [具体故障] 的情况下，
+   系统的 [具体 SLI] 仍然满足 [具体 SLO]。"
+
+例子：
+  假说："当支付服务的 1 个实例崩溃时，
+         支付成功率仍然 ≥ 99.9%，
+         P99 延迟仍然 < 500ms。"
+
+实验步骤：
+  1. 记录当前稳态基线（SLI 快照）
+  2. 注入故障（杀掉一个支付服务实例）
+  3. 观察 SLI 变化
+  4. 对比稳态假说
+  5. 清理故障，恢复系统
+
+结果判定：
+  ✅ SLI 未违反 SLO → 系统对此故障具有韧性
+  ❌ SLI 违反 SLO → 发现了一个需要修复的弱点
+```
+
+### 故障注入的分类
+
+| 类别 | 故障类型 | 工具示例 |
+|------|---------|---------|
+| **基础设施层** | 节点崩溃、CPU 满载、磁盘满、内存耗尽 | Chaos Monkey、LitmusChaos |
+| **网络层** | 延迟注入、丢包、分区、DNS 故障 | tc（Linux）、Toxiproxy |
+| **应用层** | 异常注入、线程阻塞、内存泄漏 | ChaosBlade、Byteman |
+| **依赖层** | 下游服务超时、返回错误、数据不一致 | WireMock、故障注入 SDK |
+
+### 代码示例：混沌实验框架
+
+```js
+// ========== 混沌实验框架 ==========
+
+class ChaosExperiment {
+  constructor(config) {
+    this.name = config.name;
+    this.hypothesis = config.hypothesis;
+    this.sliCollector = config.sliCollector;
+    this.faultInjector = config.faultInjector;
+    this.cleanupAction = config.cleanupAction;
+    this.sloThresholds = config.sloThresholds;
+    this.durationMs = config.durationMs || 60000;
+  }
+
+  run() {
+    console.log(`\n${'═'.repeat(50)}`);
+    console.log(`混沌实验: ${this.name}`);
+    console.log(`假说: ${this.hypothesis}`);
+    console.log(`${'═'.repeat(50)}\n`);
+
+    // 步骤 1：收集稳态基线
+    console.log('📊 步骤 1: 收集稳态基线...');
+    const baseline = this.sliCollector();
+    console.log(`  基线 SLI: ${JSON.stringify(baseline)}`);
+
+    // 步骤 2：注入故障
+    console.log('\n💥 步骤 2: 注入故障...');
+    const faultInfo = this.faultInjector();
+    console.log(`  故障详情: ${faultInfo.description}`);
+
+    // 步骤 3：观察 SLI 变化
+    console.log('\n👀 步骤 3: 观察 SLI 变化...');
+    const experimentSli = this.sliCollector();
+    console.log(`  实验中 SLI: ${JSON.stringify(experimentSli)}`);
+
+    // 步骤 4：对比 SLO
+    console.log('\n📋 步骤 4: 对比 SLO 阈值...');
+    const violations = [];
+    for (const [metric, threshold] of Object.entries(this.sloThresholds)) {
+      const actualValue = experimentSli[metric];
+      const passed = typeof threshold === 'object'
+        ? (threshold.type === 'min' ? actualValue >= threshold.value : actualValue <= threshold.value)
+        : actualValue >= threshold;
+
+      const thresholdDisplay = typeof threshold === 'object'
+        ? `${threshold.type === 'min' ? '≥' : '≤'} ${threshold.value}`
+        : `≥ ${threshold}`;
+
+      if (passed) {
+        console.log(`  ✅ ${metric}: ${actualValue} (阈值: ${thresholdDisplay})`);
+      } else {
+        console.log(`  ❌ ${metric}: ${actualValue} (阈值: ${thresholdDisplay})`);
+        violations.push({ metric, actual: actualValue, threshold });
+      }
+    }
+
+    // 步骤 5：清理
+    console.log('\n🧹 步骤 5: 清理故障...');
+    this.cleanupAction();
+    console.log('  故障已清除');
+
+    // 实验结论
+    console.log(`\n${'─'.repeat(50)}`);
+    if (violations.length === 0) {
+      console.log('🟢 实验结论: 假说成立 — 系统对此故障具有韧性');
+    } else {
+      console.log('🔴 实验结论: 假说不成立 — 发现系统弱点');
+      console.log('需要修复:');
+      for (const violation of violations) {
+        console.log(`  - ${violation.metric}: 实际值 ${violation.actual} 未达阈值`);
+      }
+    }
+    console.log(`${'─'.repeat(50)}`);
+
+    return {
+      passed: violations.length === 0,
+      baseline,
+      experimentSli,
+      violations,
+    };
+  }
+}
+
+// ========== 模拟服务状态 ==========
+let serviceInstances = 3;
+let simulatedSuccessRate = 99.95;
+let simulatedP99Latency = 120;
+
+// 实验 1：服务实例崩溃
+const instanceCrashExperiment = new ChaosExperiment({
+  name: '服务实例崩溃',
+  hypothesis: '当 1 个服务实例崩溃时，成功率 ≥ 99.9% 且 P99 延迟 < 200ms',
+  sliCollector: () => ({
+    successRate: simulatedSuccessRate,
+    p99LatencyMs: simulatedP99Latency,
+    instanceCount: serviceInstances,
+  }),
+  faultInjector: () => {
+    serviceInstances--;
+    // 模拟：实例减少导致成功率微降和延迟微升
+    simulatedSuccessRate = 99.92;
+    simulatedP99Latency = 150;
+    return { description: `杀掉 1 个服务实例（剩余 ${serviceInstances} 个）` };
+  },
+  cleanupAction: () => {
+    serviceInstances = 3;
+    simulatedSuccessRate = 99.95;
+    simulatedP99Latency = 120;
+  },
+  sloThresholds: {
+    successRate: 99.9,
+    p99LatencyMs: { type: 'max', value: 200 },
+  },
+  durationMs: 60000,
+});
+
+instanceCrashExperiment.run();
+
+// 实验 2：网络延迟注入（模拟跨分区网络问题）
+simulatedSuccessRate = 99.95;
+simulatedP99Latency = 120;
+
+const networkLatencyExperiment = new ChaosExperiment({
+  name: '网络延迟注入',
+  hypothesis: '当注入 100ms 网络延迟时，成功率 ≥ 99.9% 且 P99 延迟 < 200ms',
+  sliCollector: () => ({
+    successRate: simulatedSuccessRate,
+    p99LatencyMs: simulatedP99Latency,
+  }),
+  faultInjector: () => {
+    // 模拟：100ms 延迟导致 P99 延迟显著上升，部分请求超时
+    simulatedSuccessRate = 99.85;
+    simulatedP99Latency = 280;
+    return { description: '向数据库连接注入 100ms 额外延迟' };
+  },
+  cleanupAction: () => {
+    simulatedSuccessRate = 99.95;
+    simulatedP99Latency = 120;
+  },
+  sloThresholds: {
+    successRate: 99.9,
+    p99LatencyMs: { type: 'max', value: 200 },
+  },
+});
+
+networkLatencyExperiment.run();
+```
+
+## 📈 故障模型与分类
+
+### 故障的三维分类
+
+```
+维度 1：故障来源
+  ├── 硬件故障：磁盘坏块、内存位翻转、网卡故障
+  ├── 软件故障：内存泄漏、死锁、竞态条件
+  ├── 配置故障：错误的配置变更、证书过期
+  ├── 容量故障：流量突增、存储满、连接池耗尽
+  └── 依赖故障：第三方服务不可用、DNS 故障
+
+维度 2：故障影响范围
+  ├── 单节点：一台机器故障
+  ├── 单机架：一个机架的电源/交换机故障
+  ├── 单可用区：一个 AZ 整体不可用
+  ├── 单地域：一个地域/数据中心级别的故障
+  └── 全局：影响所有地域（如全球 DNS 故障）
+
+维度 3：故障时间特性
+  ├── 瞬时：持续毫秒级（网络抖动）
+  ├── 间歇：时有时无（不稳定的连接）
+  ├── 持续：需要人工修复（硬盘坏了）
+  └── 渐进：逐渐恶化（内存泄漏）
+```
+
+### 故障概率与影响矩阵
+
+```js
+// ========== 故障风险评估矩阵 ==========
+
+class RiskAssessmentMatrix {
+  constructor() {
+    this.risks = [];
+  }
+
+  addRisk(risk) {
+    // 风险分值 = 概率 × 影响
+    const probabilityScore = { rare: 1, unlikely: 2, possible: 3, likely: 4, certain: 5 };
+    const impactScore = { negligible: 1, minor: 2, moderate: 3, major: 4, catastrophic: 5 };
+
+    const score = probabilityScore[risk.probability] * impactScore[risk.impact];
+    const level = score >= 15 ? '🔴 极高' : score >= 10 ? '🟠 高' : score >= 5 ? '🟡 中' : '🟢 低';
+
+    this.risks.push({ ...risk, score, level });
+  }
+
+  printMatrix() {
+    console.log('=== 故障风险评估矩阵 ===\n');
+    console.log('风险等级 | 分值 | 故障类型 | 概率 | 影响 | 缓解措施');
+    console.log('---------|------|---------|------|------|--------');
+
+    const sorted = [...this.risks].sort((a, b) => b.score - a.score);
+    for (const risk of sorted) {
+      console.log(
+        `${risk.level.padEnd(8)} | ${String(risk.score).padStart(4)} | ` +
+        `${risk.type.padEnd(12)} | ${risk.probability.padEnd(8)} | ` +
+        `${risk.impact.padEnd(8)} | ${risk.mitigation}`,
+      );
+    }
+  }
+}
+
+const matrix = new RiskAssessmentMatrix();
+
+matrix.addRisk({
+  type: '单节点崩溃',
+  probability: 'likely',
+  impact: 'minor',
+  mitigation: '多实例部署 + 自动故障转移',
+});
+
+matrix.addRisk({
+  type: '网络分区',
+  probability: 'possible',
+  impact: 'major',
+  mitigation: '跨 AZ 部署 + Raft 共识',
+});
+
+matrix.addRisk({
+  type: '数据库主库故障',
+  probability: 'unlikely',
+  impact: 'catastrophic',
+  mitigation: '主从自动切换 + 定期备份',
+});
+
+matrix.addRisk({
+  type: '配置错误推送',
+  probability: 'possible',
+  impact: 'major',
+  mitigation: '灰度发布 + 配置回滚机制',
+});
+
+matrix.addRisk({
+  type: '流量突增 10x',
+  probability: 'possible',
+  impact: 'moderate',
+  mitigation: '自动扩容 + 限流 + 降级',
+});
+
+matrix.addRisk({
+  type: '全地域断电',
+  probability: 'rare',
+  impact: 'catastrophic',
+  mitigation: '异地多活 + 离线容灾',
+});
+
+matrix.addRisk({
+  type: '内存泄漏',
+  probability: 'likely',
+  impact: 'moderate',
+  mitigation: '定期重启 + 内存监控告警',
+});
+
+matrix.addRisk({
+  type: '依赖服务故障',
+  probability: 'likely',
+  impact: 'moderate',
+  mitigation: '熔断 + 降级 + 缓存兜底',
+});
+
+matrix.printMatrix();
+```
+
+## 🧮 可靠性设计的核心定理
+
+### 故障率的浴缸曲线
+
+```
+故障率 ↑
+       │  ╲                              ╱
+       │   ╲                            ╱
+       │    ╲                          ╱
+       │     ╲──────────────────────╱
+       │      早期故障   正常使用期   耗损故障
+       └────────────────────────────────→ 时间
+
+  早期故障期（Infant Mortality）：
+    新系统上线初期，由于部署错误、配置问题、未发现的 bug
+    故障率较高 → 需要 Burn-in 测试 / 灰度发布
+
+  正常使用期（Useful Life）：
+    故障率稳定且较低，故障主要是随机事件
+    故障时间间隔服从指数分布
+
+  耗损故障期（Wear-out）：
+    硬件老化、软件技术债累积
+    故障率上升 → 需要计划性替换
+```
+
+### 可靠性增长模型
+
+随着故障被发现和修复，系统的可靠性应该逐步提升：
+
+```
+理想的可靠性增长：
+
+  可靠性 ↑
+         │            ___________
+         │         __╱
+         │       _╱
+         │     _╱
+         │   _╱
+         │  ╱
+         │╱
+         └──────────────────→ 修复的故障数
+
+  每修复一个故障，MTBF 增加
+  最终趋近于一个上限（受架构限制）
+
+实践指标：
+  故障密度（Defect Density）= 故障数 / 代码行数
+  通常目标：< 1 故障 / KLOC（千行代码）
+  高可靠系统：< 0.1 故障 / KLOC
+```
+
+## 🔗 相关概念
+
+- **[容错设计](/architect/03-distributed-systems/04-distributed-reliability/02-fault-tolerance)**：熔断、限流、降级的具体实现
+- **[高可用设计](/architect/03-distributed-systems/04-distributed-reliability/03-high-availability)**：主备、多活、故障转移的实现方案
+- **[核心定理](/architect/03-distributed-systems/01-distributed-theory/02-core-theorems)**：CAP 定理对可用性的理论约束
+- **[网络模型与故障](/architect/03-distributed-systems/02-distributed-communication/05-network-models-and-failures)**：故障类型的理论分类
+
+## ✅ 学习检查点
+
+- [ ] 能够区分 SLI、SLO、SLA 三者的定义与关系
+- [ ] 理解为什么百分位数比平均值更适合作为延迟 SLI
+- [ ] 能够用串联/并联模型计算复合系统的可用性
+- [ ] 理解 MTBF、MTTF、MTTR 的定义及其关系
+- [ ] 能够解释错误预算如何平衡功能迭代与可靠性
+- [ ] 掌握混沌实验的设计框架（假说 → 注入 → 观察 → 判定）
+- [ ] 能够用风险矩阵评估系统的故障风险优先级
+- [ ] 理解"提升 MTBF 不如降低 MTTR"的工程意义
+
+## 🚀 下一步
+
+恭喜你完成了分布式系统阶段的学习！
+
+→ 返回 [架构师学习路线图](/roadmaps/architect-learning-roadmap) 查看下一阶段

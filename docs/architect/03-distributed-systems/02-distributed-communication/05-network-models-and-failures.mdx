@@ -1,0 +1,805 @@
+# 网络模型与故障理论
+
+> **版本**：v1.0
+> **最后更新**：2026-04-27
+
+## 📖 概述
+
+分布式系统的核心挑战在于：**节点之间通过不可靠的网络进行通信**。理解网络模型和故障类型是设计正确的分布式算法的前提——不同的网络假设决定了哪些问题可解、哪些不可解，以及我们需要做出怎样的权衡。
+
+本文系统地介绍分布式系统的网络模型分类、故障类型层级、经典理论问题（两将军问题、拜占庭将军问题），以及这些理论如何指导实际的系统设计。
+
+## 🎯 学习目标
+
+- 理解同步、异步、半同步三种网络模型的定义与差异
+- 掌握故障类型的层级关系（崩溃 → 遗漏 → 拜占庭）
+- 深入理解两将军问题和拜占庭将军问题的理论意义
+- 了解故障检测器的理论框架与工程实现
+- 建立"模型决定能力边界"的系统性思维
+
+## 🌐 网络模型（System Models）
+
+分布式系统的理论分析首先需要明确**系统模型**——对网络行为和节点行为的假设。不同的假设导致截然不同的可能性边界。
+
+### 同步模型（Synchronous Model）
+
+在同步模型中，系统满足以下**已知上界**：
+
+| 约束 | 保证 |
+|------|------|
+| **消息延迟** | 任何消息在 \(\delta\) 时间内必定到达 |
+| **处理时间** | 任何计算步骤在 \(\phi\) 时间内完成 |
+| **时钟漂移** | 时钟漂移率有已知上界 \(\rho\) |
+
+```
+同步模型的含义：
+  如果节点 A 给节点 B 发了消息，
+  且在 δ 时间内没收到回复，
+  A 可以确定 B 已经崩溃。
+
+这使得故障检测变得简单可靠。
+```
+
+**优势**：算法设计最简单，超时即可判断故障。
+
+**问题**：现实网络几乎不满足这些假设——网络拥塞、GC 暂停、磁盘 IO 阻塞都可能导致延迟超出预期。如果基于同步模型设计的算法遇到违反假设的情况，**正确性无法保证**。
+
+### 异步模型（Asynchronous Model）
+
+异步模型是最保守的假设——**没有任何时间上界**：
+
+| 约束 | 保证 |
+|------|------|
+| **消息延迟** | 消息最终会到达，但没有时间上限 |
+| **处理时间** | 计算最终会完成，但没有时间上限 |
+| **时钟** | 节点可能根本没有时钟 |
+
+```
+异步模型的含义：
+  节点 A 给 B 发了消息，迟迟没收到回复。
+  A 无法区分以下情况：
+    - B 已经崩溃
+    - B 处理得非常慢
+    - 网络延迟非常大
+    - 回复消息还在路上
+
+这正是 FLP 不可能性定理的前提。
+```
+
+**优势**：在此模型下证明正确的算法，在任何真实系统中都正确。
+
+**问题**：太多问题在此模型下**不可解**（如确定性共识——FLP 定理）。
+
+### 半同步模型（Partially Synchronous Model）
+
+半同步模型是工程实践中最实用的折中：
+
+**定义 1（最终同步）**：系统最终会变得同步——存在一个未知的时间点 GST（Global Stabilization Time），在 GST 之后，消息延迟和处理时间都有上界。
+
+**定义 2（已知上界但未知何时满足）**：消息延迟的上界 \(\delta\) 是已知的，但系统不总是满足这个上界。
+
+```
+半同步模型的核心假设：
+  "系统大部分时间表现良好（像同步的），
+   偶尔表现异常（像异步的），
+   但异常不会永远持续。"
+
+这与现实非常吻合：
+  - 网络拥塞是暂时的
+  - GC 暂停会结束
+  - 故障最终会被修复或隔离
+```
+
+**Raft、Paxos 等实际共识算法都基于半同步模型**：它们在异步阶段保证安全性（Safety），在同步阶段保证活性（Liveness）。
+
+### 三种模型的对比
+
+| 维度 | 同步 | 半同步 | 异步 |
+|------|------|--------|------|
+| **时间假设** | 强（已知上界） | 中（最终有上界） | 无 |
+| **故障检测** | 完美 | 最终准确 | 不可能 |
+| **共识可解性** | ✅ 可解 | ✅ 可解（GST 后） | ❌ 不可解（FLP） |
+| **现实匹配度** | 低 | 高 | 理论基准 |
+| **算法复杂度** | 低 | 中 | 最高 |
+| **典型应用** | 硬实时系统 | Raft、Paxos | 理论证明 |
+
+### 代码示例：三种模型下的故障检测
+
+```js
+// ========== 三种网络模型下的故障检测器 ==========
+
+class SynchronousDetector {
+  constructor(maxMessageDelay) {
+    this.maxMessageDelay = maxMessageDelay; // 已知上界
+    this.heartbeats = new Map(); // nodeId → lastHeartbeat
+  }
+
+  receiveHeartbeat(nodeId) {
+    this.heartbeats.set(nodeId, Date.now());
+  }
+
+  // 同步模型：超过已知上界即判定故障（完美检测）
+  detectFailures() {
+    const now = Date.now();
+    const suspected = [];
+    for (const [nodeId, lastSeen] of this.heartbeats) {
+      if (now - lastSeen > this.maxMessageDelay) {
+        suspected.push(nodeId);
+      }
+    }
+    return {
+      model: '同步模型',
+      guarantee: '完美故障检测（无误判、无漏判）',
+      suspected,
+    };
+  }
+}
+
+class PartiallySynchronousDetector {
+  constructor(initialTimeout) {
+    this.timeout = initialTimeout;
+    this.heartbeats = new Map();
+    this.suspicionHistory = new Map(); // 记录误判以自适应调整
+  }
+
+  receiveHeartbeat(nodeId) {
+    this.heartbeats.set(nodeId, Date.now());
+
+    // 如果之前误判过该节点，增加超时阈值
+    if (this.suspicionHistory.has(nodeId)) {
+      const oldTimeout = this.timeout;
+      this.timeout = Math.min(this.timeout * 1.5, 60000);
+      console.log(`  [自适应] 曾误判 ${nodeId}，超时从 ${oldTimeout}ms 调整为 ${this.timeout}ms`);
+      this.suspicionHistory.delete(nodeId);
+    }
+  }
+
+  // 半同步模型：使用自适应超时，可能误判但最终准确
+  detectFailures() {
+    const now = Date.now();
+    const suspected = [];
+    for (const [nodeId, lastSeen] of this.heartbeats) {
+      if (now - lastSeen > this.timeout) {
+        suspected.push(nodeId);
+        this.suspicionHistory.set(nodeId, now);
+      }
+    }
+    return {
+      model: '半同步模型',
+      guarantee: '最终准确故障检测（可能暂时误判，但最终纠正）',
+      timeout: this.timeout,
+      suspected,
+    };
+  }
+}
+
+class AsynchronousDetector {
+  constructor() {
+    this.heartbeats = new Map();
+  }
+
+  receiveHeartbeat(nodeId) {
+    this.heartbeats.set(nodeId, Date.now());
+  }
+
+  // 异步模型：无法可靠检测故障
+  detectFailures() {
+    return {
+      model: '异步模型',
+      guarantee: '无法可靠检测故障（FLP 不可能性）',
+      explanation: '无论等了多久没收到心跳，都无法区分"节点崩溃"和"消息极慢"',
+      suspected: [],
+    };
+  }
+}
+
+// 演示
+const syncDetector = new SynchronousDetector(5000);
+syncDetector.receiveHeartbeat('node-1');
+syncDetector.heartbeats.set('node-2', Date.now() - 6000); // 模拟超时
+console.log(syncDetector.detectFailures());
+
+const partialSyncDetector = new PartiallySynchronousDetector(3000);
+partialSyncDetector.receiveHeartbeat('node-1');
+partialSyncDetector.heartbeats.set('node-2', Date.now() - 4000);
+console.log(partialSyncDetector.detectFailures());
+// 模拟 node-2 实际没故障，后来又发了心跳
+partialSyncDetector.receiveHeartbeat('node-2');
+console.log(partialSyncDetector.detectFailures());
+
+const asyncDetector = new AsynchronousDetector();
+console.log(asyncDetector.detectFailures());
+```
+
+## ⚡ 故障类型层级
+
+### 故障分类学
+
+分布式系统中的故障形成一个**层级结构**，每种故障类型包含它上面的所有故障行为：
+
+```
+           拜占庭故障（Byzantine）
+          ╱   节点可能表现出任意行为（发送错误数据、欺骗等）
+         ╱
+        ╱  认证拜占庭（Authenticated Byzantine）
+       ╱     拜占庭 + 消息可验证签名
+      ╱
+     ╱   性能故障（Performance / Timing）
+    ╱      节点响应，但可能非常慢
+   ╱
+  ╱    遗漏故障（Omission）
+ ╱       节点可能丢失发送或接收的消息
+╱
+    崩溃-恢复故障（Crash-Recovery）
+       节点崩溃后可能恢复，但可能丢失内存状态
+ 
+    崩溃-停止故障（Crash-Stop）
+       节点崩溃后永不恢复（最简单的故障模型）
+```
+
+### 各故障类型详解
+
+| 故障类型 | 行为 | 可检测性 | 处理难度 | 典型场景 |
+|---------|------|---------|---------|---------|
+| **崩溃-停止** | 节点停止运行，不再发送任何消息 | 最终可检测 | 低 | 进程 crash、机器宕机 |
+| **崩溃-恢复** | 节点崩溃后可能重启，丢失易失状态 | 需要持久化日志 | 中 | 服务器重启、容器重启 |
+| **遗漏** | 节点运行但丢失部分消息 | 难以检测 | 中高 | 网络丢包、队列溢出 |
+| **性能** | 节点运行但响应极慢 | 超时检测 | 高 | GC 暂停、磁盘 IO |
+| **拜占庭** | 节点可能表现出任意恶意行为 | 极难 | 最高 | 被入侵的节点、硬件故障导致数据损坏 |
+
+### 容错能力与故障模型的关系
+
+| 故障模型 | 容忍 f 个故障节点所需的最少节点数 | 共识算法示例 |
+|---------|-------------------------------|------------|
+| **崩溃-停止** | \(2f + 1\) | Raft、Paxos |
+| **崩溃-恢复** | \(2f + 1\)（需持久化） | Raft（WAL） |
+| **拜占庭** | \(3f + 1\) | PBFT、Tendermint |
+
+**推导（崩溃-停止）**：系统需要多数节点（quorum）存活才能做决定。\(N\) 个节点中最多 \(f\) 个崩溃，需要 \(N - f > f\)，即 \(N > 2f\)，取 \(N = 2f + 1\)。
+
+**推导（拜占庭）**：拜占庭节点可以发送矛盾信息。需要正确节点的数量超过拜占庭节点的两倍，才能"投票"分辨真伪：\(N - f > 2f\)，即 \(N > 3f\)，取 \(N = 3f + 1\)。
+
+### 代码示例：故障模型的影响
+
+```js
+// ========== 不同故障模型下的 Quorum 计算 ==========
+
+class FaultToleranceCalculator {
+  static analyze(totalNodes, faultModel) {
+    const calculations = {
+      'crash-stop': {
+        maxFaults: Math.floor((totalNodes - 1) / 2),
+        quorum: Math.floor(totalNodes / 2) + 1,
+        formula: 'N = 2f + 1 → f = (N-1)/2',
+        description: '崩溃-停止：故障节点不再参与（沉默故障）',
+      },
+      'crash-recovery': {
+        maxFaults: Math.floor((totalNodes - 1) / 2),
+        quorum: Math.floor(totalNodes / 2) + 1,
+        formula: 'N = 2f + 1（同崩溃-停止，但需要 WAL 持久化）',
+        description: '崩溃-恢复：节点可能重启，需要从持久化日志恢复',
+      },
+      'byzantine': {
+        maxFaults: Math.floor((totalNodes - 1) / 3),
+        quorum: Math.ceil((2 * totalNodes) / 3),
+        formula: 'N = 3f + 1 → f = (N-1)/3',
+        description: '拜占庭：故障节点可能发送矛盾信息',
+      },
+    };
+
+    const calc = calculations[faultModel];
+    if (!calc) return { error: '未知的故障模型' };
+
+    return {
+      totalNodes,
+      faultModel,
+      description: calc.description,
+      formula: calc.formula,
+      maxTolerableFaults: calc.maxFaults,
+      quorumSize: calc.quorum,
+      safetyMargin: totalNodes - calc.quorum,
+    };
+  }
+
+  static compareModels(nodeCountList) {
+    console.log('=== 不同故障模型的容错能力对比 ===\n');
+    console.log('节点数 | 崩溃-停止可容忍 | 拜占庭可容忍 | 崩溃Quorum | 拜占庭Quorum');
+    console.log('-------|---------------|------------|----------|------------');
+
+    for (const nodeCount of nodeCountList) {
+      const crash = FaultToleranceCalculator.analyze(nodeCount, 'crash-stop');
+      const byzantine = FaultToleranceCalculator.analyze(nodeCount, 'byzantine');
+      console.log(
+        `  ${String(nodeCount).padEnd(4)} |` +
+        `      ${String(crash.maxTolerableFaults).padEnd(10)} |` +
+        `     ${String(byzantine.maxTolerableFaults).padEnd(7)} |` +
+        `    ${String(crash.quorumSize).padEnd(7)} |` +
+        `     ${byzantine.quorumSize}`,
+      );
+    }
+  }
+}
+
+FaultToleranceCalculator.compareModels([3, 4, 5, 7, 9, 13]);
+
+console.log('\n=== 详细分析 ===');
+console.log(FaultToleranceCalculator.analyze(5, 'crash-stop'));
+console.log(FaultToleranceCalculator.analyze(5, 'byzantine'));
+console.log(FaultToleranceCalculator.analyze(7, 'byzantine'));
+```
+
+## ⚔️ 两将军问题
+
+### 问题描述
+
+两将军问题是分布式系统中最早的不可能性结果之一：
+
+```
+          ┌──────────── 敌军阵地 ────────────┐
+          │                                   │
+将军 A ←──│───── 只能通过敌军领地传递信息 ──────│──→ 将军 B
+(3000兵)  │       信使可能被敌军截获          │    (3000兵)
+          └───────────────────────────────────┘
+                    敌军 (5000兵)
+
+条件：
+  - 两支军队必须同时进攻才能获胜（3000+3000 > 5000）
+  - 任何一方单独进攻必败（3000 < 5000）
+  - 信使穿越敌军领地时可能被截获（消息可能丢失）
+  - 两位将军需要就"进攻时间"达成共识
+```
+
+### 为什么不可能？
+
+**反证法**：假设存在一个有限轮消息交换的协议能让两将军达成共识。
+
+```
+假设最少需要 k 轮消息才能达成共识。
+
+考虑第 k 轮（最后一轮）消息：
+  - 如果第 k 轮消息被截获（丢失），
+    发送方不知道对方是否收到，
+    但按照假设，前 k-1 轮不够达成共识。
+  - 所以发送方无法确定是否应该进攻。
+  - 接收方（如果没收到第 k 轮消息）也不确定。
+
+不管 k 是多少，最后一轮消息总是存在丢失的风险。
+→ 不存在有限轮消息能保证双方一定达成共识。
+```
+
+### 与分布式系统的对应
+
+| 两将军问题 | 分布式系统 |
+|-----------|-----------|
+| 将军 A 和 B | 两个节点 |
+| 信使被截获 | 网络消息丢失 |
+| "同时进攻" | "都提交事务" |
+| 无法达成共识 | 2PC 协调者挂了，参与者可能阻塞 |
+
+两将军问题证明了：**在不可靠网络上，两个节点无法就一个值达成确定性共识。**这就是为什么 2PC（两阶段提交）存在阻塞问题——协调者在第二阶段崩溃时，参与者不知道该提交还是回滚。
+
+### 工程上的绕过方式
+
+虽然理论上无解，但工程上可以通过以下方式**降低风险**：
+
+| 方法 | 原理 | 代价 |
+|------|------|------|
+| **超时 + 重试** | 消息丢了就重发，足够多次后概率趋近 1 | 不是 100%，且增加延迟 |
+| **三阶段提交（3PC）** | 引入 Pre-Commit 阶段减少阻塞窗口 | 网络分区时仍可能不一致 |
+| **引入第三方** | 可信的协调者 / 共享存储 | 协调者成为单点 |
+| **接受概率性保证** | 像 TCP 那样用超时重传 | 不是绝对确定 |
+
+## 🏰 拜占庭将军问题
+
+### 问题描述
+
+拜占庭将军问题由 Lamport、Shostak 和 Pease 在 1982 年提出，是两将军问题的泛化：
+
+```
+场景：
+  N 个将军围攻一座城池
+  其中最多 f 个将军是叛徒（拜占庭故障）
+  叛徒可以：
+    - 给不同将军发送不同消息
+    - 故意延迟或不发送消息
+    - 伪造消息内容
+
+目标：
+  所有忠诚的将军必须就"进攻"或"撤退"达成一致意见
+  即使叛徒试图破坏共识
+```
+
+### 核心定理
+
+**定理**：在没有数字签名的情况下，拜占庭将军问题的解需要 \(N \geq 3f + 1\)。
+
+**\(N = 3, f = 1\) 不可解的直觉证明**：
+
+```
+场景 A：将军 3 是叛徒
+  将军1 → 将军2: "进攻"
+  将军1 → 将军3: "进攻"
+  将军3 → 将军2: "撤退"  （叛徒说谎）
+  
+  将军2 收到: 1说"进攻", 3说"撤退"
+  将军2 无法判断谁是叛徒
+
+场景 B：将军 1 是叛徒
+  将军1 → 将军2: "进攻"  （叛徒给不同人说不同话）
+  将军1 → 将军3: "撤退"
+  将军3 → 将军2: "撤退"
+  
+  将军2 收到: 1说"进攻", 3说"撤退"
+  将军2 看到的信息和场景 A 完全相同！
+
+→ 将军2 无法区分场景 A 和场景 B，
+  无论怎么选都可能犯错。
+```
+
+### 拜占庭容错的实际意义
+
+| 领域 | 拜占庭故障的来源 | 解决方案 |
+|------|----------------|---------|
+| **区块链** | 恶意矿工/验证者 | PBFT、PoW、PoS |
+| **航空航天** | 宇宙射线导致的位翻转 | 三模冗余（TMR） |
+| **金融系统** | 软件 bug 导致的错误响应 | 多版本独立实现 + 交叉验证 |
+| **互联网服务** | 大多数场景假设崩溃故障即可 | Raft（非拜占庭）就够了 |
+
+### 为什么大多数互联网系统不需要拜占庭容错？
+
+```
+互联网后端服务通常假设：
+  1. 节点由同一团队部署和管理（非对抗环境）
+  2. 通信通过内网进行（可信网络）
+  3. 故障主要是崩溃、网络分区，不是恶意行为
+  4. 拜占庭容错的代价太高（3f+1 vs 2f+1）
+
+因此：
+  Raft / Paxos（崩溃容错）满足绝大多数场景
+  拜占庭容错主要用于区块链和安全关键系统
+```
+
+## 🔍 故障检测器理论
+
+### Chandra-Toueg 故障检测器
+
+Chandra 和 Toueg 在 1996 年提出了**不可靠故障检测器**的理论框架，将故障检测器按两个维度分类：
+
+**完备性（Completeness）**：故障节点最终是否会被检测到
+
+| 级别 | 定义 |
+|------|------|
+| **强完备性** | 每个故障节点最终被所有正确节点怀疑 |
+| **弱完备性** | 每个故障节点最终被至少一个正确节点怀疑 |
+
+**准确性（Accuracy）**：正确节点是否会被错误地怀疑
+
+| 级别 | 定义 |
+|------|------|
+| **强准确性** | 正确节点永远不被怀疑 |
+| **弱准确性** | 至少有一个正确节点永远不被怀疑 |
+| **最终强准确性** | 从某个时间点之后，正确节点不再被怀疑 |
+| **最终弱准确性** | 从某个时间点之后，至少一个正确节点不被怀疑 |
+
+### 故障检测器的层级
+
+```
+完美故障检测器 P（强完备 + 强准确）
+  ↓ 弱化准确性
+最终完美检测器 ◇P（强完备 + 最终强准确）
+  ↓ 弱化准确性
+最终弱检测器 ◇W（弱完备 + 最终弱准确）
+  ↓
+  共识的最低要求：◇W 足以解决共识问题！
+```
+
+**关键定理**：**◇W（最终弱故障检测器）是解决共识问题的最弱故障检测器。**
+
+这意味着，只要我们的系统最终能识别出至少一个正确节点，就能解决共识问题——这正是 Raft 等算法在半同步模型下能工作的理论基础。
+
+### Phi 应计故障检测器
+
+工程实践中，最具影响力的故障检测器实现是 **Phi Accrual Failure Detector**（由 Hayashibara 等人在 2004 年提出），被 Akka、Cassandra 等系统采用。
+
+**核心思想**：不是简单地输出"怀疑/不怀疑"的二值判断，而是输出一个连续的**怀疑程度** \(\phi\)：
+
+```
+φ = -log₁₀(P(下一次心跳的延迟 ≥ 已观察到的延迟))
+
+直觉：
+  φ = 1 → 误判概率 10%
+  φ = 2 → 误判概率 1%
+  φ = 3 → 误判概率 0.1%
+  φ = 8 → 误判概率 0.000001%
+
+使用者自己设定阈值：
+  对误判敏感的应用 → 高阈值（φ > 8）
+  对故障响应速度敏感的应用 → 低阈值（φ > 3）
+```
+
+### 代码示例：Phi 应计故障检测器
+
+```js
+// ========== Phi Accrual Failure Detector ==========
+
+class PhiAccrualFailureDetector {
+  constructor(options = {}) {
+    this.threshold = options.threshold || 8;       // φ 阈值
+    this.maxSampleSize = options.maxSampleSize || 200;
+    this.heartbeatIntervals = [];                  // 心跳间隔样本
+    this.lastHeartbeatTime = null;
+  }
+
+  // 记录心跳到达
+  heartbeat() {
+    const now = Date.now();
+    if (this.lastHeartbeatTime !== null) {
+      const interval = now - this.lastHeartbeatTime;
+      this.heartbeatIntervals.push(interval);
+
+      // 保持样本窗口大小
+      if (this.heartbeatIntervals.length > this.maxSampleSize) {
+        this.heartbeatIntervals.shift();
+      }
+    }
+    this.lastHeartbeatTime = now;
+  }
+
+  // 计算心跳间隔的均值和方差
+  getStatistics() {
+    if (this.heartbeatIntervals.length === 0) {
+      return { mean: 0, variance: 0, stdDev: 0 };
+    }
+
+    const intervals = this.heartbeatIntervals;
+    const mean = intervals.reduce((sum, v) => sum + v, 0) / intervals.length;
+    const variance = intervals.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / intervals.length;
+
+    return { mean, variance, stdDev: Math.sqrt(variance) };
+  }
+
+  // 计算 φ 值
+  phi() {
+    if (this.lastHeartbeatTime === null || this.heartbeatIntervals.length < 2) {
+      return 0; // 数据不足，不做判断
+    }
+
+    const now = Date.now();
+    const timeSinceLastHeartbeat = now - this.lastHeartbeatTime;
+    const stats = this.getStatistics();
+
+    if (stats.stdDev === 0) {
+      // 所有间隔都相同，使用简单判断
+      return timeSinceLastHeartbeat > stats.mean * 2 ? 16 : 0;
+    }
+
+    // 使用正态分布近似计算 P(t > timeSinceLastHeartbeat)
+    // φ = -log10(1 - CDF(timeSinceLastHeartbeat))
+    const zScore = (timeSinceLastHeartbeat - stats.mean) / stats.stdDev;
+    const cdf = this.normalCdf(zScore);
+    const probability = 1 - cdf;
+
+    if (probability <= 0) return 16; // 极端情况
+    return -Math.log10(probability);
+  }
+
+  // 正态分布 CDF 近似（Abramowitz and Stegun 近似）
+  normalCdf(z) {
+    if (z < -6) return 0;
+    if (z > 6) return 1;
+
+    const absZ = Math.abs(z);
+    const t = 1 / (1 + 0.2316419 * absZ);
+    const d = 0.3989422804014327; // 1/√(2π)
+    const probability = d * Math.exp(-z * z / 2) *
+      (t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))));
+
+    return z > 0 ? 1 - probability : probability;
+  }
+
+  // 判断是否怀疑故障
+  isAvailable() {
+    const currentPhi = this.phi();
+    const available = currentPhi < this.threshold;
+
+    return {
+      available,
+      phi: parseFloat(currentPhi.toFixed(2)),
+      threshold: this.threshold,
+      interpretation: available
+        ? `φ=${currentPhi.toFixed(2)} < ${this.threshold}：可能存活`
+        : `φ=${currentPhi.toFixed(2)} ≥ ${this.threshold}：怀疑故障`,
+      stats: this.getStatistics(),
+    };
+  }
+}
+
+// 演示
+const detector = new PhiAccrualFailureDetector({ threshold: 8 });
+
+// 模拟规律的心跳（间隔约 1000ms，有小幅抖动）
+const heartbeatIntervals = [1000, 980, 1020, 990, 1010, 1005, 995, 1015, 985, 1000];
+
+console.log('=== Phi Accrual Failure Detector ===\n');
+console.log('--- 正常心跳阶段 ---');
+
+let simulatedTime = Date.now();
+for (const interval of heartbeatIntervals) {
+  detector.lastHeartbeatTime = simulatedTime;
+  simulatedTime += interval;
+  detector.heartbeatIntervals.push(interval);
+}
+detector.lastHeartbeatTime = simulatedTime;
+
+// 检查正常时的 φ 值
+simulatedTime += 1000; // 过了 1 秒（正常间隔）
+const originalNow = Date.now;
+Date.now = () => simulatedTime;
+console.log('正常间隔后:', detector.isAvailable());
+
+// 稍微延迟
+simulatedTime += 1000; // 过了 2 秒（2倍间隔）
+Date.now = () => simulatedTime;
+console.log('2倍间隔后:', detector.isAvailable());
+
+// 严重延迟
+simulatedTime += 3000; // 过了 5 秒（5倍间隔）
+Date.now = () => simulatedTime;
+console.log('5倍间隔后:', detector.isAvailable());
+
+// 极端延迟
+simulatedTime += 5000; // 过了 10 秒（10倍间隔）
+Date.now = () => simulatedTime;
+console.log('10倍间隔后:', detector.isAvailable());
+
+Date.now = originalNow; // 恢复
+```
+
+## 📡 网络故障的分类
+
+### 网络分区（Network Partition）
+
+网络分区是分布式系统中最棘手的故障类型之一。它不是节点故障，而是节点之间的**通信中断**。
+
+```
+正常状态:
+  A ←→ B ←→ C ←→ D ←→ E
+  
+网络分区:
+  [A ←→ B ←→ C]    [D ←→ E]
+   └─── 分区 1 ───┘  └ 分区 2 ┘
+   
+  A、B、C 之间可以通信
+  D、E 之间可以通信
+  但两组之间无法通信
+```
+
+### 分区的类型
+
+| 类型 | 描述 | 示例 |
+|------|------|------|
+| **完全分区** | 两组节点之间完全无法通信 | 跨数据中心的链路断裂 |
+| **非对称分区** | A 能发消息给 B，但 B 发给 A 的消息丢失 | 单向链路故障 |
+| **部分分区** | 只有特定节点对之间无法通信 | 特定交换机故障 |
+| **间歇性分区** | 分区时断时续 | 网络拥塞导致的丢包 |
+
+### 非对称分区的危险
+
+```
+非对称分区场景：
+
+  Leader(A) ---X--→ Follower(B)   （A 发给 B 的消息丢失）
+  Leader(A) ←───── Follower(B)    （B 发给 A 的消息正常）
+
+  A 认为：B 没有回复我的心跳 → B 可能故障了
+  B 认为：我一直收到 A 的心跳...等等，我没收到 → A 可能故障了
+
+  如果 B 发起选举并成功：出现两个 Leader（脑裂）！
+  
+  Raft 的应对：
+    Leader 必须收到多数 Follower 的确认才能维持 Leadership
+    → 即使非对称分区，也只有一个 Leader 能获得多数确认
+```
+
+## 🧩 理论与实践的映射
+
+### 网络模型选择指南
+
+| 你的系统特征 | 推荐模型 | 典型方案 |
+|------------|---------|---------|
+| 硬件可控，延迟可预测 | 同步模型 | 工业控制、航空电子 |
+| 互联网后端服务 | 半同步模型 | Raft、etcd、ZooKeeper |
+| 需要最强安全性证明 | 异步模型 | 学术论文的安全性证明 |
+| 开放网络、不可信节点 | 拜占庭模型 | 区块链（PBFT、PoS） |
+| 大多数后端微服务 | 崩溃-恢复 + 半同步 | Raft + WAL |
+
+### 故障处理策略决策
+
+```js
+function chooseFaultStrategy(systemProfile) {
+  const {
+    trustLevel,      // 'trusted' | 'semi-trusted' | 'untrusted'
+    networkType,     // 'lan' | 'wan' | 'internet'
+    failureImpact,   // 'low' | 'medium' | 'high' | 'critical'
+    nodeCount,
+  } = systemProfile;
+
+  if (trustLevel === 'untrusted') {
+    return {
+      faultModel: '拜占庭容错',
+      minNodes: 3 * Math.ceil(nodeCount * 0.33) + 1,
+      algorithm: 'PBFT / Tendermint / HotStuff',
+      reason: '节点不可信，需要防范恶意行为',
+    };
+  }
+
+  if (failureImpact === 'critical' && networkType === 'wan') {
+    return {
+      faultModel: '崩溃-恢复 + 跨机房部署',
+      minNodes: 5,
+      algorithm: 'Multi-Raft（跨机房 Raft Group）',
+      reason: '关键业务 + 广域网，需要跨机房容灾',
+    };
+  }
+
+  if (networkType === 'lan' && failureImpact !== 'critical') {
+    return {
+      faultModel: '崩溃-停止',
+      minNodes: 3,
+      algorithm: 'Raft / Paxos',
+      reason: '局域网环境，崩溃故障为主，标准共识算法即可',
+    };
+  }
+
+  return {
+    faultModel: '崩溃-恢复',
+    minNodes: 2 * Math.ceil(nodeCount * 0.33) + 1,
+    algorithm: 'Raft + WAL + 自适应故障检测',
+    reason: '通用场景，节点可能重启，需要持久化保障',
+  };
+}
+
+console.log(chooseFaultStrategy({
+  trustLevel: 'trusted', networkType: 'lan', failureImpact: 'medium', nodeCount: 5,
+}));
+
+console.log(chooseFaultStrategy({
+  trustLevel: 'untrusted', networkType: 'internet', failureImpact: 'high', nodeCount: 10,
+}));
+
+console.log(chooseFaultStrategy({
+  trustLevel: 'trusted', networkType: 'wan', failureImpact: 'critical', nodeCount: 5,
+}));
+```
+
+## 📚 经典论文索引
+
+| 论文 | 作者 | 年份 | 贡献 |
+|------|------|------|------|
+| The Byzantine Generals Problem | Lamport, Shostak, Pease | 1982 | 拜占庭容错的形式化定义 |
+| Unreliable Failure Detectors for Reliable Distributed Systems | Chandra, Toueg | 1996 | 故障检测器的理论框架 |
+| The φ Accrual Failure Detector | Hayashibara et al. | 2004 | 实用的自适应故障检测 |
+| Impossibility of Distributed Consensus with One Faulty Process | Fischer, Lynch, Paterson | 1985 | FLP 不可能性定理（异步模型） |
+| Practical Byzantine Fault Tolerance | Castro, Liskov | 1999 | 第一个实用的拜占庭容错算法 |
+
+## 🔗 相关概念
+
+- **[核心定理](/architect/03-distributed-systems/01-distributed-theory/02-core-theorems)**：CAP 定理中的 P（分区容忍）正是网络分区
+- **[共识算法](/architect/03-distributed-systems/01-distributed-theory/04-consensus-algorithms)**：Raft 基于半同步模型和崩溃-恢复故障模型
+- **[时间与顺序](/architect/03-distributed-systems/01-distributed-theory/05-time-and-ordering)**：网络模型决定了时钟同步的可行性
+- **[容错设计](/architect/03-distributed-systems/04-distributed-reliability/02-fault-tolerance)**：熔断、重试等是对网络故障的工程应对
+- **[高可用设计](/architect/03-distributed-systems/04-distributed-reliability/03-high-availability)**：故障转移策略依赖故障检测器
+
+## ✅ 学习检查点
+
+- [ ] 能够区分同步、异步、半同步三种网络模型
+- [ ] 理解为什么半同步模型是工程实践的最佳选择
+- [ ] 能够解释崩溃-停止、遗漏、拜占庭故障的层级关系
+- [ ] 能够推导崩溃容错需要 2f+1 节点、拜占庭容错需要 3f+1 节点
+- [ ] 理解两将军问题为什么无解，以及工程上如何绕过
+- [ ] 理解 Phi 应计故障检测器的优势
+- [ ] 能够根据系统特征选择合适的故障模型
+
+## 🚀 下一步
+
+→ [分布式数据管理](/architect/03-distributed-systems/03-distributed-data/01-distributed-data-overview)
