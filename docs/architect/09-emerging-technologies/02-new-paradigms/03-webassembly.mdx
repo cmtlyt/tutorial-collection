@@ -5,13 +5,325 @@
 
 ## 📖 概述
 
-讲解 WebAssembly 在架构设计中的应用，包括 Wasm 运行时、边缘计算中的 Wasm 和跨平台架构方案。
+WebAssembly（简称 Wasm）是一种可移植的、低级的字节码格式，最初为浏览器设计，如今已扩展到服务端、边缘、插件系统、区块链等场景。它提供了接近原生的性能、强沙箱隔离、毫秒级冷启动、跨语言/跨平台的能力。对于架构师来说，Wasm 是继容器之后又一个值得关注的"计算单元"抽象。本文从运行原理、运行时生态、边缘应用、跨平台架构四个方面讲解 Wasm 的架构价值。
 
 ## 🎯 学习目标
 
-- 理解 WebAssembly 的核心原理和运行时
-- 了解 Wasm 在边缘计算中的应用（Cloudflare Workers 等）
-- 掌握基于 Wasm 的跨平台架构设计
-- 能够评估 WebAssembly 在特定场景下的可行性
+- 理解 WebAssembly 的核心原理、执行模型和安全模型
+- 了解主流 Wasm 运行时的定位与选型
+- 掌握 Wasm 在边缘计算中的典型架构模式
+- 掌握基于 Wasm 的跨平台与插件架构设计
+- 能够评估 Wasm 在具体场景下的适用性
 
-> 🚧 详细内容正在编写中...
+## ⚙️ Wasm 核心原理
+
+### 定位
+
+| 维度 | 容器（Docker） | 虚拟机（VM） | WebAssembly |
+|------|--------------|------------|-------------|
+| **启动时间** | 100ms ~ 秒级 | 秒 ~ 分钟 | **微秒 ~ 毫秒** |
+| **内存占用** | 数十 MB 起 | GB 级 | **KB ~ MB** |
+| **隔离强度** | 共享内核 | 独立内核 | **默认无权限，按需授权** |
+| **可移植性** | CPU 架构 + OS 绑定 | OS 绑定 | **跨 CPU、跨 OS** |
+| **语言支持** | 任意 | 任意 | Rust、C/C++、Go、JS、Python 等 |
+
+### 执行模型
+
+```
+源代码 (Rust / C++ / Go / AssemblyScript ...)
+         │
+         │ 编译
+         ▼
+    .wasm 二进制（可移植字节码）
+         │
+         │ 加载
+         ▼
+   Wasm 运行时（解释 / JIT / AOT）
+         │
+         │ 执行（线性内存 + 栈式虚拟机）
+         ▼
+       宿主环境
+         │
+         │ 通过 Host Function 访问外部能力
+         ▼
+   文件系统 / 网络 / 时钟 / ...
+```
+
+### 安全模型
+
+Wasm 的安全核心是 **"默认零权限 + 能力传递（Capability-based）"**：
+
+- 模块内存是**线性且独立**的，无法越界访问
+- 没有任何系统调用，所有外部能力必须由宿主**显式注入**
+- 模块之间也相互隔离，除非宿主桥接
+- 与容器的"默认全权限 + 逐步剥离"形成鲜明对比
+
+### WASI（WebAssembly System Interface）
+
+WASI 是 Wasm 在非浏览器环境的系统接口标准，提供文件、网络、时钟、随机数等能力，让 Wasm 可以脱离浏览器独立运行：
+
+- **WASI Preview 1**：POSIX 风格，已被广泛实现
+- **WASI Preview 2（Component Model）**：组件模型，支持模块间类型化通信
+
+### 组件模型（Component Model）
+
+组件模型是 Wasm 生态的重要演进：
+
+```
+传统 Wasm 模块
+  - 只能传递数字类型（i32/i64/f32/f64）
+  - 字符串、对象需要手动序列化
+
+组件模型
+  - 支持丰富类型（字符串、列表、记录、变体）
+  - 组件之间可以像普通函数一样互相调用
+  - 支持跨语言组合（Rust 组件 + Go 组件）
+```
+
+## 🧰 主流 Wasm 运行时
+
+| 运行时 | 定位 | 特点 |
+|--------|------|------|
+| **Wasmtime** | 参考实现，Bytecode Alliance | WASI 支持最完整，生产稳定 |
+| **WasmEdge** | CNCF 沙箱项目 | 边缘与云原生集成好，支持 AI 扩展 |
+| **Wasmer** | 商业化运行时 | WAPM 包管理、嵌入式优化 |
+| **V8** | 浏览器 JIT | Node.js / 浏览器中的 Wasm 运行时 |
+| **wazero** | 纯 Go 实现，无 CGO | Go 项目嵌入 Wasm 的首选 |
+| **Wasmer Edge / Fastly Lucet** | 边缘运行时 | 超快冷启动，为 Serverless 设计 |
+
+### 选型建议
+
+- **独立服务/CLI 执行 Wasm** → Wasmtime / WasmEdge
+- **Go 应用内嵌入 Wasm** → wazero（无 CGO 依赖）
+- **浏览器** → 浏览器内置 V8/SpiderMonkey
+- **边缘 Serverless** → 平台托管（Cloudflare Workers / Fastly）
+- **Kubernetes 替代 runc 运行 Wasm 容器** → runwasi + containerd-shim-wasm
+
+## 🌍 边缘计算中的 Wasm
+
+### 为什么边缘爱 Wasm
+
+边缘场景对计算单元有三个核心要求：**启动快、资源省、隔离强**，Wasm 几乎完美契合：
+
+| 需求 | Wasm 的优势 |
+|------|------------|
+| **冷启动快** | 毫秒级，比容器快 10~100 倍 |
+| **单机密度高** | 单机可运行数万个 Wasm 实例（容器只能数百） |
+| **多租户安全** | 默认零权限，适合执行不信任代码 |
+| **跨架构** | 同一 `.wasm` 文件在 x86、ARM、RISC-V 都能跑 |
+| **冷存储便宜** | 几十 KB 到几 MB，分发成本低 |
+
+### 典型平台
+
+```
+Cloudflare Workers
+  - V8 Isolate + Wasm，全球 300+ 边缘节点
+  - 毫秒级冷启动，按请求计费
+  
+Fastly Compute@Edge
+  - Wasmtime 驱动，强调确定性隔离
+  
+Vercel Edge Functions / Netlify Edge
+  - 开发者友好的边缘函数平台
+
+阿里云 ESA（Edge Security Acceleration）
+  - 支持 Wasm 边缘函数
+
+Envoy Wasm Filter
+  - 用 Wasm 扩展 Envoy/Istio 的流量处理逻辑
+```
+
+### 边缘 Wasm 的典型架构
+
+```
+客户端请求
+    │
+    ▼
+边缘 POP 节点
+    │
+    ├─ 路由匹配 ──▶ 静态资源？→ 边缘缓存命中即返回
+    │
+    ├─ 匹配到动态路径
+    │     │
+    │     ▼
+    │  Wasm 运行时池
+    │     ├─ 拉取用户的 .wasm（按需、带缓存）
+    │     ├─ 创建 Isolate / Instance（毫秒级）
+    │     ├─ 执行用户代码
+    │     └─ 通过 Host API 访问 KV / 对象存储 / 数据库
+    │
+    └─ 回源（必要时）
+```
+
+### 实战：Envoy Wasm Filter 示例
+
+在服务网格中用 Wasm 实现自定义流量拦截逻辑（如企业鉴权、审计日志）：
+
+```yaml
+# Envoy 配置片段
+http_filters:
+  - name: envoy.filters.http.wasm
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+      config:
+        name: "custom_auth"
+        root_id: "custom_auth"
+        vm_config:
+          runtime: "envoy.wasm.runtime.v8"
+          code:
+            local:
+              filename: "/etc/envoy/wasm/custom_auth.wasm"
+```
+
+对应的 Wasm 模块（用 Rust 编写）：
+
+```rust
+// Cargo.toml 依赖: proxy-wasm = "0.2"
+use proxy_wasm::traits::*;
+use proxy_wasm::types::*;
+
+struct CustomAuth;
+
+impl HttpContext for CustomAuth {
+    fn on_http_request_headers(&mut self, _: usize, _: bool) -> Action {
+        // 检查自定义鉴权头
+        match self.get_http_request_header("x-company-token") {
+            Some(token) if is_valid(&token) => Action::Continue,
+            _ => {
+                self.send_http_response(401, vec![], Some(b"unauthorized"));
+                Action::Pause
+            }
+        }
+    }
+}
+
+fn is_valid(token: &str) -> bool {
+    // 校验逻辑（真实场景应调用外部鉴权服务）
+    token.starts_with("v1.") && token.len() > 10
+}
+
+proxy_wasm::main! {{
+    proxy_wasm::set_http_context(|_, _| -> Box<dyn HttpContext> {
+        Box::new(CustomAuth)
+    });
+}}
+```
+
+该 Wasm 模块无需重新编译 Envoy，可以热加载，也可以在不同网格中复用。
+
+## 🔁 跨平台与插件架构
+
+### Wasm 作为通用插件机制
+
+应用想支持第三方扩展时，传统方式的痛点：
+
+- **脚本语言嵌入（Lua / JS）**：性能一般，语言单一
+- **动态链接库（.so / .dll）**：无沙箱，一个 bug 可能拖垮整个进程
+- **子进程 + IPC**：隔离有了，但延迟高、开发复杂
+
+Wasm 作为插件机制同时兼顾了**安全、性能、多语言**：
+
+```
+主应用（Host）
+   │
+   ├─ 定义插件接口（用 WIT 描述）
+   │
+   ├─ 加载第三方 .wasm 插件
+   │    ├─ 插件A（Rust 编写）
+   │    ├─ 插件B（Go 编写）
+   │    └─ 插件C（AssemblyScript 编写）
+   │
+   └─ 通过 Host Function 暴露能力（按需授权）
+        ├─ 读写特定目录
+        ├─ 调用特定 HTTP 端点
+        └─ 访问特定 KV 命名空间
+```
+
+### 代表项目
+
+- **Envoy / Istio**：Wasm Filter 扩展流量处理
+- **Zellij / Helix**：终端/编辑器的 Wasm 插件系统
+- **Spin（Fermyon）**：Wasm 微服务框架
+- **Extism**：跨语言的 Wasm 插件 SDK
+- **Shopify Functions**：用 Wasm 允许商户自定义结账逻辑
+
+### 跨平台桌面/移动
+
+Wasm + WebGPU / WebGL 已成为跨平台 GUI 的新路线之一：
+
+```
+一份核心代码（Rust / C++）
+      │
+      │ 编译
+      ▼
+    .wasm
+      │
+      ├─ Web → 浏览器直接运行
+      ├─ Electron / Tauri → 桌面应用
+      ├─ React Native + Wasm → 移动端
+      └─ 独立 Wasm 运行时 → 嵌入式设备
+```
+
+Figma、Photoshop Web 等重度应用都已采用类似方案。
+
+## 📝 实际应用示例：多租户 SaaS 的自定义规则引擎
+
+### 业务场景
+
+一个 SaaS 电商平台，需要允许每个商家自定义"促销规则"（例如"满 200 减 30，但不叠加优惠券"）。要求：
+
+- 商家可以用 JavaScript 或 Rust 编写规则
+- 规则执行必须隔离，不能相互影响
+- 执行延迟 < 5ms，高峰 QPS 10 万
+- 规则热更新，无需重启订单服务
+
+### 架构设计
+
+```
+订单服务（Host）
+   │
+   ├─ 规则注册表（配置中心）
+   │   └─ 每个商家 n 个已发布的 .wasm 规则
+   │
+   ├─ Wasm 运行时池（Wasmtime / wazero）
+   │   ├─ 预编译 AOT，降低首次执行延迟
+   │   ├─ 实例池化，避免重复实例化
+   │   └─ 按商家分片，隔离热点
+   │
+   ├─ Host API（按能力授权）
+   │   ├─ get_order_items()     // 只读订单数据
+   │   ├─ get_coupon(id)        // 只读优惠券
+   │   ├─ log(msg)              // 写日志
+   │   └─ ❌ 无网络 / 无文件系统权限
+   │
+   └─ 执行结果 → 订单系统应用优惠
+```
+
+### 关键决策
+
+- **语言多样性**：用 Component Model 定义统一接口，允许商家自由选语言
+- **资源限制**：单次执行 CPU 燃料（fuel）上限、内存上限、执行超时，防止恶意循环
+- **审计**：Host 记录每次规则调用的入参、出参、耗时，用于回溯
+- **灰度**：规则发布先灰度 1% 订单，异常率超阈值自动回滚
+- **降级**：Wasm 执行失败回退到默认规则，订单链路绝不中断
+
+## 🔗 相关概念
+
+- **容器技术**：Wasm 是容器的补充而非替代，两者可在同一集群内共存
+- **Serverless / FaaS**：Wasm 让 FaaS 达到真正的"毫秒级冷启动"
+- **Service Mesh**：Envoy Wasm Filter 让流量治理逻辑可插拔
+- **边缘计算**：Wasm 是边缘 Serverless 的理想计算单元
+- **微前端 / 插件架构**：Wasm 提供更强的隔离和多语言支持
+- **区块链**：多条主流链（Polkadot、NEAR、CosmWasm）选 Wasm 作为智能合约运行时
+
+## 📚 学习检查点
+
+- [ ] 能否说出 Wasm 与容器在启动速度、隔离、密度上的量化差异？
+- [ ] 能否解释 WASI 和组件模型分别解决什么问题？
+- [ ] 能否列出 3 个以上主流 Wasm 运行时并说明选型依据？
+- [ ] 能否设计一套基于 Wasm 的安全插件系统，包括能力授权与资源限制？
+- [ ] 能否判断一个业务场景更适合容器、Wasm 还是两者结合？
+
+## 🚀 下一步
+
+→ [Web3 与去中心化](./04-web3-decentralization.mdx)
