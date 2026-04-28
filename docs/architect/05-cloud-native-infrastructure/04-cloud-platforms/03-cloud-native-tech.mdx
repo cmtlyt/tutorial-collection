@@ -1,7 +1,7 @@
 # 云原生技术
 
-> **版本**：v1.0
-> **最后更新**：2026-04-24
+> **版本**：v1.1
+> **最后更新**：2026-04-28
 
 ## 📚 概念介绍
 
@@ -30,6 +30,298 @@
 │              (云平台、虚拟机)                             │
 └─────────────────────────────────────────────────────────┘
 ```
+
+## 🧠 服务网格的起源：从胖客户端到 Sidecar
+
+### 微服务时代的"网络地狱"
+
+一旦把单体拆成几十上百个微服务，**网络调用的复杂度爆炸**：
+
+- 服务间怎么发现对方？（服务发现）
+- 调用失败了怎么重试？（重试/熔断）
+- 流量怎么分配到多个实例？（负载均衡）
+- 怎么观察服务间调用的延迟和错误率？（监控追踪）
+- 服务间通信怎么加密？（mTLS）
+- 怎么灰度发布新版本？（流量切分）
+
+### 阶段一：SDK / 胖客户端时代（2014-2017）
+
+代表：**Netflix OSS**（Eureka、Ribbon、Hystrix、Zuul）、**Spring Cloud**、**Dubbo**。
+
+思路：**把治理能力做进客户端库**，应用引入 SDK 即可。
+
+问题：
+- **多语言地狱**：Java 有 Spring Cloud，Go/Python/Node 要重新造轮子
+- **版本升级地狱**：SDK 升级要升几百个服务
+- **业务代码耦合治理逻辑**：应用工程师也要学限流算法
+- **SDK bug 就是应用 bug**：不能热修复
+
+**结论**：治理能力和业务代码**不该在同一个进程里**。
+
+### 阶段二：Sidecar 模式登场（2016-）
+
+**把治理能力从应用里剥离，作为一个独立进程跑在应用旁边**（同一 Pod 内）：
+
+```
+┌──────────────────────────────┐
+│           Pod                │
+│  ┌──────────┐  ┌──────────┐  │
+│  │   App    │→→│ Sidecar  │→→→ 外部
+│  │ (纯业务) │←←│ (Envoy)  │←←← 外部
+│  └──────────┘  └──────────┘  │
+└──────────────────────────────┘
+
+  App 只写业务代码，所有网络治理交给 Sidecar
+```
+
+所有进出应用的流量**被 Sidecar 透明拦截**（通过 iptables/eBPF），应用完全不感知。
+
+这就是 **Service Mesh（服务网格）** 的雏形。**"Service Mesh" 一词**由 Buoyant 公司 CEO William Morgan 在 **2017 年**正式命名。
+
+## 🏛️ 服务网格的两个平面
+
+### 控制面 vs 数据面的分离
+
+服务网格的经典架构是 **Control Plane + Data Plane 分离**：
+
+```
+                   Control Plane（控制面）
+                   ┌─────────────────────┐
+                   │  配置管理             │
+                   │  策略下发             │
+                   │  证书签发             │
+                   │  服务发现聚合          │
+                   └──────┬──────────────┘
+                          │ 下发配置
+                          ↓
+  ┌──────────────────────────────────────────────────┐
+  │                  Data Plane（数据面）             │
+  │  ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐  │
+  │  │ Proxy │   │ Proxy │   │ Proxy │   │ Proxy │  │
+  │  └───────┘   └───────┘   └───────┘   └───────┘  │
+  │     ↑ App       ↑ App       ↑ App       ↑ App    │
+  └──────────────────────────────────────────────────┘
+             实际转发流量，执行治理规则
+```
+
+- **数据面（Proxy）**：每个服务旁的 Sidecar，**实际处理流量**
+- **控制面**：**管理所有 Sidecar 的配置**，自己不处理流量
+
+这种分离的好处：
+- **数据面保持极简和高性能**（热路径）
+- **控制面可承担复杂的配置管理、协调逻辑**（冷路径）
+- **控制面挂了不影响现有流量**（只影响配置更新）
+
+## 🚀 Envoy：数据面事实标准
+
+**Envoy**（Lyft 2016 年开源，CNCF 毕业项目）几乎统治了所有主流服务网格的数据面：Istio、AWS App Mesh、Consul Connect、Kuma、Gloo 都用 Envoy。
+
+### 为什么是 Envoy？
+
+- **C++ 编写，性能极高**（单核百万 QPS）
+- **协议丰富**：HTTP/1、HTTP/2、HTTP/3、gRPC、TCP、Dubbo、Redis、Kafka
+- **可观测性内置**：所有请求自动生成 metrics/tracing
+- **热更新**：配置变更无需重启
+- **可扩展**：WASM 插件机制
+
+### xDS 协议：Envoy 的动态配置协议
+
+Envoy 不是静态配置文件驱动，而是通过 **xDS 协议**从控制面**动态拉取**配置。xDS 是一组 API 的总称：
+
+| API | 全称 | 作用 |
+|-----|------|------|
+| **LDS** | Listener Discovery | "监听哪些端口？" |
+| **RDS** | Route Discovery | "路由规则是什么？" |
+| **CDS** | Cluster Discovery | "有哪些上游服务集群？" |
+| **EDS** | Endpoint Discovery | "每个集群有哪些实例？" |
+| **SDS** | Secret Discovery | "TLS 证书是什么？" |
+| **ADS** | Aggregated Discovery | 把上面几个打包成一个流 |
+
+xDS 基于 **gRPC 流式通信**，控制面推送变更 → Envoy 实时更新配置 → 新流量立即按新规则路由。这是"服务网格能做灰度发布"的底层机制。
+
+**xDS 事实上成为了数据面与控制面之间的通用协议**——即使你不用 Istio，也可以写自己的控制面用 xDS 控制 Envoy。
+
+## 🎨 Istio：功能最全的控制面
+
+Istio（Google/IBM/Lyft 2017 年发布）是最流行的服务网格控制面。
+
+### 三大核心能力
+
+#### 1. 流量管理（Traffic Management）
+
+通过 **VirtualService** 和 **DestinationRule** 两个 CRD，把**路由规则**抽象成声明式 YAML：
+
+- **灰度发布**：5% 流量打到 v2，95% 还是 v1
+- **金丝雀**：只给内部员工放 v2（按 header 路由）
+- **故障注入**：故意让 10% 请求返回 500，测试下游容错
+- **超时/重试**：声明式配置
+- **熔断**：实例错误率超阈值自动剔除
+
+#### 2. 安全（Security）
+
+- **mTLS（双向 TLS）**：服务间通信**自动加密**，零代码改动
+- **身份**：每个 Pod 有 SPIFFE 标准身份（`spiffe://cluster/ns/default/sa/orders`）
+- **授权策略**：`AuthorizationPolicy` 定义"哪个服务能访问哪个服务的哪个 API"
+- **证书轮转**：Istiod 自动签发/轮转证书
+
+#### 3. 可观测性（Observability）
+
+Envoy 作为所有流量的必经之路，**免费生成了三大支柱**：
+- Metrics：Prometheus 指标（RED 方法所有数据）
+- Traces：每个请求自动生成 Span（支持 Jaeger/Zipkin）
+- Access Logs：所有请求的日志
+
+### Istio 的成本与反思
+
+Istio 功能强大，但**复杂度和资源开销巨大**：
+- 每个 Pod 多一个 Sidecar（~100 MB 内存、CPU 开销）
+- Envoy 的学习曲线陡峭
+- CRD 众多（VirtualService、DestinationRule、Gateway、AuthorizationPolicy...）
+- **对延迟敏感**：Sidecar 每跳增加 1-3ms
+
+### 2024 新方向：Ambient Mesh（无 Sidecar 模式）
+
+Istio 在 **2022 年 9 月**发布的 **Ambient Mesh** 试图解决 Sidecar 模式的痛点：
+
+```
+传统 Sidecar 模式：
+  每个 Pod 一个 Envoy → 资源开销大、升级麻烦
+
+Ambient Mesh：
+  Layer 4（ztunnel）：节点级共享，只做 mTLS 和基础 L4 路由
+  Layer 7（waypoint）：按需启用的 L7 代理（每命名空间一个）
+```
+
+优点：资源占用降低 90%、升级 Sidecar 不用重启业务 Pod、按需付费（用 L7 能力才起 waypoint）。
+
+**2024 年 11 月** Ambient Mesh 进入 GA，代表了服务网格的下一代架构。
+
+## 🆚 Linkerd：极简路线
+
+Linkerd 2.x 是服务网格的另一条路：**不要一切花哨，只要轻量可靠**。
+
+| 维度 | Istio | Linkerd |
+|------|-------|--------|
+| 数据面 | Envoy (C++) | linkerd2-proxy（Rust 自研，超轻） |
+| 内存占用 | ~100MB/Sidecar | ~10MB/Sidecar |
+| 功能丰富度 | 最全 | 够用（mTLS、重试、超时、监控） |
+| 学习曲线 | 陡峭 | 平缓 |
+| 协议支持 | HTTP/gRPC/TCP/Redis/Kafka... | 主要 HTTP/gRPC |
+| CRD 数量 | 50+ | 约 10 个 |
+
+**选型思路**：
+- 需要复杂流量管理、多协议 → Istio
+- 只要 mTLS 和基础治理、轻量 → Linkerd
+
+## 🔐 零信任（Zero Trust）：云原生安全新范式
+
+### 传统边界安全 vs 零信任
+
+**传统模型**："城堡护城河"——防火墙守住边界，内网可信。
+**零信任**：**"永不信任，始终验证"**（Never Trust, Always Verify）——**没有可信网络**，每一次访问都要身份认证和授权。
+
+### BeyondCorp：Google 的实践（2011-2014）
+
+2009 年 Google 遭遇**极光行动（Operation Aurora）**高级持续性威胁，认识到边界安全的根本缺陷。
+Google 用 5 年时间建成 **BeyondCorp**，核心理念：
+- **不分内外网**：在咖啡店和在办公室访问公司资源没区别
+- **基于身份 + 设备授权**：每次访问都验证"你是谁、你的设备是否合规"
+- **不信任任何网络位置**：IP 白名单不再作为信任依据
+
+这套理念后来被 **NIST SP 800-207 (2020)** 标准化为 **Zero Trust Architecture**。
+
+### 云原生下的零信任落地
+
+服务网格天然契合零信任：
+
+| 零信任原则 | Service Mesh 如何实现 |
+|----------|--------------------|
+| 身份可验证 | SPIFFE / SPIRE：每个工作负载强身份 |
+| 通信加密 | mTLS 自动开启 |
+| 最小权限 | AuthorizationPolicy 按需放行 |
+| 持续验证 | 每次请求都验证（不是"登录一次走天下"） |
+| 审计可追溯 | 所有调用自动记录 |
+
+**服务网格 = 零信任在东西向（服务间）通信的具体实现**。
+
+## 📦 云原生存储：CSI 标准
+
+### 问题：K8s 如何对接五花八门的存储？
+
+企业有各种存储：SAN、NAS、Ceph、云盘（EBS、阿里云盘）、对象存储... K8s 本身不可能为每家都原生支持。
+
+### CSI（Container Storage Interface）：统一接口
+
+2017 年由 K8s、Mesos、Docker Swarm 共同制定的**存储插件标准**：
+
+```
+┌──────────────────┐
+│  K8s Controller  │
+│  (kubelet, etc)  │
+└────────┬─────────┘
+         │ gRPC
+         ↓
+┌──────────────────┐
+│    CSI Driver    │ ← 存储厂商自己实现
+│  (Identity/Node/ │
+│   Controller)    │
+└────────┬─────────┘
+         │
+         ↓
+     实际存储系统
+ (EBS / Ceph / OSS...)
+```
+
+CSI Driver 实现三个 gRPC 服务：
+- **Identity**：我是谁、版本、能力
+- **Controller**：创建/删除卷、快照
+- **Node**：把卷挂载到节点
+
+存储厂商只要实现 CSI Driver，就能无缝接入 K8s/Mesos/Nomad 等所有支持 CSI 的编排系统。
+
+这类似于 OS 的**设备驱动统一接口**——让编排系统和存储系统**解耦**。
+
+## 🛡️ 云原生安全的三大支柱
+
+### Policy as Code：OPA（Open Policy Agent）
+
+**把"能不能做某事"的决策写成代码、通过统一引擎评估**。
+
+OPA 使用 **Rego 语言**声明策略：
+
+```
+"只允许镜像来自公司私服"
+"生产环境 Pod 必须设置 resource limits"
+"镜像不能以 root 运行"
+"命名空间必须有 owner label"
+```
+
+K8s 准入控制（Admission Controller）调用 OPA → 不符合策略的资源**被拒绝创建**。
+
+优点：
+- 策略统一管理（不散落在各个 webhook）
+- 策略即代码（可 review、可测试、可版本化）
+- 跨系统复用（K8s、Terraform、API Gateway 都能用 OPA）
+
+### 运行时安全：Falco
+
+静态策略挡不住**运行时异常**：已经合规的 Pod 里有恶意软件在挖矿怎么办？
+
+**Falco**（Sysdig 开源，CNCF 毕业）通过 **eBPF 监控内核系统调用**，检测异常行为：
+- Pod 里执行了 shell（可能被入侵）
+- 异常的文件访问（读 /etc/shadow）
+- 异常的网络连接（对外发包到挖矿矿池）
+- 容器内提权尝试
+
+### 镜像供应链安全：SLSA & Sigstore
+
+**2020 年 SolarWinds 事件**让供应链攻击进入公众视野。云原生的应对：
+
+- **SLSA（Supply-chain Levels for Software Artifacts）**：Google 主导的供应链安全等级框架
+- **Sigstore（cosign）**：镜像签名标准，像 HTTPS 证书一样给容器镜像签名
+- **SBOM（Software Bill of Materials）**：软件物料清单，列出镜像里所有依赖
+
+核心理念：**从代码到部署的每一步都要可验证、可追溯**。
 
 ## 🎯 服务网格
 

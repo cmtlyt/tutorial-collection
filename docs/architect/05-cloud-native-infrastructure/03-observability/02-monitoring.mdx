@@ -1,7 +1,7 @@
 # 监控体系
 
-> **版本**：v1.0
-> **最后更新**：2026-04-24
+> **版本**：v1.1
+> **最后更新**：2026-04-28
 
 ## 📚 概念介绍
 
@@ -26,6 +26,188 @@
 - **Utilization（利用率）**：资源使用百分比
 - **Saturation（饱和度）**：资源负载程度
 - **Errors（错误数）**：资源错误数量
+
+## 🧠 为什么是时序数据？指标的本质
+
+### 指标 = 时间序列（Time Series）
+
+监控数据的核心数学模型是**时间序列**：
+
+```
+(timestamp, value, labels)
+1714291200, 42.3, {method="GET", status="200", path="/api/users"}
+1714291215, 43.1, {method="GET", status="200", path="/api/users"}
+1714291230, 45.7, {method="GET", status="200", path="/api/users"}
+```
+
+一条时间序列 = **一个指标名 + 一组 label 的唯一组合**，随时间产生 (timestamp, value) 的数据点流。
+
+这种数据结构的性质决定了监控系统的所有技术选型：
+- **写多读少**：每秒写入海量数据点，查询频率远低于写入
+- **追加不修改**：历史数据一旦落盘就不再变
+- **局部性强**：最近的数据查得最多（最近 1 小时 >> 30 天前）
+- **降采样友好**：旧数据可合并为更低精度（1s → 1min → 1h）
+
+这些特性催生了专门的 **TSDB（时序数据库）**——用通用关系数据库存指标是大坑。
+
+## 🏛️ Prometheus 的设计哲学
+
+Prometheus 源自 **SoundCloud（2012 年）**，受 Google 内部 Borgmon 启发，**2016 年成为 CNCF 第二个毕业项目**（仅次于 K8s）。它有几个反直觉但极为关键的设计决策：
+
+### 决策一：Pull 模型（拉取），不是 Push（推送）
+
+传统监控（StatsD、Graphite、InfluxDB 早期）是 Push：应用主动把指标推送到监控系统。
+Prometheus 反其道而行——**监控系统主动去目标 `/metrics` 端点拉取**。
+
+| 维度 | Push 模型 | Pull 模型 |
+|------|----------|----------|
+| **目标发现** | 需要每个目标知道监控地址 | 监控服务器维护目标列表 |
+| **负载控制** | 应用可能压垮监控系统 | 监控决定抓取频率，背压天然 |
+| **健康检查** | 推不来可能是挂了也可能是网络问题 | 拉不到直接认定目标不健康 |
+| **调试便利** | 只能看接收到的 | 手动 `curl /metrics` 即可 |
+| **批作业适配** | 适合 | **不适合**（作业快速结束，没机会被拉取） |
+
+Prometheus 的取舍：**牺牲短生命周期任务的支持，换取简单可靠**。短任务用 **Pushgateway** 作为中间 buffer，prom 再从 Pushgateway 拉。
+
+### 决策二：多维数据模型（Label-Based）
+
+传统监控（Graphite）用**层级命名**：`web.server1.http.request.200.count`。
+Prometheus 用**多维 label**：`http_requests_total{server="web1", status="200"}`。
+
+多维模型的优势：**查询时可任意切片**——按 status 聚合、按 server 筛选、按 path 分组，都是一个 PromQL 搞定。层级命名只能按固定顺序钻取，扩展就要改名字。
+
+### 决策三：本地存储 + 单机架构
+
+Prometheus 每个实例**独立运行、本地存储、不共享**。这看起来落后，实际：
+- **部署简单**：一个二进制文件，无外部依赖
+- **查询快**：本地 SSD >> 网络存储
+- **故障隔离**：一个 Prom 挂了不影响其他
+
+扩展性怎么办？**分片 + 联邦 + 远程存储**。Thanos、Cortex、VictoriaMetrics、Mimir 在 Prom 之上构建了长时间、跨集群的分布式层。
+
+## 🔢 四类指标类型：分清用哪个
+
+Prometheus 定义了 4 种指标类型，**选错会导致数据永远错**。
+
+### Counter（计数器）：只增不减
+
+代表一个**累计值**，只会增加（重启归零）。例子：
+- `http_requests_total`：总请求数
+- `node_cpu_seconds_total`：CPU 占用总秒数
+
+**永远不要直接看 Counter 的值**——它只是一个永远上涨的大数。用 `rate()` 或 `increase()` 看变化率：
+
+```
+rate(http_requests_total[5m])  # 5分钟内平均每秒请求数
+```
+
+### Gauge（仪表）：可升可降
+
+代表一个**瞬时值**，可以任意变化。例子：
+- `node_memory_used_bytes`：当前内存用量
+- `queue_length`：当前队列深度
+
+直接看值就行，或 `avg_over_time`、`max_over_time` 做聚合。
+
+### Histogram（直方图）：分桶统计分布
+
+用于统计**数据分布**（延迟、包大小）。Prometheus 的 Histogram 存储方式是**预定义桶（bucket）**：
+
+```
+http_request_duration_seconds_bucket{le="0.1"}   3400   # ≤ 100ms 的请求数
+http_request_duration_seconds_bucket{le="0.5"}   4200   # ≤ 500ms 的请求数
+http_request_duration_seconds_bucket{le="1"}     4500   # ≤ 1s 的请求数
+http_request_duration_seconds_bucket{le="+Inf"}  4530   # 所有请求数
+http_request_duration_seconds_sum                1245.3 # 总耗时
+http_request_duration_seconds_count              4530   # 总次数
+```
+
+客户端只需**累加桶计数**（很便宜），分位数在查询时由 `histogram_quantile()` 算。
+
+### Summary（摘要）：客户端算分位数
+
+和 Histogram 类似，但**分位数在客户端计算**后直接暴露。适合确切需要某几个分位数的场景。
+
+### Histogram vs Summary 的核心差异
+
+| 维度 | Histogram | Summary |
+|------|-----------|---------|
+| **分位数计算** | 查询时（灵活） | 客户端（固定） |
+| **服务端聚合** | ✅ 可以（跨实例合并桶） | ❌ 不能（分位数不可加） |
+| **客户端成本** | 低（只增桶） | 高（滑动窗口算法） |
+| **桶精度权衡** | 桶设置错了估算不准 | 精度固定 |
+
+**90% 的场景选 Histogram**，Summary 只在"跨节点聚合不重要 + 客户端便宜"时用。
+
+## 🧮 PromQL：指标的"代数系统"
+
+PromQL 不是 SQL，它是一套**向量代数**：每次查询返回的要么是 **Instant Vector**（某一时刻各序列的值）要么是 **Range Vector**（一段时间内的值序列），要么是标量/字符串。
+
+```
+instant vector:  http_requests_total
+range vector:    http_requests_total[5m]
+scalar:          2.718281828
+```
+
+理解这一点就理解了所有"奇怪"操作：
+- `rate(...[5m])`：Range Vector → Instant Vector（算变化率）
+- `sum(...) by (job)`：Instant Vector → Instant Vector（分组聚合）
+- `instant_a / instant_b`：按相同 label 集做匹配相除
+
+这套代数的威力在于**组合任意查询而无需预建仪表盘**——这也是 Prometheus 能胜出的关键：它提供了"数据原语 + 语言"，而不只是"预定义面板"。
+
+### 常见陷阱
+
+- **`rate(counter[5m])` 范围要 ≥ scrape_interval × 4**，否则容易采到 0
+- **Counter 重启归零**：PromQL 的 `rate()` 内部处理了重启检测，不用担心
+- **高基数 label 爆炸**：给 `user_id` 加 label，几秒就撑爆 Prom。Label 只用低基数字段
+
+## 🗄️ TSDB 存储原理：为什么它写得这么快
+
+Prometheus 的本地存储引擎自研（2017 年 v2.0 从 LevelDB 迁走），核心是**块存储 + 倒排索引 + 压缩**：
+
+1. **内存 Block（WAL）**：最新 2 小时的数据写内存，同时 WAL 落盘防丢失
+2. **持久化 Block**：每 2 小时把内存块刷成磁盘 Block（目录结构）
+3. **倒排索引**：每个 label 值 → 匹配的序列 ID 列表（类似搜索引擎）
+4. **双 Delta 编码 + Gorilla 压缩**：相邻两点的差的差 + 位压缩，压缩比可达 1.37 bytes/sample（Facebook Gorilla 论文 2015）
+
+这套架构的性能数据：**单机每秒数百万样本**，同时磁盘占用极小。这就是为什么"每个 Prom 只管自己的数据"是可行的。
+
+## 🚨 告警的哲学：少就是多
+
+### 关于告警，SRE 界最重要的两条原则
+
+**原则一：告警要指向"有人必须立即处理"**
+
+如果一条告警响了但没人行动，它就不该存在。典型反模式：
+- CPU > 80% 就告警（然后呢？谁去降 CPU？是自己能恢复还是真要介入？）
+- 每天一堆告警没人看，真故障时信号被淹没 = **Alert Fatigue（告警疲劳）**
+
+**原则二：告警面向症状（Symptom），不面向原因（Cause）**
+
+坏例子：**数据库连接池用了 90%** → 告警
+好例子：**API P99 延迟 > 1s 持续 5 分钟** → 告警
+
+前者可能只是背景噪音，后者真正代表用户受影响。具体原因留给故障排查时查，告警只告用户可感知的"坏"。
+
+### 多窗口多燃烧率告警（Multi-Window Multi-Burn-Rate）
+
+Google SRE 工作手册推荐的高级告警模式。对同一个 SLO 同时监控：
+
+- **短窗口（5m）+ 高燃烧率**：早期发现故障（快）
+- **长窗口（1h）+ 低燃烧率**：防止假阳性（稳）
+
+两个条件都满足才告警。这种模式比"单纯的错误率 > 5%"精准得多，几乎无误报。
+
+### 告警分级
+
+| 级别 | 处理时限 | 处理方式 | 例子 |
+|------|---------|---------|------|
+| **P0 Page** | 立即（<5min） | 打电话叫醒人 | 核心服务 5xx 大面积 |
+| **P1 Ticket** | 小时级 | 发工单 | 某节点故障，已自愈但需复盘 |
+| **P2 Log** | 次日 | 记录不打扰 | 某个慢请求 |
+
+**"半夜把人叫醒"是极度昂贵的动作**，只留给真正紧急的事。
 
 ## 🎯 Prometheus 基础
 

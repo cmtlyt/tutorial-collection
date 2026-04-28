@@ -1,7 +1,7 @@
 # 分布式追踪
 
-> **版本**：v1.0
-> **最后更新**：2026-04-24
+> **版本**：v1.1
+> **最后更新**：2026-04-28
 
 ## 📚 概念介绍
 
@@ -14,6 +14,267 @@
 - **Span Context（跨度上下文）**：在服务间传递的追踪信息，包含 Trace ID 和 Span ID
 - **Baggage（行李）**：在服务间传递的键值对数据
 - **OpenTelemetry**：云原生的可观测性框架，提供统一的 API 和 SDK
+
+## 🧠 为什么需要分布式追踪？
+
+### 微服务时代的"调试黑洞"
+
+单体应用里，调用栈就是一切——抛异常时的 stacktrace 告诉你每一层函数在哪、为什么慢。
+
+但到了微服务时代：
+
+```
+用户请求 → API Gateway → Auth Service → Order Service → Payment Service → Inventory Service → DB
+                                              │
+                                              └→ Notification Service → Email Service
+```
+
+一个请求可能穿越 **10+ 个服务**，每个服务独立进程、独立日志、独立监控。当用户抱怨"付款慢"时：
+- 是哪个服务慢？
+- 是服务内部慢，还是调用下游慢？
+- 是这一个请求慢，还是所有请求都慢？
+- 慢在具体哪一段代码/SQL/外部调用？
+
+**光看单服务的 metrics 和 logs 无法回答**——你需要"串起来"看整条链路。这就是分布式追踪要解决的问题。
+
+## 📜 起源：Google Dapper 论文（2010）
+
+现代分布式追踪的所有实现，都是 Google **Dapper 论文**（2010 年发布，但系统 2004 年就在 Google 内部上线）的"学徒"：
+- **Zipkin**（Twitter，2012）：第一个开源追踪系统，直接对标 Dapper
+- **Jaeger**（Uber，2015）：CNCF 毕业项目，Dapper + Zipkin 的工程优化
+- **SkyWalking**（华为/Apache，2015）：国人主导，APM 方向扩展
+- **OpenTracing → OpenTelemetry**（2016→2019）：统一标准
+
+Dapper 论文奠定了三个**核心抽象**，至今未变：
+
+1. **Trace**：一次请求的完整因果链
+2. **Span**：链路中的一个工作单元（一次函数调用、一次 RPC、一次 SQL）
+3. **Context Propagation**：跨进程传递标识的机制
+
+理解这三个抽象就理解了所有追踪系统。
+
+## 🏛️ Span 模型：追踪的"原子"
+
+### Span 的数据结构
+
+一个 Span 记录：
+
+```
+Span {
+  trace_id:       "abc123..."        ← 整条链路的唯一 ID
+  span_id:        "def456..."        ← 本 span 的唯一 ID
+  parent_span_id: "ghi789..."        ← 父 span（构造树形关系）
+  operation_name: "GET /api/orders"  ← 人类可读的名字
+  start_time:     1714291200.123
+  end_time:       1714291200.246
+  attributes:     { http.status_code: 200, user_id: "42" }
+  events:         [ { timestamp, name, attributes } ]  ← 时间点标注
+  status:         OK | ERROR
+}
+```
+
+### Trace 是 Span 的树/DAG
+
+多个 Span 通过 `parent_span_id` 关系，构成一棵以"根 Span（根请求）"为根的树：
+
+```
+Trace (trace_id = abc123)
+│
+└─ Span: GET /api/checkout      (100ms, 根 span)
+   ├─ Span: auth-service.verify (10ms)
+   ├─ Span: order-service.create (80ms)
+   │  ├─ Span: db.insert_order  (20ms)
+   │  └─ Span: payment.charge   (55ms)
+   │     └─ Span: stripe.call   (50ms)
+   └─ Span: notify.send_email   (5ms, 异步)
+```
+
+这棵树揭示了一切：
+- **总耗时**：100ms
+- **瓶颈**：`stripe.call` 占 50ms（外部调用是主要耗时）
+- **并行机会**：notify 是异步的，可以和 db 并行
+- **错误定位**：如果某个 span status=ERROR，一眼看出故障环节
+
+### Span 的几种类型（SpanKind）
+
+OpenTelemetry 规范定义了 5 种 SpanKind：
+
+| 类型 | 含义 | 例子 |
+|------|------|------|
+| **SERVER** | 接收请求的服务端 | HTTP server 收到请求 |
+| **CLIENT** | 发起外部调用 | HTTP client、RPC client |
+| **PRODUCER** | 发消息到队列 | Kafka producer.send |
+| **CONSUMER** | 从队列消费消息 | Kafka consumer.poll |
+| **INTERNAL** | 服务内部操作 | 一个函数调用 |
+
+## 🔄 上下文传播（Context Propagation）：最核心的技术挑战
+
+### 问题的本质
+
+Service A 调用 Service B，B 要知道"这次请求的 trace_id 是什么"，才能生成关联的 Span。
+
+但 A 和 B 是不同进程，甚至不同机器——**trace_id 怎么过去的？**
+
+答案：**通过协议 header 携带**。
+
+### W3C Trace Context：终于统一的标准
+
+早期每家系统有自己的 header 格式（Zipkin `X-B3-*`、Jaeger `uber-trace-id`），**跨厂商完全不通**。
+
+**2020 年 2 月**，W3C 发布 **Trace Context 规范（W3C TR/trace-context）**，成为**正式 Web 标准**。核心是两个 HTTP header：
+
+```
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+             │    │                                │                │
+          version trace-id (16 字节)          parent-id (8 字节)  flags
+
+tracestate: vendor1=value1,vendor2=value2     ← 厂商自定义附加信息
+```
+
+今天的所有主流追踪系统、Service Mesh、API Gateway **默认支持 W3C Trace Context**，分布式追踪的互操作性终于解决。
+
+### Baggage：跨服务传递业务上下文
+
+除了 trace_id，有时还需要**在链路上带业务数据**（比如"当前用户是 VIP"，后端日志都标上），这就是 **Baggage**。
+
+它也通过 HTTP header 传递（W3C 定义了 `baggage` header），但要**谨慎使用**：
+- Baggage 内容会出现在所有下游日志，泄露风险
+- Baggage 会增加每个请求的网络开销
+- 基数过高会让后端存储爆炸
+
+## 🎚️ 采样（Sampling）：成本与价值的艺术
+
+### 为什么必须采样
+
+假设每个请求产生 50 个 Span，一个日 QPS 10 亿的系统：
+- 500 亿个 Span/天
+- 每个 Span 约 500 字节 = **25 TB/天**
+
+**全采集既不经济也没必要**——99% 的请求都是正常的，看不出啥。采样策略决定了**留下哪些 trace**。
+
+### 头部采样（Head-Based Sampling）
+
+在**请求刚进入时**就决定"要不要采"。
+
+```
+请求到达 → 掷色子（1% 概率）→ 决定采 → 整条链路所有 Span 都采
+                              → 决定不采 → 所有 Span 都不生成
+```
+
+优点：简单、成本可控、下游不用传 Span
+缺点：**运气问题**——真正的异常请求可能刚好没被采到
+
+### 尾部采样（Tail-Based Sampling）
+
+等**整条链路完成**再决定采不采。
+
+```
+所有 Span 先缓存 → 链路完成 →  看整条情况
+                              ├─ 有错误？ 100% 采
+                              ├─ 慢请求？ 100% 采
+                              └─ 正常且快？ 随机留 1%
+```
+
+优点：**真正有价值的 trace 不丢**（所有错误和慢请求都保留）
+缺点：实现复杂，需要缓冲整条链路的数据
+
+### 自适应采样（Adaptive Sampling）
+
+根据流量和错误率**动态调整采样率**：
+- 流量小时 100% 采
+- 流量大时降到 0.1%
+- 错误率升高时提高采样率
+
+Jaeger、Tempo、Datadog 等现代系统都支持这种模式。
+
+### 采样的哲学
+
+> **采样不是"为了省钱不得已的妥协"，而是"把有限预算花在最有信息量的请求上"。**
+
+头部采样适合"我想看大盘分布"；尾部采样适合"我想找问题根因"。成熟的追踪系统应该两者都支持。
+
+## 🔧 埋点方式：从"手动" → "自动" → "无侵入"
+
+### 手动埋点（Manual Instrumentation）
+
+工程师在代码里显式创建 Span：
+
+```js
+const span = tracer.startSpan('process-order')
+try {
+  // 业务逻辑
+} finally {
+  span.end()
+}
+```
+
+✅ 精确、可控
+❌ 工作量巨大，容易遗漏
+
+### 自动埋点（Auto Instrumentation）
+
+框架级的自动插桩——**导入 SDK 后自动为 HTTP、DB、消息队列、Redis 等客户端生成 Span**。
+
+- Java：JVM Agent（`javaagent` 参数）字节码织入
+- Node.js：monkey patching（替换 http、mysql 等模块方法）
+- Python：importhook + wrapt
+
+✅ 开箱即用，覆盖 90% 场景
+❌ 性能有轻微开销
+
+### eBPF / Sidecar 无侵入埋点（前沿）
+
+- **eBPF**：在内核层拦截系统调用，应用完全无感知（Cilium Tetragon、Pixie）
+- **Service Mesh**：Envoy Sidecar 在 L7 层自动生成 Span（Istio 原生集成 Jaeger）
+
+✅ 应用零改动
+❌ 无法感知应用内部的业务语义
+
+**现代最佳实践**：自动埋点覆盖通用基础设施，手动埋点标注关键业务节点（如"支付成功"、"库存扣减"），两者结合。
+
+## 📊 追踪数据的后端架构
+
+### 存储挑战
+
+追踪数据的特征：**写多、读少、按 trace_id 查**。
+
+| 后端 | 技术栈 | 特点 |
+|------|-------|------|
+| **Jaeger + Cassandra/ES** | 成熟、重量 | 灵活但运维复杂 |
+| **Tempo**（Grafana） | 对象存储 + block | 极低成本，只支持 trace_id 查询 |
+| **ClickHouse** | 列存 | 高基数任意维度查询 |
+| **SkyWalking + OAP** | 自研存储 | APM 功能更全 |
+
+### 查询模式
+
+最常见的查询：
+1. **按 trace_id 查整条链路**（从日志看到 id，跳转到追踪系统）
+2. **按服务 + 延迟查 trace**（"过去 1 小时 payment-service 最慢的 10 个请求"）
+3. **按错误查 trace**（"所有 status=ERROR 的请求"）
+4. **链路对比**（"正常 vs 异常请求，差别在哪一步"）
+
+## 🪢 三支柱的真正联动：关联查询（Correlated Observability）
+
+可观测性的终极形态：**从 metrics → traces → logs 能够一路跳转**。
+
+```
+Grafana 看到 P99 异常抖动
+    │
+    │ [点击] 跳转到 Tempo，看该时间段的慢 traces
+    ↓
+Tempo 显示某个 trace 在 DB 查询上卡了 3s
+    │
+    │ [点击] 带着 trace_id 跳转到 Loki 查 DB 服务的日志
+    ↓
+Loki 显示 "deadlock detected on order table"
+```
+
+实现这种联动的关键：**所有三类数据都必须带 trace_id 标签**。这也是为什么业界强烈推荐：
+- 日志里自动带 `trace_id` 字段（MDC 模式）
+- Metrics 也支持 Exemplar（给时序数据点打 trace_id 标记）
+- 统一 OpenTelemetry SDK 自动串起来
+
+**统一的 trace_id 是把三大支柱编织成一张网的"针线"。**
 
 ### 分布式追踪架构
 
