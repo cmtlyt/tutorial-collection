@@ -1,0 +1,615 @@
+# 系统设计方法论
+
+> **版本**：v1.0
+> **最后更新**：2026-04-28
+
+## 📚 概念介绍
+
+面对"设计一个短链系统""设计一个秒杀系统""设计一个微信 Feed 流"这类问题时，真正的难点不在于技术细节，而在于**如何在有限时间内从模糊需求走到结构化方案**。本节不涉及具体系统实现，而是回答四个方法论层面的问题：
+
+1. **如何澄清需求**：什么是功能需求 / 非功能需求？为什么一上来就写代码的人往往做错题？
+2. **如何做容量估算**：QPS、存储、带宽、内存怎么 Back-of-the-Envelope 拍？
+3. **4S 分析法是什么**：Scenario / Service / Storage / Scale 如何贯穿整个设计过程？
+4. **如何做权衡取舍**：一致性 vs 可用性、读优化 vs 写优化、性能 vs 成本，这些决策怎么说清楚？
+
+掌握这套方法论，你面对**任何没见过的系统**都能有清晰的推进路径——**这是系统设计和编码最大的区别**。
+
+## 🎯 4S 分析法
+
+4S 是系统设计面试和方案评审最广泛使用的结构化框架（源于九章算法《System Design Interview》体系）：
+
+| 阶段 | 英文 | 核心产出 | 时间占比 |
+|------|------|---------|---------|
+| **Scenario（场景）** | Clarify requirements | 功能列表 + 规模数字 | 20% |
+| **Service（服务）** | High-level design | 服务拆分 + API 设计 | 30% |
+| **Storage（存储）** | Data modeling | 存储选型 + Schema | 20% |
+| **Scale（扩展）** | Scale & optimize | 性能优化 + 容灾 | 30% |
+
+**关键心法**：这四个阶段**必须按序推进，不可跳步**。跳过 Scenario 直接画架构图，是新人最常犯的错误。
+
+```text
+Scenario → 明确"做什么、规模多大"
+    ↓
+Service  → 拆分"谁来做、怎么调用"
+    ↓
+Storage  → 决定"数据放哪、怎么存"
+    ↓
+Scale    → 应对"瓶颈在哪、如何演进"
+```
+
+## 💡 Step 1: Scenario —— 需求澄清
+
+### 功能需求 vs 非功能需求
+
+| 类型 | 英文 | 关注 | 典型问题 |
+|------|------|------|---------|
+| **功能需求** | Functional Requirements (FR) | 系统**做什么** | 能否缩短 URL？能否统计点击量？是否支持自定义短码？ |
+| **非功能需求** | Non-Functional Requirements (NFR) | 系统**做得多好** | QPS 多少？可用性几个 9？存储年限多久？P99 延迟多少？ |
+
+**新人常见误区**：只关注 FR 就开始设计，等评审时被问 "5W QPS 怎么扛" 才发现架构根本不成立。
+
+### 问对问题的 Checklist
+
+**功能需求层面**：
+- 核心功能是什么？（MVP）
+- 哪些是扩展功能？（v2 / v3）
+- 用户是谁？内部/外部/B 端/C 端？
+- 使用场景？（Web/Mobile/Server-to-Server）
+- 数据输入/输出格式？
+
+**非功能需求层面**：
+- 用户规模：DAU、MAU
+- 流量规模：QPS（峰值 vs 均值）、读写比
+- 数据规模：单条数据大小、总条数、增长率
+- 延迟要求：P95、P99
+- 可用性要求：几个 9
+- 一致性要求：强一致 / 最终一致？
+- 数据保留期：几年？
+- 成本敏感度？
+
+```js
+// 需求澄清 Checklist 生成器
+function buildRequirementsChecklist(systemName) {
+  return {
+    systemName,
+    functional: {
+      coreFeatures: ['列出 3-5 个必做功能（MVP）'],
+      extendedFeatures: ['列出 v2 可选功能'],
+      userSegments: ['目标用户画像'],
+      dataModel: ['关键实体、关系'],
+      apiSurface: ['对外 API 列表（POST /xxx 等）'],
+    },
+    nonFunctional: {
+      scale: {
+        dau: '日活用户数',
+        monthlyPV: '月 PV',
+        peakQps: '峰值 QPS',
+        readWriteRatio: '读写比（如 100:1）',
+      },
+      performance: {
+        p95LatencyMs: '95 分位延迟目标',
+        p99LatencyMs: '99 分位延迟目标',
+      },
+      reliability: {
+        availability: 'SLO（如 99.95%）',
+        rpo: '可接受的数据丢失窗口',
+        rto: '可接受的恢复时间',
+      },
+      data: {
+        itemSizeBytes: '单条数据字节数',
+        retentionYears: '保留年限',
+        growthRate: '增长率',
+      },
+      consistency: '强一致 / 读已写一致 / 最终一致',
+      costSensitivity: '高 / 中 / 低',
+    },
+  }
+}
+
+// 使用：设计短链服务前先填写
+const checklist = buildRequirementsChecklist('short-url-service')
+console.log(JSON.stringify(checklist, null, 2))
+// 打印出一份空白问卷模板，在澄清会上逐项填写
+```
+
+### 1 分钟决定系统量级
+
+澄清到 QPS 和数据量后，直接对照这张**量级表**定位复杂度：
+
+| QPS 量级 | 数据量 | 架构复杂度 | 典型技术选型 |
+|---------|-------|-----------|-------------|
+| < 100 | < 10 GB | 单机单库 | MySQL + Nginx |
+| 100 ~ 1K | 10 ~ 100 GB | 读写分离 | MySQL 主从 + Redis |
+| 1K ~ 10K | 100 GB ~ 1 TB | 分库分表 + 缓存 | ShardingSphere + Redis Cluster |
+| 10K ~ 100K | 1 ~ 10 TB | 微服务 + 多级缓存 | K8s + Redis + CDN |
+| > 100K | > 10 TB | 异地多活 + 专用集群 | 单元化 + 自研中间件 |
+
+## 💡 Step 2: Service —— 服务拆分与 API 设计
+
+### 服务拆分原则
+
+1. **单一职责**：一个服务只负责一个业务领域
+2. **高内聚低耦合**：内部紧密相关，对外通过 API 交互
+3. **数据自治**：服务独占自己的数据库，不共享底层 Schema
+4. **故障隔离**：一个服务挂掉不影响其他服务
+
+### API 设计的 5 个关键决策
+
+| 决策 | 选项 | 典型场景 |
+|------|------|---------|
+| **协议** | REST / gRPC / GraphQL / WebSocket | 对外 REST、对内 gRPC、实时推送 WebSocket |
+| **接口粒度** | 细粒度（每接口一个动作）/ 聚合粒度（一个接口返回聚合数据） | 前端聚合用聚合、通用能力用细粒度 |
+| **同步 vs 异步** | 请求响应 / 消息队列 / 回调 | 强实时同步，弱实时/耗时操作异步 |
+| **幂等性** | 是 / 否 | 写接口必须幂等（带幂等键） |
+| **版本管理** | URL 版本 / Header 版本 / 内容协商 | 多数选 URL（/v1/xxx） |
+
+### API 设计模板
+
+```js
+// 一个标准 API 定义模板（基于 OpenAPI 思路的简化版）
+function defineApi({
+  method,
+  path,
+  summary,
+  auth,
+  request,
+  response,
+  errors,
+  idempotent = false,
+  rateLimit,
+}) {
+  return {
+    method,
+    path,
+    summary,
+    security: auth,
+    idempotent,
+    rateLimit,
+    request,
+    response,
+    errors,
+  }
+}
+
+// 示例：短链服务创建接口
+const createShortUrl = defineApi({
+  method: 'POST',
+  path: '/v1/urls',
+  summary: '创建短链',
+  auth: 'Bearer Token',
+  idempotent: true, // 基于请求头 Idempotency-Key
+  rateLimit: '100 req/min/user',
+  request: {
+    headers: { 'Idempotency-Key': 'UUID' },
+    body: {
+      longUrl: 'string (1024)',
+      customAlias: 'string? (optional 3-20)',
+      expiresAt: 'ISO8601?',
+    },
+  },
+  response: {
+    200: {
+      shortUrl: 'string',
+      shortCode: 'string',
+      expiresAt: 'ISO8601?',
+    },
+  },
+  errors: {
+    400: 'INVALID_URL',
+    409: 'ALIAS_TAKEN',
+    429: 'RATE_LIMITED',
+  },
+})
+
+console.log(createShortUrl)
+```
+
+## 💡 Step 3: Storage —— 数据建模与存储选型
+
+### 存储选型决策树
+
+```text
+数据访问模式是？
+├─ 强事务 + 结构化
+│   └─ 关系型：MySQL / PostgreSQL
+├─ 海量写入 + 弱结构
+│   ├─ 宽列模型：Cassandra / HBase
+│   └─ 时序：InfluxDB / TDengine
+├─ 文档型灵活结构
+│   └─ MongoDB / Couchbase
+├─ 键值查找 / 缓存
+│   └─ Redis / Memcached
+├─ 图关系 / 关联查询
+│   └─ Neo4j / JanusGraph
+├─ 全文检索
+│   └─ Elasticsearch / OpenSearch
+└─ 大文件 / 归档
+    └─ 对象存储：S3 / OSS / MinIO
+```
+
+### Schema 设计四原则
+
+1. **业务驱动**：字段设计对齐业务概念，而非数据库对齐业务
+2. **读多写少场景反范式**：允许冗余以减少 JOIN
+3. **冷热分离**：热数据 in-memory、温数据 SSD、冷数据对象存储
+4. **预留扩展位**：`extra` JSON 字段、版本号字段
+
+### CAP/PACELC 在存储选型中的落地
+
+| 业务特点 | 推荐 | 典型选型 |
+|---------|------|---------|
+| 订单、账户、库存 | CP（强一致） | MySQL + Raft / HBase |
+| 评论、Feed、点赞 | AP（最终一致） | Cassandra / 分库分表 MySQL + 异步 |
+| 用户配置、标签 | AP（读延迟最低） | Redis + 异步回写 |
+| 日志、审计 | AP（高吞吐） | Kafka + OSS |
+
+## 💡 Step 4: Scale —— 扩展与优化
+
+### 扩展策略矩阵
+
+| 维度 | 垂直扩展（Scale Up） | 水平扩展（Scale Out） |
+|------|--------------------|---------------------|
+| **做法** | 换更强机器（CPU、内存、SSD） | 加机器，数据分片 |
+| **难度** | 低（换硬件即可） | 高（要改架构） |
+| **上限** | 单机天花板（~百万 QPS） | 几乎无上限 |
+| **成本曲线** | 指数上升 | 近似线性 |
+| **适合** | 初期、强一致场景 | 成熟期、高并发场景 |
+
+**经验法则**：**能 Scale Up 就 Scale Up**（避免分布式复杂性），**不得已才 Scale Out**（业务规模或成本逼到那一步）。
+
+### 关键优化手段清单
+
+| 瓶颈 | 手段 | 性价比 |
+|------|------|-------|
+| 读多 | 缓存（多级）、读副本 | ⭐⭐⭐⭐⭐ |
+| 写多 | 分片、异步批量、LSM 存储 | ⭐⭐⭐⭐ |
+| 计算密集 | 异步化、任务队列、算法优化 | ⭐⭐⭐⭐ |
+| 链路长 | 合并调用、BFF、本地兜底 | ⭐⭐⭐ |
+| 跨地域 | CDN、边缘计算、多活 | ⭐⭐ |
+
+### 瓶颈识别三板斧
+
+1. **压测定位**：用 JMeter / wrk 打出真实瓶颈所在层
+2. **监控分层**：黄金信号按层拆（网关 / 服务 / 缓存 / DB）
+3. **剖面分析**：火焰图定位热点函数、慢 SQL 定位慢查询
+
+## 💡 容量估算（Back-of-the-Envelope）
+
+### 必背数字（Jeff Dean 延迟表）
+
+| 操作 | 典型耗时 | 相对关系 |
+|------|---------|---------|
+| L1 缓存访问 | 0.5 ns | 1× |
+| 分支预测错误 | 5 ns | 10× |
+| L2 缓存访问 | 7 ns | 14× |
+| Mutex 加解锁 | 25 ns | 50× |
+| 主存访问 | 100 ns | 200× |
+| 内存顺序读 1 MB | 250 μs | 50 万× |
+| SSD 随机读 4 KB | 150 μs | 30 万× |
+| 同机房网络 RTT | 500 μs | 100 万× |
+| HDD 顺序读 1 MB | 20 ms | 4000 万× |
+| 跨 AZ 网络 RTT | 1 ms | 200 万× |
+| 跨地域网络 RTT | 150 ms | 3 亿× |
+
+**架构推论**：
+- 一次跨机房 RTT 约等于 1000 次本地缓存命中，能本地命中就别跨机房
+- 一次磁盘随机读约等于 1500 次主存访问，能命中内存就别查盘
+- 一次跨地域 RTT 约等于 300 倍的跨 AZ RTT，**多活方案的跨地域一致性代价极高**
+
+### 容量估算四连问
+
+设计任何系统都要回答这四个数字：
+
+1. **QPS**：平均 QPS、峰值 QPS（通常 2~10 倍均值）
+2. **存储**：单条数据字节数 × 总数 × 保留期 × 副本数
+3. **带宽**：单次请求字节数 × QPS
+4. **内存**：热数据大小 × 缓存命中率要求
+
+```js
+// 容量估算工具：输入业务规模，输出核心资源需求
+function capacityEstimate({
+  dau,
+  peakRatio = 5,                 // 峰值倍数
+  requestsPerUserPerDay,
+  avgRequestBytes,
+  writeRatio,                    // 写请求占比
+  recordSizeBytes,
+  retentionYears,
+  replicationFactor = 3,
+  hotWindowDays = 30,            // 热数据窗口：近 N 天的新增数据视为热数据
+  cacheHitRateTarget = 0.95,
+}) {
+  const SECONDS_PER_DAY = 86400
+  const KB = 1024
+  const MB = KB * 1024
+  const GB = MB * 1024
+  const TB = GB * 1024
+
+  // 1. QPS 估算
+  const totalReqPerDay = dau * requestsPerUserPerDay
+  const avgQps = totalReqPerDay / SECONDS_PER_DAY
+  const peakQps = avgQps * peakRatio
+
+  // 2. 带宽估算（峰值）
+  const peakBandwidthMBps = (peakQps * avgRequestBytes) / MB
+  const peakBandwidthGbps = (peakBandwidthMBps * 8) / 1024
+
+  // 3. 存储估算
+  const writeQps = avgQps * writeRatio
+  const writePerDay = writeQps * SECONDS_PER_DAY
+  const rawBytes = writePerDay * 365 * retentionYears * recordSizeBytes
+  const rawTB = rawBytes / TB
+  const replicatedTB = rawTB * replicationFactor
+
+  // 4. 内存估算：近 hotWindowDays 天新增数据作为热集合
+  const hotRecords = writePerDay * hotWindowDays
+  const hotMemoryGB = (hotRecords * recordSizeBytes) / GB
+
+  return {
+    qps: {
+      avg: Math.round(avgQps),
+      peak: Math.round(peakQps),
+    },
+    bandwidth: {
+      peakMBps: peakBandwidthMBps.toFixed(2),
+      peakGbps: peakBandwidthGbps.toFixed(3),
+    },
+    storage: {
+      rawTB: rawTB.toFixed(2),
+      replicatedTB: replicatedTB.toFixed(2),
+      suggestedShards: Math.ceil(replicatedTB / 4), // 按每分片 4 TB
+    },
+    memory: {
+      hotWindowDays,
+      hotDataGB: hotMemoryGB.toFixed(2),
+      cacheHitRateTarget,
+      suggestedCacheGB: Math.ceil(hotMemoryGB * 1.2), // 额外 20% 缓冲
+    },
+  }
+}
+
+// 场景：短链服务估算
+const estimate = capacityEstimate({
+  dau: 100_000_000,              // 1 亿 DAU
+  peakRatio: 5,
+  requestsPerUserPerDay: 20,     // 每人每天 20 次访问短链
+  avgRequestBytes: 500,          // 单次请求 500 字节
+  writeRatio: 0.01,              // 1% 是创建短链
+  recordSizeBytes: 500,          // 单条记录 500 字节
+  retentionYears: 5,
+  replicationFactor: 3,
+  hotWindowDays: 30,             // 近 30 天的短链视为热数据
+  cacheHitRateTarget: 0.95,
+})
+
+console.log(JSON.stringify(estimate, null, 2))
+// 典型输出（具体数字随 JS 浮点精度可能有末位差异）：
+// {
+//   "qps":        { "avg": 23148, "peak": 115741 },
+//   "bandwidth":  { "peakMBps": "55.19", "peakGbps": "0.431" },
+//   "storage":    { "rawTB": "16.60", "replicatedTB": "49.80", "suggestedShards": 13 },
+//   "memory":     { "hotWindowDays": 30, "hotDataGB": "279.40",
+//                   "cacheHitRateTarget": 0.95, "suggestedCacheGB": 336 }
+// }
+// 架构决策：
+//   • 峰值 11.5W QPS → 必须多副本 + 13 分片
+//   • 热数据 ~279 GB → Redis 集群约 10 节点（64 GB/节点）
+//   • 带宽 0.4 Gbps → 单机房千兆可满足，跨机房同步需评估
+```
+
+## 💡 权衡分析框架
+
+### 常见权衡维度
+
+系统设计的本质就是**不停地做权衡**。掌握以下六大权衡轴：
+
+| 权衡轴 | 偏向 A | 偏向 B | 决定因素 |
+|-------|-------|-------|---------|
+| **一致性 vs 可用性** | 强一致 | 最终一致 | 业务能否容忍脏读 |
+| **读 vs 写** | 读优化（多级缓存） | 写优化（LSM / 追加） | 读写比 |
+| **延迟 vs 吞吐** | 低延迟（同步） | 高吞吐（批量） | 业务实时性 |
+| **一致 vs 成本** | 同步复制 | 异步复制 | 预算 |
+| **安全 vs 性能** | 全链路加密 | 内网明文 | 合规要求 |
+| **复杂度 vs 弹性** | 单体 | 微服务 | 团队规模与迭代频率 |
+
+### ADR（Architecture Decision Record）：记录每一次权衡
+
+每次架构决策应形成一条可追溯的记录：
+
+```js
+// ADR 模板：架构决策记录
+function createADR({
+  id,
+  title,
+  status, // Proposed / Accepted / Deprecated / Superseded
+  context,
+  options,
+  decision,
+  consequences,
+}) {
+  return {
+    id: `ADR-${String(id).padStart(4, '0')}`,
+    title,
+    status,
+    date: new Date().toISOString().split('T')[0],
+    context,
+    options,
+    decision,
+    consequences,
+  }
+}
+
+// 示例：短链存储选型决策
+const adr = createADR({
+  id: 1,
+  title: '短链服务采用 MySQL 分库分表而非 NoSQL',
+  status: 'Accepted',
+  context:
+    '短链服务 5 年内预计写入 3000 亿条，读写比 100:1，单条约 500B。需要决定持久化方案。',
+  options: [
+    {
+      name: 'MySQL + ShardingSphere 分库分表',
+      pros: ['成熟可靠', '团队熟悉', '支持事务', 'B+ 树适合点查'],
+      cons: ['扩容要迁移数据', '分布式事务难'],
+    },
+    {
+      name: 'Cassandra',
+      pros: ['线性扩展', '写吞吐极高', '天然多副本'],
+      cons: ['团队无经验', '强一致要付出 QUORUM 代价'],
+    },
+    {
+      name: 'HBase',
+      pros: ['海量写入', 'RowKey 顺序读友好'],
+      cons: ['依赖 HDFS 与 ZK', '运维成本高'],
+    },
+  ],
+  decision:
+    '选择 MySQL + ShardingSphere。理由：短链是单点查询主导，B+ 树性能优越；团队有运维经验；写入量 30K QPS 在 MySQL 分片后可承载。',
+  consequences: [
+    '优点：上线周期短、故障可控、事务能力强',
+    '缺点：未来若写入量超 20W QPS 需重新评估迁移',
+    '风险：分片键（short_code 哈希）必须在初版就固定',
+  ],
+})
+
+console.log(JSON.stringify(adr, null, 2))
+```
+
+## 📝 实际应用示例
+
+### 综合案例：45 分钟完成短链服务设计的完整推演
+
+假设你有 45 分钟面试时间，按 4S 分配：
+
+```js
+// 系统设计推进时钟：把 45 分钟切成 4 段
+function designTimer(totalMinutes = 45) {
+  const phases = [
+    { name: 'Scenario（需求澄清）', ratio: 0.2 },
+    { name: 'Service（高层设计）', ratio: 0.3 },
+    { name: 'Storage（数据建模）', ratio: 0.2 },
+    { name: 'Scale（扩展优化）', ratio: 0.3 },
+  ]
+
+  let cursor = 0
+  return phases.map((p) => {
+    const minutes = Math.round(totalMinutes * p.ratio)
+    const phase = {
+      name: p.name,
+      minutesAllocated: minutes,
+      startAt: `${cursor} min`,
+      endAt: `${cursor + minutes} min`,
+    }
+    cursor += minutes
+    return phase
+  })
+}
+
+console.log(designTimer(45))
+// [
+//   { name: 'Scenario（需求澄清）', minutesAllocated: 9,  startAt: '0 min',  endAt: '9 min'  },
+//   { name: 'Service（高层设计）', minutesAllocated: 14, startAt: '9 min',  endAt: '23 min' },
+//   { name: 'Storage（数据建模）', minutesAllocated: 9,  startAt: '23 min', endAt: '32 min' },
+//   { name: 'Scale（扩展优化）',   minutesAllocated: 14, startAt: '32 min', endAt: '46 min' },
+// ]
+```
+
+**完整推演（用文字描述，每阶段输出要点）**：
+
+```text
+═══════════════════════════════════════════════════════════
+阶段 1（0-9 分钟）：Scenario
+───────────────────────────────────────────────────────────
+功能需求：
+  ✓ 长链 → 短链（7 位编码）
+  ✓ 短链 → 重定向至长链
+  ✓ 点击统计（异步即可）
+  ✗ 不做：自定义短码、过期时间（v2 再说）
+
+非功能需求：
+  • 规模：1 亿 DAU、每人日均访问 20 次 → 20 亿 PV/天
+  • 峰值 QPS：20 亿/86400 × 5 ≈ 11.5W QPS
+  • 读写比：100:1 → 写 1150 QPS，读 11.4W QPS
+  • 存储：5 年内新增 36 亿条（1 亿×1%×365×5×2）
+  • SLO：可用性 99.95%、P99 < 100ms
+  • 一致性：允许最终一致（统计数据晚几秒无所谓）
+
+═══════════════════════════════════════════════════════════
+阶段 2（9-23 分钟）：Service
+───────────────────────────────────────────────────────────
+服务拆分：
+  ┌──────────┐    ┌──────────┐    ┌──────────┐
+  │ 短链网关 │───▶│ 编码服务 │───▶│  存储层  │
+  └──────────┘    └──────────┘    └──────────┘
+                        │
+                        ▼
+                  ┌──────────┐
+                  │ ID 生成器│（分布式）
+                  └──────────┘
+
+API：
+  POST /v1/urls             创建短链（幂等键）
+  GET  /:shortCode          重定向（302）
+  GET  /v1/urls/:shortCode  查询元数据
+
+═══════════════════════════════════════════════════════════
+阶段 3（23-32 分钟）：Storage
+───────────────────────────────────────────────────────────
+选型：MySQL 分库分表（8 库 64 表）+ Redis 缓存
+Schema：
+  short_url (
+    short_code  varchar(8) primary key,
+    long_url    varchar(2048),
+    created_at  datetime,
+    user_id     bigint
+  )
+分片键：hash(short_code) mod 64
+
+═══════════════════════════════════════════════════════════
+阶段 4（32-45 分钟）：Scale
+───────────────────────────────────────────────────────────
+读优化：
+  • 多级缓存：本地 Caffeine（LRU 10万）+ Redis 集群
+  • CDN 短链前缀页：静态 301 规则
+  • 布隆过滤器防穿透
+
+写优化：
+  • 分布式 ID（雪花算法）→ Base62 编码
+  • 异步点击统计（Kafka → Flink → ClickHouse）
+
+可用性：
+  • 双 AZ 部署（同城双活）+ 主从切换 30s
+  • Redis 挂掉 → 降级直读 DB（限流保护）
+  • 跨地域异步复制（RPO ≤ 5s）
+
+监控：
+  • 黄金信号分层埋点
+  • SLO 看板：成功率 / P99 / Error Budget
+═══════════════════════════════════════════════════════════
+```
+
+这一整套推演**才是"系统设计"真正的内容**，下一章节的 `基础服务`、`复杂系统`、`大数据系统` 三篇都按这个方法论展开。
+
+## 🔗 相关概念
+
+- **并发理论基础**：Little's Law 是容量估算公式的理论根基，见《并发理论基础》
+- **可用性理论基础**：SLO/Error Budget 是 NFR 澄清的核心输出，见《可用性理论基础》
+- **基础服务设计**：短链 / 分布式 ID / 秒杀 / IM 的 4S 推演实践，见《基础服务设计》
+- **复杂系统设计**：搜索 / 推荐 / Feed 流的方法论应用，见《复杂系统设计》
+- **大数据系统设计**：实时计算 / 日志 / 同步平台的设计范式，见《大数据系统设计》
+
+## 📚 学习检查点
+
+- [ ] 能否背出 4S 法的 4 个阶段、每阶段的核心产出和时间占比？
+- [ ] 拿到"设计一个系统"的题目，能否用 Checklist 在 10 分钟内澄清出 FR 和 NFR？
+- [ ] 能否背出 Jeff Dean 延迟表的关键数量级（L1、主存、SSD、同机房、跨地域）？
+- [ ] 能否根据 DAU 估算出 QPS、存储、带宽、内存四个数字？
+- [ ] 能否在 6 大权衡轴上为一个业务场景做出明确选择？
+- [ ] 能否用 ADR 格式记录一次架构决策？
+- [ ] 能否在 45 分钟内完成一次完整的系统设计推演？
+
+## 🚀 下一步
+
+方法论奠基完成，接下来开始把方法论用到具体案例上：
+
+→ [基础服务设计](/architect/06-system-design/03-classic-system-design/02-basic-services)

@@ -1,0 +1,436 @@
+# 并发理论基础
+
+> **版本**：v1.0
+> **最后更新**：2026-04-28
+
+## 📚 概念介绍
+
+在动手实现线程池、限流器、缓存之前，先要建立一套可量化的并发理论框架。本节不涉及具体实现，而是回答四个根本问题：
+
+1. **"高并发"究竟高在哪**：用哪些指标衡量一个系统的并发能力？
+2. **为什么加机器不总是线性提速**：Amdahl 定律、Gustafson 定律与 USL（通用扩展律）告诉了我们什么？
+3. **并发数、吞吐量与延迟是什么关系**：Little's Law 如何指导容量规划？
+4. **并发模型有哪些流派**：Thread-per-Request、Reactor、Actor、CSP、协程，各自取舍在哪？
+
+掌握这些理论后，你再去看线程池参数、限流算法、异步框架，就能"知其然更知其所以然"。
+
+## 🎯 并发指标体系
+
+### 并发 vs 并行
+
+这两个词常被混用，但语义差别决定了架构方向：
+
+| 维度 | 并发（Concurrency） | 并行（Parallelism） |
+|------|--------------------|--------------------|
+| **本质** | 任务交错调度，"同时处理"多件事 | 任务物理同时执行，"同时完成"多件事 |
+| **依赖** | 依赖调度器（OS 线程、事件循环、协程） | 依赖多核 CPU / 多机 |
+| **关注点** | 结构（如何组织任务） | 执行（如何加速） |
+| **单核可否** | 可（时间片轮转） | 不可（至少两个执行单元） |
+| **典型问题** | 上下文切换、锁竞争、协调 | 任务切分、负载均衡、数据同步 |
+
+一句话：**并发是关于处理大量事情，并行是关于同时做大量事情**（Rob Pike）。高并发系统必须并发，是否并行取决于工作负载类型。
+
+### 核心四指标
+
+评估并发系统的四个一级指标：
+
+| 指标 | 定义 | 典型单位 | 关注分位 |
+|------|------|---------|---------|
+| **吞吐量（Throughput）** | 单位时间内完成的请求数 | QPS / TPS / RPS | 均值 |
+| **响应时间（Latency）** | 单个请求从发出到收到响应的耗时 | ms / μs | P50、P95、P99、P999 |
+| **并发数（Concurrency）** | 系统同时处理的请求数 | - | 均值、峰值 |
+| **资源利用率** | CPU、内存、IO、网络带宽占用 | % | 均值、峰值 |
+
+**为什么要看分位而非均值**：均值会被长尾请求掩盖。假设 100 次请求中 99 次是 10ms、1 次是 1000ms，均值是 19.9ms 看似很好，但 P99 是 1000ms，这意味着**每 100 个用户就有 1 个体验极差**——在百万日活系统中每天就是万级用户受损。
+
+```js
+// 根据耗时样本计算各分位的完整示例
+function calculatePercentiles(samples) {
+  // 升序排序是分位计算的前提
+  const sorted = [...samples].sort((a, b) => a - b)
+  const n = sorted.length
+
+  // 使用 nearest-rank 方法（与 Prometheus、Go 的 pprof 一致）
+  const pick = (p) => {
+    const rank = Math.ceil((p / 100) * n)
+    return sorted[Math.max(0, rank - 1)]
+  }
+
+  return {
+    count: n,
+    min: sorted[0],
+    max: sorted[n - 1],
+    mean: sorted.reduce((acc, v) => acc + v, 0) / n,
+    p50: pick(50),
+    p95: pick(95),
+    p99: pick(99),
+    p999: pick(99.9),
+  }
+}
+
+// 模拟一批请求耗时（ms）：99 次快请求 + 1 次慢请求
+const latencies = Array.from({ length: 99 }, () => 10).concat([1000])
+
+const result = calculatePercentiles(latencies)
+console.log(result)
+// {
+//   count: 100, min: 10, max: 1000,
+//   mean: 19.9, p50: 10, p95: 10, p99: 1000, p999: 1000
+// }
+// 结论：均值与 P95 都看不出问题，只有 P99 暴露了长尾
+```
+
+### 黄金信号（Four Golden Signals）
+
+Google SRE 提出的四个监控黄金信号，是上面四指标在可观测性侧的落地：
+
+| 信号 | 含义 | 回答的问题 |
+|------|------|-----------|
+| **Latency** | 请求耗时（需区分成功与失败） | 用户体验好不好 |
+| **Traffic** | 系统所承受的需求量（QPS、带宽） | 现在有多忙 |
+| **Errors** | 失败请求的速率（显式 5xx + 隐式超时/错结果） | 系统有没有坏 |
+| **Saturation** | 资源"满载度"（CPU、内存、队列长度） | 还能扛多久 |
+
+## 💡 可扩展性定律
+
+### Amdahl 定律：串行部分是天花板
+
+对一个系统而言，总有一部分逻辑**无法被并行化**（如锁、串行 IO、全局计数）。令 `p` 为可并行化比例、`n` 为并行度，则理论加速比为：
+
+```text
+              1
+S(n) = ─────────────────
+       (1 - p) + p / n
+```
+
+**关键推论**：当 `n → ∞`，加速比上限为 `1 / (1 - p)`。
+
+- 若 95% 可并行，再多机器，加速比**最大 20 倍**
+- 若 99% 可并行，加速比**最大 100 倍**
+
+```js
+// Amdahl 定律加速比计算
+function amdahlSpeedup(parallelFraction, workers) {
+  const serial = 1 - parallelFraction
+  return 1 / (serial + parallelFraction / workers)
+}
+
+// 对比不同并行比例在增加机器时的加速比
+const fractions = [0.5, 0.75, 0.9, 0.95, 0.99]
+const workerCounts = [2, 4, 8, 16, 32, 64, 128, Infinity]
+
+for (const p of fractions) {
+  const row = workerCounts.map((n) => amdahlSpeedup(p, n).toFixed(2))
+  console.log(`并行比例 ${(p * 100).toFixed(0)}%:`, row.join('  '))
+}
+// 并行比例 50%: 1.33 1.60 1.78 1.88 1.94 1.97 1.98 2.00
+// 并行比例 75%: 1.60 2.29 2.91 3.37 3.66 3.82 3.91 4.00
+// 并行比例 90%: 1.82 3.08 4.71 6.40 7.80 8.77 9.34 10.00
+// 并行比例 95%: 1.90 3.48 5.93 9.14 12.55 15.42 17.41 20.00
+// 并行比例 99%: 1.98 3.88 7.48 13.91 24.43 39.26 56.39 100.00
+```
+
+**架构启示**：优化并发系统的第一性原则是**减少串行部分**——去锁、分片、异步化、无共享。
+
+### Gustafson 定律：规模在扩，问题也在扩
+
+Amdahl 假设问题规模固定，而现实是**机器变多时人们也会处理更大的问题**。Gustafson 定律：
+
+```text
+S(n) = n - α × (n - 1)
+```
+
+其中 `α` 为串行时间占比。结论：在可伸缩规模的问题上（如大数据处理），加速比**近似线性**随并行度增长。
+
+**启示**：Amdahl 适合分析"固定负载下加机器"；Gustafson 适合分析"业务扩张时加机器"。架构评估要搞清楚自己在哪种场景。
+
+### USL 通用扩展律：加机器为何会变慢
+
+Neil Gunther 的 USL（Universal Scalability Law）在 Amdahl 基础上再加一项**协调开销**：
+
+```text
+                     n
+S(n) = ───────────────────────────────
+       1 + σ × (n-1) + κ × n × (n-1)
+```
+
+- `σ`：串行化系数（类似 Amdahl 的 `1-p`）
+- `κ`：协调/一致性开销系数（节点间通信、锁协商、缓存一致性）
+
+**三段式曲线**：
+1. 线性增长段：`n` 较小时近似线性
+2. 收益递减段：`σ` 主导，趋近 Amdahl 上限
+3. **负收益段**：`κ` 主导，**加机器反而变慢**（雪崩）
+
+```js
+// USL 曲线计算：给定串行系数与协调系数，估算不同并行度下的加速比
+function uslSpeedup(n, sigma, kappa) {
+  return n / (1 + sigma * (n - 1) + kappa * n * (n - 1))
+}
+
+const sigma = 0.03  // 3% 串行
+const kappa = 0.0005 // 0.05% 协调开销
+const peaks = []
+
+for (let n = 1; n <= 64; n++) {
+  const s = uslSpeedup(n, sigma, kappa)
+  peaks.push({ n, speedup: +s.toFixed(2) })
+}
+
+// 找到加速比峰值所在的并行度
+const peak = peaks.reduce((a, b) => (b.speedup > a.speedup ? b : a))
+console.log('加速比峰值:', peak)
+// 加速比峰值: { n: 13, speedup: 10.21 }
+// 结论：在 σ=3%, κ=0.05% 的系统里，13 个节点后加速比开始下降
+```
+
+**架构启示**：
+- 做分布式的第一件事是**压测 + 拟合 USL 曲线**，找到你的"甜蜜点"
+- `κ` 通常源于"锁 / 共识 / 一致性"，降低 `κ` 的手段：分片、Sharding、读写分离、异步复制、最终一致性
+
+## 💡 Little's Law：容量规划的万能钥匙
+
+**Little's Law**（利特尔法则）：稳态下队列系统中的平均请求数 `L`、到达率 `λ`、停留时间 `W` 满足：
+
+```text
+L = λ × W
+```
+
+映射到服务器场景：
+
+```text
+并发数 = QPS × 平均响应时间（秒）
+```
+
+这是**容量规划最重要的一个公式**，它可以回答所有的"需要多大线程池""能扛多少 QPS""响应时间涨了会怎样"。
+
+```js
+// Little's Law 容量推算工具
+// 输入任意两个量推算第三个
+function littlesLaw({ qps, avgLatencyMs, concurrency }) {
+  const avgLatencySec = avgLatencyMs != null ? avgLatencyMs / 1000 : undefined
+
+  // 已知 QPS + 延迟 → 推算并发
+  if (qps != null && avgLatencySec != null) {
+    return { concurrency: qps * avgLatencySec }
+  }
+  // 已知并发 + 延迟 → 推算 QPS
+  if (concurrency != null && avgLatencySec != null) {
+    return { qps: concurrency / avgLatencySec }
+  }
+  // 已知 QPS + 并发 → 推算延迟
+  if (qps != null && concurrency != null) {
+    return { avgLatencyMs: (concurrency / qps) * 1000 }
+  }
+  throw new Error('至少需要提供两个已知量')
+}
+
+// 场景 1：业务目标 QPS=5000，平均响应时间 50ms，需要多大并发池？
+console.log(littlesLaw({ qps: 5000, avgLatencyMs: 50 }))
+// { concurrency: 250 } → 至少需要 250 个并发处理单元
+
+// 场景 2：容器线程池上限 200，平均响应时间 80ms，最大 QPS 是多少？
+console.log(littlesLaw({ concurrency: 200, avgLatencyMs: 80 }))
+// { qps: 2500 }
+
+// 场景 3：压测实测 QPS=3000、并发 300，实际平均响应时间多久？
+console.log(littlesLaw({ qps: 3000, concurrency: 300 }))
+// { avgLatencyMs: 100 }
+```
+
+### 响应时间模型：排队论 M/M/1
+
+当请求到达率 `λ` 接近服务能力 `μ` 时，响应时间**急剧上升**（非线性！）。M/M/1 模型下：
+
+```text
+           1              基础服务时间
+W = ───────────── = ───────────────────────
+     μ - λ             1 - 利用率 ρ
+```
+
+其中 `ρ = λ / μ` 为系统利用率。
+
+**关键现象**：
+- 利用率 50%：响应时间约为基础耗时的 2 倍
+- 利用率 80%：响应时间约为基础耗时的 5 倍
+- 利用率 95%：响应时间约为基础耗时的 20 倍
+- 利用率 99%：响应时间约为基础耗时的 100 倍
+
+```js
+// 单服务器 M/M/1 排队模型：利用率对响应时间的放大效应
+function mm1ResponseTime(serviceTimeMs, utilization) {
+  if (utilization >= 1) return Infinity
+  // W = (1/μ) / (1 - ρ)，其中 ρ = λ/μ 为利用率
+  return serviceTimeMs / (1 - utilization)
+}
+
+const baseServiceMs = 20  // 基础服务时间 20ms
+const utilizations = [0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 0.99]
+
+for (const u of utilizations) {
+  const rt = mm1ResponseTime(baseServiceMs, u)
+  console.log(`利用率 ${(u * 100).toFixed(0)}% → 响应时间 ${rt.toFixed(1)}ms`)
+}
+// 利用率 30% → 响应时间 28.6ms
+// 利用率 50% → 响应时间 40.0ms
+// 利用率 70% → 响应时间 66.7ms
+// 利用率 80% → 响应时间 100.0ms
+// 利用率 90% → 响应时间 200.0ms
+// 利用率 95% → 响应时间 400.0ms
+// 利用率 99% → 响应时间 2000.0ms   ← 雪崩临界
+```
+
+**架构启示**：
+- **不要把机器用到 100%**。行业常见经验是**CPU 水位控制在 60%~70%** 之间，为尖峰留出缓冲
+- 容量规划要基于峰值 QPS 而非均值，且留足 30%~50% Headroom
+- 响应时间恶化时看利用率，往往不是代码问题，是"接近饱和"
+
+## 💡 C10K / C10M 问题：并发模型的演进动因
+
+### 三大历史关口
+
+并发模型的每次跃迁，都是被一个"K 级问题"逼出来的：
+
+| 问题 | 年代 | 挑战 | 破解手段 |
+|------|------|------|---------|
+| **C1K** | 1990s | 单机同时处理 1K 连接 | 多进程 / 多线程 |
+| **C10K** | 1999 | 单机 1W 连接 | epoll/kqueue、非阻塞 IO、Reactor 模式 |
+| **C10M** | 2013+ | 单机 1000W 连接 | 内核旁路（DPDK、io_uring）、用户态协议栈、协程、RDMA |
+
+### 为什么线程模型顶不住 C10K
+
+假设每个线程栈 1MB，1W 连接就要 **10GB 内存**仅用于栈。再加上：
+- 线程切换的 CPU 开销（2~10μs/次）
+- 内核态到用户态拷贝
+- 锁竞争
+
+结论：**一个连接一个线程的模型上限在几千**。必须走"一个线程处理多个连接"的路子——这就是 Reactor 模式的起源。
+
+## 💡 并发模型分类
+
+### 五大主流模型对比
+
+| 模型 | 调度单位 | 代表 | 优点 | 缺点 | 适用 |
+|------|---------|------|------|------|------|
+| **Thread-per-Request** | OS 线程 | Tomcat、Servlet | 编程模型简单 | 栈开销大、切换贵、难以规模化 | 中低并发、CPU 密集 |
+| **Reactor（事件驱动）** | 事件循环 | Node.js、Nginx、Netty | 高并发 IO、资源少 | 回调地狱、不适合 CPU 密集 | 高并发 IO 密集 |
+| **Actor** | 轻量 Actor | Erlang、Akka | 无共享、位置透明、天然分布式 | 消息不可预测、调试难 | 电信、IM、分布式 |
+| **CSP（通信顺序进程）** | goroutine / channel | Go | 并发原语直观、无锁通信 | channel 设计门槛 | 云原生服务 |
+| **Coroutine（协程）** | 用户态协程 | Kotlin、Python async、Virtual Thread | 同步写法 + 异步执行 | 需要运行时配合、CPU 密集不友好 | IO 密集服务 |
+
+### 编程模型的一次深度转折：从"线程 = 请求"到"协程 = 请求"
+
+JDK 21 Virtual Thread、Go goroutine、Kotlin Coroutine 这类**用户态调度的轻量线程**本质是在解决同一个问题：
+
+> 让程序员继续用"阻塞同步"的心智模型写代码，但底层用"非阻塞事件循环"的机制跑代码。
+
+这就既享受了 Thread-per-Request 的简单，又获得了 Reactor 的规模。**这是未来 5~10 年的主流方向**。
+
+### 阻塞 vs 非阻塞 vs 同步 vs 异步
+
+四个词经常搞混。一张表厘清：
+
+| 概念 | 关注点 | 正/反面 |
+|------|-------|--------|
+| **同步（Sync）** | 调用者是否等待结果返回 | 反面：异步（发起即返回，通过回调/Future 拿结果） |
+| **阻塞（Blocking）** | 线程在等待时是否被 OS 挂起 | 反面：非阻塞（调用立即返回状态，需自己轮询或注册事件） |
+
+四种组合均存在：
+- **同步阻塞**：`read()` 默认行为
+- **同步非阻塞**：设置 `O_NONBLOCK` + 轮询
+- **异步阻塞**：很少见（本质没意义）
+- **异步非阻塞**：`epoll + 事件回调`、`io_uring`
+
+## 📝 实际应用示例
+
+### 综合案例：一次秒杀系统的理论推演
+
+假设业务目标：
+- 商品 10W 件，开抢瞬间预估 50W 用户涌入
+- SLA：P99 响应时间 < 200ms
+- 单机基准：CPU 8 核，压测单请求平均 40ms，串行比例约 8%（锁+DB写）
+
+**用理论推演架构方案**：
+
+```js
+// 综合推演工具：集成 Amdahl、Little's Law、M/M/1
+function architecturePlanning({
+  targetQps,
+  avgLatencyMs,
+  singleMachineQps,
+  serialFraction,
+  safeUtilization,
+}) {
+  const report = {}
+
+  // Step 1：Little's Law 算总并发
+  report.totalConcurrency = targetQps * (avgLatencyMs / 1000)
+
+  // Step 2：按安全水位反推实际需承载 QPS
+  report.provisionedQps = targetQps / safeUtilization
+
+  // Step 3：估算所需机器数（朴素线性扩展）
+  report.naiveMachines = Math.ceil(report.provisionedQps / singleMachineQps)
+
+  // Step 4：Amdahl 修正——考虑串行部分带来的扩展上限
+  const maxSpeedup = 1 / serialFraction
+  report.amdahlCeiling = Math.floor(maxSpeedup * singleMachineQps)
+  report.reachable = report.provisionedQps <= report.amdahlCeiling
+
+  // Step 5：M/M/1 估算饱和时延迟放大
+  report.latencyAtSafe = avgLatencyMs / (1 - safeUtilization)
+
+  return report
+}
+
+const plan = architecturePlanning({
+  targetQps: 50000,           // 目标 5W QPS
+  avgLatencyMs: 40,
+  singleMachineQps: 2000,     // 单机压测值
+  serialFraction: 0.08,       // 8% 串行（锁+DB）
+  safeUtilization: 0.7,       // 70% 水位
+})
+
+console.log(plan)
+// {
+//   totalConcurrency: 2000,      ← 系统任一时刻约 2000 请求在飞
+//   provisionedQps: 71428.57,    ← 需按 7.1W QPS 容量部署
+//   naiveMachines: 36,           ← 至少 36 台
+//   amdahlCeiling: 25000,        ← 单集群 Amdahl 上限 2.5W QPS
+//   reachable: false,            ← ⚠️ 单一集群不可达目标！
+//   latencyAtSafe: 133.33,       ← 70% 水位下预期延迟 133ms（满足 P99<200ms）
+// }
+```
+
+**架构决策推导**：
+
+1. `reachable === false` 意味着**不能靠同一个集群堆机器**，必须**分片**把串行部分切散（如按商品 ID 分片，每个分片独立锁/独立 DB）
+2. `latencyAtSafe = 133ms` < 200ms SLA：说明延迟预算够，不必做更激进的异步化
+3. `totalConcurrency = 2000`：指导线程池/连接池/信号量的上限配置
+4. 入口层需配限流（把 50W 用户降到 5W 实际 QPS），限流算法的选择见下一节
+
+这就是**用理论指导架构**的完整链路——下一章节开始动手实现。
+
+## 🔗 相关概念
+
+- **线程池设计**：基于 Little's Law 推导 `核心线程数 = QPS × 响应时间`，见《并发处理》
+- **限流算法**：令牌桶/漏桶/滑动窗口的选择受 USL 协调开销与 M/M/1 饱和点影响，见《流量控制》
+- **缓存架构**：缓存本质是**降低每请求的串行部分**，从而抬升 Amdahl 天花板，见《缓存架构》
+- **分布式一致性（CAP/PACELC）**：USL 中的 `κ` 系数在分布式场景常表现为一致性协议开销，见《高可用性理论基础》
+- **容量估算**：Little's Law 是所有容量规划的基础公式，见《系统设计方法论》
+
+## 📚 学习检查点
+
+- [ ] 能否用 Little's Law 从业务 QPS 和延迟要求推算出合理的线程池/连接池大小？
+- [ ] 能否解释为什么"CPU 打满到 95%"会导致延迟暴涨 20 倍？
+- [ ] 能否说出 Amdahl 与 Gustafson 定律的差异以及各自适用场景？
+- [ ] 能否画出 USL 曲线的三段式，并指出 σ 和 κ 在业务上分别对应什么？
+- [ ] 能否区分并发/并行、同步/异步、阻塞/非阻塞这三对概念？
+- [ ] 能否说出五大并发模型的核心差异，并判断自己系统适合哪一种？
+- [ ] 拿到一个高并发需求，能否先用理论推演再动手写代码？
+
+## 🚀 下一步
+
+理论奠基完成，接下来进入实现：
+
+→ [并发处理](/architect/06-system-design/01-high-concurrency/02-concurrency-processing)

@@ -1,0 +1,508 @@
+# 可用性理论基础
+
+> **版本**：v1.0
+> **最后更新**：2026-04-28
+
+## 📚 概念介绍
+
+在动手做冗余、演练、扩缩容之前，先要把"可用性"这个模糊的目标**量化为可以度量、可以管理、可以权衡的工程指标**。本节不涉及具体实现，而是回答四个根本问题：
+
+1. **"99.99% 可用"到底意味着什么**：如何用 SLI/SLO/SLA/Error Budget 把口头承诺转为工程契约？
+2. **系统为什么会挂**：故障有哪些类型？MTBF/MTTR 说明了什么？网络分布式八大谬误在哪里咬人？
+3. **CAP、PACELC 到底限制了我们什么**：为什么"又要一致又要可用又要扛分区"是骗自己的？
+4. **串联/并联/N 副本系统的可用性怎么算**：为什么多加一个依赖反而会让整体可用性下降？
+
+掌握这些理论后，你做任何 HA 架构决策——主从/多活、同步/异步复制、Paxos/Raft、熔断/降级——都能**用数字说话**，而不是"感觉更稳"。
+
+## 🎯 可用性的量化
+
+### 可用性定义
+
+经典公式（稳态可用性）：
+
+```text
+                MTBF
+可用性 A = ─────────────────
+           MTBF + MTTR
+```
+
+- **MTBF**（Mean Time Between Failures）：平均故障间隔时间，衡量系统**多久坏一次**
+- **MTTR**（Mean Time To Repair/Recovery）：平均修复时间，衡量**坏了多久能好**
+- **MTTF**（Mean Time To Failure）：平均无故障时间，针对不可修复设备（硬盘、芯片）
+
+**两个提升可用性的方向**：
+1. **拉长 MTBF**：做冗余、做预检、做混沌工程预暴露
+2. **缩短 MTTR**：做监控告警、做自愈、做演练
+
+工业界的一个残酷事实：**靠降低故障频率能做到 99.9%，但想做到 99.99% 以上，几乎全部来自缩短 MTTR**。
+
+### N 个 9 的代价
+
+"几个 9" 这个表述不能只背数字，要背**对应的停机时间**才有感觉：
+
+| 可用性 | 年停机 | 月停机 | 周停机 | 一天停机 |
+|--------|--------|--------|--------|---------|
+| 90%（1 个 9） | 36.5 天 | 3 天 | 16.8 小时 | 2.4 小时 |
+| 99%（2 个 9） | 3.65 天 | 7.2 小时 | 1.68 小时 | 14.4 分钟 |
+| 99.9%（3 个 9） | 8.76 小时 | 43.8 分钟 | 10.1 分钟 | 1.44 分钟 |
+| 99.95% | 4.38 小时 | 21.9 分钟 | 5.04 分钟 | 43.2 秒 |
+| 99.99%（4 个 9） | 52.56 分钟 | 4.38 分钟 | 1.01 分钟 | 8.64 秒 |
+| 99.999%（5 个 9） | 5.26 分钟 | 26.3 秒 | 6.05 秒 | 0.86 秒 |
+| 99.9999%（6 个 9） | 31.5 秒 | 2.63 秒 | 0.6 秒 | 86 毫秒 |
+
+**每多一个 9，成本大约是上一个级别的 10 倍**。架构设计的第一步永远是和业务对齐：**你真的需要 5 个 9 吗**？
+
+```js
+// 可用性与停机时间相互换算
+function availabilityToDowntime(availability) {
+  if (availability <= 0 || availability >= 1) {
+    throw new Error('可用性必须在 (0, 1) 区间')
+  }
+  const yearMinutes = 365.25 * 24 * 60
+  const unavail = 1 - availability
+  const downMinutes = yearMinutes * unavail
+
+  return {
+    availability: (availability * 100).toFixed(6) + '%',
+    yearlyDowntime: formatDuration(downMinutes),
+    monthlyDowntime: formatDuration(downMinutes / 12),
+    weeklyDowntime: formatDuration(downMinutes / 52.18),
+  }
+}
+
+function downtimeToAvailability(yearlyDowntimeMinutes) {
+  const yearMinutes = 365.25 * 24 * 60
+  return 1 - yearlyDowntimeMinutes / yearMinutes
+}
+
+function formatDuration(minutes) {
+  if (minutes >= 60 * 24) return `${(minutes / 60 / 24).toFixed(2)} 天`
+  if (minutes >= 60) return `${(minutes / 60).toFixed(2)} 小时`
+  if (minutes >= 1) return `${minutes.toFixed(2)} 分钟`
+  return `${(minutes * 60).toFixed(2)} 秒`
+}
+
+// 不同可用性目标对应的允许年停机
+for (const a of [0.99, 0.999, 0.9999, 0.99999]) {
+  console.log(availabilityToDowntime(a))
+}
+// { availability: '99.000000%', yearlyDowntime: '3.65 天', ... }
+// { availability: '99.900000%', yearlyDowntime: '8.77 小时', ... }
+// { availability: '99.990000%', yearlyDowntime: '52.60 分钟', ... }
+// { availability: '99.999000%', yearlyDowntime: '5.26 分钟', ... }
+
+// 反向：运维同学说"这半年我们宕机了 2 小时"，可用性是多少？
+console.log((downtimeToAvailability(120) * 100).toFixed(4) + '%')
+// 99.9772%  → 年化刚到 3 个 9 水平
+```
+
+## 💡 SLI / SLO / SLA / Error Budget
+
+这是 Google SRE 体系中**最核心的四个概念**，构成了可用性的工程契约语言。
+
+### 四个术语的关系
+
+| 术语 | 全称 | 本质 | 面向 | 例子 |
+|------|------|------|------|------|
+| **SLI** | Service Level Indicator | 客观测量的指标 | 工程侧 | "API 成功率"、"P99 延迟" |
+| **SLO** | Service Level Objective | 对 SLI 的内部目标 | 工程 + 产品 | "API 成功率 ≥ 99.95%/月" |
+| **SLA** | Service Level Agreement | 对外合约（含违约赔偿） | 客户 + 商务 | "达不到 99.9% 赔 10% 月费" |
+| **Error Budget** | 错误预算 | `1 - SLO`，允许失败的额度 | SRE + 研发 | "每月允许 0.05% 失败 = 21 分钟" |
+
+**三者的层级关系**：
+
+```text
+SLI（实际测到什么）
+  ↓ 设定目标
+SLO（我们承诺自己达到什么）
+  ↓ 对外承诺
+SLA（签给客户的合同，一定严于 SLO）
+```
+
+通常 `SLA < SLO < 实际表现`，比如实际 99.99%、SLO 99.95%、SLA 99.9%，层层留安全余量。
+
+### 选什么作为 SLI：VALET 法则
+
+一个服务不是所有指标都值得做 SLO。Google 推荐从 **VALET** 五个维度选：
+
+| 维度 | 含义 | 典型 SLI |
+|------|------|---------|
+| **V**olume | 流量是否够用 | QPS、并发数 |
+| **A**vailability | 成功率 | `成功请求 / 总请求` |
+| **L**atency | 延迟 | P95、P99 响应时间 |
+| **E**rrors | 错误率 | 5xx 率、业务错误率 |
+| **T**ickets | 人工介入需求 | 工单数、告警数 |
+
+选 SLI 的三个原则：
+1. **用户视角**：用户感觉不到的指标不值得做 SLO（比如 CPU 利用率不是 SLI）
+2. **比率而非绝对值**：`成功率` 比 `成功数` 可比性更好
+3. **可监控可告警**：指标必须能被采集系统实时观测到
+
+### Error Budget：把可用性变成可支配预算
+
+**核心思想**：把 "1 - SLO" 换算为具体的允许失败时间/次数，当作一笔**预算**，由研发与 SRE 共同消耗。
+
+- **预算未用完**：可以上新功能、做激进变更
+- **预算即将用完**：冻结非必要变更，all-in 稳定性
+- **预算超支**：服务降级、流量限制、事后复盘追责
+
+```js
+// Error Budget 计算器
+function errorBudget({ slo, periodDays = 30, totalRequests, currentBadRequests }) {
+  const errorBudgetRatio = 1 - slo
+  const minutesInPeriod = periodDays * 24 * 60
+  const allowedDowntimeMin = minutesInPeriod * errorBudgetRatio
+
+  // 按请求数计算剩余预算
+  const allowedBadRequests = totalRequests * errorBudgetRatio
+  const remaining = allowedBadRequests - currentBadRequests
+  const burnRate =
+    (currentBadRequests / allowedBadRequests) * 100
+
+  return {
+    sloTarget: (slo * 100).toFixed(3) + '%',
+    periodDays,
+    allowedDowntimeMin: allowedDowntimeMin.toFixed(2),
+    allowedBadRequests: Math.floor(allowedBadRequests),
+    currentBadRequests,
+    remainingBadRequests: Math.max(0, Math.floor(remaining)),
+    burnRatePercent: burnRate.toFixed(2) + '%',
+    status:
+      burnRate >= 100
+        ? 'EXHAUSTED（冻结变更）'
+        : burnRate >= 50
+        ? 'AT_RISK（限制变更）'
+        : 'HEALTHY（可正常迭代）',
+  }
+}
+
+// 场景：月 SLO = 99.95%，本月已服务 1 亿请求，出了 3 万次失败，当前状态？
+console.log(
+  errorBudget({
+    slo: 0.9995,
+    periodDays: 30,
+    totalRequests: 100_000_000,
+    currentBadRequests: 30000,
+  })
+)
+// {
+//   sloTarget: '99.950%',
+//   allowedDowntimeMin: '21.60',           ← 全月允许宕机 21.6 分钟
+//   allowedBadRequests: 50000,             ← 全月允许失败 5 万次
+//   remainingBadRequests: 20000,           ← 还剩 2 万次预算
+//   burnRatePercent: '60.00%',             ← 已消耗 60%
+//   status: 'AT_RISK（限制变更）'          ← ⚠️ 超过 50%，进入限制态
+// }
+```
+
+### 燃烧率告警：比"阈值告警"更先进
+
+传统告警"5xx 率 > 1% 持续 5 分钟"的问题：不同 SLO 目标下同样的错误率意义完全不同。现代 SRE 用 **Burn Rate（燃烧率）** 告警：
+
+```text
+Burn Rate = 当前窗口错误率 / SLO 允许错误率
+```
+
+Google SRE 实战推荐的**多窗口多燃烧率告警**：
+
+| 燃烧率 | 短窗口 | 长窗口 | 耗尽月预算所需时间 | 用途 |
+|--------|-------|-------|-----------------|------|
+| 14.4× | 5 分钟 | 1 小时 | 2 小时 | 即时 P0 告警 |
+| 6× | 30 分钟 | 6 小时 | 5 小时 | P1 告警 |
+| 3× | 2 小时 | 1 天 | 10 小时 | P2 告警 |
+| 1× | 6 小时 | 3 天 | 30 天 | 趋势关注 |
+
+## 💡 故障模型与分布式谬误
+
+### 故障分类
+
+理解故障类型，才能设计对应的冗余策略：
+
+| 类型 | 特征 | 典型例子 | 应对 |
+|------|------|---------|------|
+| **Crash Fault** | 节点停止响应但不产生错误输出 | 进程 OOM、机器宕机 | 主从切换、超时重试 |
+| **Omission Fault** | 节点丢消息（收或发） | 网络丢包、队列溢出 | ACK 确认、幂等重试 |
+| **Timing Fault** | 响应超时或时钟漂移 | GC 长暂停、NTP 漂移 | 合理超时、时钟同步 |
+| **Byzantine Fault** | 节点产生错误/恶意输出 | 内存位翻转、被入侵 | 共识算法（PBFT）、校验和 |
+
+工程实践中 **99% 的故障是前三类**，拜占庭故障主要在区块链、军工等高安全场景才值得为它设计。
+
+### 分布式计算的八大谬误（L. Peter Deutsch，1994）
+
+任何分布式系统架构师都必须警惕这八个**看似成立实则错误**的假设：
+
+1. **网络是可靠的** → 网络一定会抖动、丢包、分区
+2. **延迟为零** → 跨机房 RTT 几十毫秒，跨洲上百毫秒
+3. **带宽是无限的** → 大对象、大查询会打穿网络
+4. **网络是安全的** → 流量必须加密、鉴权
+5. **拓扑不会改变** → IP 会变、服务会迁移、节点会上下线
+6. **只有一个管理员** → 任何节点都可能被独立修改配置
+7. **传输成本为零** → 序列化/反序列化、加解密都有开销
+8. **网络是同质的** → 跨云、跨机房、跨 IDC 的行为差异巨大
+
+**启示**：每一条 HA 设计都应该能回答"当这条谬误失败时我怎么办"。
+
+### 故障传播：雪崩与级联
+
+故障很少孤立发生。三个典型传播模式：
+
+1. **重试风暴**：下游慢，上游超时重试，反而把下游彻底打死
+2. **连接池耗尽**：下游响应变慢 → 上游连接堆积 → 线程池满 → 服务不可用
+3. **缓存穿透雪崩**：缓存大面积失效 → 请求直打数据库 → 数据库打挂 → 服务全挂
+
+**破解手段**：
+
+| 问题 | 方案 | 原理 |
+|------|------|------|
+| 重试风暴 | 指数退避 + Jitter + 重试预算 | 压低重试频率 |
+| 连接池耗尽 | 超时 + 舱壁隔离 + 熔断 | 限制故障半径 |
+| 缓存雪崩 | 过期时间加随机、多级缓存、Singleflight | 打散失效时间 |
+
+## 💡 CAP 与 PACELC 定理
+
+### CAP 定理：不能三者全要
+
+一个分布式系统无法同时满足：
+
+- **Consistency（一致性）**：所有节点在同一时刻看到相同数据
+- **Availability（可用性）**：每个请求都能收到非错误响应（不保证最新）
+- **Partition Tolerance（分区容忍性）**：网络分区发生时系统仍能运行
+
+**现实约束**：网络分区不可避免（见分布式谬误 1）→ P 必须要 → 只能在 C 和 A 之间选：
+
+| 系统类型 | 选择 | 代表 |
+|---------|------|------|
+| **CP** | 分区时放弃可用（拒绝写） | ZooKeeper、etcd、HBase |
+| **AP** | 分区时放弃强一致（最终一致） | Cassandra、DynamoDB、Eureka |
+
+**常见误区**：
+- CAP 说的是**网络分区发生时**的取舍，没发生分区时不存在这个取舍
+- "最终一致性"不是 CP 也不是不一致，而是 AP 下的一致性弱化形式
+- 一个系统的不同部分可以做不同选择（比如账户余额 CP，商品评论 AP）
+
+### PACELC 定理：比 CAP 更完整
+
+2010 年 Daniel Abadi 提出的 PACELC 补全了 CAP 的空白：
+
+```text
+if Partition:
+    choose A or C          ← 这就是 CAP
+else (Else):
+    choose L or C
+```
+
+- **L（Latency）**：低延迟
+- **C（Consistency）**：强一致
+
+即使没有网络分区，**同步复制和异步复制之间也要权衡**：
+
+| 分区时 | 无分区时 | 系统分类 | 代表 |
+|-------|---------|---------|------|
+| A | L | PA/EL | Cassandra、DynamoDB（优先低延迟） |
+| A | C | PA/EC | MongoDB 默认（分区时牺牲一致，正常时强一致） |
+| C | L | PC/EL | 罕见 |
+| C | C | PC/EC | HBase、BigTable（全程强一致） |
+
+**架构启示**：选型不要只看 CAP 标签，要看 PACELC 四个格子里它在哪一格。
+
+## 💡 串并联系统可用性计算
+
+### 串联系统：木桶短板
+
+请求路径上**所有依赖都正常**才算成功，总可用性是各环节**乘积**：
+
+```text
+A_total = A_1 × A_2 × ... × A_n
+```
+
+残酷推论：**每加一个依赖，可用性都会下降**。
+
+| 依赖数 | 单个 99.9% | 总可用性 | 年停机 |
+|-------|-----------|---------|--------|
+| 1 | 99.9% | 99.9% | 8.77 小时 |
+| 3 | 99.9% | 99.7% | 26.3 小时 |
+| 5 | 99.9% | 99.5% | 43.8 小时 |
+| 10 | 99.9% | 99.0% | 87.7 小时 |
+
+**这就是微服务化的暗面**：拆得越细、链路越长、整体可用性越差。必须用**缓存、本地兜底、异步化、服务网格熔断**对冲。
+
+### 并联系统（冗余）：N 副本放大可用性
+
+N 个副本**只要有一个能用就算可用**，失败概率是乘积：
+
+```text
+A_redundant = 1 - (1 - A)^N
+```
+
+| 单副本 | 2 副本 | 3 副本 | 5 副本 |
+|-------|-------|-------|-------|
+| 99% | 99.99% | 99.9999% | 10 个 9 |
+| 99.9% | 99.9999% | 9 个 9 | 15 个 9 |
+
+**但注意**：这只在**故障独立**假设下成立。现实中同机柜/同机房/同云厂商的副本**故障高度相关**，所以才需要跨 AZ、跨 Region、跨 Cloud。
+
+```js
+// 可用性计算器：串联 + 并联 + 混合
+function seriesAvailability(availabilities) {
+  return availabilities.reduce((acc, a) => acc * a, 1)
+}
+
+function parallelAvailability(availability, replicas) {
+  return 1 - Math.pow(1 - availability, replicas)
+}
+
+// 混合：每级内部 N 副本并联，级与级之间串联
+function hybridAvailability(stages) {
+  return stages.reduce((acc, stage) => {
+    const stageA = parallelAvailability(stage.singleAvail, stage.replicas)
+    return acc * stageA
+  }, 1)
+}
+
+// 场景 1：链路有 5 个串行依赖，每个 99.9%
+const serial = seriesAvailability(new Array(5).fill(0.999))
+console.log(`5 级串联: ${(serial * 100).toFixed(4)}%`)
+// 5 级串联: 99.5010%
+
+// 场景 2：单机 99%，做 3 副本并联
+const parallel = parallelAvailability(0.99, 3)
+console.log(`3 副本并联: ${(parallel * 100).toFixed(4)}%`)
+// 3 副本并联: 99.9999%
+
+// 场景 3：真实电商链路——网关→API→缓存→DB，每层 2~3 副本，单实例 99.9%
+const real = hybridAvailability([
+  { singleAvail: 0.999, replicas: 2 }, // 网关
+  { singleAvail: 0.999, replicas: 2 }, // API 服务
+  { singleAvail: 0.999, replicas: 2 }, // 缓存
+  { singleAvail: 0.999, replicas: 3 }, // DB
+])
+console.log(`混合链路: ${(real * 100).toFixed(6)}%`)
+// 混合链路: 99.999700%
+```
+
+### 架构决策：该串还是该并？
+
+| 目标 | 选择 | 技术手段 |
+|------|------|---------|
+| **降低链路长度** | 减少串联 | 合并服务、边缘计算、缓存兜底、同步改异步 |
+| **提升单点可靠** | 增加并联 | 主从、多副本、异地多活 |
+| **降低相关性** | 增加隔离 | 跨 AZ、跨 Region、跨云、跨厂商 |
+
+## 📝 实际应用示例
+
+### 综合案例：一个订单系统的 HA 目标推演
+
+业务目标：
+- 对外 SLA：年可用 99.95%
+- 对内 SLO：99.99%（留 0.04% 安全余量）
+- 核心链路：网关 → 订单 API → 缓存 → DB
+- 每层独立部署，故障近似独立
+
+**用理论推演架构**：
+
+```js
+// HA 综合规划工具
+function haPlanning({ targetSlo, stages, mtbfHours = 30 * 24 }) {
+  // Step 1：反推每层最低可用性（假设各层对等，几何均分）
+  const stageCount = stages.length
+  const perStageTarget = Math.pow(targetSlo, 1 / stageCount)
+
+  // Step 2：对每层规划副本数以达成 perStageTarget
+  // 反解 parallelAvailability：1 - (1 - A)^N >= perStageTarget
+  // => N >= log(1 - perStageTarget) / log(1 - A)
+  const plan = stages.map((stage) => {
+    const logFail = Math.log(1 - stage.singleAvail)
+    const logTarget = Math.log(1 - perStageTarget)
+    const replicas = Math.max(1, Math.ceil(logTarget / logFail))
+    const achieved = 1 - Math.pow(1 - stage.singleAvail, replicas)
+
+    return {
+      name: stage.name,
+      singleAvail: stage.singleAvail,
+      requiredReplicas: replicas,
+      achievedAvail: achieved,
+    }
+  })
+
+  // Step 3：串联合并各层实际可达可用性
+  const totalAvail = plan.reduce((acc, p) => acc * p.achievedAvail, 1)
+
+  // Step 4：由 A = MTBF / (MTBF + MTTR) 反推允许的 MTTR
+  const mttrHours = ((1 - totalAvail) * mtbfHours) / totalAvail
+  const mttrSeconds = mttrHours * 3600
+
+  return {
+    targetSlo: (targetSlo * 100).toFixed(3) + '%',
+    perStageTarget: (perStageTarget * 100).toFixed(4) + '%',
+    stagePlans: plan.map((p) => ({
+      name: p.name,
+      singleAvail: (p.singleAvail * 100).toFixed(3) + '%',
+      requiredReplicas: p.requiredReplicas,
+      achievedAvail: (p.achievedAvail * 100).toFixed(6) + '%',
+    })),
+    actualAvail: (totalAvail * 100).toFixed(6) + '%',
+    meetsTarget: totalAvail >= targetSlo,
+    allowedMttrSeconds: mttrSeconds.toFixed(2),
+  }
+}
+
+const plan = haPlanning({
+  targetSlo: 0.9999, // 内部 SLO 4 个 9
+  stages: [
+    { name: '网关', singleAvail: 0.995 },   // 单实例 99.5%
+    { name: 'API',  singleAvail: 0.995 },
+    { name: '缓存', singleAvail: 0.999 },   // Redis 集群节点 99.9%
+    { name: 'DB',   singleAvail: 0.999 },
+  ],
+})
+
+console.log(JSON.stringify(plan, null, 2))
+// 典型输出（具体数字随 JS 浮点精度略有不同）：
+// {
+//   "targetSlo": "99.990%",
+//   "perStageTarget": "99.9975%",   ← 4 层几何均分
+//   "stagePlans": [
+//     { "name": "网关", "singleAvail": "99.500%", "requiredReplicas": 3, "achievedAvail": "99.999988%" },
+//     { "name": "API",  "singleAvail": "99.500%", "requiredReplicas": 3, "achievedAvail": "99.999988%" },
+//     { "name": "缓存", "singleAvail": "99.900%", "requiredReplicas": 2, "achievedAvail": "99.999900%" },
+//     { "name": "DB",   "singleAvail": "99.900%", "requiredReplicas": 2, "achievedAvail": "99.999900%" }
+//   ],
+//   "actualAvail": "99.999775%",    ← 实际可达约 5 个 9
+//   "meetsTarget": true,
+//   "allowedMttrSeconds": "5.83"    ← 允许 MTTR 约 6 秒
+// }
+```
+
+**架构决策推导**：
+
+1. **网关/API 单机 99.5% 需要 3 副本、缓存/DB 单机 99.9% 需要 2 副本**，各层才能做到 `perStageTarget ≈ 99.9975%`，4 层串联后达到目标 4 个 9
+2. 单副本可用性从 99.5% 提升到 99.9%，副本需求从 3 降到 2——**优化单实例稳定性的性价比高于堆副本**
+3. 允许 MTTR 只有约 **6 秒**，人肉介入完全来不及，必须依赖**健康探测 + 自动切换 + 熔断降级**
+4. 实际可达约 5 个 9，**比目标 4 个 9 高出整整 1 个 9**——这就是运维 Error Budget 的缓冲空间
+5. 4 层共需 **3+3+2+2 = 10 个实例**，还需结合流量/成本进一步权衡（流量小时冗余单位成本高）
+
+这就是**用理论指导 HA 设计**的完整链路——下一章节开始动手实现冗余、演练和弹性。
+
+## 🔗 相关概念
+
+- **冗余设计**：并联可用性的工程落地，见《冗余设计》
+- **故障治理**：MTTR 缩短的核心手段，见《故障管理》
+- **弹性设计**：副本数动态调整、扩缩容策略，见《弹性设计》
+- **分布式一致性**：CAP/PACELC 中 C 的具体实现（Raft/Paxos），见《03 分布式系统》相关章节
+- **熔断降级**：破解串联故障传播的关键手段
+
+## 📚 学习检查点
+
+- [ ] 能否准确把 "99.99% 可用" 换算为年/月/天停机时间？
+- [ ] 能否区分 SLI、SLO、SLA，并为一个具体服务设计 Error Budget？
+- [ ] 能否解释 CAP 和 PACELC 的差异，以及各自适用场景？
+- [ ] 能否说出分布式八大谬误中哪一条是你当前系统最大的隐患？
+- [ ] 能否用公式计算一条 N 级串联链路的实际可用性？
+- [ ] 能否根据业务 SLO 反推每层副本数和单机稳定性要求？
+- [ ] 拿到 HA 需求，能否先用理论推演再动手做冗余？
+
+## 🚀 下一步
+
+理论奠基完成，接下来进入实现：
+
+→ [冗余设计](/architect/06-system-design/02-high-availability/02-redundancy-design)
