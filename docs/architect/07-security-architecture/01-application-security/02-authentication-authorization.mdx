@@ -1,17 +1,720 @@
 # 认证与授权
 
-> **版本**：v1.0
-> **最后更新**：2026-04-24
+> **版本**：v1.2
+> **最后更新**：2026-04-28
 
-## 📖 概述
+## 📚 概念介绍
 
-深入讲解认证与授权机制，包括 OAuth 2.0/OIDC、JWT/Session、RBAC/ABAC、SSO 和零信任架构。
+**认证（Authentication）** 解决的是"你是谁"的问题，而 **授权（Authorization）** 解决的是"你能做什么"的问题。二者是安全架构的两大基石：先通过认证确认主体身份，再依据授权策略决定其对资源的访问权限。
 
-## 🎯 学习目标
+本文深入讲解现代 Web 应用中主流的认证授权方案：OAuth 2.0 / OIDC、JWT / Session、RBAC / ABAC、SSO 以及零信任架构。
 
-- 掌握 OAuth 2.0 的授权流程和各种模式
-- 理解 JWT 和 Session 的适用场景和安全考量
-- 掌握 RBAC 和 ABAC 的权限模型设计
-- 理解零信任架构的核心原则
+## 📐 理论基础
 
-> 🚧 详细内容正在编写中...
+### AAA 模型（Authentication, Authorization, Accounting）
+
+AAA 是 IETF 定义的网络安全三大支柱（RFC 2903 / RFC 3539），贯穿所有现代安全系统：
+
+| 环节 | 中文 | 核心问题 | 技术手段 |
+|------|------|---------|---------|
+| Authentication | 认证 | 你是谁？ | 口令、生物特征、证书、Token、MFA |
+| Authorization | 授权 | 你能做什么？ | ACL、RBAC、ABAC、策略引擎 |
+| Accounting | 计量/审计 | 你做了什么？ | 日志、计费记录、审计轨迹 |
+
+常在 AAA 之外再扩展一项 **Identification（识别）**，合称 **IAAA**。
+
+### 身份的本体论：Identifier、Identity、Credential、Subject
+
+- **Subject（主体）**：发起操作的实体（自然人、服务账号、设备、工作负载）
+- **Identity（身份）**：主体在某个上下文中的代表，由一组属性（Claims）组成
+- **Identifier（标识符）**：身份的全局唯一引用（UID、邮箱、手机号、DID）
+- **Credential（凭据）**：证明"我拥有这个身份"的秘密（口令、私钥、Token）
+
+一个自然人可以拥有多个身份（工作邮箱、个人手机号、GitHub 账号），认证的本质是 **将凭据与身份绑定、将身份归结到主体**。
+
+### 认证强度分级（NIST SP 800-63B AAL）
+
+NIST 定义三个 **Authenticator Assurance Level**：
+
+| AAL | 强度 | 典型方式 |
+|-----|------|---------|
+| AAL1 | 单因子，基础强度 | 口令、短信 OTP |
+| AAL2 | 多因子，中等强度 | 口令 + OTP、口令 + Push |
+| AAL3 | 多因子 + 硬件绑定，高强度 | 硬件安全密钥（WebAuthn/FIDO2）+ 口令 |
+
+三大认证因子：
+
+1. **知识因子（Something you know）**：口令、PIN、密保问题
+2. **持有因子（Something you have）**：手机、硬件 Key、证书
+3. **生物因子（Something you are）**：指纹、面容、声纹
+
+### 访问控制模型演进史
+
+```
+1970s         1980s           1990s            2010s            2020s
+DAC    →     MAC      →      RBAC      →      ABAC      →      ReBAC / PBAC
+自主          强制             角色              属性              关系/策略
+```
+
+| 模型 | 全称 | 授权依据 | 代表场景 |
+|------|------|---------|---------|
+| DAC | Discretionary Access Control | 资源所有者自主授权 | Unix 文件权限、ACL |
+| MAC | Mandatory Access Control | 安全级别强制绑定（Bell-LaPadula、Biba） | 军事/政府系统 |
+| RBAC | Role-Based Access Control | 用户 → 角色 → 权限（NIST RBAC 四层模型） | 企业后台 |
+| ABAC | Attribute-Based Access Control | 基于主体/资源/操作/环境的属性组合（NIST SP 800-162） | 多租户 SaaS、细粒度 |
+| ReBAC | Relationship-Based Access Control | 主体与资源的关系图（Google Zanzibar） | 社交、协作、Google Docs |
+| PBAC | Policy-Based Access Control | 声明式策略语言（OPA/Rego、Cedar、XACML） | 云原生、零信任 |
+
+**Bell-LaPadula 模型**（机密性导向）的两条核心规则：
+
+- **No Read Up**：低密级主体不可读高密级资源
+- **No Write Down**：高密级主体不可写低密级资源
+
+**Biba 模型**（完整性导向）与 BLP 相对：
+
+- **No Read Down**：高完整性主体不可读低完整性资源
+- **No Write Up**：低完整性主体不可写高完整性资源
+
+### OAuth 2.0 协议的四个角色（RFC 6749）
+
+```
++--------+                               +---------------+
+|        |--(A)- Authorization Request ->|   Resource    |
+|        |                               |     Owner     |
+|        |<-(B)-- Authorization Grant ---|               |
+|        |                               +---------------+
+|        |                               +---------------+
+|        |--(C)-- Authorization Grant -->| Authorization |
+| Client |                               |     Server    |
+|        |<-(D)----- Access Token -------|               |
+|        |                               +---------------+
+|        |                               +---------------+
+|        |--(E)----- Access Token ------>|    Resource   |
+|        |                               |     Server    |
+|        |<-(F)--- Protected Resource ---|               |
++--------+                               +---------------+
+```
+
+- **Resource Owner**：资源拥有者，通常是终端用户
+- **Client**：第三方应用，想要访问资源
+- **Authorization Server**：签发 Token 的授权服务器
+- **Resource Server**：持有受保护资源的服务器
+
+OAuth 2.0 的 **根本设计目标**：让 Client 在 **不掌握 Resource Owner 凭据** 的前提下，代为访问受限资源。
+
+### OIDC 的身份层（OIDC Core 1.0）
+
+OIDC 在 OAuth 2.0 之上叠加了三层：
+
+1. **ID Token**：JWT 格式的身份断言，包含 `iss / sub / aud / exp / iat / nonce` 等声明
+2. **UserInfo Endpoint**：标准化的用户信息查询端点
+3. **Discovery & Dynamic Registration**：`/.well-known/openid-configuration` 自描述元数据
+
+核心区分：OAuth 回答 "这个 Client 可以做什么"，OIDC 回答 "登录的用户是谁"。
+
+### JWT 的三段式数学结构（RFC 7519）
+
+```
+JWT = BASE64URL(Header) + "." + BASE64URL(Payload) + "." + BASE64URL(Signature)
+
+Signature = ALG( secret, BASE64URL(Header) + "." + BASE64URL(Payload) )
+```
+
+- **Header**：描述算法 `{"alg": "HS256", "typ": "JWT"}`
+- **Payload**：声明集合（Claims），分为 **Registered / Public / Private** 三类
+- **Signature**：算法决定使用 HMAC（对称）或 RSA/ECDSA（非对称）
+
+**常见 Registered Claims**：
+
+| 声明 | 含义 |
+|------|------|
+| iss | Issuer 发行方 |
+| sub | Subject 主体 |
+| aud | Audience 受众 |
+| exp | Expiration 过期时间 |
+| nbf | Not Before 生效时间 |
+| iat | Issued At 签发时间 |
+| jti | JWT ID 唯一标识 |
+
+### 零信任架构（NIST SP 800-207）
+
+NIST 正式的零信任定义以及 **七条基本原则**：
+
+1. 所有数据源与计算服务都视为"资源"
+2. 所有通信都应加密，无论网络位置
+3. 访问单个资源的授权是 **按会话** 决定的
+4. 访问策略由 **动态策略** 决定，考虑客户端身份、应用、资产状态、环境属性
+5. 组织需要监控并度量所有资产的完整性与安全状态
+6. 所有资源的认证与授权是 **动态的，严格强制执行，优先在访问前**
+7. 组织应持续收集资产、网络、通信信息，用来 **改善安全态势**
+
+ZTA 的核心组件（PEP / PDP / PIP / PAP）：
+
+- **PEP（Policy Enforcement Point）**：执行点，拦截请求
+- **PDP（Policy Decision Point）**：决策点，判断允许/拒绝
+- **PIP（Policy Information Point）**：信息点，提供上下文（设备状态、风险分数）
+- **PAP（Policy Administration Point）**：管理点，编辑策略
+
+## 🎯 OAuth 2.0 与 OIDC
+
+### OAuth 2.0 四种授权模式
+
+OAuth 2.0 是一种 **授权协议**（不是认证协议），它允许第三方应用在不获取用户密码的前提下，访问用户在另一服务上的资源。
+
+| 授权模式 | 英文名 | 适用场景 |
+|---------|--------|---------|
+| 授权码模式 | Authorization Code | Web 后端应用（最安全，推荐） |
+| 简化模式 | Implicit | 已不推荐，使用 Authorization Code + PKCE 替代 |
+| 密码模式 | Resource Owner Password Credentials | 仅限高度信任的一方应用 |
+| 客户端模式 | Client Credentials | 服务器之间通信、机器身份 |
+
+### 授权码模式流程
+
+```
++--------+                               +---------------+
+|        |--(1)-- Authorization ------>|   Resource    |
+|        |         Request              |     Owner     |
+|        |<-(2)-- Authorization Code --|               |
+|        |                               +---------------+
+| Client |                               +---------------+
+|        |--(3)-- Authorization ------>| Authorization |
+|        |         Code + Redirect URI  |    Server     |
+|        |<-(4)-- Access Token ---------|               |
+|        |                               +---------------+
++--------+
+```
+
+### 授权码 + PKCE 完整实现
+
+PKCE（Proof Key for Code Exchange）用于防止授权码拦截攻击，现已成为公共客户端（SPA、移动应用）的推荐做法。
+
+```js
+import crypto from 'node:crypto'
+import express from 'express'
+import axios from 'axios'
+
+const app = express()
+const CLIENT_ID = 'demo-client-id'
+const CLIENT_SECRET = 'demo-client-secret'
+const REDIRECT_URI = 'http://localhost:3000/callback'
+const AUTH_SERVER = 'https://auth.example.com'
+
+// 生成 PKCE 所需的 code_verifier 和 code_challenge
+function generatePkcePair() {
+  const codeVerifier = crypto.randomBytes(32).toString('base64url')
+  const codeChallenge = crypto
+    .createHash('sha256')
+    .update(codeVerifier)
+    .digest('base64url')
+  return { codeVerifier, codeChallenge }
+}
+
+const sessionStore = new Map()
+
+// 1. 发起授权请求，跳转至授权服务器
+app.get('/login', (req, res) => {
+  const { codeVerifier, codeChallenge } = generatePkcePair()
+  const state = crypto.randomBytes(16).toString('hex')
+  const sessionId = crypto.randomBytes(16).toString('hex')
+
+  sessionStore.set(sessionId, { codeVerifier, state })
+  res.cookie('sid', sessionId, { httpOnly: true, secure: true })
+
+  const authorizeUrl = new URL(`${AUTH_SERVER}/authorize`)
+  authorizeUrl.searchParams.set('response_type', 'code')
+  authorizeUrl.searchParams.set('client_id', CLIENT_ID)
+  authorizeUrl.searchParams.set('redirect_uri', REDIRECT_URI)
+  authorizeUrl.searchParams.set('scope', 'openid profile email')
+  authorizeUrl.searchParams.set('state', state)
+  authorizeUrl.searchParams.set('code_challenge', codeChallenge)
+  authorizeUrl.searchParams.set('code_challenge_method', 'S256')
+
+  res.redirect(authorizeUrl.toString())
+})
+
+// 2. 授权服务器回调，用 code 交换 access_token
+app.get('/callback', async (req, res) => {
+  const { code, state } = req.query
+  const sessionId = req.cookies?.sid
+  const session = sessionStore.get(sessionId)
+
+  if (!session || session.state !== state) {
+    return res.status(400).send('Invalid state parameter')
+  }
+
+  try {
+    const tokenResponse = await axios.post(`${AUTH_SERVER}/token`, {
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: REDIRECT_URI,
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      code_verifier: session.codeVerifier,
+    })
+
+    const { access_token, refresh_token, id_token } = tokenResponse.data
+    sessionStore.delete(sessionId)
+
+    res.json({ access_token, refresh_token, id_token })
+  } catch (error) {
+    res.status(500).json({ error: 'Token exchange failed', detail: error.message })
+  }
+})
+
+app.listen(3000, () => console.log('OAuth client listening on :3000'))
+```
+
+### OIDC（OpenID Connect）
+
+OIDC 构建在 OAuth 2.0 之上，增加了 **认证层**，通过签发 `id_token`（JWT 格式）来传递用户身份信息。
+
+- **access_token**：用于访问资源服务器的 API（OAuth 2.0 原有）
+- **id_token**：携带用户身份声明（Claims），用于认证（OIDC 新增）
+- **userinfo 端点**：获取更多用户信息的 REST 端点
+
+## 🎯 JWT 与 Session
+
+### 核心差异对比
+
+| 维度 | Session | JWT |
+|------|---------|-----|
+| 存储位置 | 服务端（内存/Redis） | 客户端（Cookie / localStorage） |
+| 水平扩展 | 需要共享存储 | 天然无状态 |
+| 注销实现 | 直接删除 Session | 需要黑名单或短过期时间 |
+| 数据大小 | Session ID 很小 | Token 较大（含声明） |
+| 跨域支持 | 受 Cookie 同源限制 | 天然支持跨域 |
+| 安全风险 | CSRF | XSS（若存 localStorage） |
+
+### JWT 签发与验证
+
+```js
+import jwt from 'jsonwebtoken'
+import crypto from 'node:crypto'
+
+const ACCESS_TOKEN_SECRET = process.env.JWT_SECRET || 'replace-with-strong-secret'
+const ACCESS_TOKEN_TTL = '15m'
+const REFRESH_TOKEN_TTL = '7d'
+
+function signAccessToken(user) {
+  return jwt.sign(
+    {
+      sub: user.id,
+      name: user.name,
+      roles: user.roles,
+    },
+    ACCESS_TOKEN_SECRET,
+    {
+      algorithm: 'HS256',
+      expiresIn: ACCESS_TOKEN_TTL,
+      issuer: 'api.example.com',
+      audience: 'web.example.com',
+    }
+  )
+}
+
+function signRefreshToken(user) {
+  const jti = crypto.randomBytes(16).toString('hex')
+  const token = jwt.sign(
+    { sub: user.id, jti },
+    ACCESS_TOKEN_SECRET,
+    { expiresIn: REFRESH_TOKEN_TTL }
+  )
+  return { token, jti }
+}
+
+function verifyAccessToken(token) {
+  try {
+    return jwt.verify(token, ACCESS_TOKEN_SECRET, {
+      algorithms: ['HS256'],
+      issuer: 'api.example.com',
+      audience: 'web.example.com',
+    })
+  } catch (error) {
+    return null
+  }
+}
+
+// 示例：签发 Token
+const user = { id: 'u_1001', name: 'Alice', roles: ['editor'] }
+const accessToken = signAccessToken(user)
+const { token: refreshToken } = signRefreshToken(user)
+
+console.log('Access Token:', accessToken)
+console.log('Decoded:', verifyAccessToken(accessToken))
+```
+
+### Express 中间件：JWT 鉴权
+
+```js
+import express from 'express'
+
+const app = express()
+
+function authenticate(req, res, next) {
+  const authHeader = req.headers.authorization
+  if (!authHeader?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing bearer token' })
+  }
+
+  const token = authHeader.substring('Bearer '.length)
+  const payload = verifyAccessToken(token)
+  if (!payload) {
+    return res.status(401).json({ error: 'Invalid or expired token' })
+  }
+
+  req.user = payload
+  next()
+}
+
+app.get('/api/profile', authenticate, (req, res) => {
+  res.json({ userId: req.user.sub, roles: req.user.roles })
+})
+
+app.listen(3000)
+```
+
+### JWT 最佳实践
+
+1. **短过期时间**：access_token 设为 15 分钟以内，用 refresh_token 换新
+2. **禁止在 JWT 中放敏感数据**：JWT Payload 仅是 Base64 编码，不是加密
+3. **算法锁定**：显式指定 `algorithms: ['HS256']`，防止 `alg=none` 攻击
+4. **密钥足够强**：HS256 密钥至少 256 bit（32 字节随机值）
+5. **注销需要黑名单**：将已作废的 `jti` 存入 Redis，过期时间等同 Token TTL
+
+## 🎯 RBAC 与 ABAC
+
+### RBAC（基于角色的访问控制）
+
+权限与角色绑定，用户通过被赋予角色间接获得权限。
+
+```js
+// 角色 - 权限映射
+const rolePermissions = {
+  guest: ['article:read'],
+  editor: ['article:read', 'article:create', 'article:update'],
+  admin: ['article:read', 'article:create', 'article:update', 'article:delete', 'user:manage'],
+}
+
+function hasPermission(user, permission) {
+  return user.roles.some((role) =>
+    (rolePermissions[role] || []).includes(permission)
+  )
+}
+
+// Express 中间件
+function requirePermission(permission) {
+  return (req, res, next) => {
+    if (!hasPermission(req.user, permission)) {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+    next()
+  }
+}
+
+// 使用
+// app.delete('/api/articles/:id', authenticate, requirePermission('article:delete'), handler)
+```
+
+### ABAC（基于属性的访问控制）
+
+权限由主体属性（Subject）、资源属性（Resource）、操作（Action）、环境（Environment）共同决定，表达能力远强于 RBAC。
+
+```js
+// 策略引擎：返回 true 表示允许
+const policies = [
+  // 策略 1：用户只能编辑自己创建的文章
+  ({ subject, resource, action }) =>
+    action === 'article:update' &&
+    resource.ownerId === subject.id,
+
+  // 策略 2：管理员可以执行任何操作
+  ({ subject }) => subject.roles.includes('admin'),
+
+  // 策略 3：工作时间（9:00-18:00）才允许删除
+  ({ action, environment }) => {
+    if (action !== 'article:delete') return false
+    const hour = new Date(environment.currentTime).getHours()
+    return hour >= 9 && hour < 18
+  },
+]
+
+function evaluate(context) {
+  return policies.some((policy) => policy(context))
+}
+
+// 使用示例
+const allowed = evaluate({
+  subject: { id: 'u_1001', roles: ['editor'] },
+  resource: { ownerId: 'u_1001', type: 'article' },
+  action: 'article:update',
+  environment: { currentTime: new Date().toISOString() },
+})
+
+console.log('Allowed:', allowed)
+```
+
+### 何时选择 RBAC，何时选择 ABAC？
+
+- **RBAC**：权限边界清晰、角色数量可控的后台系统
+- **ABAC**：需要细粒度、动态、多维度控制的场景（如多租户 SaaS、金融风控）
+- **混合方案**：用 RBAC 控制大粒度菜单/功能，用 ABAC 控制数据行级权限
+
+## 🎯 SSO（单点登录）
+
+### 主流协议
+
+1. **CAS（Central Authentication Service）**：早期经典方案，基于 Ticket
+2. **SAML 2.0**：企业级 SSO 协议，基于 XML，适用于传统企业应用
+3. **OIDC**：现代 SSO 首选，基于 JSON / JWT，适用于移动 / 单页应用
+
+### OIDC SSO 架构
+
+```
++----------+       +---------------+       +---------------+
+|  App A   |<----->|               |       |               |
++----------+       |    OIDC IdP   |<----->|   用户数据库    |
++----------+       | (Identity     |       |               |
+|  App B   |<----->|  Provider)    |       +---------------+
++----------+       |               |
++----------+       |               |
+|  App C   |<----->|               |
++----------+       +---------------+
+```
+
+用户在 IdP 登录一次，所有接入的应用都可以获得身份凭证（`id_token`），无需重复登录。
+
+## 🎯 零信任架构
+
+### 核心原则
+
+1. **永不信任，始终验证**：不因网络位置（内网/外网）授予信任
+2. **最小权限原则**：仅授予完成任务所需的最小权限，且限时授予
+3. **假设已被攻破**：所有访问默认为"不可信"，每次都需验证
+4. **持续验证**：每次资源访问都需认证、授权、审计
+5. **微分段**：将网络划分为最小可控单元，减少横向移动风险
+
+### 零信任组件
+
+```
++-----------------+      +------------------+
+|     User        |      |   Policy Engine  |
+|   / Device      |      |   (决策大脑)      |
++-----------------+      +------------------+
+         |                        |
+         v                        v
++-----------------+      +------------------+
+|  Policy         |----->|  Policy          |
+|  Enforcement    |      |  Administrator   |
+|  Point (PEP)    |      |  (管理配置)       |
++-----------------+      +------------------+
+         |
+         v
++-----------------+
+|   Resource      |
++-----------------+
+```
+
+- **PEP（Policy Enforcement Point）**：流量拦截点，执行授权决策（如 API 网关、Service Mesh 边车）
+- **PE（Policy Engine）**：结合身份、设备、环境、行为等多维度信号做出决策
+- **PA（Policy Administrator）**：管理策略、下发配置
+
+### 零信任落地示例
+
+```js
+// 零信任授权决策：综合多因素打分
+function evaluateZeroTrust(context) {
+  const { user, device, network, resource, action } = context
+  let riskScore = 0
+
+  // 用户因素
+  if (!user.mfaVerified) riskScore += 30
+  if (user.abnormalLogin) riskScore += 20
+
+  // 设备因素
+  if (!device.isManaged) riskScore += 25
+  if (!device.osUpToDate) riskScore += 15
+  if (!device.diskEncrypted) riskScore += 10
+
+  // 网络因素
+  if (network.location === 'untrusted') riskScore += 20
+  if (network.vpnless && resource.sensitivity === 'high') riskScore += 30
+
+  // 资源敏感度
+  const threshold = {
+    low: 80,
+    medium: 60,
+    high: 40,
+    critical: 20,
+  }[resource.sensitivity] || 50
+
+  if (riskScore >= threshold) {
+    return { decision: 'deny', riskScore, threshold }
+  }
+
+  // 中等风险需要二次认证
+  if (riskScore >= threshold - 20) {
+    return { decision: 'step_up', riskScore, threshold, reason: 'Require MFA' }
+  }
+
+  return { decision: 'allow', riskScore, threshold }
+}
+
+const result = evaluateZeroTrust({
+  user: { id: 'u_1001', mfaVerified: true, abnormalLogin: false },
+  device: { isManaged: true, osUpToDate: true, diskEncrypted: true },
+  network: { location: 'trusted', vpnless: false },
+  resource: { sensitivity: 'high' },
+  action: 'read',
+})
+
+console.log(result)
+```
+
+## 📝 实际应用示例：完整认证授权方案
+
+以下综合示例演示一个小型服务的登录、发 Token、鉴权、授权的完整链路：
+
+```js
+import express from 'express'
+import cookieParser from 'cookie-parser'
+import jwt from 'jsonwebtoken'
+import bcrypt from 'bcryptjs'
+import crypto from 'node:crypto'
+
+const app = express()
+app.use(express.json())
+app.use(cookieParser())
+
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex')
+const REFRESH_SECRET = process.env.REFRESH_SECRET || crypto.randomBytes(32).toString('hex')
+
+// 模拟数据库
+const users = new Map()
+const revokedTokens = new Set() // 黑名单
+users.set('alice@example.com', {
+  id: 'u_1001',
+  email: 'alice@example.com',
+  passwordHash: bcrypt.hashSync('P@ssw0rd!', 10),
+  roles: ['editor'],
+})
+
+// 权限中间件（RBAC）
+const rolePermissions = {
+  editor: new Set(['article:read', 'article:write']),
+  admin: new Set(['article:read', 'article:write', 'user:manage']),
+}
+
+function hasPermission(roles, permission) {
+  return roles.some((role) => rolePermissions[role]?.has(permission))
+}
+
+function authenticate(req, res, next) {
+  const header = req.headers.authorization || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null
+  if (!token) return res.status(401).json({ error: 'Unauthorized' })
+  if (revokedTokens.has(token)) return res.status(401).json({ error: 'Token revoked' })
+
+  try {
+    req.user = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] })
+    req.accessToken = token
+    next()
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid token' })
+  }
+}
+
+function requirePermission(permission) {
+  return (req, res, next) => {
+    if (!hasPermission(req.user.roles, permission)) {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+    next()
+  }
+}
+
+// 登录
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body
+  const user = users.get(email)
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    return res.status(401).json({ error: 'Invalid credentials' })
+  }
+
+  const accessToken = jwt.sign(
+    { sub: user.id, roles: user.roles },
+    JWT_SECRET,
+    { algorithm: 'HS256', expiresIn: '15m' }
+  )
+  const refreshToken = jwt.sign(
+    { sub: user.id },
+    REFRESH_SECRET,
+    { algorithm: 'HS256', expiresIn: '7d' }
+  )
+
+  res.cookie('refresh_token', refreshToken, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  })
+  res.json({ access_token: accessToken })
+})
+
+// 刷新
+app.post('/api/auth/refresh', (req, res) => {
+  const refreshToken = req.cookies?.refresh_token
+  if (!refreshToken) return res.status(401).json({ error: 'Missing refresh token' })
+  try {
+    const payload = jwt.verify(refreshToken, REFRESH_SECRET, { algorithms: ['HS256'] })
+    const user = [...users.values()].find((u) => u.id === payload.sub)
+    if (!user) return res.status(401).json({ error: 'User not found' })
+    const accessToken = jwt.sign(
+      { sub: user.id, roles: user.roles },
+      JWT_SECRET,
+      { algorithm: 'HS256', expiresIn: '15m' }
+    )
+    res.json({ access_token: accessToken })
+  } catch {
+    res.status(401).json({ error: 'Invalid refresh token' })
+  }
+})
+
+// 注销
+app.post('/api/auth/logout', authenticate, (req, res) => {
+  revokedTokens.add(req.accessToken)
+  res.clearCookie('refresh_token')
+  res.json({ ok: true })
+})
+
+// 受保护资源
+app.get('/api/articles', authenticate, requirePermission('article:read'), (req, res) => {
+  res.json({ articles: [{ id: 'a_1', title: 'Hello Zero Trust' }] })
+})
+
+app.post('/api/articles', authenticate, requirePermission('article:write'), (req, res) => {
+  res.status(201).json({ id: 'a_new', ...req.body })
+})
+
+app.listen(3000, () => console.log('Auth demo running at http://localhost:3000'))
+```
+
+## 🔗 相关概念
+
+- **OAuth 2.0**：授权协议，解决"客户端如何代用户访问资源"
+- **OIDC**：基于 OAuth 2.0 的认证层，签发 `id_token`
+- **JWT**：自包含的 Token 格式，无状态、可跨域
+- **RBAC / ABAC**：两种主流的授权模型，分别适用于不同场景
+- **SSO**：跨系统单点登录，常用 OIDC / SAML 实现
+- **零信任**：现代安全架构范式，核心是"持续验证"
+
+## 📚 学习检查点
+
+- [ ] 能否完整描述 OAuth 2.0 授权码 + PKCE 的流程？
+- [ ] 能否说清 JWT 与 Session 在水平扩展、注销、安全上的权衡？
+- [ ] 能否设计一套 RBAC + ABAC 混合的权限系统？
+- [ ] 能否落地一个 OIDC SSO 方案？
+- [ ] 能否用零信任原则重新审视一个已有系统的访问控制？
+
+## 🚀 下一步
+
+→ [常见安全威胁](./03-security-threats.mdx)

@@ -1,17 +1,678 @@
 # 常见安全威胁
 
-> **版本**：v1.0
-> **最后更新**：2026-04-24
+> **版本**：v1.2
+> **最后更新**：2026-04-28
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解 Web 应用中的常见安全威胁及防护方案，包括 OWASP Top 10、SQL 注入、XSS、CSRF、DDoS 防护和供应链安全。
+Web 应用面临的安全威胁种类繁多，且随技术演进持续变化。**OWASP**（Open Worldwide Application Security Project）每数年发布一次 **Top 10**，总结当下最严峻的 Web 安全风险，是安全架构设计的重要参考。
 
-## 🎯 学习目标
+本文以 OWASP Top 10（2021 版）为主线，深入讲解最常见、最高危的 Web 安全威胁：SQL 注入、XSS、CSRF、SSRF、DDoS 及供应链安全，并给出完整的代码级防御方案。
 
-- 掌握 OWASP Top 10 安全威胁及其防护
-- 理解 SQL 注入、XSS、CSRF 的攻击原理和防御方法
-- 了解 DDoS 攻击的类型和防护方案
-- 理解供应链安全的风险和应对策略
+## 📐 理论基础
 
-> 🚧 详细内容正在编写中...
+### 信息安全三元组：CIA
+
+所有安全目标都可以归结为对 **CIA 三元组** 的保护：
+
+| 属性 | 含义 | 失效表现 |
+|------|------|---------|
+| Confidentiality（机密性） | 数据仅授权主体可读 | 数据泄露 |
+| Integrity（完整性） | 数据不被未授权篡改 | 数据被篡改、伪造 |
+| Availability（可用性） | 授权主体可及时访问 | 拒绝服务 |
+
+常见扩展到 **CIA + 3A（Authentication/Authorization/Accountability）** 和 **Parkerian Hexad（占有、真实性、实用性）**。
+
+### 威胁建模：从攻击者视角设计防御
+
+威胁建模的标准流程（Microsoft SDL）：
+
+```
+1. 分解系统（Decompose）：画数据流图 DFD，识别可信边界
+2. 识别威胁（Identify Threats）：使用 STRIDE 对每个元素逐一分析
+3. 评估风险（Rate）：使用 DREAD / CVSS 打分
+4. 缓解措施（Mitigate）：选择防御手段
+5. 验证（Validate）：渗透测试、代码审计
+```
+
+### STRIDE：微软威胁分类学
+
+STRIDE 将威胁分为六类，每类都有对应的安全属性：
+
+| 威胁 | 英文 | 违反的属性 | 典型示例 |
+|------|------|-----------|---------|
+| S | Spoofing 身份伪造 | Authentication | 冒充他人登录、伪造 Cookie |
+| T | Tampering 篡改 | Integrity | 修改传输数据、SQL 注入改库 |
+| R | Repudiation 抵赖 | Non-repudiation | 用户否认曾下单 |
+| I | Information Disclosure 信息泄露 | Confidentiality | 目录遍历、SSRF |
+| D | Denial of Service 拒绝服务 | Availability | DDoS、CC |
+| E | Elevation of Privilege 权限提升 | Authorization | 普通用户获得管理员权限 |
+
+### DREAD：风险评分
+
+对每个威胁按 5 个维度打分（0-10），加权求平均定优先级：
+
+| 维度 | 含义 |
+|------|------|
+| Damage | 损失程度 |
+| Reproducibility | 复现难度 |
+| Exploitability | 利用难度 |
+| Affected Users | 影响范围 |
+| Discoverability | 被发现的容易程度 |
+
+现代替代方案是 **CVSS v3.1 / v4.0**（Common Vulnerability Scoring System），按 Base / Temporal / Environmental 指标产出 0-10 分。
+
+### PASTA：以攻击者为中心的七阶段模型
+
+**PASTA**（Process for Attack Simulation and Threat Analysis）比 STRIDE 更完整：
+
+1. 定义业务目标
+2. 定义技术范围
+3. 应用程序分解
+4. 威胁分析
+5. 漏洞与弱点分析
+6. 攻击建模
+7. 风险分析与对策
+
+### Lockheed Martin Cyber Kill Chain
+
+描述入侵者的完整攻击链路，用于在每一步设置防御控制：
+
+```
+侦察 → 武器化 → 投递 → 利用 → 安装 → 命令控制 (C2) → 目标行动
+Reconnaissance → Weaponization → Delivery → Exploitation → Installation → C2 → Actions
+```
+
+每个环节都有防御控制手段（如投递环节用邮件网关、利用环节用 EDR、C2 环节用流量分析）。
+
+### MITRE ATT&CK 框架
+
+**ATT&CK**（Adversarial Tactics, Techniques, and Common Knowledge）是业界最全面的攻击知识库，定义 14 个 **战术（Tactics）**：
+
+```
+Reconnaissance → Resource Development → Initial Access → Execution →
+Persistence → Privilege Escalation → Defense Evasion → Credential Access →
+Discovery → Lateral Movement → Collection → Command and Control →
+Exfiltration → Impact
+```
+
+每个战术下有多个 **技术（Techniques）** 和 **子技术**，例如 `T1190 - Exploit Public-Facing Application`、`T1059 - Command and Scripting Interpreter`。
+
+### 注入类攻击的形式化模型：Taint Analysis
+
+所有注入攻击（SQL / XSS / 命令注入 / SSRF / 模板注入）都符合同一个抽象模型：
+
+```
+Source（污点源） → Propagation（传播） → Sink（危险接收点）
+  用户输入        变量传递、拼接          eval、query、exec
+```
+
+防御的本质：在 Source 到 Sink 的路径上插入 **Sanitizer（净化）** 或 **Parameterization（参数化）**，切断污点传播。静态分析工具（CodeQL、Semgrep、Checkmarx）都在自动化这一分析过程。
+
+### 同源策略（SOP）与 CORS
+
+**Same-Origin Policy** 是浏览器安全模型的基石：只有当 `协议 + 域名 + 端口` 完全一致，才视为同源。
+
+跨域能力由受控机制提供：
+
+- **CORS**（Cross-Origin Resource Sharing）：`Access-Control-Allow-*` 协商
+- **postMessage**：跨文档消息
+- **CSP**（Content Security Policy）：细粒度控制可信来源
+- **COOP / COEP / CORP**：Spectre 之后引入的进程隔离机制
+
+XSS 的本质是 **破坏 SOP**：攻击者让恶意脚本运行在受害域下，从而获得该域的所有权限（Cookie、LocalStorage、DOM）。
+
+### 零日（0-Day）、N-Day 与漏洞生命周期
+
+```
+发现 → 披露（CVD） → 补丁发布 → 部署修复 → EoL
+ ↑         ↑             ↑            ↑          ↑
+0-Day   通告/CVE       N-Day 窗口    利用峰值    长尾威胁
+```
+
+- **CVE**（Common Vulnerabilities and Exposures）：全球漏洞唯一编号
+- **CWE**（Common Weakness Enumeration）：弱点分类，如 CWE-89 为 SQL 注入
+- **KEV**（Known Exploited Vulnerabilities）：CISA 维护的在野利用清单，是打补丁优先级排序的关键依据
+
+## 🎯 OWASP Top 10（2021）
+
+| 编号 | 威胁名称 | 中文名 |
+|------|---------|-------|
+| A01 | Broken Access Control | 失效的访问控制 |
+| A02 | Cryptographic Failures | 加密失效 |
+| A03 | Injection | 注入（SQL/NoSQL/命令） |
+| A04 | Insecure Design | 不安全设计 |
+| A05 | Security Misconfiguration | 安全配置错误 |
+| A06 | Vulnerable and Outdated Components | 易受攻击和过时的组件 |
+| A07 | Identification and Authentication Failures | 身份识别与认证失败 |
+| A08 | Software and Data Integrity Failures | 软件与数据完整性失败 |
+| A09 | Security Logging and Monitoring Failures | 安全日志与监控失败 |
+| A10 | Server-Side Request Forgery (SSRF) | 服务端请求伪造 |
+
+## 🎯 SQL 注入
+
+### 攻击原理
+
+攻击者通过在输入中拼接 SQL 语句片段，破坏原有查询语义。例如：
+
+```js
+// ❌ 错误写法：字符串拼接
+const username = req.body.username // 攻击者输入：admin' --
+const query = `SELECT * FROM users WHERE username = '${username}' AND password = '${password}'`
+// 实际执行：SELECT * FROM users WHERE username = 'admin' --' AND password = ...
+// 密码校验被注释掉
+```
+
+### 防御方案
+
+```js
+import mysql from 'mysql2/promise'
+
+const pool = mysql.createPool({
+  host: 'localhost',
+  user: 'app',
+  password: process.env.DB_PASSWORD,
+  database: 'demo',
+})
+
+// ✅ 方案 1：参数化查询（首选）
+async function findUserSafe(username, password) {
+  const [rows] = await pool.execute(
+    'SELECT id, username FROM users WHERE username = ? AND password_hash = ?',
+    [username, password]
+  )
+  return rows[0] || null
+}
+
+// ✅ 方案 2：ORM（底层使用参数化查询）
+// 使用 Prisma / TypeORM / Sequelize 等，避免手写 SQL
+
+// ✅ 方案 3：白名单校验（用于表名、列名等不能参数化的场景）
+const ALLOWED_SORT_FIELDS = new Set(['id', 'created_at', 'username'])
+async function listUsers(sortBy = 'id') {
+  if (!ALLOWED_SORT_FIELDS.has(sortBy)) {
+    throw new Error('Invalid sort field')
+  }
+  const [rows] = await pool.execute(
+    `SELECT id, username FROM users ORDER BY ${sortBy} LIMIT 100`
+  )
+  return rows
+}
+```
+
+### 深度防御
+
+1. **最小权限数据库账号**：应用层账号仅授予必要权限，禁止 `DROP`、`ALTER` 等
+2. **WAF 规则**：拦截明显的 SQL 注入 Payload
+3. **错误信息不外泄**：生产环境不返回数据库错误堆栈
+4. **审计日志**：记录异常查询、异常 IP
+
+## 🎯 XSS（跨站脚本）
+
+### 三种类型
+
+| 类型 | 存储位置 | 攻击特征 |
+|------|---------|---------|
+| 反射型 | URL / 请求参数 | 需诱导用户点击特制链接 |
+| 存储型 | 服务端数据库 | 危害最大，持续影响所有访问者 |
+| DOM 型 | 客户端 DOM 操作 | 不经服务器，纯前端漏洞 |
+
+### 攻击示例与防御
+
+```js
+// ❌ 危险：直接插入未转义内容
+function renderCommentUnsafe(comment) {
+  return `<div class="comment">${comment}</div>`
+  // 攻击者输入 <script>fetch('/api/steal?c='+document.cookie)</script>
+}
+
+// ✅ 方案 1：HTML 实体转义
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function renderCommentSafe(comment) {
+  return `<div class="comment">${escapeHtml(comment)}</div>`
+}
+
+// ✅ 方案 2：前端框架默认转义（React / Vue）
+// React：<div>{comment}</div> 会自动转义
+// React 中仅 dangerouslySetInnerHTML 会绕过保护
+
+// ✅ 方案 3：富文本场景使用 DOMPurify
+import DOMPurify from 'isomorphic-dompurify'
+function renderRichText(html) {
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['p', 'b', 'i', 'u', 'a', 'ul', 'li', 'br'],
+    ALLOWED_ATTR: ['href'],
+  })
+}
+```
+
+### Content Security Policy（CSP）
+
+CSP 是浏览器层面的防御，即使存在 XSS，也能阻止恶意脚本执行：
+
+```js
+import express from 'express'
+import helmet from 'helmet'
+
+const app = express()
+
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'nonce-{RANDOM}'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      connectSrc: ["'self'", 'https://api.example.com'],
+      frameAncestors: ["'none'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      upgradeInsecureRequests: [],
+    },
+  })
+)
+```
+
+### Cookie 安全
+
+```js
+res.cookie('session', sessionId, {
+  httpOnly: true,  // 阻止 JS 读取，防 XSS 窃取
+  secure: true,    // 仅 HTTPS 传输
+  sameSite: 'strict', // 防 CSRF
+  maxAge: 3600 * 1000,
+})
+```
+
+## 🎯 CSRF（跨站请求伪造）
+
+### 攻击原理
+
+攻击者诱导已登录用户在另一个网站发起请求，浏览器会自动携带受害站点的 Cookie，从而完成非用户本意的操作（如转账、修改密码）。
+
+### 防御方案
+
+```js
+import express from 'express'
+import crypto from 'node:crypto'
+import cookieParser from 'cookie-parser'
+
+const app = express()
+app.use(express.json())
+app.use(cookieParser())
+
+// ✅ 方案 1：Double Submit Cookie（双重提交 Cookie）
+app.get('/api/csrf-token', (req, res) => {
+  const token = crypto.randomBytes(32).toString('hex')
+  res.cookie('csrf_token', token, { sameSite: 'strict', secure: true })
+  res.json({ csrfToken: token })
+})
+
+function verifyCsrf(req, res, next) {
+  const cookieToken = req.cookies?.csrf_token
+  const headerToken = req.headers['x-csrf-token']
+  if (!cookieToken || cookieToken !== headerToken) {
+    return res.status(403).json({ error: 'CSRF token mismatch' })
+  }
+  next()
+}
+
+app.post('/api/transfer', verifyCsrf, (req, res) => {
+  res.json({ ok: true })
+})
+
+// ✅ 方案 2：SameSite Cookie（现代浏览器默认 Lax）
+// Cookie 设置 sameSite: 'strict' 可完全阻止跨站请求携带 Cookie
+
+// ✅ 方案 3：同源检查（Origin / Referer 头）
+function verifyOrigin(req, res, next) {
+  const allowed = ['https://app.example.com']
+  const origin = req.headers.origin || req.headers.referer
+  if (!origin || !allowed.some((o) => origin.startsWith(o))) {
+    return res.status(403).json({ error: 'Invalid origin' })
+  }
+  next()
+}
+```
+
+## 🎯 SSRF（服务端请求伪造）
+
+### 攻击原理
+
+服务端接收用户输入的 URL 并发起请求，攻击者可以让服务器请求内网资源（如 `http://169.254.169.254/latest/meta-data/` 获取云厂商元数据）。
+
+### 防御方案
+
+```js
+import { URL } from 'node:url'
+import dns from 'node:dns/promises'
+import net from 'node:net'
+import axios from 'axios'
+
+const ALLOWED_PROTOCOLS = new Set(['http:', 'https:'])
+const ALLOWED_HOSTS = new Set(['api.partner.com', 'cdn.example.com'])
+
+// 判断是否是私有 IP
+function isPrivateIp(ip) {
+  if (net.isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number)
+    if (a === 10) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 192 && b === 168) return true
+    if (a === 127) return true
+    if (a === 169 && b === 254) return true // 云厂商元数据
+    if (a === 0) return true
+  }
+  if (net.isIP(ip) === 6) {
+    const lower = ip.toLowerCase()
+    if (lower === '::1' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80')) {
+      return true
+    }
+  }
+  return false
+}
+
+async function safeFetch(userUrl) {
+  const parsed = new URL(userUrl)
+
+  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
+    throw new Error('Protocol not allowed')
+  }
+
+  // 白名单（首选方案）
+  if (!ALLOWED_HOSTS.has(parsed.hostname)) {
+    throw new Error('Host not in allowlist')
+  }
+
+  // DNS 解析后再次校验（防 DNS Rebinding）
+  const addresses = await dns.lookup(parsed.hostname, { all: true })
+  for (const addr of addresses) {
+    if (isPrivateIp(addr.address)) {
+      throw new Error('Private IP is forbidden')
+    }
+  }
+
+  return axios.get(parsed.toString(), {
+    timeout: 5000,
+    maxRedirects: 0, // 禁止重定向，防止绕过校验
+    maxContentLength: 5 * 1024 * 1024,
+  })
+}
+```
+
+### 深度防御
+
+1. **网络层隔离**：应用容器不允许访问元数据服务、内网敏感端口
+2. **IMDSv2**：AWS 等云平台使用 Session 保护的元数据服务
+3. **出口代理**：所有出网请求必须经过受控代理，由代理做 URL 审计
+
+## 🎯 DDoS 防护
+
+### 攻击分层
+
+| 层级 | 类型 | 示例 |
+|------|------|------|
+| L3/L4 | 网络层 | SYN Flood、UDP Flood、反射放大 |
+| L7 | 应用层 | HTTP Flood、慢速连接（Slowloris） |
+
+### 应用层限流
+
+```js
+import express from 'express'
+import rateLimit from 'express-rate-limit'
+import slowDown from 'express-slow-down'
+import { RateLimiterRedis } from 'rate-limiter-flexible'
+import Redis from 'ioredis'
+
+const app = express()
+const redis = new Redis()
+
+// ✅ 基础限流：每个 IP 每分钟 100 次
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests' },
+})
+app.use('/api/', apiLimiter)
+
+// ✅ 登录接口更严格：每 IP 每 15 分钟 5 次
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyGenerator: (req) => req.ip,
+})
+
+// ✅ 慢速响应：失败次数增多后延迟响应
+const loginSlowDown = slowDown({
+  windowMs: 15 * 60 * 1000,
+  delayAfter: 3,
+  delayMs: (hits) => hits * 500,
+})
+
+app.post('/api/login', loginLimiter, loginSlowDown, (req, res) => {
+  res.json({ ok: true })
+})
+
+// ✅ 分布式限流（基于 Redis，适用多实例部署）
+const distLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: 'rl',
+  points: 100,
+  duration: 60,
+  blockDuration: 60,
+})
+
+app.use(async (req, res, next) => {
+  try {
+    await distLimiter.consume(req.ip)
+    next()
+  } catch {
+    res.status(429).json({ error: 'Too many requests' })
+  }
+})
+
+app.listen(3000)
+```
+
+### 多层防护体系
+
+1. **边缘层（CDN/Anti-DDoS）**：阿里云 DDoS 高防、Cloudflare，清洗 L3/L4 流量
+2. **WAF 层**：拦截 L7 攻击、SQL 注入、XSS
+3. **网关层**：限流、熔断、身份验证
+4. **应用层**：业务级限流、防刷、验证码、设备指纹
+5. **监控与自动化**：实时异常检测、自动触发黑名单与扩容
+
+## 🎯 供应链安全
+
+### 风险类型
+
+1. **恶意包**：伪造、抢注、依赖混淆（Dependency Confusion）
+2. **已知漏洞**：上游依赖的 CVE
+3. **构建环境污染**：CI/CD 机密泄漏、构建产物篡改
+4. **事件监视**：`postinstall` 脚本、可执行依赖
+
+### 防御工具链
+
+```bash
+# 1. npm 审计（定期执行）
+npm audit --production
+npm audit fix
+
+# 2. 依赖锁定 & 完整性
+# 使用 lockfile（package-lock.json / pnpm-lock.yaml），严禁删除
+# CI 中使用 npm ci（严格依赖 lockfile，不会修改）
+npm ci --prefer-offline
+
+# 3. SCA 工具
+npx snyk test
+npx snyk monitor
+
+# 4. 只安装已审查的版本（pnpm 支持 overrides）
+# package.json 中 pnpm.overrides 固定传递依赖
+
+# 5. 禁用 postinstall 脚本（高风险环境）
+npm config set ignore-scripts true
+
+# 6. 发布产物签名（SLSA / Sigstore）
+npx cosign sign --key cosign.key artifact.tar
+```
+
+### SBOM 生成
+
+**SBOM（Software Bill of Materials）** 是软件物料清单，用于追溯依赖链。
+
+```bash
+# 生成 CycloneDX 格式 SBOM
+npx @cyclonedx/cyclonedx-npm --output-file sbom.json
+
+# 生成 SPDX 格式 SBOM
+npx spdx-sbom-generator
+```
+
+### CI 安全检查示例（GitHub Actions）
+
+```yaml
+# .github/workflows/security.yml
+name: Security Scan
+on: [push, pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - name: npm audit
+        run: npm audit --audit-level=high
+      - name: Snyk Test
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - name: Generate SBOM
+        run: npx @cyclonedx/cyclonedx-npm --output-file sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+```
+
+## 📝 实际应用示例：集成安全中间件
+
+以下示例综合使用 `helmet`、`rate-limit`、`csrf`、输入校验，构建一套安全防御基线：
+
+```js
+import express from 'express'
+import helmet from 'helmet'
+import rateLimit from 'express-rate-limit'
+import cookieParser from 'cookie-parser'
+import { z } from 'zod'
+import crypto from 'node:crypto'
+import DOMPurify from 'isomorphic-dompurify'
+
+const app = express()
+
+// 1. HTTP 安全头（CSP、HSTS、X-Frame-Options 等）
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        frameAncestors: ["'none'"],
+      },
+    },
+    hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  })
+)
+
+// 2. Body 解析（限制大小）
+app.use(express.json({ limit: '100kb' }))
+app.use(cookieParser())
+
+// 3. 全局限流
+app.use(
+  '/api/',
+  rateLimit({
+    windowMs: 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+  })
+)
+
+// 4. CSRF Token
+app.get('/api/csrf', (req, res) => {
+  const token = crypto.randomBytes(32).toString('hex')
+  res.cookie('csrf_token', token, { httpOnly: false, secure: true, sameSite: 'strict' })
+  res.json({ csrfToken: token })
+})
+
+function verifyCsrf(req, res, next) {
+  const cookieToken = req.cookies?.csrf_token
+  const headerToken = req.headers['x-csrf-token']
+  if (!cookieToken || cookieToken !== headerToken) {
+    return res.status(403).json({ error: 'CSRF token mismatch' })
+  }
+  next()
+}
+
+// 5. 输入校验（Zod）
+const commentSchema = z.object({
+  articleId: z.string().uuid(),
+  content: z.string().min(1).max(2000),
+})
+
+app.post('/api/comments', verifyCsrf, (req, res) => {
+  const result = commentSchema.safeParse(req.body)
+  if (!result.success) {
+    return res.status(400).json({ error: 'Invalid input', detail: result.error.issues })
+  }
+  // 6. 富文本场景下的输出净化
+  const clean = DOMPurify.sanitize(result.data.content, {
+    ALLOWED_TAGS: ['b', 'i', 'u', 'a'],
+    ALLOWED_ATTR: ['href'],
+  })
+  res.status(201).json({ id: crypto.randomUUID(), content: clean })
+})
+
+// 7. 错误处理（不泄露堆栈）
+app.use((err, req, res, next) => {
+  console.error(err)
+  res.status(500).json({ error: 'Internal error' })
+})
+
+app.listen(3000, () => console.log('Secure API running at :3000'))
+```
+
+## 🔗 相关概念
+
+- **OWASP**：Web 安全领域的权威组织，其 Top 10 是行业安全基准
+- **CSP**：浏览器层防御 XSS 的关键机制
+- **SameSite Cookie**：现代浏览器对抗 CSRF 的默认防线
+- **WAF**：在应用前拦截攻击流量的基础设施
+- **SBOM**：供应链透明化的关键数据
+
+## 📚 学习检查点
+
+- [ ] 能否完整列出 OWASP Top 10 并说明每一项的核心防御？
+- [ ] 能否写出一个防御 SQL 注入、XSS、CSRF 的 Express 中间件组合？
+- [ ] 能否识别并防御 SSRF 攻击？
+- [ ] 能否设计一套应对 L7 DDoS 的限流方案？
+- [ ] 能否说明供应链攻击的主要形式并给出防御手段？
+
+## 🚀 下一步
+
+→ [数据安全](./04-data-security.mdx)

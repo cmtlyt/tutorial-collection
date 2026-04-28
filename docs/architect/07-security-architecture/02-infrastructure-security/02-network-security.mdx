@@ -1,17 +1,670 @@
 # 网络安全
 
-> **版本**：v1.0
-> **最后更新**：2026-04-24
+> **版本**：v1.2
+> **最后更新**：2026-04-28
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解网络层面的安全防护，包括防火墙与 WAF、VPN/专线和网络隔离与分段。
+网络安全的核心是 **边界防护** 与 **纵深防御**：通过防火墙、WAF、VPN、网络隔离等机制，在不同层次拦截攻击者、减小攻击面。本文从 OSI 模型出发，讲解现代云环境下的网络安全架构与落地实现。
 
-## 🎯 学习目标
+## 📐 理论基础
 
-- 掌握防火墙和 WAF 的工作原理和配置
-- 理解 VPN 和专线的适用场景
-- 掌握网络隔离与分段的设计方法
-- 能够设计完整的网络安全方案
+### OSI 七层模型 vs TCP/IP 四层模型
 
-> 🚧 详细内容正在编写中...
+```
+OSI 参考模型            TCP/IP 模型         典型协议            典型攻击
+─────────────           ─────────────      ─────────────      ─────────────
+7. 应用层（App）  ─┐                        HTTP/DNS/SMTP     SQLi/XSS/CSRF
+6. 表示层（Pre） ─┼─→ 应用层               TLS/MIME           协议降级
+5. 会话层（Ses） ─┘                        RPC/NetBIOS        会话劫持
+4. 传输层（Trans） →   传输层               TCP/UDP/QUIC      SYN Flood/端口扫描
+3. 网络层（Net）   →   网络层               IP/ICMP/IPsec     IP 欺骗/路由劫持
+2. 数据链路（DL）  ─┐                      Ethernet/ARP      ARP 欺骗/MAC 泛洪
+1. 物理层（Phy）   ─┴─→ 网络接口层          802.11/Cable      窃听/物理破坏
+```
+
+### 网络安全 CIA + 真实性 + 不可抵赖性
+
+网络协议提供安全属性的手段：
+
+| 安全属性 | 协议机制 |
+|---------|---------|
+| 机密性 | TLS、IPsec ESP、WireGuard |
+| 完整性 | TLS Record MAC、IPsec AH、HMAC |
+| 真实性 | 证书、PSK、ECDSA |
+| 不可抵赖 | 数字签名 |
+| 可用性 | 冗余链路、Anti-DDoS、BGP FlowSpec |
+
+### TCP 三次握手与四次挥手
+
+```
+三次握手（建立连接）                    四次挥手（关闭连接）
+────────────────────                    ─────────────────
+Client          Server                  Client          Server
+  │ ─── SYN ──→ │                         │ ─── FIN ──→ │
+  │             │ ← SYN/ACK ── │          │             │ ← ACK ─── │
+  │ ─── ACK ──→ │                         │             │ ← FIN ─── │
+                                          │ ─── ACK ──→ │
+```
+
+**SYN Flood** 攻击利用三次握手第二步，服务器为半开连接保留资源而耗尽内存；防御手段是 **SYN Cookies**：服务器不保存半开状态，将 SYN 信息编码到 SYN/ACK 的序号中，收到 ACK 时再验证。
+
+### TLS 握手状态机（TLS 1.3）
+
+TLS 1.3 显著简化握手（1-RTT / 0-RTT）：
+
+```
+Client                                      Server
+──────                                      ──────
+ClientHello（支持的版本、密码套件、key_share）
+                    ───────────────────→
+                                        ← ServerHello（选择的套件、key_share）
+                                        ← {EncryptedExtensions}
+                                        ← {Certificate, CertificateVerify}
+                                        ← {Finished}
+{Finished}           ───────────────────→
+[Application Data]  ←──────────────────→  [Application Data]
+```
+
+大括号 `{}` 内表示使用 **握手密钥** 加密，方括号 `[]` 表示使用 **应用数据密钥** 加密。TLS 1.3 相比 1.2 删除了不安全的算法（RC4、CBC、压缩、RSA 密钥交换），强制 PFS。
+
+### 防火墙类型学与演进
+
+```
+1980s            1990s              2000s              2010s+
+包过滤    →    状态检测    →    应用代理    →    下一代防火墙（NGFW）
+无状态         跟踪连接          解析协议          集成 IPS/WAF/沙箱/AI
+```
+
+| 类型 | 工作层次 | 原理 | 代表 |
+|------|---------|------|------|
+| 包过滤 | L3/L4 | 按 IP/端口/协议放行 | iptables（早期） |
+| 状态检测 | L3/L4 | 维护连接跟踪表（conntrack） | nftables、pf |
+| 应用代理 | L7 | 代理解析协议并过滤 | Squid、HAProxy |
+| NGFW | L3~L7 | 身份感知、应用识别、IPS、TLS 检测 | Palo Alto、FortiGate |
+| 云原生 FW | L3/L4 | 分布式、基于标签 | 安全组、NSG、Calico |
+
+### IDS vs IPS
+
+- **IDS（入侵检测系统）**：旁路部署，只检测不阻断，告警为主（Snort、Suricata 监听模式）
+- **IPS（入侵防御系统）**：串联部署，检测 + 实时阻断（Suricata inline、ModSecurity）
+- **UTM（统一威胁管理）**：整合防火墙、IPS、反病毒、URL 过滤
+
+### DDoS 攻击分类学
+
+| 类别 | 层次 | 典型 |
+|------|------|------|
+| 资源耗尽型 | L3/L4 | SYN/ACK/UDP Flood |
+| 反射放大 | L3/L4 | DNS/NTP/Memcached 放大（放大倍数可达 50000x） |
+| 协议滥用 | L4 | Slowloris（慢速）、TCP ZeroWindow |
+| 应用层 | L7 | HTTP Flood、CC、API 风暴 |
+| 业务层 | 业务 | 刷单、薅羊毛、凭据填充 |
+
+**反射放大** 攻击原理：攻击者伪造源 IP 为受害者地址，向开放服务（如开放的 Memcached、DNS）发送小请求，服务返回的大响应被放大打向受害者。
+
+### BGP 路由安全（RPKI）
+
+BGP（RFC 4271）设计时默认信任，历史上多次发生 **前缀劫持** 事件（2008 巴基斯坦劫持 YouTube、2018 AWS Route53 被劫持）。
+
+防护机制：
+
+- **RPKI（Resource Public Key Infrastructure, RFC 6480）**：通过 CA 体系为 IP 前缀与 AS 签发 ROA，边界路由器验证
+- **BGPsec**：在 BGP UPDATE 报文上附带签名
+- **MANRS**（Mutually Agreed Norms for Routing Security）：行业自律规范
+
+### DNS 安全
+
+DNS（RFC 1035）同样设计为明文无验证，存在三类风险：
+
+| 威胁 | 示例 | 防护 |
+|------|------|------|
+| 缓存投毒 | Kaminsky 漏洞 | DNSSEC |
+| 窃听 | ISP/中间人查看查询 | DoH / DoT / DoQ |
+| 流量劫持 | 运营商 302、NXDOMAIN 劫持 | DoH、HTTPS 记录 |
+| DNS 隧道 | 用 DNS 外发数据 | DPI、DNS 日志审计 |
+
+- **DNSSEC**（RFC 4033-4035）：为 DNS 记录添加数字签名，形成信任链（Root → TLD → Zone）
+- **DoT**（DNS over TLS, RFC 7858）：853 端口 TLS 封装
+- **DoH**（DNS over HTTPS, RFC 8484）：443 端口，更难识别与阻断
+- **DoQ**（DNS over QUIC, RFC 9250）：基于 QUIC，更低时延
+
+### ARP 与 DHCP 安全
+
+局域网协议默认无认证：
+
+- **ARP 欺骗**：攻击者冒充网关 MAC，截获流量 → **动态 ARP 检测（DAI）**
+- **DHCP 欺骗**：伪造 DHCP 服务器下发恶意网关/DNS → **DHCP Snooping**
+- **MAC 泛洪**：刷满交换机 CAM 表使其退化为集线器 → **端口安全（Port Security）**
+
+### 零信任网络访问（ZTNA）与 SASE
+
+**ZTNA**（Zero Trust Network Access）替代传统 VPN，为应用而非网络授权：
+
+```
+传统 VPN：                   ZTNA：
+用户 → VPN → 整个内网         用户 → ZTNA 代理 → 特定应用
+（横向移动风险大）            （应用级隔离，最小权限）
+```
+
+**SASE**（Secure Access Service Edge, Gartner 2019）：将 SD-WAN + SWG + CASB + ZTNA + FWaaS 融合为云交付服务，能力包括：
+
+- **SWG**（Secure Web Gateway）：Web 流量清洗
+- **CASB**（Cloud Access Security Broker）：云服务使用管控
+- **FWaaS**（Firewall-as-a-Service）：云端防火墙
+- **ZTNA**：零信任应用访问
+
+### 网络分段模型演进
+
+```
+扁平网络 → VLAN → VPC / 子网 → 微分段 → 工作负载身份（SPIFFE）
+ 同一广播域   二层隔离   三层隔离    Pod 级     服务身份级
+```
+
+**SPIFFE / SPIRE** 为工作负载颁发 **SVID（SPIFFE Verifiable Identity Document）**，让服务间基于身份而非 IP 进行认证，这是 **身份即边界（Identity as the New Perimeter）** 的核心实现。
+
+## 🎯 OSI 分层与对应防护
+
+| 层级 | 典型威胁 | 防护手段 |
+|------|---------|---------|
+| L2（数据链路） | ARP 欺骗、MAC 泛洪 | 端口安全、DHCP Snooping |
+| L3（网络） | IP 欺骗、路由劫持 | ACL、BGP 防护 |
+| L4（传输） | SYN Flood、端口扫描 | 防火墙、连接限速 |
+| L7（应用） | SQL 注入、XSS、HTTP Flood | WAF、API 网关、Bot 防护 |
+
+## 🎯 防火墙
+
+### 防火墙分类
+
+| 类型 | 特点 | 代表产品 |
+|------|------|---------|
+| 包过滤防火墙 | 基于 IP/端口，无状态 | iptables（早期） |
+| 状态检测防火墙 | 跟踪连接状态 | iptables/nftables、pf |
+| 应用层防火墙 | 解析应用协议 | WAF、NGFW |
+| 云原生防火墙 | 云厂商托管 | 阿里云安全组、AWS Security Group |
+
+### Linux nftables 配置示例
+
+nftables 是 iptables 的现代替代，Linux 3.13+ 内置。
+
+```bash
+# /etc/nftables.conf
+# 定义基本过滤规则
+
+flush ruleset
+
+table inet filter {
+    # 允许的入站 TCP 端口
+    set allowed_tcp {
+        type inet_service
+        elements = { 22, 80, 443 }
+    }
+
+    # 受信任的管理网段
+    set admin_cidrs {
+        type ipv4_addr
+        flags interval
+        elements = { 10.0.0.0/24, 10.0.1.0/24 }
+    }
+
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # 放行已建立的连接
+        ct state established,related accept
+        ct state invalid drop
+
+        # 放行本地回环
+        iif lo accept
+
+        # ICMP（速率限制防泛洪）
+        ip protocol icmp limit rate 10/second accept
+        ip6 nexthdr icmpv6 limit rate 10/second accept
+
+        # SSH 仅管理网段 + 速率限制防爆破
+        tcp dport 22 ip saddr @admin_cidrs ct state new limit rate 3/minute accept
+
+        # 放行业务端口
+        tcp dport @allowed_tcp ct state new accept
+
+        # 记录被丢弃的包（限速）
+        limit rate 5/minute log prefix "nft-dropped: "
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+```
+
+加载配置：
+
+```bash
+sudo nft -f /etc/nftables.conf
+sudo systemctl enable --now nftables
+sudo nft list ruleset
+```
+
+### 云安全组设计原则
+
+1. **最小暴露**：默认 Deny all，只开放必须端口
+2. **按角色建组**：Web 层、App 层、DB 层各一组，组间通过安全组引用授权
+3. **避免 0.0.0.0/0**：管理端口（22、3389）仅允许跳板机 / 堡垒机 IP
+4. **分层授权**：Web 组允许来自 `ALB-SG`；App 组允许来自 `Web-SG`；DB 组允许来自 `App-SG`
+
+## 🎯 WAF（Web 应用防火墙）
+
+### 核心能力
+
+1. **规则检测**：OWASP CRS 核心规则集（SQLi、XSS、RCE、LFI）
+2. **速率限制**：按 IP / Session / URL 限制
+3. **Bot 管理**：区分真实用户、爬虫、恶意机器人
+4. **虚拟补丁**：在漏洞修复前通过 WAF 规则拦截
+5. **CC/DDoS 防护**：L7 挑战、JS 验证、人机校验
+
+### ModSecurity + OWASP CRS（Nginx）
+
+```nginx
+# /etc/nginx/nginx.conf（启用 ModSecurity 模块）
+load_module modules/ngx_http_modsecurity_module.so;
+
+http {
+    modsecurity on;
+    modsecurity_rules_file /etc/nginx/modsec/main.conf;
+
+    server {
+        listen 443 ssl http2;
+        server_name app.example.com;
+
+        ssl_certificate /etc/ssl/app.crt;
+        ssl_certificate_key /etc/ssl/app.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+
+        # 基础限流
+        limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+
+        location /api/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://backend;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+    }
+}
+```
+
+```conf
+# /etc/nginx/modsec/main.conf
+Include /etc/nginx/modsec/modsecurity.conf
+Include /etc/nginx/modsec/crs-setup.conf
+Include /etc/nginx/modsec/rules/*.conf
+
+# 启用阻断模式
+SecRuleEngine On
+
+# 异常评分模式
+SecDefaultAction "phase:1,log,auditlog,deny,status:403"
+SecDefaultAction "phase:2,log,auditlog,deny,status:403"
+
+# 请求体大小限制
+SecRequestBodyLimit 13107200
+SecRequestBodyNoFilesLimit 131072
+
+# 自定义拦截规则示例：拒绝访问 .env 文件
+SecRule REQUEST_URI "@contains /.env" \
+    "id:1001,phase:1,deny,status:404,msg:'Attempt to access sensitive file'"
+
+# 拒绝常见扫描器 UA
+SecRule REQUEST_HEADERS:User-Agent "@rx (?i)(sqlmap|nikto|acunetix|nmap|wpscan)" \
+    "id:1002,phase:1,deny,status:403,msg:'Scanner detected'"
+```
+
+### 云 WAF 快速接入（以阿里云 WAF 为例）
+
+```
+用户请求
+   ↓
+DNS 解析 → WAF CNAME
+   ↓
+WAF（清洗、规则检测、CC 防护）
+   ↓
+源站 SLB / ECS
+```
+
+接入步骤（概念性）：
+
+1. 在 WAF 控制台创建站点，获得 CNAME
+2. 源站 IP 配置为 SLB / 后端 IP
+3. DNS 将域名 CNAME 指向 WAF 地址
+4. 回源放行 WAF 出口 IP（源站安全组只允许 WAF 回源段）
+5. 启用 OWASP 规则集 + CC 防护 + Bot 管理
+
+## 🎯 VPN 与专线
+
+### 对比
+
+| 方案 | 传输方式 | 带宽 | 时延 | 成本 | 适用场景 |
+|------|---------|------|------|------|---------|
+| IPsec VPN | 加密隧道走公网 | 中 | 中 | 低 | 分支机构、临时互联 |
+| SSL VPN | 浏览器/客户端 | 低 | 中 | 低 | 远程办公 |
+| 专线（物理） | 运营商独立链路 | 高 | 低 | 高 | 核心业务、金融、混合云 |
+| 云连接（SD-WAN） | 公网 + 优化路由 | 中高 | 低中 | 中 | 多地多云互联 |
+
+### WireGuard（现代 VPN）配置
+
+WireGuard 是新一代 VPN，代码小、性能好、配置简单。
+
+服务端配置 `/etc/wireguard/wg0.conf`：
+
+```ini
+[Interface]
+PrivateKey = SERVER_PRIVATE_KEY
+Address = 10.200.0.1/24
+ListenPort = 51820
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+[Peer]
+# 客户端 Alice
+PublicKey = ALICE_PUBLIC_KEY
+AllowedIPs = 10.200.0.2/32
+
+[Peer]
+# 客户端 Bob
+PublicKey = BOB_PUBLIC_KEY
+AllowedIPs = 10.200.0.3/32
+```
+
+客户端配置：
+
+```ini
+[Interface]
+PrivateKey = ALICE_PRIVATE_KEY
+Address = 10.200.0.2/24
+DNS = 10.200.0.1
+
+[Peer]
+PublicKey = SERVER_PUBLIC_KEY
+Endpoint = vpn.example.com:51820
+AllowedIPs = 10.200.0.0/24, 10.0.0.0/16
+PersistentKeepalive = 25
+```
+
+启动：
+
+```bash
+# 生成密钥对
+wg genkey | tee privatekey | wg pubkey > publickey
+
+# 启动 WireGuard
+sudo wg-quick up wg0
+sudo systemctl enable wg-quick@wg0
+
+# 查看状态
+sudo wg show
+```
+
+### 堡垒机（跳板机）模式
+
+所有对生产环境的 SSH 访问必须经过堡垒机，并记录完整会话：
+
+```
+研发 → VPN → 堡垒机（MFA + 审计录屏）→ 生产服务器
+```
+
+核心能力：
+- **身份与权限**：对接企业 IAM，按角色授权
+- **MFA**：账号 + OTP / WebAuthn
+- **会话审计**：完整录制命令与屏幕
+- **动态密码**：服务器密码由堡垒机临时下发
+- **工单流程**：高敏感操作需审批
+
+开源方案：[Teleport](https://goteleport.com)、[JumpServer](https://www.jumpserver.org)。
+
+## 🎯 网络隔离与分段
+
+### VPC 分段设计
+
+一个典型的三层分段架构：
+
+```
+              Internet
+                 ↓
+        +-----------------+
+        |  Public Subnet  |  (ALB/NAT/WAF，仅必要端口对外)
+        |  10.0.1.0/24    |
+        +-----------------+
+                 ↓
+        +-----------------+
+        |  App Subnet     |  (应用服务器，无公网 IP)
+        |  10.0.2.0/24    |
+        +-----------------+
+                 ↓
+        +-----------------+
+        |  DB Subnet      |  (数据库，仅允许 App 层访问)
+        |  10.0.3.0/24    |
+        +-----------------+
+```
+
+### 微分段（Micro-segmentation）
+
+传统网段隔离只做到"大区域"，微分段做到"每个工作负载"，核心理念是 **零信任网络**。
+
+Kubernetes 中使用 NetworkPolicy 实现微分段：
+
+```yaml
+# 默认拒绝所有入向流量
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: production
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# 允许 Frontend 访问 API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-allow-from-frontend
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# 仅允许 API 访问数据库
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-allow-from-api
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api
+      ports:
+        - protocol: TCP
+          port: 5432
+```
+
+### DNS 安全
+
+1. **DNSSEC**：防止 DNS 应答被篡改
+2. **DoH / DoT**：DNS over HTTPS / TLS，防止中间人窥探
+3. **私有 DNS 解析**：VPC 内部域名由内部 DNS 服务解析，避免泄露
+
+## 📝 实际应用示例：多层网络安全架构
+
+以下示例定义一套综合的网络安全架构（以 Terraform 表达 AWS 资源为例）：
+
+```hcl
+# main.tf - 三层网络 + 安全组设计
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+# VPC
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  tags = { Name = "prod-vpc" }
+}
+
+# 公有子网（仅 ALB、NAT）
+resource "aws_subnet" "public" {
+  count                   = 2
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.${count.index + 1}.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = false
+  tags = { Name = "public-${count.index}" }
+}
+
+# 私有子网（App）
+resource "aws_subnet" "app" {
+  count             = 2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.${count.index + 10}.0/24"
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  tags = { Name = "app-${count.index}" }
+}
+
+# 数据子网（DB）
+resource "aws_subnet" "data" {
+  count             = 2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.${count.index + 20}.0/24"
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  tags = { Name = "data-${count.index}" }
+}
+
+# ALB 安全组：仅允许公网 443
+resource "aws_security_group" "alb" {
+  name   = "alb-sg"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# App 安全组：仅允许 ALB 访问 8080
+resource "aws_security_group" "app" {
+  name   = "app-sg"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# DB 安全组：仅允许 App 访问 5432
+resource "aws_security_group" "db" {
+  name   = "db-sg"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.app.id]
+  }
+}
+
+# 堡垒机安全组：仅允许办公网段 SSH
+resource "aws_security_group" "bastion" {
+  name   = "bastion-sg"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["203.0.113.0/24"] # 办公出口 IP
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# App 允许堡垒机 SSH
+resource "aws_security_group_rule" "app_ssh_from_bastion" {
+  type                     = "ingress"
+  from_port                = 22
+  to_port                  = 22
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.bastion.id
+  security_group_id        = aws_security_group.app.id
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+```
+
+## 🔗 相关概念
+
+- **纵深防御**：多层独立防护，单点被突破仍能兜底
+- **零信任网络**：每次连接都需验证，不因位置授予信任
+- **微分段**：在工作负载粒度实施访问控制
+- **WAF**：应用层安全防线，弥补代码漏洞
+- **堡垒机**：统一运维入口，实现可审计的特权访问管理
+
+## 📚 学习检查点
+
+- [ ] 能否说明 L3/L4 与 L7 防护的差异与分工？
+- [ ] 能否编写一份安全的 nftables / 安全组配置？
+- [ ] 能否为 Kubernetes 集群设计 NetworkPolicy？
+- [ ] 能否为企业选型 VPN / 专线方案？
+- [ ] 能否搭建一套基于堡垒机的特权访问架构？
+
+## 🚀 下一步
+
+→ [容器安全](./03-container-security.mdx)

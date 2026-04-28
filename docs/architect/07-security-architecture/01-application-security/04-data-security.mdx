@@ -1,17 +1,761 @@
 # 数据安全
 
-> **版本**：v1.0
-> **最后更新**：2026-04-24
+> **版本**：v1.2
+> **最后更新**：2026-04-28
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解数据安全的核心技术，包括加密算法、传输层安全（TLS/SSL）、数据脱敏和密钥管理。
+数据安全贯穿数据的整个生命周期：**采集 → 传输 → 存储 → 使用 → 销毁**。其中三个核心技术支柱：
 
-## 🎯 学习目标
+1. **加密**（Encryption）：防止未授权访问，保护机密性
+2. **脱敏**（Data Masking）：在保留数据可用性的同时降低泄露风险
+3. **密钥管理**（Key Management）：保护加密体系的"钥匙"本身
 
-- 掌握对称加密、非对称加密和哈希算法的原理与应用
-- 理解 TLS/SSL 的握手过程和证书管理
-- 掌握数据脱敏的策略和实现
-- 了解密钥管理的最佳实践
+本文讲解对称加密、非对称加密、哈希算法、TLS/SSL、数据脱敏与密钥管理的原理与落地实践。
 
-> 🚧 详细内容正在编写中...
+## 📐 理论基础
+
+### 数据生命周期与安全控制
+
+```
+采集 → 传输 → 存储 → 使用 → 共享 → 归档 → 销毁
+ ↓      ↓      ↓      ↓      ↓      ↓      ↓
+最小  TLS/   AES/  机密  脱敏/ 加密  可靠
+采集   VPN   KMS   计算  Token 归档  销毁
+```
+
+### 香农保密通信理论
+
+现代密码学奠基于 Shannon 1949 年的论文《Communication Theory of Secrecy Systems》：
+
+- **完美保密（Perfect Secrecy）**：密文不泄露任何关于明文的信息，`H(M|C) = H(M)`
+- **一次一密（OTP）** 是唯一数学证明达到完美保密的方案，但要求密钥长度 ≥ 明文长度，且不可重用
+- **实际密码学** 追求 **计算安全性**：即使攻击者有多项式时间和算力，仍无法区分密文与随机序列
+
+### Kerckhoffs 原则
+
+1883 年 Auguste Kerckhoffs 提出的第一原则，仍是现代密码学的铁律：
+
+> **加密算法应当公开可审查，系统的安全性只依赖密钥的保密。**
+
+这直接否定了"隐藏算法"的"以不透明谋安全"（Security through Obscurity）思路。所有现代标准算法（AES、RSA、SHA-2）都经过数十年公开分析。
+
+### 密码学原语分类
+
+| 原语 | 提供的保证 | 代表算法 |
+|------|-----------|---------|
+| 对称加密 | 机密性 | AES、ChaCha20 |
+| 非对称加密 | 机密性 + 密钥分发 | RSA-OAEP、ECIES |
+| 数字签名 | 完整性 + 真实性 + 不可抵赖 | RSA-PSS、ECDSA、Ed25519 |
+| 哈希 | 完整性 | SHA-256、SHA-3、BLAKE2 |
+| MAC | 完整性 + 真实性（对称） | HMAC、GMAC、Poly1305 |
+| AEAD | 机密性 + 完整性 + 真实性 | AES-GCM、ChaCha20-Poly1305 |
+| KDF | 从口令派生密钥 | PBKDF2、Argon2、scrypt、HKDF |
+| 密钥交换 | 协商共享密钥 | ECDH、X25519 |
+
+### 数学基础概览
+
+**1. 模运算与有限域**
+
+整数模 `n` 形成剩余类环 `Z_n`；当 `p` 为素数时，`Z_p` 是有限域 `GF(p)`，具备 **加法、乘法、逆元**，这是 RSA、DSA、DH 等算法的基础。
+
+**2. 群论：循环群与生成元**
+
+非对称密码学依赖某些群上的 **困难问题**：
+
+- **DLP（离散对数问题）**：已知 `g`、`g^x mod p`，求 `x`
+- **ECDLP（椭圆曲线离散对数）**：在椭圆曲线群上的 DLP，更难
+- **整数分解问题**：RSA 基于大整数分解难度
+
+**3. RSA 原理**
+
+```
+选素数 p, q → n = p·q → φ(n) = (p-1)(q-1)
+选 e（公钥指数，常为 65537）→ d = e^(-1) mod φ(n)（私钥）
+加密：c = m^e mod n
+解密：m = c^d mod n
+```
+
+安全性建立在 **无法高效分解 n**。当前推荐 RSA ≥ 2048 位（对应约 112 位对称安全），高安全场景用 3072/4096 位。
+
+**4. 椭圆曲线密码（ECC）**
+
+方程 `y² = x³ + ax + b (mod p)` 定义的曲线上的点集构成一个加法群。256 位 ECC 的安全强度 ≈ 3072 位 RSA，密钥短、运算快，特别适合移动/IoT 场景。主流曲线：NIST P-256、secp256k1（比特币）、Curve25519 / Ed25519（Bernstein）。
+
+**5. 后量子密码（PQC）**
+
+Shor 算法理论上可以在量子计算机上多项式时间破解 RSA/ECC。NIST 于 2024 年正式发布首批 PQC 标准：
+
+| 算法 | 用途 | 基础数学问题 |
+|------|------|------------|
+| ML-KEM（CRYSTALS-Kyber） | 密钥封装 | 格问题（Module-LWE） |
+| ML-DSA（CRYSTALS-Dilithium） | 数字签名 | 格问题 |
+| SLH-DSA（SPHINCS+） | 数字签名 | 哈希 |
+| FALCON | 数字签名 | NTRU 格 |
+
+### 对称加密结构
+
+**1. 分组密码（Block Cipher）**
+
+AES 是 **代换-置换网络（SPN）** 结构，将明文分成 128 位块，使用 10/12/14 轮的 SubBytes（S-box）、ShiftRows、MixColumns、AddRoundKey 操作。对比历史上的 DES 使用的是 **Feistel 结构**。
+
+**2. 加密模式**
+
+| 模式 | 是否并行 | 是否需 IV | 认证 | 适用性 |
+|------|---------|----------|------|-------|
+| ECB | 是 | 否 | 否 | ⚠️ **禁用**，相同明文块产生相同密文 |
+| CBC | 加密串行，解密并行 | 需唯一 IV | 否 | 已不推荐单独使用 |
+| CTR | 完全并行 | 需唯一 Nonce | 否 | 高性能，需配合 MAC |
+| GCM | 并行 | 需唯一 Nonce | 内置 | **推荐（AEAD）** |
+| CCM | 串行 | 需唯一 Nonce | 内置 | IoT、WPA2 |
+
+**AEAD（Authenticated Encryption with Associated Data）** 同时提供机密性、完整性、真实性，是当前事实标准。
+
+### 哈希函数的三大安全性质
+
+1. **抗原像**（Preimage Resistance）：给定 h，难以找到 m 使 `H(m)=h`
+2. **抗第二原像**（Second Preimage）：给定 m₁，难以找到 m₂≠m₁ 使 `H(m₁)=H(m₂)`
+3. **抗碰撞**（Collision Resistance）：难以找到任意 m₁≠m₂ 使 `H(m₁)=H(m₂)`
+
+**生日攻击**：对 n 位哈希，找碰撞的期望复杂度约 `2^(n/2)`，所以 SHA-1（160 位）在 2017 年被 Google SHAttered 攻破，应使用 SHA-256 及以上。
+
+**MD5 / SHA-1 已不安全**，但在数据指纹、校验和等非安全场景仍可使用。
+
+### PKI 与信任模型
+
+**PKI（Public Key Infrastructure）** 解决的根本问题：**如何把公钥可靠地绑定到身份**。
+
+核心要素：
+
+```
+Root CA（根证书，自签名）
+   ├── Intermediate CA（中间证书）
+   │      ├── End-Entity Certificate（终端实体证书）
+   │      └── Revocation（CRL / OCSP）
+   └── Trust Store（操作系统/浏览器预置根证书列表）
+```
+
+- **证书（X.509）**：绑定公钥 + 主体 + 有效期 + 签发者 + 扩展信息
+- **证书链验证**：从叶子逐级向上验证签名，最终落到受信根
+- **吊销机制**：
+  - **CRL（证书吊销列表）**：CA 定期发布已吊销证书序列号列表
+  - **OCSP（在线证书状态协议）**：实时查询单个证书状态
+  - **OCSP Stapling**：服务端附带 CA 签名的状态响应，减轻客户端查询
+- **证书透明度（Certificate Transparency, RFC 6962）**：所有证书公开记录到可审计日志，防止 CA 误签发
+
+### 前向安全（Forward Secrecy）
+
+即使长期私钥泄露，过去的会话流量 **仍不可解密**。实现方式是每次会话用 **临时 Diffie-Hellman（ECDHE）** 协商会话密钥。TLS 1.3 强制所有密码套件使用 (EC)DHE，天然具备 PFS。
+
+### 随机数与熵
+
+密码学对随机数的要求极高：
+
+- **不可预测**：下一位与前所有位独立
+- **均匀分布**：每个值等概率
+- **不可重现**：外部观察者无法推断种子
+
+必须使用 **CSPRNG（密码学安全伪随机数生成器）**：Node.js `crypto.randomBytes`、Linux `/dev/urandom`、Web Crypto `crypto.getRandomValues`。**禁用** `Math.random()`、C 的 `rand()`、Python 的 `random` 于密码学场景。
+
+### 机密计算与同态加密
+
+- **机密计算（Confidential Computing）**：在可信执行环境（TEE，如 Intel SGX、AMD SEV、ARM CCA）中处理数据，保证数据"使用中"也不被主机读取
+- **同态加密（Homomorphic Encryption）**：直接在密文上进行运算，结果解密后等于对明文运算。完全同态加密（FHE）性能尚待成熟
+- **零知识证明（ZKP）**：证明某命题为真，不泄露额外信息（zk-SNARK / zk-STARK）
+
+## 🎯 密码学基础
+
+### 三大加密算法类型
+
+| 类型 | 代表算法 | 密钥特点 | 典型用途 |
+|------|---------|---------|---------|
+| 对称加密 | AES-256-GCM, ChaCha20-Poly1305 | 加密/解密同一把密钥 | 数据存储加密、大文件加密 |
+| 非对称加密 | RSA-2048/4096, ECDSA, Ed25519 | 公钥/私钥一对 | 密钥交换、数字签名 |
+| 哈希 | SHA-256, SHA-3, BLAKE2 | 单向函数，不可逆 | 完整性校验、口令存储（配合加盐） |
+
+### 对称加密：AES-GCM
+
+AES-GCM 是当前推荐的对称加密模式，同时提供 **机密性** 和 **完整性**（AEAD）。
+
+```js
+import crypto from 'node:crypto'
+
+const ALGORITHM = 'aes-256-gcm'
+const KEY_LENGTH = 32 // 256 bit
+const IV_LENGTH = 12  // GCM 推荐 96 bit
+const TAG_LENGTH = 16
+
+function encryptAesGcm(plaintext, key) {
+  if (key.length !== KEY_LENGTH) {
+    throw new Error('Key must be 32 bytes')
+  }
+  const iv = crypto.randomBytes(IV_LENGTH)
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv)
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+  const authTag = cipher.getAuthTag()
+
+  // 输出结构：iv || authTag || ciphertext
+  return Buffer.concat([iv, authTag, ciphertext]).toString('base64')
+}
+
+function decryptAesGcm(encoded, key) {
+  const data = Buffer.from(encoded, 'base64')
+  const iv = data.subarray(0, IV_LENGTH)
+  const authTag = data.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH)
+  const ciphertext = data.subarray(IV_LENGTH + TAG_LENGTH)
+
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv)
+  decipher.setAuthTag(authTag)
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8')
+}
+
+// 使用示例
+const key = crypto.randomBytes(KEY_LENGTH)
+const encrypted = encryptAesGcm('sensitive data', key)
+const decrypted = decryptAesGcm(encrypted, key)
+console.log('Encrypted:', encrypted)
+console.log('Decrypted:', decrypted)
+```
+
+### 非对称加密：RSA 与 ECDSA
+
+```js
+import crypto from 'node:crypto'
+
+// 生成 RSA 密钥对
+const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+})
+
+// 数字签名
+function sign(message, privateKeyPem) {
+  const signer = crypto.createSign('RSA-SHA256')
+  signer.update(message)
+  return signer.sign(privateKeyPem, 'base64')
+}
+
+function verify(message, signature, publicKeyPem) {
+  const verifier = crypto.createVerify('RSA-SHA256')
+  verifier.update(message)
+  return verifier.verify(publicKeyPem, signature, 'base64')
+}
+
+const message = 'transaction:transfer:10000'
+const signature = sign(message, privateKey)
+console.log('Valid:', verify(message, signature, publicKey))
+
+// Ed25519（更现代、更快、更安全）
+const ed = crypto.generateKeyPairSync('ed25519')
+const edSig = crypto.sign(null, Buffer.from(message), ed.privateKey)
+const edValid = crypto.verify(null, Buffer.from(message), ed.publicKey, edSig)
+console.log('Ed25519 Valid:', edValid)
+```
+
+### 口令哈希：绝不要用 SHA-256
+
+普通哈希（SHA-256、MD5）**不适合** 存口令：哈希速度太快，撞库/彩虹表成本极低。应使用专为口令设计的慢哈希：bcrypt、scrypt、Argon2。
+
+```js
+import bcrypt from 'bcryptjs'
+import crypto from 'node:crypto'
+
+// ✅ bcrypt（经典选择）
+async function hashPasswordBcrypt(password) {
+  const saltRounds = 12 // 根据硬件能力调整，登录耗时 ~250ms 是合适阈值
+  return bcrypt.hash(password, saltRounds)
+}
+
+async function verifyPasswordBcrypt(password, hash) {
+  return bcrypt.compare(password, hash)
+}
+
+// ✅ Argon2id（OWASP 2023+ 推荐首选）
+// 需要安装：npm install argon2
+// import argon2 from 'argon2'
+// const hash = await argon2.hash(password, { type: argon2.argon2id })
+
+// ✅ scrypt（Node.js 内置）
+function hashPasswordScrypt(password) {
+  const salt = crypto.randomBytes(16)
+  const derived = crypto.scryptSync(password, salt, 64, {
+    N: 2 ** 15, // CPU/内存成本
+    r: 8,
+    p: 1,
+  })
+  return `scrypt${salt.toString('hex')}${derived.toString('hex')}`
+}
+
+function verifyPasswordScrypt(password, stored) {
+  const [algo, saltHex, derivedHex] = stored.split('
+)
+  if (algo !== 'scrypt') return false
+  const salt = Buffer.from(saltHex, 'hex')
+  const expected = Buffer.from(derivedHex, 'hex')
+  const actual = crypto.scryptSync(password, salt, expected.length, { N: 2 ** 15, r: 8, p: 1 })
+  return crypto.timingSafeEqual(actual, expected)
+}
+
+// 使用示例
+const hashed = await hashPasswordBcrypt('P@ssw0rd!')
+console.log('Match:', await verifyPasswordBcrypt('P@ssw0rd!', hashed))
+```
+
+## 🎯 传输层安全（TLS/SSL）
+
+### TLS 1.3 握手流程
+
+TLS 1.3 简化了握手流程，仅需 **1-RTT**（0-RTT 可选）即可完成密钥协商：
+
+```
+Client                                    Server
+  |---- ClientHello (supported versions,    |
+  |      cipher suites, key share) -------->|
+  |<-- ServerHello (version, cipher,        |
+  |     key share, cert, signature) --------|
+  |<-- EncryptedExtensions, Certificate,    |
+  |     CertificateVerify, Finished --------|
+  |---- Finished, (encrypted data) -------->|
+  |<-----------(encrypted data)-------------|
+```
+
+### Node.js HTTPS 服务配置
+
+```js
+import https from 'node:https'
+import fs from 'node:fs'
+import express from 'express'
+
+const app = express()
+app.get('/', (req, res) => res.send('Secure Hello'))
+
+const options = {
+  key: fs.readFileSync('/etc/letsencrypt/live/example.com/privkey.pem'),
+  cert: fs.readFileSync('/etc/letsencrypt/live/example.com/fullchain.pem'),
+
+  // 仅允许 TLS 1.2+
+  minVersion: 'TLSv1.2',
+  // 推荐 TLS 1.3 为首选
+  maxVersion: 'TLSv1.3',
+
+  // 现代加密套件（OpenSSL 格式）
+  ciphers: [
+    'TLS_AES_256_GCM_SHA384',
+    'TLS_CHACHA20_POLY1305_SHA256',
+    'TLS_AES_128_GCM_SHA256',
+    'ECDHE-ECDSA-AES256-GCM-SHA384',
+    'ECDHE-RSA-AES256-GCM-SHA384',
+    'ECDHE-ECDSA-CHACHA20-POLY1305',
+    'ECDHE-RSA-CHACHA20-POLY1305',
+  ].join(':'),
+
+  honorCipherOrder: true,
+}
+
+https.createServer(options, app).listen(443, () => {
+  console.log('HTTPS listening on :443')
+})
+```
+
+### HSTS：强制 HTTPS
+
+```js
+import helmet from 'helmet'
+
+app.use(
+  helmet.hsts({
+    maxAge: 31536000,      // 1 年
+    includeSubDomains: true,
+    preload: true,         // 可提交至 https://hstspreload.org
+  })
+)
+```
+
+### mTLS（双向 TLS）
+
+服务间通信推荐使用 mTLS，双方都需证书验证身份：
+
+```js
+import https from 'node:https'
+import fs from 'node:fs'
+
+const server = https.createServer({
+  key: fs.readFileSync('server-key.pem'),
+  cert: fs.readFileSync('server-cert.pem'),
+  ca: fs.readFileSync('ca-cert.pem'), // 信任的 CA
+  requestCert: true,       // 要求客户端提供证书
+  rejectUnauthorized: true, // 证书不合法则拒绝
+}, (req, res) => {
+  const cert = req.socket.getPeerCertificate()
+  res.end(`Hello, ${cert.subject.CN}`)
+})
+
+server.listen(8443)
+```
+
+### 证书自动化：Let's Encrypt + certbot
+
+```bash
+# 使用 certbot 申请/续签免费证书
+certbot certonly --standalone -d example.com -d www.example.com
+
+# 自动续签（放入 crontab）
+0 3 * * * certbot renew --quiet --deploy-hook "systemctl reload nginx"
+```
+
+## 🎯 数据脱敏
+
+### 脱敏方法分类
+
+| 方法 | 说明 | 适用场景 |
+|------|------|---------|
+| 遮蔽（Masking） | 用固定字符替换部分 | 展示层：手机、身份证 |
+| 泛化（Generalization） | 降低精度 | 日志：IP 去后段、生日变年龄段 |
+| 加密/Tokenization | 可逆/不可逆映射 | 存储：订单号、用户 ID |
+| 假名化（Pseudonymization） | 用无意义 ID 替换 | 数据分析、研发环境 |
+| 差分隐私 | 注入受控噪声 | 统计分析 |
+
+### 常见脱敏实现
+
+```js
+// 1. 手机号脱敏：138****1234
+function maskPhone(phone) {
+  if (!/^\d{11}$/.test(phone)) return phone
+  return phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2')
+}
+
+// 2. 身份证脱敏：保留前 6 位 + 后 4 位
+function maskIdCard(id) {
+  if (typeof id !== 'string' || id.length < 10) return id
+  return id.slice(0, 6) + '*'.repeat(id.length - 10) + id.slice(-4)
+}
+
+// 3. 邮箱脱敏：a***e@example.com
+function maskEmail(email) {
+  const [local, domain] = email.split('@')
+  if (!domain) return email
+  if (local.length <= 2) return `${local[0]}*@${domain}`
+  return `${local[0]}${'*'.repeat(local.length - 2)}${local.slice(-1)}@${domain}`
+}
+
+// 4. 银行卡号脱敏：保留后 4 位
+function maskBankCard(card) {
+  const digits = String(card).replace(/\s/g, '')
+  if (digits.length < 6) return card
+  return '*'.repeat(digits.length - 4) + digits.slice(-4)
+}
+
+// 5. 姓名脱敏
+function maskName(name) {
+  if (!name) return name
+  if (name.length === 1) return name
+  if (name.length === 2) return name[0] + '*'
+  return name[0] + '*'.repeat(name.length - 2) + name.slice(-1)
+}
+
+// 6. IP 脱敏（保留前两段）
+function maskIp(ip) {
+  const parts = String(ip).split('.')
+  if (parts.length !== 4) return ip
+  return `${parts[0]}.${parts[1]}.*.*`
+}
+
+console.log(maskPhone('13812341234'))       // 138****1234
+console.log(maskIdCard('110101199001011234')) // 110101********1234
+console.log(maskEmail('alice@example.com'))  // a***e@example.com
+console.log(maskBankCard('6222021234567890')) // ************7890
+console.log(maskName('张三丰'))                // 张*丰
+console.log(maskIp('192.168.1.100'))         // 192.168.*.*
+```
+
+### Tokenization：用 Token 替换敏感值
+
+在支付、医疗等场景，将真实卡号/病历号映射为 Token，Token 本身无意义，真实值仅存于高安全区域（Tokenization Vault）：
+
+```js
+import crypto from 'node:crypto'
+import Redis from 'ioredis'
+
+const redis = new Redis()
+
+// 生成 Token 并存储映射
+async function tokenize(rawValue, namespace = 'card') {
+  const token = `tok_${crypto.randomBytes(16).toString('hex')}`
+  const encrypted = encryptAesGcm(rawValue, vaultKey) // 使用上文的函数
+  await redis.set(`${namespace}:${token}`, encrypted)
+  return token
+}
+
+// 查询原值（仅限高权限服务）
+async function detokenize(token, namespace = 'card') {
+  const encrypted = await redis.get(`${namespace}:${token}`)
+  if (!encrypted) return null
+  return decryptAesGcm(encrypted, vaultKey)
+}
+
+const vaultKey = crypto.randomBytes(32)
+```
+
+### 日志脱敏中间件
+
+```js
+const SENSITIVE_FIELDS = ['password', 'token', 'idCard', 'phone', 'creditCard', 'cvv', 'pin']
+
+function sanitizeForLog(value, depth = 0) {
+  if (depth > 5) return '[Truncated]'
+  if (value === null || value === undefined) return value
+  if (Array.isArray(value)) return value.map((v) => sanitizeForLog(v, depth + 1))
+  if (typeof value === 'object') {
+    const out = {}
+    for (const [k, v] of Object.entries(value)) {
+      if (SENSITIVE_FIELDS.includes(k)) {
+        out[k] = '***'
+      } else if (k === 'phone' && typeof v === 'string') {
+        out[k] = maskPhone(v)
+      } else {
+        out[k] = sanitizeForLog(v, depth + 1)
+      }
+    }
+    return out
+  }
+  return value
+}
+
+// Express 日志中间件
+function safeLogger(req, res, next) {
+  console.log(JSON.stringify({
+    method: req.method,
+    path: req.path,
+    body: sanitizeForLog(req.body),
+    headers: sanitizeForLog({ authorization: req.headers.authorization }),
+  }))
+  next()
+}
+```
+
+## 🎯 密钥管理
+
+### 密钥分层体系（Envelope Encryption）
+
+大规模系统的密钥管理采用"**信封加密**"：
+
+```
+用户数据 ── DEK ──> 密文                  （Data Encryption Key）
+  DEK    ── KEK ──> 加密后的 DEK           （Key Encryption Key，存储在 KMS）
+  KEK    ── HSM / 根密钥保护
+```
+
+- **DEK**：对称密钥，加密实际数据，可一数据一密
+- **KEK**：主密钥，用于加密 DEK，由 KMS 管理，永不出 KMS 明文
+- **KMS**：云厂商的密钥管理服务（AWS KMS、阿里云 KMS、HashiCorp Vault）
+
+```js
+import crypto from 'node:crypto'
+
+// 简化示意：使用 KEK 加密 DEK
+function generateDek() {
+  return crypto.randomBytes(32)
+}
+
+function wrapDek(dek, kek) {
+  return encryptAesGcm(dek.toString('base64'), kek) // 复用上文函数
+}
+
+function unwrapDek(wrapped, kek) {
+  return Buffer.from(decryptAesGcm(wrapped, kek), 'base64')
+}
+
+// 加密流程
+function encryptWithEnvelope(plaintext, kek) {
+  const dek = generateDek()
+  const ciphertext = encryptAesGcm(plaintext, dek)
+  const wrappedDek = wrapDek(dek, kek)
+  return { ciphertext, wrappedDek }
+}
+
+function decryptWithEnvelope({ ciphertext, wrappedDek }, kek) {
+  const dek = unwrapDek(wrappedDek, kek)
+  return decryptAesGcm(ciphertext, dek)
+}
+
+// 使用
+const kek = crypto.randomBytes(32) // 实际来自 KMS
+const payload = encryptWithEnvelope('credit card: 6222 0212 3456 7890', kek)
+console.log(decryptWithEnvelope(payload, kek))
+```
+
+### 云厂商 KMS 使用（AWS 示例）
+
+```js
+import { KMSClient, EncryptCommand, DecryptCommand, GenerateDataKeyCommand } from '@aws-sdk/client-kms'
+
+const kms = new KMSClient({ region: 'us-east-1' })
+const KEY_ID = 'arn:aws:kms:us-east-1:123456789012:key/your-key-id'
+
+// 生成数据密钥（明文 + 密文）
+async function generateDataKey() {
+  const resp = await kms.send(
+    new GenerateDataKeyCommand({
+      KeyId: KEY_ID,
+      KeySpec: 'AES_256',
+    })
+  )
+  return {
+    plaintextKey: Buffer.from(resp.Plaintext),
+    encryptedKey: Buffer.from(resp.CiphertextBlob),
+  }
+}
+
+// 应用层加密数据（使用明文 DEK 加密后立即从内存销毁）
+async function encryptData(plaintext) {
+  const { plaintextKey, encryptedKey } = await generateDataKey()
+  const ciphertext = encryptAesGcm(plaintext, plaintextKey)
+  plaintextKey.fill(0) // 内存清零
+  return { ciphertext, encryptedKey: encryptedKey.toString('base64') }
+}
+
+// 解密（每次调用 KMS 解密 DEK）
+async function decryptData({ ciphertext, encryptedKey }) {
+  const resp = await kms.send(
+    new DecryptCommand({ CiphertextBlob: Buffer.from(encryptedKey, 'base64') })
+  )
+  const plaintextKey = Buffer.from(resp.Plaintext)
+  const plaintext = decryptAesGcm(ciphertext, plaintextKey)
+  plaintextKey.fill(0)
+  return plaintext
+}
+```
+
+### 密钥轮换
+
+1. **定期轮换**：根密钥每年，DEK 每 90 天或按数据量
+2. **增量轮换**：新数据用新 DEK，老数据延后重加密或借解密时机"即用即换"
+3. **版本化**：密钥携带版本号，密文中记录版本，支持多版本共存
+4. **自动化**：云 KMS 通常支持自动轮换，配合审计日志
+
+### 密钥管理原则
+
+- **绝不提交到代码仓库**：使用 `.gitignore`、密钥扫描（`gitleaks`、`trufflehog`）
+- **最小权限访问**：基于 IAM 策略限制 KMS 调用者与 key 范围
+- **审计所有操作**：KMS 调用必须接入日志审计
+- **环境隔离**：开发、测试、生产使用不同密钥
+- **灾备**：跨区域复制、密钥材料离线备份
+
+## 📝 实际应用示例：敏感字段加密存储
+
+以下示例综合演示一条完整的"信封加密 + 数据脱敏 + 日志安全"链路：
+
+```js
+import crypto from 'node:crypto'
+import express from 'express'
+
+const app = express()
+app.use(express.json())
+
+// 模拟数据库
+const db = new Map()
+
+// 模拟 KMS 的根密钥（实际来自云 KMS）
+const rootKey = crypto.randomBytes(32)
+
+// 复用前文定义的加密/脱敏函数
+const ALGORITHM = 'aes-256-gcm'
+function encryptAesGcm(plaintext, key) {
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv)
+  const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+  return Buffer.concat([iv, cipher.getAuthTag(), ct]).toString('base64')
+}
+function decryptAesGcm(encoded, key) {
+  const buf = Buffer.from(encoded, 'base64')
+  const iv = buf.subarray(0, 12)
+  const tag = buf.subarray(12, 28)
+  const ct = buf.subarray(28)
+  const d = crypto.createDecipheriv(ALGORITHM, key, iv)
+  d.setAuthTag(tag)
+  return Buffer.concat([d.update(ct), d.final()]).toString('utf8')
+}
+function maskPhone(p) {
+  return String(p).replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')
+}
+function maskIdCard(id) {
+  return String(id).replace(/^(\d{6})\d+(\d{4})$/, '$1********$2')
+}
+
+// 信封加密
+function envelopeEncrypt(plaintext) {
+  const dek = crypto.randomBytes(32)
+  const ciphertext = encryptAesGcm(plaintext, dek)
+  const wrappedDek = encryptAesGcm(dek.toString('base64'), rootKey)
+  dek.fill(0)
+  return { ciphertext, wrappedDek, version: 1 }
+}
+
+function envelopeDecrypt({ ciphertext, wrappedDek }) {
+  const dekB64 = decryptAesGcm(wrappedDek, rootKey)
+  const dek = Buffer.from(dekB64, 'base64')
+  const plaintext = decryptAesGcm(ciphertext, dek)
+  dek.fill(0)
+  return plaintext
+}
+
+// 创建用户（存储时加密，返回时脱敏）
+app.post('/api/users', (req, res) => {
+  const { name, phone, idCard } = req.body
+  const id = crypto.randomUUID()
+  db.set(id, {
+    id,
+    name,
+    phone: envelopeEncrypt(phone),
+    idCard: envelopeEncrypt(idCard),
+    createdAt: new Date().toISOString(),
+  })
+  res.status(201).json({
+    id,
+    name,
+    phone: maskPhone(phone),
+    idCard: maskIdCard(idCard),
+  })
+})
+
+// 查询用户（默认返回脱敏数据）
+app.get('/api/users/:id', (req, res) => {
+  const user = db.get(req.params.id)
+  if (!user) return res.status(404).json({ error: 'Not found' })
+
+  const showFull = req.query.full === '1' && req.headers['x-admin-token'] === process.env.ADMIN_TOKEN
+  const phone = envelopeDecrypt(user.phone)
+  const idCard = envelopeDecrypt(user.idCard)
+
+  res.json({
+    id: user.id,
+    name: user.name,
+    phone: showFull ? phone : maskPhone(phone),
+    idCard: showFull ? idCard : maskIdCard(idCard),
+    createdAt: user.createdAt,
+  })
+})
+
+app.listen(3000, () => console.log('Data security demo on :3000'))
+```
+
+## 🔗 相关概念
+
+- **AEAD**：同时提供加密与完整性校验的算法模式（AES-GCM、ChaCha20-Poly1305）
+- **TLS 1.3**：现代加密传输协议，推荐最低版本
+- **信封加密**：DEK + KEK 的分层密钥架构
+- **Tokenization**：用无意义 Token 替代敏感数据的脱敏手段
+- **KMS**：密钥管理服务，是现代密码学工程的基石
+
+## 📚 学习检查点
+
+- [ ] 能否说出 AES-GCM 相较 AES-CBC 的优势？
+- [ ] 能否说明为什么不能用 SHA-256 存口令？
+- [ ] 能否配置一个只允许 TLS 1.2+ 和现代加密套件的 HTTPS 服务？
+- [ ] 能否设计一套信封加密方案？
+- [ ] 能否区分加密、脱敏、Tokenization 的适用场景？
+
+## 🚀 下一步
+
+→ [7.2 基础设施安全](../02-infrastructure-security/01-infrastructure-security-overview.mdx)

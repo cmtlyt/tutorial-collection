@@ -1,17 +1,844 @@
 # 合规与审计
 
-> **版本**：v1.0
-> **最后更新**：2026-04-24
+> **版本**：v1.2
+> **最后更新**：2026-04-28
 
-## 📖 概述
+## 📚 概念介绍
 
-讲解安全合规与审计的核心要求，包括等保合规、安全审计日志和隐私保护（GDPR、个人信息保护法）。
+**合规（Compliance）** 是组织遵守法律法规、行业标准与内部策略的能力；**审计（Audit）** 是对合规性进行独立评估的过程。对架构师而言，合规不是事后补丁，而是需要在架构设计阶段就融入的核心约束。
 
-## 🎯 学习目标
+本文讲解国内外主要合规要求（等保 2.0、GDPR、个人信息保护法）、安全审计日志设计，以及满足合规的架构实践。
 
-- 理解等保合规的核心要求和实施流程
-- 掌握安全审计日志的设计和管理
-- 了解 GDPR 和个人信息保护法的核心条款
-- 能够设计满足合规要求的安全架构
+## 📐 理论基础
 
-> 🚧 详细内容正在编写中...
+### GRC 治理模型
+
+**GRC（Governance, Risk, Compliance）** 是企业管理安全与合规的顶层框架：
+
+| 维度 | 中文 | 关注点 |
+|------|------|-------|
+| Governance | 治理 | 战略、角色、流程、绩效度量 |
+| Risk | 风险 | 识别、评估、处置、监控 |
+| Compliance | 合规 | 法规、标准、内部策略的符合性 |
+
+三者关系：**治理定方向、风险提示阻力、合规划定底线**。
+
+### 三线防御模型（Three Lines of Defense）
+
+IIA（国际内部审计师协会）提出的治理模型，已在金融/医疗/政务领域普遍采纳：
+
+```
+第一线：业务部门（风险所有者）         ← 日常运营与控制
+第二线：风险管理 + 合规 + 信息安全     ← 策略、监督、指导
+第三线：内部审计                       ← 独立保证
+              ↑
+        外部审计 + 监管部门
+```
+
+### 主流安全与合规框架全景
+
+```
+战略层（指引）      ISO 27001 / NIST CSF / COBIT / ISO 31000
+           ↓
+控制层（控制集合）  NIST SP 800-53 / ISO 27002 / CIS Controls
+           ↓
+技术层（具体实践）  CIS Benchmark / OWASP ASVS / PCI DSS 技术要求
+           ↓
+法律层（监管要求）  GDPR / PIPL / HIPAA / SOX / 等保 2.0 / 关基条例
+```
+
+### NIST Cybersecurity Framework（CSF 2.0）
+
+2024 年 NIST 发布 CSF 2.0，六大核心功能（Function）：
+
+```
+Govern（治理）← 2.0 新增，覆盖其他五项
+    ↓
+Identify → Protect → Detect → Respond → Recover
+ 识别        保护       检测      响应       恢复
+```
+
+每个 Function 下有 Category（类别）、Subcategory（子类别），可映射到 ISO 27001、NIST SP 800-53、CIS 等控制。
+
+### ISO 27001 与 ISMS
+
+**ISO/IEC 27001** 定义 **ISMS（信息安全管理体系）** 的要求，基于 PDCA 循环：
+
+```
+Plan（计划） → Do（执行） → Check（检查） → Act（改进）
+ 建立 ISMS      实施运行        监控评估          维护改进
+```
+
+ISO 27002 作为配套，给出 **93 项控制**（2022 版）分 4 类：
+
+- 组织控制（37 项）
+- 人员控制（8 项）
+- 物理控制（14 项）
+- 技术控制（34 项）
+
+### ISO 27001 vs SOC 2 vs NIST CSF
+
+| 维度 | ISO 27001 | SOC 2 | NIST CSF |
+|------|-----------|-------|----------|
+| 性质 | 国际认证标准 | 鉴证报告 | 自愿性框架 |
+| 颁发方 | 认证机构 | 注册会计师 | 自评估 |
+| 认证范围 | ISMS 体系 | 信任原则（5 类） | 灵活定义 |
+| 有效期 | 3 年 + 年审 | 通常 1 年 | 无 |
+| 地区 | 全球 | 美国 / 全球 SaaS | 美国发起，全球参考 |
+
+### 数据主体权利的法理基础
+
+欧盟《通用数据保护条例 GDPR》首次系统化确立了 **数据主体权利**，其理论基础是 **信息自决权**（Informationelle Selbstbestimmung，1983 年德国联邦宪法法院"人口普查案"确立）：**个人有权决定自身信息如何被收集与使用**。
+
+**GDPR 第 15-22 条** 规定的数据主体权利：
+
+| 权利 | 条款 | 含义 |
+|------|------|------|
+| 访问权 | Art. 15 | 要求确认是否被处理并获取副本 |
+| 更正权 | Art. 16 | 要求更正不准确信息 |
+| 删除权（被遗忘权） | Art. 17 | 要求删除其个人数据 |
+| 限制处理权 | Art. 18 | 暂停处理 |
+| 可携带权 | Art. 20 | 以结构化格式取得并转移 |
+| 反对权 | Art. 21 | 反对直销、画像 |
+| 免于自动化决策权 | Art. 22 | 不受仅基于算法决策的约束 |
+
+PIPL 第 44-49 条规定了与之对应的中国版本，并新增 **已故个人信息处理权利由近亲属行使**（第 49 条）。
+
+### Privacy by Design（隐私嵌入式设计）
+
+**Ann Cavoukian** 博士 2009 年提出的 **七条基础原则**，后被 GDPR Art. 25 写入法律：
+
+1. **主动预防而非被动响应**（Proactive not Reactive）
+2. **隐私作为默认设置**（Privacy as the Default Setting）
+3. **嵌入设计中**（Privacy Embedded into Design）
+4. **完整功能，不做取舍**（Full Functionality — Positive-Sum）
+5. **端到端安全**（End-to-End Security — Full Lifecycle Protection）
+6. **可见性与透明度**（Visibility and Transparency）
+7. **尊重用户隐私**（Respect for User Privacy — User-Centric）
+
+### 隐私工程八条原则（NIST PE Framework）
+
+NIST SP 800-207A / IR 8062 将 Privacy by Design 进一步工程化，形成可落地的隐私风险管理模型：**PAI（Privacy Attributes & Identifiability）**，包括可预测性（Predictability）、可管理性（Manageability）、关联性（Disassociability）等属性指标。
+
+### 数据处理合法性基础
+
+GDPR Art. 6 列出 6 类合法性基础（Lawful Basis）：
+
+1. **Consent**（同意）
+2. **Contract**（合同履行）
+3. **Legal Obligation**（法定义务）
+4. **Vital Interests**（保护生命）
+5. **Public Task**（公共利益）
+6. **Legitimate Interests**（合法利益权衡）
+
+PIPL 第 13 条列出 7 类类似基础，并特别要求处理 **敏感个人信息** 时需 **单独同意**（separate consent）。
+
+### 数据跨境流动的法律机制
+
+```
+GDPR（欧盟）                               PIPL（中国）
+─────────────                              ──────────────
+Adequacy Decision（充分性认定）            安全评估（国家网信办）
+Standard Contractual Clauses（SCC）        标准合同（标准合同办法）
+Binding Corporate Rules（BCR）             个人信息保护认证
+Derogations（例外情形）                    法律法规另有规定
+```
+
+### 审计日志的完整性保证
+
+审计日志作为合规的"客观证据"，必须满足 **不可篡改性**。常见技术基础：
+
+| 机制 | 原理 | 典型应用 |
+|------|------|---------|
+| WORM 存储 | 写一次多次读 | 对象存储 Object Lock、磁带归档 |
+| 哈希链 | 每条记录含前一条哈希，链式不可篡改 | Git、审计日志 |
+| Merkle 树 | 树状哈希，O(log n) 证明成员 | 证书透明度 CT Log、区块链 |
+| 时间戳服务 | RFC 3161，可信第三方签发时间 | 电子签名法 |
+| 区块链 | 分布式共识 + 哈希链 | 司法存证、供应链 |
+
+**默克尔树（Merkle Tree）完整性证明**：
+
+```
+            root = H(H12 || H34)
+           /                  \
+    H12 = H(H1||H2)       H34 = H(H3||H4)
+      /     \                /     \
+   H1=H(d1) H2=H(d2)     H3=H(d3) H4=H(d4)
+```
+
+只需 O(log n) 个哈希即可证明某条记录属于该集合，这是 CT Log、Git Object、Bitcoin、Sigstore Rekor 的共同基础。
+
+### 审计日志的 W5H1 要素
+
+一条合规级审计日志需完整回答 **六个 W/H**：
+
+| 要素 | 含义 | 字段 |
+|------|------|------|
+| Who | 谁 | actor.id / name / roles |
+| What | 做了什么 | action / target |
+| When | 何时 | timestamp（带时区） |
+| Where | 何处 | source.ip / device / geoLocation |
+| Why | 为何 | business_reason / ticket_id |
+| How | 如何 | method / path / user_agent |
+
+### 数据分级分类的理论依据
+
+《数据安全法》第 21 条要求数据分级分类。依据 **敏感度 × 影响面** 两维度形成矩阵：
+
+```
+         │ 低敏感度      │  高敏感度
+─────────┼──────────────┼──────────────
+ 低影响  │  公开/内部    │   敏感
+ 高影响  │  重要          │   核心 / 国家级
+```
+
+- **公开**：可不受限对外披露
+- **内部**：仅组织内可访问
+- **敏感**：涉及个人信息或商业秘密
+- **核心**：泄露后危害国家安全、经济命脉、公共利益
+
+关键信息基础设施运营者（CIIO）识别的 **重要数据** 需额外申报。
+
+### 合规度量与成熟度模型
+
+**CMMI / ISO 21827 SSE-CMM** 定义五级成熟度：
+
+| 等级 | 名称 | 特征 |
+|------|------|------|
+| 1 | Initial | 临时、英雄式 |
+| 2 | Managed | 有流程，项目级 |
+| 3 | Defined | 组织级标准流程 |
+| 4 | Quantitatively Managed | 用数据度量 |
+| 5 | Optimizing | 持续改进 |
+
+合规项目通常追求至少达到 **Level 3**，关键流程达 **Level 4**。
+
+### 事件响应与取证（DFIR）
+
+NIST SP 800-61r2 定义 **事件响应生命周期**：
+
+```
+准备 → 检测与分析 → 遏制 → 根除 → 恢复 → 事后回顾
+Preparation → Detection & Analysis → Containment → Eradication → Recovery → Post-Incident
+```
+
+数字取证遵循 **证据链（Chain of Custody）** 原则：任何证据的获取、保存、分析、移交都有可审计记录，否则法庭不予采信。
+
+## 🎯 主要合规框架
+
+### 国内合规
+
+| 法规/标准 | 范围 | 核心要求 |
+|----------|------|---------|
+| 网络安全法 | 所有网络运营者 | 分级保护、网络实名、数据保护 |
+| 数据安全法 | 数据处理活动 | 数据分类分级、重要数据保护 |
+| 个人信息保护法（PIPL） | 处理个人信息 | 最小必要、告知同意、数据出境 |
+| 等保 2.0 | 网络系统 | 五级保护，主流业务要求三级 |
+| 密码法 | 涉密与商用密码 | 商密合规使用 |
+| 金融行业标准 | 金融机构 | JR/T 0071、PCI DSS |
+
+### 国际合规
+
+| 法规/标准 | 地区 | 核心要求 |
+|----------|------|---------|
+| GDPR | 欧盟 | 最严隐私法，数据主体权利，违规可罚全球营收 4% |
+| CCPA / CPRA | 加州 | 消费者隐私权 |
+| HIPAA | 美国医疗 | 医疗信息保护 |
+| SOC 2 | 全球 SaaS | 安全、可用、机密性等 5 大信任原则 |
+| ISO 27001 | 全球 | 信息安全管理体系（ISMS） |
+| PCI DSS | 全球支付 | 持卡人数据保护 |
+
+## 🎯 等保 2.0
+
+### 五个保护等级
+
+| 级别 | 对象 | 示例 |
+|------|------|------|
+| 一级（自主保护） | 一般系统 | 小企业官网 |
+| 二级（指导保护） | 一般业务系统 | 中小企业 ERP |
+| 三级（监督保护） | 关键业务系统 | 金融、电商、政务（最常见） |
+| 四级（强制保护） | 重要基础设施 | 大型银行核心 |
+| 五级（专控保护） | 极端重要系统 | 国家安全系统 |
+
+### 等保三级核心要求（技术类）
+
+1. **安全物理环境**：机房准入、视频监控、防电磁干扰
+2. **安全通信网络**：网络架构清晰、带宽冗余、通信加密
+3. **安全区域边界**：边界设备、入侵检测、防病毒、访问控制
+4. **安全计算环境**：身份鉴别、访问控制、安全审计、恶意代码防护
+5. **安全管理中心**：系统管理、审计管理、安全管理、集中管控
+
+### 等保 3 级关键技术映射
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 安全管理中心（集中日志、统一身份、密钥管理）              │
+└─────────────────────────────────────────────────────┘
+          ↑              ↑              ↑
+┌──────────────┐ ┌──────────────┐ ┌─────────────────┐
+│ 边界：WAF、   │ │ 通信：        │ │ 计算：RBAC、    │
+│ IDS/IPS、   │ │ TLS、VPN     │ │ 审计日志、      │
+│ DDoS 清洗    │ │ 专线         │ │ 双因子认证      │
+└──────────────┘ └──────────────┘ └─────────────────┘
+```
+
+### 等保测评流程
+
+1. **定级**：业务影响定级 + 专家评审 + 主管部门审核
+2. **备案**：到当地网信/公安备案
+3. **建设整改**：依据等保要求建设
+4. **等级测评**：委托测评机构出具报告
+5. **监督检查**：定期接受公安部门检查
+
+## 🎯 GDPR 与 PIPL
+
+### 核心原则对比
+
+| 原则 | GDPR | PIPL |
+|------|------|------|
+| 合法性基础 | 同意、合同、法定义务等 6 类 | 同意、履行合同、法定义务等 7 类 |
+| 最小必要 | 数据最小化原则 | 最小必要原则 |
+| 透明告知 | 明确且易懂的告知 | 告知内容法定 |
+| 数据主体权利 | 访问、更正、删除、可携带、反对 | 类似，新增死亡后权利处理 |
+| 数据出境 | 充分性决定、SCC、BCR | 安全评估、标准合同、认证 |
+| 违规处罚 | 最高 2000 万欧元或全球营收 4% | 最高 5000 万元或营收 5% |
+
+### 数据主体权利的落地
+
+```js
+import express from 'express'
+import crypto from 'node:crypto'
+
+const app = express()
+app.use(express.json())
+
+// 模拟数据仓库
+const userDataStore = new Map()
+const auditLog = []
+
+function writeAudit(event) {
+  auditLog.push({
+    id: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    ...event,
+  })
+}
+
+// 1. 数据访问权（Right to Access）
+app.get('/api/privacy/my-data', authenticate, (req, res) => {
+  const data = userDataStore.get(req.user.sub) || null
+  writeAudit({
+    action: 'privacy.access',
+    subject: req.user.sub,
+    requester: req.user.sub,
+    ip: req.ip,
+  })
+  res.json({ data })
+})
+
+// 2. 数据更正权（Right to Rectification）
+app.patch('/api/privacy/my-data', authenticate, (req, res) => {
+  const current = userDataStore.get(req.user.sub) || {}
+  const updated = { ...current, ...req.body, updatedAt: new Date().toISOString() }
+  userDataStore.set(req.user.sub, updated)
+  writeAudit({
+    action: 'privacy.rectify',
+    subject: req.user.sub,
+    fields: Object.keys(req.body),
+  })
+  res.json({ ok: true })
+})
+
+// 3. 数据可携带权（Right to Data Portability）
+app.get('/api/privacy/export', authenticate, (req, res) => {
+  const data = userDataStore.get(req.user.sub) || {}
+  writeAudit({
+    action: 'privacy.export',
+    subject: req.user.sub,
+    format: 'json',
+  })
+  res.setHeader('Content-Disposition', `attachment; filename="my-data-${req.user.sub}.json"`)
+  res.json({
+    subjectId: req.user.sub,
+    exportedAt: new Date().toISOString(),
+    data,
+  })
+})
+
+// 4. 删除权（Right to Erasure / 被遗忘权）
+app.delete('/api/privacy/my-data', authenticate, async (req, res) => {
+  const subjectId = req.user.sub
+  // 在多系统间传播删除请求
+  await Promise.all([
+    anonymizeInOrderSystem(subjectId),
+    deleteFromAnalytics(subjectId),
+    revokeAllTokens(subjectId),
+  ])
+  userDataStore.delete(subjectId)
+  writeAudit({
+    action: 'privacy.erase',
+    subject: subjectId,
+    reason: req.body?.reason || 'user_request',
+  })
+  res.json({ ok: true, erasedAt: new Date().toISOString() })
+})
+
+// 5. 同意撤回（Right to Withdraw Consent）
+const consentStore = new Map()
+app.post('/api/privacy/consent', authenticate, (req, res) => {
+  const { purpose, granted } = req.body
+  const key = `${req.user.sub}:${purpose}`
+  consentStore.set(key, { granted, updatedAt: new Date().toISOString() })
+  writeAudit({
+    action: 'privacy.consent',
+    subject: req.user.sub,
+    purpose,
+    granted,
+  })
+  res.json({ ok: true })
+})
+
+// 辅助：模拟各子系统的匿名化
+async function anonymizeInOrderSystem(subjectId) {
+  // 将订单中的用户标识替换为匿名 ID，但保留统计价值
+  console.log(`anonymize orders for ${subjectId}`)
+}
+async function deleteFromAnalytics(subjectId) {
+  console.log(`delete analytics for ${subjectId}`)
+}
+async function revokeAllTokens(subjectId) {
+  console.log(`revoke tokens for ${subjectId}`)
+}
+
+function authenticate(req, res, next) {
+  // 简化：真实场景使用 JWT / Session
+  const sub = req.headers['x-user-id']
+  if (!sub) return res.status(401).json({ error: 'Unauthorized' })
+  req.user = { sub }
+  next()
+}
+
+app.listen(3000, () => console.log('Privacy API on :3000'))
+```
+
+### 数据分类分级
+
+```js
+// 数据分级定义（依据《数据安全法》与行业实践）
+export const DataClassification = Object.freeze({
+  PUBLIC: { level: 1, label: '公开', examples: ['产品介绍', '博客文章'] },
+  INTERNAL: { level: 2, label: '内部', examples: ['内部文档', '组织架构'] },
+  CONFIDENTIAL: { level: 3, label: '敏感', examples: ['用户邮箱', '订单信息'] },
+  RESTRICTED: { level: 4, label: '核心', examples: ['身份证号', '银行卡号', '密码'] },
+})
+
+// 基于级别的最小控制要求
+export const DataControlBaseline = Object.freeze({
+  PUBLIC: { encryption: 'optional', masking: 'none', audit: 'access' },
+  INTERNAL: { encryption: 'transit', masking: 'none', audit: 'access' },
+  CONFIDENTIAL: { encryption: 'transit+rest', masking: 'display', audit: 'full' },
+  RESTRICTED: { encryption: 'transit+rest+envelope', masking: 'storage+display', audit: 'full+alert' },
+})
+
+// 数据字段元数据（可用于自动化策略执行）
+export const userFieldMetadata = {
+  id: { classification: 'INTERNAL', pii: false },
+  email: { classification: 'CONFIDENTIAL', pii: true },
+  phone: { classification: 'CONFIDENTIAL', pii: true },
+  idCard: { classification: 'RESTRICTED', pii: true, sensitivePII: true },
+  bankCard: { classification: 'RESTRICTED', pii: true, sensitivePII: true },
+  passwordHash: { classification: 'RESTRICTED', pii: false },
+  createdAt: { classification: 'INTERNAL', pii: false },
+}
+```
+
+### 数据出境合规
+
+1. **安全评估**：由网信办组织评估（重要数据、关键信息基础设施）
+2. **标准合同**：与境外接收方签订国家网信部门制定的标准合同
+3. **个保认证**：通过专业机构的个人信息保护认证
+4. **例外情形**：履行合同、跨境人事管理等
+
+## 🎯 安全审计日志
+
+### 审计日志必备字段
+
+```js
+// 审计事件 Schema
+export const auditEventSchema = {
+  // 事件身份
+  eventId: 'UUID，全局唯一',
+  timestamp: 'ISO 8601，带时区',
+  eventType: '访问 | 变更 | 登录 | 授权 | 配置 | 异常',
+  severity: 'info | warning | error | critical',
+
+  // 主体（谁）
+  actor: {
+    type: 'user | service | system',
+    id: '用户/服务 ID',
+    name: '用户名',
+    roles: ['角色列表'],
+    sessionId: '会话 ID',
+  },
+
+  // 客体（对什么）
+  target: {
+    type: 'resource | api | config',
+    id: '资源 ID',
+    name: '资源名',
+    attributes: { classification: 'RESTRICTED' },
+  },
+
+  // 动作
+  action: 'read | create | update | delete | execute',
+  outcome: 'success | failure | denied',
+  reason: '失败原因（如适用）',
+
+  // 上下文
+  source: {
+    ip: '客户端 IP',
+    userAgent: 'User-Agent',
+    geoLocation: 'GeoIP 结果',
+    device: '设备指纹',
+  },
+
+  // 请求/响应摘要
+  request: {
+    method: 'HTTP 方法',
+    path: '请求路径',
+    requestId: '请求 ID，用于链路追踪',
+  },
+  response: {
+    statusCode: 200,
+    durationMs: 123,
+  },
+
+  // 合规元数据
+  compliance: {
+    regulations: ['GDPR', 'PIPL'],
+    dataCategory: 'CONFIDENTIAL',
+  },
+}
+```
+
+### 审计日志实现
+
+```js
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+
+// 可选：哈希链保证完整性
+class TamperEvidentAuditLog {
+  constructor(filePath) {
+    this.filePath = filePath
+    this.previousHash = this.loadLastHash()
+  }
+
+  loadLastHash() {
+    if (!fs.existsSync(this.filePath)) return null
+    const lines = fs.readFileSync(this.filePath, 'utf8').trim().split('\n').filter(Boolean)
+    if (lines.length === 0) return null
+    const last = JSON.parse(lines[lines.length - 1])
+    return last.hash
+  }
+
+  append(event) {
+    const entry = {
+      ...event,
+      eventId: event.eventId || crypto.randomUUID(),
+      timestamp: event.timestamp || new Date().toISOString(),
+      previousHash: this.previousHash,
+    }
+    const payload = JSON.stringify(entry)
+    entry.hash = crypto.createHash('sha256').update(payload).digest('hex')
+    fs.appendFileSync(this.filePath, JSON.stringify(entry) + '\n')
+    this.previousHash = entry.hash
+    return entry
+  }
+
+  verify() {
+    const lines = fs.readFileSync(this.filePath, 'utf8').trim().split('\n').filter(Boolean)
+    let prev = null
+    for (const line of lines) {
+      const entry = JSON.parse(line)
+      if (entry.previousHash !== prev) {
+        return { valid: false, brokenAt: entry.eventId, reason: 'previousHash mismatch' }
+      }
+      const { hash, ...rest } = entry
+      const expected = crypto.createHash('sha256').update(JSON.stringify(rest)).digest('hex')
+      if (expected !== hash) {
+        return { valid: false, brokenAt: entry.eventId, reason: 'hash mismatch' }
+      }
+      prev = hash
+    }
+    return { valid: true, count: lines.length }
+  }
+}
+
+// 使用
+const logger = new TamperEvidentAuditLog('./audit.log')
+logger.append({
+  eventType: 'access',
+  severity: 'info',
+  actor: { type: 'user', id: 'u_1001', roles: ['editor'] },
+  target: { type: 'resource', id: 'article_42' },
+  action: 'read',
+  outcome: 'success',
+  source: { ip: '203.0.113.10' },
+})
+console.log(logger.verify())
+```
+
+### 日志集中化架构
+
+```
+应用 Pod ──┐
+应用 Pod ──┤─→ Fluent Bit ─→ Kafka ─→ Logstash ─→ Elasticsearch ─→ Kibana
+应用 Pod ──┘                       │
+                                   ↓
+                                SIEM（Splunk/Wazuh/ELK + 规则）
+                                   │
+                                   ↓
+                             告警与自动响应（SOAR）
+```
+
+核心要求（满足等保 / PIPL）：
+
+- **集中存储**：禁止在产生日志的服务器本地单独存储
+- **最少 6 个月**：等保要求审计日志至少保存 6 个月
+- **防篡改**：写入后不可修改（WORM 存储 / 哈希链 / 对象存储版本）
+- **时间一致**：所有主机使用 NTP 同步
+- **敏感字段脱敏**：日志中不得出现明文口令、完整身份证、银行卡号
+
+## 🎯 合规监控与告警
+
+### 关键告警事件
+
+```yaml
+# 基于 ElastAlert / SIEM 的告警规则（YAML 伪配置）
+rules:
+  - name: "管理员登录失败多次"
+    query: "actor.roles:admin AND eventType:login AND outcome:failure"
+    threshold: 5
+    window: 5m
+    severity: critical
+
+  - name: "敏感数据批量导出"
+    query: "action:export AND target.attributes.classification:RESTRICTED"
+    threshold: 1
+    severity: high
+    action: ["notify-soc", "block-user-temp"]
+
+  - name: "非业务时段的敏感操作"
+    query: "target.attributes.classification:(RESTRICTED OR CONFIDENTIAL) AND action:(update OR delete)"
+    time_filter: "hour < 8 OR hour > 20"
+    severity: high
+
+  - name: "异地登录"
+    query: "eventType:login AND outcome:success"
+    condition: "source.geoLocation changed within 1h"
+    severity: medium
+
+  - name: "权限授予变更"
+    query: "action:grant OR action:revoke"
+    severity: high
+    destination: ["soc", "compliance-team"]
+
+  - name: "审计日志完整性异常"
+    query: "auditIntegrity:broken"
+    severity: critical
+```
+
+### 合规度量（Compliance Dashboard）
+
+```js
+// 简化的合规度量计算示例
+function calculateComplianceMetrics(events, period) {
+  const metrics = {
+    // 审计覆盖率：是否所有敏感操作都有日志
+    auditCoverage: 0,
+    // MFA 启用率
+    mfaAdoptionRate: 0,
+    // 数据主体请求平均响应时长（应 <= 30 天）
+    dsarAvgResponseDays: 0,
+    // 高危告警响应及时率（MTTR <= 1h）
+    criticalAlertMttrMinutes: 0,
+    // 加密覆盖率（传输、存储）
+    encryptionCoverage: { transit: 0, rest: 0 },
+    // 权限变更审批率
+    privilegeChangeApprovalRate: 0,
+  }
+
+  const totalSensitiveOps = events.filter(
+    (e) => ['RESTRICTED', 'CONFIDENTIAL'].includes(e.target?.attributes?.classification)
+  ).length
+  const auditedSensitive = events.filter((e) => e.audited === true).length
+  metrics.auditCoverage = totalSensitiveOps === 0 ? 1 : auditedSensitive / totalSensitiveOps
+
+  const logins = events.filter((e) => e.eventType === 'login' && e.outcome === 'success')
+  const withMfa = logins.filter((e) => e.actor?.mfa === true)
+  metrics.mfaAdoptionRate = logins.length === 0 ? 0 : withMfa.length / logins.length
+
+  const dsars = events.filter((e) => e.eventType === 'dsar')
+  if (dsars.length) {
+    const totalMs = dsars.reduce((sum, e) => sum + (e.resolvedAt - e.createdAt), 0)
+    metrics.dsarAvgResponseDays = totalMs / dsars.length / (24 * 3600 * 1000)
+  }
+
+  return metrics
+}
+```
+
+## 🎯 数据保留与删除策略
+
+```js
+// 数据保留策略配置（依据业务 + 法规）
+export const retentionPolicies = [
+  { scope: 'audit.log', retentionDays: 180, disposal: 'archive-then-delete' }, // 等保 180 天
+  { scope: 'user.active', retentionDays: null, disposal: 'while-active' },     // 账号存续期间
+  { scope: 'user.logout', retentionDays: 30, disposal: 'delete' },             // 注销 30 日内
+  { scope: 'order.completed', retentionDays: 365 * 5, disposal: 'archive' },   // 财税 5 年
+  { scope: 'payment.log', retentionDays: 365 * 10, disposal: 'archive' },      // 金融 10 年
+  { scope: 'session', retentionDays: 7, disposal: 'delete' },
+  { scope: 'access.log', retentionDays: 180, disposal: 'delete' },
+]
+
+// 实际删除执行器（cron job 每日跑）
+async function runRetentionJob(storageAdapter) {
+  for (const policy of retentionPolicies) {
+    if (policy.retentionDays === null) continue
+    const cutoff = Date.now() - policy.retentionDays * 24 * 3600 * 1000
+    const result = await storageAdapter.disposeOlderThan(policy.scope, cutoff, policy.disposal)
+    console.log(`[retention] scope=${policy.scope} disposed=${result.count}`)
+  }
+}
+```
+
+## 📝 实际应用示例：合规的请求链路
+
+以下示例将 **认证 → 授权 → 审计 → 脱敏** 串联起来：
+
+```js
+import express from 'express'
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+
+const app = express()
+app.use(express.json())
+
+// 审计日志（复用前文 TamperEvidentAuditLog）
+class TamperEvidentAuditLog {
+  constructor(filePath) {
+    this.filePath = filePath
+    this.previousHash = null
+    if (fs.existsSync(filePath)) {
+      const lines = fs.readFileSync(filePath, 'utf8').trim().split('\n').filter(Boolean)
+      if (lines.length) this.previousHash = JSON.parse(lines[lines.length - 1]).hash
+    }
+  }
+  append(event) {
+    const entry = {
+      ...event,
+      eventId: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      previousHash: this.previousHash,
+    }
+    entry.hash = crypto.createHash('sha256').update(JSON.stringify(entry)).digest('hex')
+    fs.appendFileSync(this.filePath, JSON.stringify(entry) + '\n')
+    this.previousHash = entry.hash
+    return entry
+  }
+}
+const auditLogger = new TamperEvidentAuditLog('./audit.log')
+
+// 数据仓库
+const users = new Map([
+  ['u_1001', { id: 'u_1001', name: '张三', phone: '13812341234', idCard: '110101199001011234' }],
+])
+
+// 脱敏函数
+const mask = {
+  phone: (v) => v.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2'),
+  idCard: (v) => v.replace(/^(\d{6})\d+(\d{4})$/, '$1********$2'),
+}
+
+// 简化鉴权
+function authenticate(req, res, next) {
+  const userId = req.headers['x-user-id']
+  const roles = (req.headers['x-user-roles'] || '').split(',').filter(Boolean)
+  if (!userId) {
+    auditLogger.append({
+      eventType: 'login', severity: 'warning',
+      actor: { type: 'anonymous' },
+      action: 'authenticate', outcome: 'failure', reason: 'missing credentials',
+      source: { ip: req.ip },
+    })
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  req.user = { id: userId, roles }
+  next()
+}
+
+// 授权 + 审计中间件
+function authorizeAndAudit(permission, targetType) {
+  return (req, res, next) => {
+    const allowed = req.user.roles.includes('admin') || req.user.roles.includes(permission)
+    const event = {
+      eventType: 'access',
+      severity: allowed ? 'info' : 'warning',
+      actor: { type: 'user', id: req.user.id, roles: req.user.roles },
+      target: { type: targetType, id: req.params.id },
+      action: req.method === 'GET' ? 'read' : 'write',
+      outcome: allowed ? 'success' : 'denied',
+      source: { ip: req.ip, userAgent: req.headers['user-agent'] },
+      request: { method: req.method, path: req.path },
+      compliance: { regulations: ['PIPL'], dataCategory: 'RESTRICTED' },
+    }
+
+    if (!allowed) {
+      auditLogger.append(event)
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+    res.on('finish', () => {
+      event.response = { statusCode: res.statusCode }
+      auditLogger.append(event)
+    })
+    next()
+  }
+}
+
+// 路由：读取用户（默认脱敏，仅特权角色看完整）
+app.get('/api/users/:id', authenticate, authorizeAndAudit('user:read', 'user'), (req, res) => {
+  const user = users.get(req.params.id)
+  if (!user) return res.status(404).json({ error: 'Not found' })
+  const showFull = req.user.roles.includes('compliance-officer')
+  res.json({
+    id: user.id,
+    name: user.name,
+    phone: showFull ? user.phone : mask.phone(user.phone),
+    idCard: showFull ? user.idCard : mask.idCard(user.idCard),
+  })
+})
+
+app.listen(3000, () => console.log('Compliance demo on :3000'))
+```
+
+## 🔗 相关概念
+
+- **等保 2.0**：中国网络安全等级保护 2.0 国家标准
+- **GDPR / PIPL**：欧盟与中国的隐私保护法规
+- **审计日志**：合规体系的"黑匣子"
+- **数据分级分类**：差异化保护的基础
+- **SIEM / SOAR**：集中化监控与自动化响应
+
+## 📚 学习检查点
+
+- [ ] 能否说清等保 2.0 三级对应的主要技术要求？
+- [ ] 能否设计一套满足 GDPR / PIPL 数据主体权利的 API？
+- [ ] 能否设计防篡改的审计日志方案？
+- [ ] 能否为企业制定数据分级分类与保留策略？
+- [ ] 能否搭建一套合规监控与告警体系？
+
+## 🚀 下一步
+
+→ [第八阶段：架构软技能](/architect/08-architect-soft-skills/01-architecture-documentation/01-architecture-documentation-overview)
