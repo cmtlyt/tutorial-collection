@@ -1,7 +1,7 @@
 # LLM 应用开发
 
-> **版本**：v1.1  
-> **最后更新**：2026-04-16
+> **版本**：v1.2  
+> **最后更新**：2026-04-30
 
 ## 📖 概述
 
@@ -36,7 +36,7 @@ Tools 是 LLM 可以调用的外部功能，如搜索、计算、数据库查询
 ### 安装
 
 ```bash
-npm install @langchain/core @langchain/openai
+pnpm add langchain @langchain/core @langchain/openai @langchain/langgraph @langchain/community zod
 ```
 
 ### 基础使用
@@ -48,7 +48,7 @@ import { ChatOpenAI } from '@langchain/openai';
 
 // 初始化 LLM
 const llm = new ChatOpenAI({
-  model: 'gpt-4',
+  model: 'gpt-4o',
   temperature: 0.7,
 });
 
@@ -60,7 +60,10 @@ console.log(response.content);
 #### 使用 Prompt Template
 
 ```javascript
+import { ChatOpenAI } from '@langchain/openai';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
+
+const llm = new ChatOpenAI({ model: 'gpt-4o' });
 
 // 创建提示词模板
 const prompt = ChatPromptTemplate.fromMessages([
@@ -89,7 +92,7 @@ import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 
 // 创建 LLM
-const llm = new ChatOpenAI({ model: 'gpt-4' });
+const llm = new ChatOpenAI({ model: 'gpt-4o' });
 
 // 创建提示词模板
 const prompt = ChatPromptTemplate.fromTemplate(
@@ -119,7 +122,7 @@ import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 
 // LLM 实例
-const llm = new ChatOpenAI({ model: 'gpt-4' });
+const llm = new ChatOpenAI({ model: 'gpt-4o' });
 
 // 第一步：总结
 const summarizePrompt = ChatPromptTemplate.fromTemplate(
@@ -148,74 +151,99 @@ console.log(result);
 
 ### Memory（记忆）系统
 
-#### 对话缓冲记忆
+#### 最简单的上下文记忆
+
+最简单的多轮对话可以从消息数组开始：每轮调用前传入已有历史，调用后把用户消息和模型回复追加到数组中。
 
 ```javascript
 import { ChatOpenAI } from '@langchain/openai';
-import { ChatPromptTemplate } from '@langchain/core/prompts';
-import { ConversationBufferMemory } from '@langchain/memory';
 
-// LLM 实例
-const llm = new ChatOpenAI({ model: 'gpt-4' });
-
-// 创建记忆
-const memory = new ConversationBufferMemory({
-  returnMessages: true,
-  memoryKey: 'history',
+const llm = new ChatOpenAI({
+  model: 'gpt-4o',
+  temperature: 0.7,
 });
 
-// 创建提示词模板（包含历史消息）
-const prompt = ChatPromptTemplate.fromMessages([
-  ['system', '你是一个友好的助手。'],
-  ['placeholder', '{history}'],
-  ['user', '{input}'],
-]);
+const messages = [
+  ['system', '你是一个专业的程序员。'],
+  ['user', '如何学习 JavaScript？'],
+];
 
-// 构建链
-const chain = prompt.pipe(llm);
+const response1 = await llm.invoke(messages);
+console.log(response1.content);
 
-// 第一次对话
-const input1 = '我叫张三';
-const response1 = await chain.invoke({
-  input: input1,
-  history: await memory.loadMemoryVariables({}).history,
-});
+messages.push(['assistant', response1.content]);
+messages.push(['user', '请根据我刚才的问题，给一个 3 周学习计划。']);
 
-// 保存到记忆
-await memory.saveContext({ input: input1 }, { output: response1.content });
-
-// 第二次对话
-const input2 = '我叫什么名字？';
-const response2 = await chain.invoke({
-  input: input2,
-  history: await memory.loadMemoryVariables({}).history,
-});
-
-console.log(response2.content); // 应该记住用户叫张三
+const response2 = await llm.invoke(messages);
+console.log(response2.content);
 ```
 
-#### 窗口记忆
+#### LangGraph 短期记忆
+
+当对话需要交给 Agent 管理时，可以使用 LangGraph 的 checkpointer。相同 `thread_id` 下的多次调用会共享同一份会话状态。
 
 ```javascript
-import { ConversationBufferWindowMemory } from '@langchain/memory';
+import { createAgent } from 'langchain';
+import { MemorySaver } from '@langchain/langgraph';
 
-// 只保留最近 k 条消息
-const memory = new ConversationBufferWindowMemory({
-  k: 3, // 只保留最近 3 轮对话
-  returnMessages: true,
+const checkpointer = new MemorySaver();
+
+const agent = createAgent({
+  model: 'openai:gpt-4o',
+  tools: [],
+  systemPrompt: '你是一个友好的助手。',
+  checkpointer,
 });
+
+const config = {
+  configurable: {
+    thread_id: 'user-zhangsan-session-1',
+  },
+};
+
+await agent.invoke(
+  {
+    messages: [{ role: 'user', content: '我叫张三。' }],
+  },
+  config
+);
+
+const result = await agent.invoke(
+  {
+    messages: [{ role: 'user', content: '我叫什么名字？' }],
+  },
+  config
+);
+
+console.log(result.messages.at(-1).content);
 ```
 
-#### 总结记忆
+#### 长对话上下文管理
+
+长对话不要无限追加历史消息。常见做法是只保留最近消息、按 token 截断，或把较早对话总结成一条系统上下文。
 
 ```javascript
-import { ConversationSummaryMemory } from '@langchain/memory';
+import { ChatOpenAI } from '@langchain/openai';
 
-// 自动总结旧消息，节省 token
-const memory = new ConversationSummaryMemory({
-  llm: new ChatOpenAI({ model: 'gpt-3.5-turbo' }),
-  returnMessages: true,
-});
+const llm = new ChatOpenAI({ model: 'gpt-4o-mini' });
+
+function keepRecentMessages(messages, maxMessages) {
+  const systemMessages = messages.filter(([role]) => role === 'system');
+  const chatMessages = messages.filter(([role]) => role !== 'system');
+  return [...systemMessages, ...chatMessages.slice(-maxMessages)];
+}
+
+const messages = [
+  ['system', '你是一个专业的技术顾问。'],
+  ['user', '什么是 React？'],
+  ['assistant', 'React 是一个用于构建用户界面的 JavaScript 库。'],
+  ['user', '它和 Vue 有什么区别？'],
+];
+
+const compactMessages = keepRecentMessages(messages, 3);
+const response = await llm.invoke(compactMessages);
+
+console.log(response.content);
 ```
 
 ### Tools（工具）集成
@@ -275,94 +303,47 @@ console.log(result); // 北京的天气：25°C，晴天
 
 ### Agents（智能体）
 
-#### ReAct Agent
+#### 使用 createAgent
+
+LangChain v1 中可以使用 `createAgent` 创建 Agent。它在 LangGraph 之上封装了常见的状态管理、持久化和工具调用流程。
 
 ```javascript
-import { ChatOpenAI } from '@langchain/openai';
-import { initializeAgentExecutorWithOptions } from 'langchain/agents';
-import { SerpAPI } from '@langchain/community/tools/serpapi';
-import { Calculator } from '@langchain/community/tools/calculator';
+import { createAgent, tool } from 'langchain';
+import { z } from 'zod';
 
-// 初始化 LLM
-const llm = new ChatOpenAI({ model: 'gpt-4', temperature: 0 });
-
-// 准备工具
-const tools = [
-  new SerpAPI({ apiKey: process.env.SERPAPI_API_KEY }),
-  new Calculator(),
-];
-
-// 创建 Agent
-const agentExecutor = await initializeAgentExecutorWithOptions(tools, llm, {
-  agentType: 'zero-shot-react-description',
-  verbose: true,
-});
-
-// 运行 Agent
-const result = await agentExecutor.run(
-  '苹果公司现在的股价是多少？如果我有100股，价值多少美元？'
+const stockValueTool = tool(
+  async ({ price, shares }) => {
+    return `${shares} 股的总价值是 ${(price * shares).toFixed(2)} 美元。`;
+  },
+  {
+    name: 'stock_value_calculator',
+    description: '根据股价和股数计算股票总价值。',
+    schema: z.object({
+      price: z.number().positive().describe('每股价格'),
+      shares: z.number().int().positive().describe('持有股数'),
+    }),
+  }
 );
 
-console.log(result);
+const agent = createAgent({
+  model: 'openai:gpt-4o',
+  tools: [stockValueTool],
+  systemPrompt: '你是一个会使用工具解决问题的助手。',
+});
+
+const result = await agent.invoke({
+  messages: [
+    {
+      role: 'user',
+      content: '如果我有 100 股，每股 12.5 美元，总价值是多少？',
+    },
+  ],
+});
+
+console.log(result.messages.at(-1).content);
 ```
 
-Agent 的工作原理（Python 示例）：
-
-```python
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain.tools import Tool
-from langchain_openai import ChatOpenAI
-from langchain import hub
-
-# ReAct Agent 的核心思想：Reasoning + Acting
-# 1. Thought（思考）：分析当前情况
-# 2. Action（行动）：选择合适的工具
-# 3. Observation（观察）：获取工具执行结果
-# 4. 重复上述步骤直到完成
-
-def search_tool(query: str) -> str:
-    """搜索工具"""
-    return f"搜索结果：{query}"
-
-def calculator_tool(expression: str) -> str:
-    """计算器工具"""
-    try:
-        result = eval(expression)
-        return f"计算结果：{result}"
-    except:
-        return "计算错误"
-
-# 定义工具
-tools = [
-    Tool(
-        name="Search",
-        func=search_tool,
-        description="用于搜索信息的工具"
-    ),
-    Tool(
-        name="Calculator",
-        func=calculator_tool,
-        description="用于数学计算的工具"
-    )
-]
-
-# 初始化 LLM
-llm = ChatOpenAI(model="gpt-4", temperature=0)
-
-# 加载 ReAct prompt
-prompt = hub.pull("hwchase17/react")
-
-# 创建 Agent
-agent = create_react_agent(llm, tools, prompt)
-agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-
-# 运行
-result = agent_executor.invoke({
-    "input": "搜索苹果公司的股价，然后计算100股的价值"
-})
-
-print(result)
-```
+Agent 的核心循环是：读取用户目标，判断是否需要工具，调用工具获得观察结果，再生成最终回答。复杂 Agent 建议用 LangGraph 管理状态、分支、持久化和人工确认节点。
 
 ## 📚 LlamaIndex
 
@@ -387,19 +368,21 @@ LlamaIndex 是专注于数据索引和检索的框架，特别适合构建 RAG�
 ### 快速开始
 
 ```javascript
-import { VectorStoreIndex, SimpleDirectoryReader } from 'llamaindex';
+import { Document, VectorStoreIndex } from 'llamaindex';
 
-// 读取文档
-const documents = await SimpleDirectoryReader('data').loadData();
+const documents = [
+  new Document({
+    text: '机器学习是一类让计算机从数据中学习规律的方法。',
+    id_: 'machine-learning-intro',
+  }),
+];
 
-// 创建索引
 const index = await VectorStoreIndex.fromDocuments(documents);
-
-// 创建查询引擎
 const queryEngine = index.asQueryEngine();
 
-// 查询
-const response = await queryEngine.query('什么是机器学习？');
+const response = await queryEngine.query({
+  query: '什么是机器学习？',
+});
 
 console.log(response.toString());
 ```
@@ -407,138 +390,160 @@ console.log(response.toString());
 **注意**：LlamaIndex.TS 使用模块化包结构，需要安装基础包和特定提供商包：
 
 ```bash
-npm install llamaindex @llamaindex/openai
+pnpm add llamaindex @llamaindex/openai
 ```
 
 ### 数据加载
 
-#### 从文件加载
+#### 构造文档对象
 
 ```javascript
-import { SimpleDirectoryReader } from 'llamaindex';
+import { Document } from 'llamaindex';
 
-// 从目录加载
-const documents = await SimpleDirectoryReader('data').loadData();
+const documents = [
+  new Document({
+    text: '这里是第一份业务文档的正文内容。',
+    id_: 'business-doc-1',
+  }),
+  new Document({
+    text: '这里是第二份技术文档的正文内容。',
+    id_: 'technical-doc-1',
+  }),
+];
 
-// 从单个文件加载
-const document = await SimpleDirectoryReader('data/doc.pdf').loadData();
+console.log(documents.map((document) => document.id_));
 ```
 
 #### 从网页加载
 
 ```javascript
-import { SimpleWebPageReader } from 'llamaindex';
+import { Document } from 'llamaindex';
 
-const documents = await SimpleWebPageReader.loadData([
-  'https://example.com/article',
-]);
+const response = await fetch('https://example.com/article');
+const html = await response.text();
+
+const documents = [
+  new Document({
+    text: html.replace(/<[^>]+>/g, ' '),
+    id_: 'example-article',
+  }),
+];
+
+console.log(documents[0].text.slice(0, 120));
 ```
 
 ### 文档分割
 
 ```javascript
-import { SentenceSplitter } from 'llamaindex';
+import { Document, SentenceSplitter } from 'llamaindex';
 
-// 创建分割器
+const documents = [
+  new Document({
+    text: '这是一段较长的文档内容。分割器会把文档拆成更适合检索的小片段。',
+    id_: 'splitter-demo',
+  }),
+];
+
 const splitter = new SentenceSplitter({
-  chunkSize: 1000,  // 每个 chunk 的最大字符数
-  chunkOverlap: 200,  // chunk 之间的重叠字符数
+  chunkSize: 100,
+  chunkOverlap: 20,
 });
 
-// 分割文档
 const nodes = splitter.getNodesFromDocuments(documents);
+
+console.log(nodes.map((node) => node.getContent()));
 ```
 
 ### 向量索引
 
 ```javascript
-import { VectorStoreIndex, storageContextFromDefaults } from 'llamaindex';
 import { OpenAIEmbedding } from '@llamaindex/openai';
+import { Document, Settings, VectorStoreIndex } from 'llamaindex';
 
-// 自定义嵌入模型
-const embeddingModel = new OpenAIEmbedding({
+Settings.embedModel = new OpenAIEmbedding({
   apiKey: process.env.OPENAI_API_KEY,
-  model: 'text-embedding-ada-002',
+  model: 'text-embedding-3-small',
 });
 
-// 创建存储上下文
-const storageContext = await storageContextFromDefaults({
-  vectorStoreType: 'simple',
-  persistDir: './storage',
+const documents = [
+  new Document({
+    text: '向量索引用于根据语义相似度检索文档片段。',
+    id_: 'vector-index-intro',
+  }),
+];
+
+const index = await VectorStoreIndex.fromDocuments(documents);
+const queryEngine = index.asQueryEngine({ similarityTopK: 1 });
+
+const response = await queryEngine.query({
+  query: '向量索引有什么作用？',
 });
 
-// 创建索引
-const index = await VectorStoreIndex.fromDocuments(
-  documents,
-  {
-    storageContext,
-    embedModel: embeddingModel,
-  }
-);
-
-// 持久化索引
-await index.storageContext.persist();
+console.log(response.toString());
 ```
 
 ### 查询引擎
 
 ```javascript
-// 基础查询引擎
-const queryEngine = index.asQueryEngine();
+import { Document, VectorStoreIndex } from 'llamaindex';
 
-// 自定义查询引擎
+const documents = [
+  new Document({
+    text: '深度学习是机器学习的一个分支，常用于图像识别、语音识别和自然语言处理。',
+    id_: 'deep-learning-intro',
+  }),
+  new Document({
+    text: '传统机器学习通常依赖人工特征工程，深度学习更强调从数据中自动学习多层特征。',
+    id_: 'ml-vs-dl',
+  }),
+];
+
+const index = await VectorStoreIndex.fromDocuments(documents);
 const queryEngine = index.asQueryEngine({
-  similarityTopK: 3,  // 返回前 3 个最相关的文档
-  streaming: true,  // 流式输出
+  similarityTopK: 2,
 });
 
-// 查询
-const response = await queryEngine.query('什么是深度学习？');
+const response = await queryEngine.query({
+  query: '什么是深度学习？',
+});
 
-// 流式输出
-for await (const chunk of response.responseStream) {
-  process.stdout.write(chunk);
-}
+console.log(response.toString());
 ```
 
-### RAG 实现原理（Python 示例）
+### RAG 实现原理
 
-```python
-from llama_index import VectorStoreIndex, SimpleDirectoryReader
-from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.llms.openai import ChatOpenAI
+```javascript
+import { OpenAI, OpenAIEmbedding } from '@llamaindex/openai';
+import { Document, Settings, VectorStoreIndex } from 'llamaindex';
 
-# RAG 的核心流程：
-# 1. 加载文档
-# 2. 分割文档
-# 3. 创建向量索引
-# 4. 查询时检索相关文档
-# 5. 将检索到的文档作为上下文传递给 LLM
+Settings.llm = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  model: 'gpt-4o',
+});
+Settings.embedModel = new OpenAIEmbedding({
+  apiKey: process.env.OPENAI_API_KEY,
+  model: 'text-embedding-3-small',
+});
 
-# 1. 加载文档
-documents = SimpleDirectoryReader("data").loadData()
+const documents = [
+  new Document({
+    text: '机器学习通过训练数据学习模式，并用这些模式对新数据进行预测。',
+    id_: 'ml-basics',
+  }),
+  new Document({
+    text: 'RAG 会先检索相关文档，再把检索结果作为上下文交给大模型生成回答。',
+    id_: 'rag-basics',
+  }),
+];
 
-# 2. 分割文档（自动进行）
-# LlamaIndex 会自动将文档分割成合适的 chunks
+const index = await VectorStoreIndex.fromDocuments(documents);
+const queryEngine = index.asQueryEngine({ similarityTopK: 2 });
 
-# 3. 创建向量索引
-# 使用 OpenAI 的 embedding 模型
-embed_model = OpenAIEmbedding(api_key="your-api-key")
-index = VectorStoreIndex.from_documents(
-    documents,
-    embed_model=embed_model
-)
+const response = await queryEngine.query({
+  query: 'RAG 和机器学习有什么关系？',
+});
 
-# 4. 创建查询引擎
-query_engine = index.asQueryEngine(
-    similarity_top_k=3,  # 检索前 3 个最相关的文档
-    llm=ChatOpenAI(model="gpt-4")  # 使用 GPT-4 生成答案
-)
-
-# 5. 查询
-response = query_engine.query("什么是机器学习？")
-
-print(response)
+console.log(response.toString());
 ```
 
 ## 🛠️ 其他开源框架
@@ -550,7 +555,7 @@ Vercel AI SDK 是一个现代化的全栈 TypeScript AI 开发套件，特别适
 **安装**：
 
 ```bash
-npm install ai @ai-sdk/openai
+pnpm add ai @ai-sdk/openai
 ```
 
 **使用示例**：
@@ -561,7 +566,7 @@ import { generateText } from 'ai';
 
 // 生成文本
 const { text } = await generateText({
-  model: openai('gpt-4'),
+  model: openai('gpt-4o'),
   prompt: '写一首关于春天的诗',
 });
 
@@ -575,7 +580,7 @@ import { openai } from '@ai-sdk/openai';
 import { streamText } from 'ai';
 
 const result = await streamText({
-  model: openai('gpt-4'),
+  model: openai('gpt-4o'),
   prompt: '解释什么是量子计算',
 });
 
@@ -591,7 +596,7 @@ LangGraph 是 LangChain 团队开发的状态机框架，用于构建复杂的�
 **安装**：
 
 ```bash
-npm install @langchain/langgraph @langchain/openai
+pnpm add @langchain/langgraph @langchain/openai
 ```
 
 **使用示例**：
@@ -610,7 +615,7 @@ const StateAnnotation = Annotation.Root({
 
 // 定义节点
 const agentNode = async (state) => {
-  const llm = new ChatOpenAI({ model: 'gpt-4' });
+  const llm = new ChatOpenAI({ model: 'gpt-4o' });
   const response = await llm.invoke(state.messages);
   return { messages: [response] };
 };
@@ -643,45 +648,35 @@ console.log(result);
 ### 案例 1：智能问答系统
 
 ```javascript
-import { ChatOpenAI } from '@langchain/openai';
-import { ChatPromptTemplate } from '@langchain/core/prompts';
-import { ConversationBufferMemory } from '@langchain/memory';
+import { createAgent } from 'langchain';
+import { MemorySaver } from '@langchain/langgraph';
 
-// LLM 实例
-const llm = new ChatOpenAI({ model: 'gpt-4' });
-
-// 记忆
-const memory = new ConversationBufferMemory({
-  returnMessages: true,
-  memoryKey: 'history',
+const agent = createAgent({
+  model: 'openai:gpt-4o',
+  tools: [],
+  systemPrompt: `你是一个专业的技术顾问。
+请用简洁、专业的语言回答用户的问题。
+如果不确定答案，请诚实地说不知道。`,
+  checkpointer: new MemorySaver(),
 });
 
-// 提示词模板
-const prompt = ChatPromptTemplate.fromMessages([
-  ['system', `你是一个专业的技术顾问。
-  请用简洁、专业的语言回答用户的问题。
-  如果不确定答案，请诚实地说不知道。`],
-  ['placeholder', '{history}'],
-  ['user', '{input}'],
-]);
+const config = {
+  configurable: {
+    thread_id: 'qa-user-001',
+  },
+};
 
-// 构建链
-const chain = prompt.pipe(llm);
-
-// 问答函数
 async function askQuestion(question) {
-  const history = await memory.loadMemoryVariables({}).history;
-  const response = await chain.invoke({ input: question, history });
-  
-  await memory.saveContext(
-    { input: question },
-    { output: response.content }
+  const result = await agent.invoke(
+    {
+      messages: [{ role: 'user', content: question }],
+    },
+    config
   );
-  
-  return response.content;
+
+  return result.messages.at(-1).content;
 }
 
-// 使用
 const answer1 = await askQuestion('什么是 React？');
 console.log(answer1);
 
@@ -694,106 +689,99 @@ console.log(answer2);
 ```javascript
 import { ChatOpenAI } from '@langchain/openai';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
-import { loadSummarizationChain } from 'langchain/chains';
+import { StringOutputParser } from '@langchain/core/output_parsers';
 
-// LLM 实例
-const llm = new ChatOpenAI({ model: 'gpt-4' });
+const llm = new ChatOpenAI({ model: 'gpt-4o-mini' });
 
-// 创建摘要链
-const summarizeChain = loadSummarizationChain(llm, {
-  type: 'map_reduce',  // map-reduce 策略
-});
+const prompt = ChatPromptTemplate.fromMessages([
+  ['system', '你是一个专业的文档编辑，请输出结构清晰的中文摘要。'],
+  ['user', '请总结以下文档：\n\n{document}'],
+]);
 
-// 长文档
+const summarizeChain = prompt.pipe(llm).pipe(new StringOutputParser());
+
 const longDocument = `
-  这里是一段很长的文档内容...
-  可以是数百页的书籍或报告...
+大语言模型应用通常由模型调用、提示词、工具、记忆和外部数据源组成。
+在生产环境中，开发者需要关注成本、延迟、安全、可观测性和评估体系。
+对于长文档问答，常见方案是使用 RAG 检索相关片段，再把片段作为上下文传给模型。
 `;
 
-// 生成摘要
-const summary = await summarizeChain.call({
-  input_documents: [{ pageContent: longDocument }],
+const summary = await summarizeChain.invoke({
+  document: longDocument,
 });
 
-console.log(summary.output_text);
+console.log(summary);
 ```
 
 ### 案例 3：代码助手
 
 ```javascript
-import { ChatOpenAI } from '@langchain/openai';
-import { ChatPromptTemplate } from '@langchain/core/prompts';
-import { DynamicStructuredTool } from '@langchain/core/tools';
+import { createAgent, tool } from 'langchain';
 import { z } from 'zod';
-import { initializeAgentExecutorWithOptions } from 'langchain/agents';
 
-// LLM 实例
-const llm = new ChatOpenAI({ model: 'gpt-4' });
-
-// 代码执行工具
-const executeCodeTool = new DynamicStructuredTool({
-  name: 'execute_code',
-  description: '执行 JavaScript 代码并返回结果',
-  schema: z.object({
-    code: z.string().describe('要执行的 JavaScript 代码'),
-  }),
-  func: async ({ code }) => {
-    try {
-      // 注意：实际应用中应该使用安全的沙箱环境
-      const result = eval(code);
-      return String(result);
-    } catch (error) {
-      return `错误: ${error.message}`;
+const fibonacciTool = tool(
+  async ({ count }) => {
+    const values = [];
+    for (let index = 0; index < count; index += 1) {
+      values.push(index < 2 ? index : values[index - 1] + values[index - 2]);
     }
+    return values.join(', ');
   },
-});
-
-// 创建 Agent
-const agentExecutor = await initializeAgentExecutorWithOptions(
-  [executeCodeTool],
-  llm,
   {
-    agentType: 'zero-shot-react-description',
-    verbose: true,
+    name: 'fibonacci',
+    description: '生成指定数量的斐波那契数列。',
+    schema: z.object({
+      count: z.number().int().min(1).max(50).describe('要生成的项数'),
+    }),
   }
 );
 
-// 使用代码助手
-const result = await agentExecutor.run(
-  '计算斐波那契数列的前 10 项'
-);
+const agent = createAgent({
+  model: 'openai:gpt-4o',
+  tools: [fibonacciTool],
+  systemPrompt: '你是一个代码助手，需要优先使用工具完成可计算任务。',
+});
 
-console.log(result);
+const result = await agent.invoke({
+  messages: [{ role: 'user', content: '计算斐波那契数列的前 10 项' }],
+});
+
+console.log(result.messages.at(-1).content);
 ```
 
 ### 案例 4：RAG 问答系统
 
 ```javascript
-import { VectorStoreIndex, SimpleDirectoryReader } from 'llamaindex';
-import { OpenAIEmbedding, ChatOpenAI } from '@llamaindex/openai';
+import { OpenAI, OpenAIEmbedding } from '@llamaindex/openai';
+import { Document, Settings, VectorStoreIndex } from 'llamaindex';
 
-// 1. 加载文档
-const documents = await SimpleDirectoryReader('docs').loadData();
-
-// 2. 创建索引
-const embeddingModel = new OpenAIEmbedding({
+Settings.llm = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  model: 'gpt-4o',
 });
-const index = await VectorStoreIndex.fromDocuments(documents, {
-  embedModel: embeddingModel,
+Settings.embedModel = new OpenAIEmbedding({
+  apiKey: process.env.OPENAI_API_KEY,
+  model: 'text-embedding-3-small',
 });
 
-// 3. 创建查询引擎
-const queryEngine = index.asQueryEngine({
-  similarityTopK: 3,
-  llm: new ChatOpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    model: 'gpt-4',
+const documents = [
+  new Document({
+    text: '项目提供 LLM 基础、RAG、Agent 和应用开发教程。',
+    id_: 'project-overview',
   }),
+  new Document({
+    text: '应用开发章节介绍 LangChain、LlamaIndex、AI SDK 和 LangGraph。',
+    id_: 'app-development',
+  }),
+];
+
+const index = await VectorStoreIndex.fromDocuments(documents);
+const queryEngine = index.asQueryEngine({ similarityTopK: 2 });
+
+const response = await queryEngine.query({
+  query: '项目的核心功能是什么？',
 });
 
-// 4. 查询
-const response = await queryEngine.query('项目的核心功能是什么？');
 console.log(response.toString());
 ```
 
@@ -809,24 +797,35 @@ console.log(response.toString());
 ### 2. 错误处理
 
 ```javascript
-try {
-  const response = await llm.invoke(prompt);
-  return response.content;
-} catch (error) {
-  if (error.status === 429) {
-    // 速率限制，等待后重试
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    return retry();
-  } else {
-    console.error('LLM 调用失败:', error);
-    throw error;
+import { ChatOpenAI } from '@langchain/openai';
+
+const llm = new ChatOpenAI({ model: 'gpt-4o-mini' });
+
+async function invokeWithRetry(llm, messages, maxRetries = 2) {
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      const response = await llm.invoke(messages);
+      return response.content;
+    } catch (error) {
+      if (error.status !== 429 || attempt === maxRetries) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
   }
 }
+
+const content = await invokeWithRetry(llm, [
+  ['user', '解释什么是上下文窗口。'],
+]);
+
+console.log(content);
 ```
 
 ### 3. 成本优化
 
-- 使用更小的模型（如 GPT-3.5）
+- 根据任务复杂度选择更小的模型（如 mini 版本）
 - 压缩上下文
 - 使用缓存
 - 批处理请求
